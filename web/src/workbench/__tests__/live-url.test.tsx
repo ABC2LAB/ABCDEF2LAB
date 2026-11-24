@@ -456,37 +456,29 @@ describe("서버 방식 확인 (catalog)", () => {
     expect(screen.queryByText("기존 점검 다시 열기")).toBeNull();
     expect(screen.queryByRole("link", { name: "진행·시작 전 점검 목록" })).toBeNull();
     expect(screen.queryAllByRole("button", { name: /\.(com|io)$/ })).toHaveLength(0);
-    const login = screen.getByRole("radiogroup", { name: "로그인 여부" });
-    for (const r of within(login).getAllByRole("radio")) expect(r).toBeEnabled();
-    expect(within(login).getByRole("radio", { name: "로그인 없이 점검" })).toBeChecked();
-    expect(screen.getByText("계정이 있어야 함")).toBeVisible();
-    expect(screen.queryByRole("radiogroup", { name: "로그인 방법" })).toBeNull();
-    expect(screen.getAllByText(/^연결 전/).length).toBeGreaterThanOrEqual(2);
-    // 로그인해서 점검: 시안처럼 방법 · 계정 칸이 나오고 입력할 수 있다
-    fireEvent.click(within(login).getByRole("radio", { name: "로그인해서 점검" }));
-    const how = screen.getByRole("radiogroup", { name: "로그인 방법" });
-    expect(within(how).getByRole("radio", { name: "아이디 · 비밀번호" })).toBeChecked();
-    const accounts = screen.getAllByLabelText(/^계정 [AB] /);
-    expect(accounts).toHaveLength(4);
-    for (const el of accounts) {
-      expect(el).toBeEnabled();
-      expect(el).toHaveValue("");
-    }
-    fireEvent.change(accounts[0], { target: { value: "typed-local-id" } });
-    fireEvent.change(accounts[1], { target: { value: "typed-local-secret" } });
-    fireEvent.click(within(how).getByRole("radio", { name: "쿠키 붙여넣기" }));
-    expect(screen.getAllByPlaceholderText("Cookie: session=…")).toHaveLength(2);
-    fireEvent.click(within(how).getByRole("radio", { name: "아이디 · 비밀번호" }));
+    // 로그인 칸(시안의 계정 A 관리자 · B 일반 입력, 연결 전)은 뺐다 — 대신 '계정 분류' 칸의 시험 계정 A · B(사용자 11/24)
+    expect(screen.queryByRole("radiogroup", { name: "로그인 여부" })).toBeNull();
+    // 시안의 '계정 A (관리자) 아이디' 같은 입력칸은 없다(새 시험 계정 칸은 '계정 A 아이디')
+    expect(screen.queryByLabelText(/^계정 [AB] \(/)).toBeNull();
+    // 대상 승인 전에도 시험 계정 칸은 보인다 — 채울 수는 있고 저장만 승인 뒤에(사용자 11/24)
+    const pair = within(screen.getByRole("region", { name: "시험 계정" }));
+    expect(pair.getByRole("group", { name: "계정 A" })).toHaveTextContent("대상 승인 전");
+    expect(pair.getByLabelText("계정 A 아이디")).toBeEnabled();
+    expect(pair.getByRole("button", { name: "저장" })).toBeDisabled();
+    expect(pair.getByText("대상이 승인되면 저장할 수 있습니다")).toBeInTheDocument();
     // 2쪽: LLM 서버 주소 · 점검 목표 · 점검 범위 · 워커 수도 고를 수 있다 (지어낸 값 · 연결 상태 없음)
     fireEvent.change(target, { target: { value: "https://target.example/" } });
     fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     expect(screen.getByLabelText("LLM 서버 주소")).toBeEnabled();
     expect(screen.getByLabelText("LLM 서버 주소")).toHaveValue("");
     expect(screen.queryByText(/연결됨/)).toBeNull();
-    for (const box of within(screen.getByRole("group", { name: "점검 목표" })).getAllByRole("checkbox")) {
-      expect(box).toBeEnabled();
-      expect(box).not.toBeChecked();
-    }
+    // 계정이 있어야 하는 목표(IDOR · 관리자 기능)는 이번 회차가 시험 계정으로 로그인하지 않으면 막힌다(11/24, 실제 결속을 따름)
+    const goals = within(screen.getByRole("group", { name: "점검 목표" }));
+    for (const name of ["남의 정보 보기 (IDOR)", "관리자 기능 접근"])
+      expect(goals.getByRole("checkbox", { name })).toBeDisabled();
+    for (const name of ["로그인 없이 접근", "민감정보 노출"])
+      expect(goals.getByRole("checkbox", { name })).toBeEnabled();
+    for (const box of goals.getAllByRole("checkbox")) expect(box).not.toBeChecked();
     for (const r of within(screen.getByRole("radiogroup", { name: "점검 범위" })).getAllByRole("radio")) {
       expect(r).toBeEnabled();
       expect(r).not.toBeChecked();
@@ -508,7 +500,7 @@ describe("서버 방식 확인 (catalog)", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
     await waitFor(() => expect(u.createURLDraft).toHaveBeenCalled());
     const sent = JSON.stringify(u.createURLDraft.mock.calls);
-    for (const v of ["typed-local-id", "typed-local-secret", "꼼꼼하게", '"4"']) expect(sent).not.toContain(v);
+    for (const v of ["꼼꼼하게", '"4"']) expect(sent).not.toContain(v);
     // 요약 패널: 시안 줄 그대로, 서버 값이 없는 줄(로그인 · 점검 범위 · 점검 목표)은 '—' 와 연결 전 딱지
     const sum = screen.getByRole("complementary", { name: "점검 요약" });
     expect([...sum.querySelectorAll("dt")].map((dt) => dt.textContent)).toEqual([
@@ -3268,57 +3260,196 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
     expect(screen.queryByRole("region", { name: "대상 리셋 확인" })).toBeNull();
   });
 
-  it("승인된 대상이면 계정 · 정책 선언 상자를 두고, 버튼은 그 대상을 미리 고르게 한 뒤 그 화면으로 간다(사용자 11/23)", async () => {
-    serve(active(declaration()), noWrites);
+  // 사용자 11/24: 수평만이라 시험 계정은 A(소유) · B(교차) 둘 — 이름을 적어 추가하는 상자 대신 두 줄 고정. 이름은 정책 선언의
+  // 소유 · 교차 계정 이름. 아래 따로 있던 계정 목록은 뺐고 '이번 회차 로그인' 줄만. 정책 선언 상자는 선언만
+  const STATEMENT = "소유 · 승인된 일회용 시험 계정이라는 진술";
+  function serveQuick(initial: Array<Record<string, unknown>>, statement = STATEMENT) {
+    serve(active(declaration()), noWrites, initial);
+    const base = vi.mocked(teamApi.apiFetch).getMockImplementation();
+    const calls: string[] = [];
+    const sent: string[] = [];
+    let rows = [...initial];
+    vi.mocked(teamApi.apiFetch).mockImplementation(async (path, init) => {
+      const p = String(path);
+      const m = init?.method ?? "GET";
+      if (p.includes(`/${TARGET_ID}/accounts`) && m !== "GET") {
+        calls.push(`${m} ${p.split(`/${TARGET_ID}`)[1]}`);
+        sent.push(String(init?.body ?? ""));
+        const label = p.split("/accounts/")[1]?.split("/")[0];
+        if (m === "POST" && p.endsWith("/accounts"))
+          rows.push({ label: JSON.parse(String(init?.body)).label, classification: "real" });
+        if (p.endsWith("/mark-test"))
+          rows = rows.map((r) => (r.label === label ? { ...r, classification: "test" } : r));
+        if (p.endsWith("/unmark")) rows = rows.map((r) => (r.label === label ? { ...r, classification: "real" } : r));
+        if (p.endsWith("/credential")) {
+          rows = rows.map((r) => (r.label === label ? { ...r, credential_configured: true } : r));
+          return { account: { label, credential_configured: true } } as never;
+        }
+        return {} as never;
+      }
+      if (p.endsWith(`/${TARGET_ID}/accounts`))
+        return { accounts: rows, ...(statement ? { account_statement: statement } : {}) } as never;
+      return (base as NonNullable<typeof base>)(path, init);
+    });
+    return { calls, sent };
+  }
+  const pairBox = async () => within(await screen.findByRole("region", { name: "시험 계정" }));
+
+  it("시험 계정은 A(소유) · B(교차) 두 줄 — 이름은 정책 선언에서, 상태 · 로그인 줄을 보이고 정책 선언 상자는 선언만", async () => {
+    serveQuick([
+      { label: "tester-a", classification: "test", credential_configured: true },
+      { label: "tester-b", classification: "test" },
+    ]);
     saveHandle();
     const { goTo } = mount("new");
-    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
-    expect(await within(box).findByText("있음 · 소유자 전용 종류 1개")).toBeInTheDocument();
-    fireEvent.click(within(box).getByRole("button", { name: "계정 분류" }));
-    expect(goTo).toHaveBeenCalledWith("classify");
-    expect(useWb.getState().focusTarget?.id).toBe(TARGET_ID);
-    const seq = useWb.getState().focusTarget?.seq ?? 0;
-    fireEvent.click(within(box).getByRole("button", { name: "정책 선언" }));
+    // 시안의 로그인 계정 입력 칸 · 이름을 적어 추가하는 상자는 없다
+    expect(screen.queryByRole("radiogroup", { name: "로그인 여부" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "시험 계정 추가" })).toBeNull();
+    const box = await pairBox();
+    const a = box.getByRole("group", { name: "계정 A" });
+    const b = box.getByRole("group", { name: "계정 B" });
+    await waitFor(() => expect(a).toHaveTextContent("계정 A자격 등록됨"));
+    // 별칭은 화면 글에 없고 마우스를 올렸을 때만
+    expect(a).not.toHaveTextContent("tester-a");
+    expect(within(a).getByText("계정 A")).toHaveAttribute("title", "별칭 tester-a");
+    expect(b).toHaveTextContent("계정 B자격 없음");
+    expect(within(a).getByLabelText("계정 A 비밀번호")).toHaveAttribute("placeholder", "비밀번호 (새로 넣으면 바꿈)");
+    // 둘 다 이미 시험 표시라 진술 동의 칸은 없다
+    expect(box.queryByRole("checkbox")).toBeNull();
+    const acct = screen.getByRole("region", { name: "계정 분류" });
+    expect(acct).toHaveTextContent("등록됨 · 로그인해서 점검");
+    const decl = screen.getByRole("region", { name: "정책 선언" });
+    expect(await within(decl).findByText("있음 · 소유자 전용 종류 1개")).toBeInTheDocument();
+    // 세부 관리는 이 자리에서 펼친다(계정 분류 화면에 안 감)
+    const toggle = within(acct).getByRole("button", { name: "자세히 관리" });
+    fireEvent.click(toggle);
+    expect(await within(acct).findByRole("region", { name: "대상 로그인 방식" })).toBeInTheDocument();
+    // A · B 말고 다른 계정이 없으면 '다른 계정' 칸은 두지 않는다
+    expect(within(acct).queryByRole("region", { name: "다른 계정" })).toBeNull();
+    expect(acct).toHaveTextContent("비밀번호 · 토큰 · 세션 값은 화면에 남기지 않고 서버 보호 파일로만 보냅니다.");
+    expect(goTo).not.toHaveBeenCalledWith("classify");
+    fireEvent.click(within(acct).getByRole("button", { name: "닫기" }));
+    expect(within(acct).queryByRole("region", { name: "대상 로그인 방식" })).toBeNull();
+    fireEvent.click(within(decl).getByRole("button", { name: "정책 선언" }));
     expect(goTo).toHaveBeenCalledWith("declaration");
-    expect(useWb.getState().focusTarget).toEqual({ id: TARGET_ID, seq: seq + 1 });
+    expect(useWb.getState().focusTarget?.id).toBe(TARGET_ID);
+  });
+
+  it("시험 계정 저장: 새 계정이면 동의 뒤 등록 → 시험 표시 → 자격을 채운 줄만 보내고 칸을 비운다", async () => {
+    const { calls, sent } = serveQuick([]);
+    saveHandle();
+    mount("new");
+    const box = await pairBox();
+    const save = box.getByRole("button", { name: "저장" });
+    fireEvent.change(box.getByLabelText("계정 A 아이디"), { target: { value: "typed-user-1" } });
+    fireEvent.change(box.getByLabelText("계정 A 비밀번호"), { target: { value: "typed-secret-12345" } });
+    expect(save).toBeDisabled(); // 진술 동의 전
+    fireEvent.click(await box.findByRole("checkbox", { name: STATEMENT }));
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+    // 자격 칸은 누르자마자 비운다
+    expect(box.getByLabelText("계정 A 아이디")).toHaveValue("");
+    expect(box.getByLabelText("계정 A 비밀번호")).toHaveValue("");
+    expect(await box.findByRole("status")).toHaveTextContent("저장함");
+    // B 는 비워 둬서 보내지 않는다
+    expect(calls).toEqual(["POST /accounts", "POST /accounts/tester-a/mark-test", "PUT /accounts/tester-a/credential"]);
+    expect(JSON.parse(sent[0])).toEqual({ label: "tester-a" });
+    expect(JSON.parse(sent[1])).toEqual({ statement_confirmed: true });
+    expect(sent.filter((x) => x.includes("typed-secret-12345"))).toHaveLength(1);
+    expect(sent[2]).toContain("typed-user-1");
+    await waitFor(() => expect(box.getByRole("group", { name: "계정 A" })).toHaveTextContent("자격 등록됨"));
+    const acct = screen.getByRole("region", { name: "계정 분류" });
+    await waitFor(() => expect(acct).toHaveTextContent("등록됨 · 로그인해서 점검"));
+    // 화면 어디에도 비밀번호가 남지 않는다
+    expect(document.body.innerHTML).not.toContain("typed-secret-12345");
+  });
+
+  it("시험 계정 저장: 이미 시험 표시된 계정이면 동의 없이 자격만 보낸다", async () => {
+    const { calls } = serveQuick([
+      { label: "tester-a", classification: "test" },
+      { label: "tester-b", classification: "test" },
+    ]);
+    saveHandle();
+    mount("new");
+    const box = await pairBox();
+    fireEvent.change(box.getByLabelText("계정 B 아이디"), { target: { value: "u" } });
+    fireEvent.change(box.getByLabelText("계정 B 비밀번호"), { target: { value: "typed-secret-12345" } });
+    await waitFor(() => expect(box.getByRole("button", { name: "저장" })).toBeEnabled());
+    fireEvent.click(box.getByRole("button", { name: "저장" }));
+    await box.findByRole("status");
+    expect(calls).toEqual(["PUT /accounts/tester-b/credential"]);
+  });
+
+  it("시험 계정 저장: 진술을 못 받으면 새 계정은 막고 이유를 보인다", async () => {
+    serveQuick([], "");
+    saveHandle();
+    mount("new");
+    const box = await pairBox();
+    expect(await box.findByText("진술을 받지 못해 새 시험 계정은 저장할 수 없습니다")).toBeInTheDocument();
+    expect(box.getByRole("button", { name: "저장" })).toBeDisabled();
+  });
+
+  // 사용자 11/24: 표시 해제 · 시험 표시도 로그인 상자 줄에서
+  it("시험 계정 줄의 [표시 해제]는 unmark 를 보내고, 다시 [시험 표시]는 진술 동의 뒤에만 보낸다", async () => {
+    const { calls } = serveQuick([
+      { label: "tester-a", classification: "test", credential_configured: true },
+      { label: "tester-b", classification: "test", credential_configured: true },
+    ]);
+    saveHandle();
+    mount("new");
+    const box = await pairBox();
+    const a = () => box.getByRole("group", { name: "계정 A" });
+    await waitFor(() => expect(a()).toHaveTextContent("자격 등록됨"));
+    expect(box.queryByRole("checkbox")).toBeNull();
+    fireEvent.click(within(a()).getByRole("button", { name: "표시 해제" }));
+    await waitFor(() => expect(a()).toHaveTextContent("시험 표시 안 됨"));
+    expect(calls).toEqual(["POST /accounts/tester-a/unmark"]);
+    // 다시 표시하려면 진술 동의가 있어야 한다
+    const mark = within(a()).getByRole("button", { name: "시험 표시" });
+    expect(mark).toBeDisabled();
+    fireEvent.click(box.getByRole("checkbox", { name: STATEMENT }));
+    fireEvent.click(within(a()).getByRole("button", { name: "시험 표시" }));
+    await waitFor(() => expect(a()).toHaveTextContent("자격 등록됨"));
+    expect(calls).toEqual(["POST /accounts/tester-a/unmark", "POST /accounts/tester-a/mark-test"]);
+    // 로그인 줄도 다시 읽힌다
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "계정 분류" })).toHaveTextContent("등록됨 · 로그인해서 점검"),
+    );
   });
 
   // 시험 계정 줄은 등록 여부가 아니라 이번 회차가 실제로 로그인하는지를 따른다(#874 이동찬 P2)
-  const accountLine = async () => {
-    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
-    return within(box).getByText("시험 계정").parentElement as HTMLElement;
-  };
+  const accountSection = () => screen.findByRole("region", { name: "계정 분류" });
   it("로컬 모델 · 시험 계정 등록됨이면 '로그인해서 점검'", async () => {
     serve(active(declaration()), noWrites, [{ label: "tester", classification: "test" }]);
     saveHandle();
     mount("new");
-    const line = await accountLine();
-    await waitFor(() => expect(line).toHaveTextContent("등록됨 · 로그인해서 점검"));
+    const acct = await accountSection();
+    await waitFor(() => expect(acct).toHaveTextContent("등록됨 · 로그인해서 점검"));
   });
   it("외부 모델 · 동의 안 함이면 등록돼 있어도 '로그인 없이 점검'으로 보인다", async () => {
     u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
     serve(active(declaration()), noWrites, [{ label: "tester", classification: "test" }]);
     saveHandle();
     mount("new");
-    const line = await accountLine();
-    await waitFor(() => expect(line).toHaveTextContent("등록됨 · 외부 전송 동의 전이라 로그인 없이 점검"));
-    expect(line).not.toHaveTextContent("로그인해서 점검");
+    const acct = await accountSection();
+    await waitFor(() => expect(acct).toHaveTextContent("등록됨 · 외부 전송 동의 전이라 로그인 없이 점검"));
+    expect(acct).not.toHaveTextContent("로그인해서 점검");
   });
   it("계정 조회가 실패하면 '확인하지 못함', 끝나지 않았으면 '확인 중'으로 두고 '없음'으로 단정하지 않는다", async () => {
     serve(active(declaration()), noWrites, "fail");
     saveHandle();
     const view = mount("new");
-    const failed = await accountLine();
+    const failed = await accountSection();
     await waitFor(() => expect(failed).toHaveTextContent("확인하지 못함"));
+    await waitFor(() => expect(failed).toHaveTextContent("계정 정보를 읽지 못했습니다"));
     expect(failed).not.toHaveTextContent("없음");
     view.unmount();
     serve("pending", noWrites, "pending");
     mount("new");
-    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
-    const [account, decl] = within(box).getAllByRole("listitem");
-    expect(account).toHaveTextContent("시험 계정확인 중");
-    expect(decl).toHaveTextContent("정책 선언확인 중");
-    expect(box).not.toHaveTextContent("없음");
+    const acct = await accountSection();
+    expect(acct).toHaveTextContent("확인 중");
+    expect(acct).not.toHaveTextContent("없음");
+    expect(screen.getByRole("region", { name: "정책 선언" })).toHaveTextContent("정책 선언확인 중");
   });
 
   // #874 이경준 P2: 저장됐지만 무효가 된 선언은 '없음'이 아니라 다시 선언해야 한다고 보인다
@@ -3336,17 +3467,16 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
     );
     saveHandle();
     mount("new");
-    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
-    const decl = () => within(box).getAllByRole("listitem")[1];
-    await waitFor(() => expect(decl()).toHaveTextContent("정책 선언무효 · 다시 선언 필요"));
-    expect(decl()).not.toHaveTextContent("없음");
+    const box = await screen.findByRole("region", { name: "정책 선언" });
+    await waitFor(() => expect(box).toHaveTextContent("정책 선언무효 · 다시 선언 필요"));
+    expect(box).not.toHaveTextContent("없음");
   });
 
   it("정책 선언이 없으면 상자에 '없음'으로 보인다", async () => {
     serve({ state: "none", declaration: null }, noWrites);
     saveHandle();
     mount("new");
-    const box = await screen.findByRole("region", { name: "계정 · 정책 선언" });
+    const box = await screen.findByRole("region", { name: "정책 선언" });
     expect(await within(box).findByText("없음 · 확정 단계 없이 점검")).toBeInTheDocument();
   });
 
