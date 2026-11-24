@@ -18,6 +18,7 @@ import (
 
 	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/pathmask"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -275,7 +276,12 @@ func attemptPatterns(b *runBinding) map[string]string {
 			!strings.HasPrefix(row.PathPattern, "/") || len(row.PathPattern) > maxAttemptPatternBytes || strings.ContainsAny(row.PathPattern, "?#\r\n") {
 			continue
 		}
-		out[row.AttemptID] = row.PathPattern
+		// 이전 표시 파일에는 경로 조각 원문이 있을 수 있다. 새 버전의 검증된 틀만 읽는다.
+		if row.DisplayVersion == 2 && pathmask.ValidDisplayPattern(row.PathPattern) {
+			out[row.AttemptID] = row.PathPattern
+		} else {
+			out[row.AttemptID] = pathmask.DisplayShape(row.PathPattern)
+		}
 	}
 	return out
 }
