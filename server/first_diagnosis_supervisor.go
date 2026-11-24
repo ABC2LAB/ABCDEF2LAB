@@ -895,7 +895,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	budgetLimited := firstDiagnosisBudgetLimited(task, server.firstModelBudget)
 	// 실행 상한(예산·시간)이나 목표 달성일 때만, 실행 중 intent가 끝나는 대로 마감한다. 계획이 비어도 마감하지 않는다(원본과
 	// 같은 끝 규칙). 마감 사유 budget_limited는 실행 상한일 때만 붙는다.
-	outcomes, closing := firstDiagnosisClosingOutcomes(counts, firstDiagnosisForcedClose(budgetLimited, task))
+	outcomes, closing := firstDiagnosisClosingOutcomes(counts, budgetLimited, task)
 	if !closing {
 		return false, none, nil
 	}
@@ -904,7 +904,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	if result, ok := server.engine.e2HTTP.explorationBudgetOutcome(task, server.firstModelBudget, outcomes); ok {
 		return true, result, nil
 	}
-	settled := outcomes.Done + outcomes.PolicyLimited + outcomes.Incomplete + outcomes.Unknown + outcomes.Stopped
+	settled := outcomes.Total()
 	if flow := server.engine.e2HTTP.options.Workflow; flow != nil &&
 		firstDiagnosisWorkflowNotReady(flow.DeepReady(), flow.NoDeepRuns(), settled, server.engine.e2HTTP.lastPlanSucceeded(task.ID)) {
 		return failOutcome(reasonClosureWorkflowNotReady)
@@ -1043,7 +1043,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 			continue
 		}
 		switch outcome {
-		case intentOutcomeDone, intentOutcomeIncomplete, intentOutcomeStopped:
+		case intentOutcomeDone, intentOutcomeIncomplete, intentOutcomeStopped, intentOutcomeGoalMet:
 		case intentOutcomePolicyLimited:
 			// 정책 제한 사유는 E②가 실제로 거부·미지원한 호출로 뒷받침돼야 한다.
 			if !limited[intent.ID][intent.BlockedReason] {

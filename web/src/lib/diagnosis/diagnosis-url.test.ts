@@ -293,7 +293,9 @@ describe("실행 결과 칸(docs/contracts/run-outcome-states.md §3.2)", () => 
     drain_complete: true,
     result_ready: true,
   };
-  const counts = (c: Partial<Record<"done" | "policy_limited" | "incomplete" | "unknown" | "stopped", number>>) => ({
+  const counts = (
+    c: Partial<Record<"done" | "policy_limited" | "incomplete" | "unknown" | "stopped" | "goal_met", number>>,
+  ) => ({
     done: 0,
     policy_limited: 0,
     incomplete: 0,
@@ -320,7 +322,30 @@ describe("실행 결과 칸(docs/contracts/run-outcome-states.md §3.2)", () => 
   });
   it("cancelled는 개수만 받는다", () => {
     const cancelled = { ...completed, state: "cancelled" as const, intent_outcomes: counts({ done: 1, stopped: 1 }) };
-    expect(parseURLJob(envelope(cancelled), owner).intent_outcomes).toEqual(counts({ done: 1, stopped: 1 }));
+    // 파서는 goal_met이 없던 기록도 0으로 채운다.
+    expect(parseURLJob(envelope(cancelled), owner).intent_outcomes).toEqual({
+      ...counts({ done: 1, stopped: 1 }),
+      goal_met: 0,
+    });
+  });
+  it("목표 달성으로 중단(goal_met)은 남은 작업이 아니라 complete에 들어간다(#875 발견 6)", () => {
+    const goalMet = { ...completed, outcome: "complete", intent_outcomes: counts({ done: 1, goal_met: 2 }) };
+    expect(parseURLJob(envelope(goalMet), owner).intent_outcomes?.goal_met).toBe(2);
+    // goal_met만 있다고 partial이면 대조식에 맞지 않는다.
+    expect(() =>
+      parseURLJob(
+        envelope({ ...completed, outcome: "partial", intent_outcomes: counts({ done: 1, goal_met: 2 }) }),
+        owner,
+      ),
+    ).toThrow();
+    for (const bad of [-1, 1.5, "2"]) {
+      expect(() =>
+        parseURLJob(
+          envelope({ ...completed, outcome: "complete", intent_outcomes: { ...counts({ done: 1 }), goal_met: bad } }),
+          owner,
+        ),
+      ).toThrow();
+    }
   });
   it.each([
     { ...completed, outcome: "complete", intent_outcomes: counts({ done: 1, incomplete: 1 }) },

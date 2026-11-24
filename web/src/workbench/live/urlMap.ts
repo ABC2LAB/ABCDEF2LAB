@@ -74,8 +74,13 @@ export function urlOutcomeText(
   const c = job.intent_outcomes;
   if (!c) return "";
   const finished = c.done + c.policy_limited;
+  const goalMet = c.goal_met ?? 0;
   const remaining = c.incomplete + c.stopped;
-  if (job.state === "cancelled") return `중지됨 · 끝난 ${finished} / 끊긴 ${remaining + c.unknown}`;
+  // 목표 달성으로 멈춘 작업은 검사를 끝낸 것도 끊긴 것도 아니라 따로 보인다(#875 발견 6, #894 경준 리뷰).
+  if (job.state === "cancelled")
+    return goalMet > 0
+      ? `중지됨 · 끝난 ${finished} · 목표 달성(계획자 판단)으로 중단 ${goalMet} / 끊긴 ${remaining + c.unknown}`
+      : `중지됨 · 끝난 ${finished} / 끊긴 ${remaining + c.unknown}`;
   if (job.state !== "completed" || !job.outcome) return "";
   const parts: string[] = [];
   if (compact && c.done === 0) parts.push("검사 안 함");
@@ -86,6 +91,9 @@ export function urlOutcomeText(
   // 결과 불명은 남은 작업과 따로 보인다(미실행·판단불가를 섞지 않는다).
   if (c.unknown > 0) parts.push(`결과 불명 ${c.unknown}`);
   if (c.policy_limited > 0) parts.push(`정책상 검증 안 됨 ${c.policy_limited}`);
+  // 목표 달성으로 작업이 끝나 멈춘 작업은 남은 작업이 아니라 따로 보인다(#875 발견 6). 목표 달성은 계획자(모델) 판단이지
+  // 프로그램이 검증한 사실이 아니라서 문구에 그렇게 적는다(#894 경준 리뷰, 절대 규칙 4).
+  if (goalMet > 0) parts.push(`목표 달성(계획자 판단)으로 중단 ${goalMet}`);
   if (job.closing_reason === "budget_limited")
     parts.push(compact ? "예산 상한에서 마감" : "예산 상한에서 마감 · 찾은 후보는 보존");
   return parts.join(" · ");

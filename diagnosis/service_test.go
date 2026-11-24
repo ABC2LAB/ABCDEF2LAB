@@ -388,3 +388,23 @@ func TestParentCancellationStopsActiveExecution(t *testing.T) {
 		t.Fatal(snapshot)
 	}
 }
+
+// 목표 달성으로 중단(GoalMet)은 남은 작업이 아니다: 그것만 있으면 complete이고, 음수면 받지 않는다(#875 발견 6).
+func TestIntentOutcomesGoalMet(t *testing.T) {
+	if (IntentOutcomes{GoalMet: 1}).Outcome() != OutcomeComplete || (IntentOutcomes{GoalMet: 1, Stopped: 1}).Outcome() != OutcomePartial {
+		t.Fatal("goal_met outcome rule")
+	}
+	if (IntentOutcomes{Done: 1, GoalMet: -1}).Valid() || !(IntentOutcomes{Done: 1, GoalMet: 2}).Valid() {
+		t.Fatal("goal_met validity")
+	}
+	// 합계는 칸마다 한 번씩 센다(서로 다른 2의 거듭제곱으로 빠진 칸·두 번 센 칸을 가린다).
+	if got := (IntentOutcomes{Done: 1, PolicyLimited: 2, Incomplete: 4, Unknown: 8, Stopped: 16, GoalMet: 32}).Total(); got != 63 {
+		t.Fatalf("total=%d", got)
+	}
+	if !(RunResult{Outcome: OutcomeComplete, IntentOutcomes: IntentOutcomes{Done: 1, GoalMet: 2}}).Valid() {
+		t.Fatal("complete with goal_met rejected")
+	}
+	if (RunResult{Outcome: OutcomePartial, IntentOutcomes: IntentOutcomes{Done: 1, GoalMet: 2}}).Valid() {
+		t.Fatal("partial without remaining work accepted")
+	}
+}

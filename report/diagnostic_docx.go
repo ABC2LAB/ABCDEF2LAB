@@ -140,10 +140,40 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 	}
 	w.chapter("3장. 진단 결과 요약")
 	w.paragraph("Normal", "실행 결과: "+in.RunText+". 실행 결과는 취약점이 없다는 뜻이 아닙니다.")
+	if in.ExposedCredentialValues > 0 {
+		w.paragraph("Normal", fmt.Sprintf("대상이 노출한 자격 값: 노출됨 %d건. 보고서에서는 값을 가렸습니다.", in.ExposedCredentialValues))
+	}
 	if in.SourceFailures > 0 {
 		w.paragraph("Normal", fmt.Sprintf("근거 불러오기 실패: %d건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.", in.SourceFailures))
 	}
 	w.table([][]string{{"확정", "검토 필요", "미실행", "판단 불가·결과 불명", "비취약"}, {strconv.Itoa(in.Confirmed), strconv.Itoa(in.Review), strconv.Itoa(in.NotExecuted), strconv.Itoa(in.Unknown), strconv.Itoa(in.Negative)}})
+	if len(in.ProductConfirmed) > 0 || in.ProductSuspected > 0 || in.ProductUndecidable > 0 || in.ProductUnverified > 0 || in.ProductSourceUnavailable > 0 || in.ProductUnreadable > 0 {
+		w.paragraph("Heading2", "제품 E③ 확정 단계")
+		summary := fmt.Sprintf("독립 확정 %d건", len(in.ProductConfirmed))
+		if in.ProductSealUnconfirmed > 0 {
+			summary += fmt.Sprintf(" · 그중 근거 봉인 미확인 %d건", in.ProductSealUnconfirmed)
+		}
+		if in.ProductSuspected > 0 || in.ProductUndecidable > 0 {
+			summary += fmt.Sprintf(" · 의심 %d건 · 판정 불가 %d건(확정에 세지 않음)", in.ProductSuspected, in.ProductUndecidable)
+		}
+		if in.ProductUnverified > 0 {
+			summary += fmt.Sprintf(" · 확인 실패 %d건(확정에 안 셈)", in.ProductUnverified)
+		}
+		if in.ProductSourceUnavailable > 0 {
+			summary += fmt.Sprintf(" · 당시 원본 미확인 %d건(확정에 세지 않음)", in.ProductSourceUnavailable)
+		}
+		if in.ProductUnreadable > 0 {
+			summary += fmt.Sprintf(" · 제품 확정 단계 판정을 읽지 못함(%d건, 확정에 세지 않음)", in.ProductUnreadable)
+		}
+		w.paragraph("Normal", summary)
+		for _, row := range in.ProductConfirmed {
+			line := fmt.Sprintf("제품 판정 %s · 자원 종류 %s · 근거 호출 %d건", row.VerdictID, row.ResourceType, row.EvidenceCalls)
+			if row.SealUnconfirmedReason != "" {
+				line += " · 근거 봉인 미확인(" + row.SealUnconfirmedReason + ")"
+			}
+			w.paragraph("Normal", line)
+		}
+	}
 	w.paragraph("Normal", "확정 집계는 유효한 저장 E③ 판정만 포함합니다. HTTP 성공·AI 주장·후보·정상 종료는 확정 근거가 아닙니다. 검토 필요 후보는 확정 심각도·위험도 합계에 포함하지 않습니다.")
 	keys := []string{}
 	for k := range in.BySeverity {
@@ -166,6 +196,9 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		w.table([][]string{{"항목", "값"}, {"고유 ID / 유형", e.ID + " / " + e.VulnClass}, {"판정 / 검증", e.Outcome + " / " + e.Verification}, {"위험도 / 상태", e.SeverityText() + " / " + e.Status}, {"실행 / intent", e.Run + " / " + strconv.FormatInt(e.IntentID, 10)}, {"증거 버전 / digest", strconv.FormatInt(e.EvidenceVersion, 10) + " / " + e.Digest}})
 		if e.Stale {
 			w.paragraph("Normal", "증거 버전 불일치: 오래된 자료를 확정으로 집계하지 않습니다.")
+		}
+		if e.LanguageMixed {
+			w.paragraph("Normal", "다른 언어 섞임: 모델이 쓴 설명·조치·근거에 한자·가나가 섞여 있습니다. 한 번 한국어로 다시 쓰게 했지만 남았습니다.")
 		}
 		if e.Truncated {
 			w.paragraph("Normal", "주의: 실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.")

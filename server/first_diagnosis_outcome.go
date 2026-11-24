@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosis"
 )
 
@@ -14,6 +15,8 @@ const (
 	intentOutcomeIncomplete    = "incomplete"
 	intentOutcomeUnknown       = "unknown"
 	intentOutcomeStopped       = "stopped"
+	// 목표 달성으로 작업이 끝나 취소된 intent(stopped + goal_met, #875 발견 6). 미완료로 세지 않는다.
+	intentOutcomeGoalMet = "goal_met"
 	// 아직 시작하지 않음(open). 보통 마감 판정은 이것이 없을 때만 하고, 실행 상한 마감(budget_limited)에서는
 	// 시작하지 못한 intent로 incomplete에 센다(계약 §2).
 	intentOutcomeOpen = "open"
@@ -39,7 +42,12 @@ func firstDiagnosisIntentOutcome(state, blockedReason string) string {
 			return intentOutcomeUnknown
 		}
 		return intentOutcomeIncomplete
-	case "exhausted", "stopped":
+	case "stopped":
+		if blockedReason == db.IntentStopReasonGoalMet {
+			return intentOutcomeGoalMet
+		}
+		return intentOutcomeIncomplete
+	case "exhausted":
 		return intentOutcomeIncomplete
 	case "paused":
 		return intentOutcomeStopped
@@ -88,6 +96,8 @@ func firstDiagnosisIntentOutcomes(ctx context.Context, q firstDiagnosisQuerier, 
 			out.Incomplete += n
 		case intentOutcomeStopped:
 			out.Stopped += n
+		case intentOutcomeGoalMet:
+			out.GoalMet += n
 		case intentOutcomeOpen:
 			counts.open += n
 		case intentOutcomeRunning:
@@ -122,13 +132,20 @@ func firstDiagnosisForcedClose(budgetLimited bool, task *Task) bool {
 // firstDiagnosisClosingOutcomes는 마감 판정의 앞부분이다. 실행이 끝나는 길은 원본 ARTEX와 같이 목표 달성 선언(C26)과
 // 실행 상한(예산·시간)뿐이다(forced). 계획이 비어도 마감하지 않는다: Planner는 원본처럼 다음 알림(Worker 완료·발견)이나
 // 심장박동 때 다시 계획한다(사용자 결정 2026-11-19, 결과 계약 §3.2). 실행 중 intent가 있으면 기다리고, forced면 시작하지
-// 못한 intent를 incomplete로 센다(계약 §2·§3.2).
-func firstDiagnosisClosingOutcomes(c firstDiagnosisIntentCounts, forced bool) (diagnosis.IntentOutcomes, bool) {
-	if c.running > 0 || !forced {
+// 못한 intent를 incomplete로 센다(계약 §2·§3.2). 목표 달성(작업 done)으로 마감하면 그 intent는 목표 달성으로 중단이다.
+func firstDiagnosisClosingOutcomes(c firstDiagnosisIntentCounts, budgetLimited bool, task *Task) (diagnosis.IntentOutcomes, bool) {
+	goalMet := firstDiagnosisGoalMet(task)
+	if c.running > 0 || !budgetLimited && !goalMet {
 		return diagnosis.IntentOutcomes{}, false
 	}
 	out := c.outcomes
-	out.Incomplete += c.open
+	// 목표 달성으로 마감하면 시작하지 않은 open intent도 남은 작업이 아니다(목표 달성으로 중단). 실행 상한 마감은 지금처럼
+	// 시작하지 못한 미완료로 센다.
+	if goalMet {
+		out.GoalMet += c.open
+	} else {
+		out.Incomplete += c.open
+	}
 	return out, true
 }
 

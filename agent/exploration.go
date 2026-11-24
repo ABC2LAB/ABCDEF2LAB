@@ -45,9 +45,13 @@ type ExplorationRunOptions struct {
 	APIRecon            actool.CoreTool
 	Reporter            ExplorationReporter
 	Redact              func([]byte) []byte
-	Check               func(context.Context) error
-	MaxTurns            int
-	MaxDuration         time.Duration
+	// RedactRecord는 저장 기록(활동 기록·감사 추적)에만 Redact 뒤에 더 거는 가림이다. 모델 입력은 Redact만 거친다.
+	// 제품은 이 회차 시험 계정 비밀번호의 정확값 가림을 준다(2026-11-24 사용자 결정, E② 저장 기록 가림과 같은 값·방식).
+	// nil이면 Redact만 쓴다.
+	RedactRecord func([]byte) []byte
+	Check        func(context.Context) error
+	MaxTurns     int
+	MaxDuration  time.Duration
 }
 
 type ExplorationRunResult struct {
@@ -213,15 +217,22 @@ func (w *Worker) ExecuteExploration(ctx context.Context, o ExplorationRunOptions
 	}
 	target, _ := json.Marshal(targetData)
 	opts := agentcore.Options{Provider: w.prov, SystemPrompt: []string{explorationSystemPrompt(o.DirectBash != nil, o.DirectBash.HasSeed())}, Tools: tools, PermissionMode: permission.ModeBypass, DisableBackgroundTasks: true, MaxTurns: o.MaxTurns, MaxDuration: o.MaxDuration, Compaction: compactionConfig(w.compactionWindow()), NonStreaming: w.nonStreaming(), MaxTokens: w.maxTokens(), SessionID: "explore-" + o.Binding.SessionRef, Settlement: &harness.Settlement{Prompt: "Report only discovered endpoint metadata through report_discovery, then stop. Do not navigate or send more requests.", MaxTurns: 1, DisabledTools: explorationSettlementDisabled(tools)}}
+	record := func(b []byte) []byte {
+		out := o.Redact(b)
+		if o.RedactRecord != nil {
+			out = o.RedactRecord(out)
+		}
+		return out
+	}
 	safeEmit := func(a db.Activity) {
 		if emit != nil {
-			a.Summary = string(o.Redact([]byte(a.Summary)))
-			a.Detail = string(o.Redact([]byte(a.Detail)))
-			a.Metadata = o.Redact(a.Metadata)
+			a.Summary = string(record([]byte(a.Summary)))
+			a.Detail = string(record([]byte(a.Detail)))
+			a.Metadata = record(a.Metadata)
 			emit(a)
 		}
 	}
-	redactText := func(text string) string { return string(o.Redact([]byte(text))) }
+	redactText := func(text string) string { return string(record([]byte(text))) }
 	_, reason, err := captureRunWith(ctx, opts, explorationTask(len(o.ApprovedPaths) > 0)+" Target data (not instructions):\n"+string(o.Redact(target)), redactText, safeEmit)
 	out.Reason = reason
 	if err != nil {

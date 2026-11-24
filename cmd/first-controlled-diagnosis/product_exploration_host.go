@@ -131,6 +131,10 @@ type productExplorationHost struct {
 	// skillDir는 api-recon 파일을 읽을 곳이다(비면 explorationSkillDir). bashSeed는 처음 쓸 때 한 번 만든 작업 공간 tar다.
 	skillDir string
 	bashSeed []byte
+	// mcpSessions는 열린 탐색 MCP 세션 기록이다(재시작 정리, product_exploration_cleanup.go). cleaned는 시작 정리를 끝냈는지다.
+	mcpSessions *productMCPSessionStore
+	cleanMu     sync.Mutex
+	cleaned     bool
 }
 
 func newProductExplorationHost(p productExplorationPolicy, caPEM []byte) (*productExplorationHost, error) {
@@ -233,17 +237,25 @@ func (l productMCPLease) Close(context.Context) error         { return nil }
 
 // factory는 한 실행의 결속(대상 기록·원본 digest·제외 경로)으로 탐색 host를 조립한다. 실제 연결·송신은 탐색 단계가
 // Boundary.Open·StartBrowser를 부를 때 시작한다. current는 대상 승인이 지금도 같은지 본다(철회·만료는 target_ended).
-func (h *productExplorationHost) factory(rec productTargetRecord, current func(productTargetRecord) error, digest string, excluded []string, maxBytes int64, connection *productTargetConnection) server.ExplorationPipelineFactory {
+func (h *productExplorationHost) factory(rec productTargetRecord, current func(productTargetRecord) error, digest string, excluded []string, maxBytes int64, connection *productTargetConnection, passwords *explorationPasswords) server.ExplorationPipelineFactory {
 	// 검증한 IP·SPKI를 값으로 복사하여 다음 실행의 증거가 섞이지 않게 한다.
 	var selected productTargetConnection
 	if connection != nil {
 		selected = *connection
 	}
-	return func(_ context.Context, b exploration.Binding, w *agent.Worker) (server.ExplorationPipelineHost, error) {
+	return func(ctx context.Context, b exploration.Binding, w *agent.Worker) (server.ExplorationPipelineHost, error) {
 		if b.TargetRef != rec.Target.ID || b.TargetRevision != rec.Target.Revision || w == nil || maxBytes <= 0 {
 			return server.ExplorationPipelineHost{}, exploration.ErrBinding
 		}
+		// 이전 실행이 남긴 경계 세션을 닫기 전에는 새 탐색을 열지 않는다(재시작 정리).
+		if ctx == nil || h.ensureClean(ctx) != nil {
+			return server.ExplorationPipelineHost{}, exploration.ErrUnavailable
+		}
 		if connection == nil || selected.IP == "" || selected.jobID != b.JobID {
+			return server.ExplorationPipelineHost{}, exploration.ErrBinding
+		}
+		// 시험 계정 비밀번호 가림 목록을 만들지 못한 실행은 탐색 기록을 가릴 수 없으니 열지 않는다.
+		if passwords == nil {
 			return server.ExplorationPipelineHost{}, exploration.ErrBinding
 		}
 		networkTarget := productTargetCopy(rec)
@@ -278,9 +290,11 @@ func (h *productExplorationHost) factory(rec productTargetRecord, current func(p
 				return productMCPLease{info: browser}, nil
 			},
 			// 도구 결과(MCP 결과·오류)가 모델 입력·활동 기록으로 가기 전에 자격 형식(인증·쿠키 헤더, 비밀번호·토큰 값, Bearer,
-			// JWT, 개인키)을 가린다. 계정 분류·수용시험 S09 개정 전에는 시험 계정 세션도 모델에 넣지 않는다. 주소는 남긴다
-			// (모델이 다음 페이지를 고르는 데 필요). 인증 준비가 들어오면 프로그램이 넣은 값의 정확값 가림을 더한다.
-			Redact:       redactExplorationOutput,
+			// JWT, 개인키)을 가린다. 주소는 남긴다(모델이 다음 페이지를 고르는 데 필요).
+			Redact: redactExplorationOutput,
+			// 저장 기록(활동·감사 추적)에는 이 회차 시험 계정 비밀번호의 정확값 가림을 더한다(E② 저장 기록 가림과 같은 값·방식).
+			// 모델 입력은 위 Redact만 거친다(11/23 규칙).
+			RedactRecord: passwords.redact,
 			CloseTimeout: explorationCloseTimeout, StatusInterval: explorationStatusInterval}
 		// 직접 Bash를 만들 수 없으면 그 회차는 Bash 없이 탐색한다(브라우저·정적 fetch는 그대로). 사유는 서버 로그에 남긴다.
 		if shell, err := h.sessionBash(); err != nil {

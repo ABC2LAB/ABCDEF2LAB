@@ -33,3 +33,8 @@ func (c ControlClient) CurrentSession(ctx context.Context) (*exploration.State, 
 func (c ControlClient) CloseSession(ctx context.Context, binding exploration.Binding, reason exploration.Reason) (exploration.State, error) {
 	return controlLease{client: c, binding: binding}.Close(ctx, reason)
 }
+
+// CloseStale은 새로 시작한 준비 서비스가 이전 실행이 남긴 세션을 닫는다. 감사 원자료에 closed_by restart_cleanup으로 남는다.
+func (c ControlClient) CloseStale(ctx context.Context, binding exploration.Binding) (exploration.State, error) {
+	return controlLease{client: c, binding: binding}.state(ctx, ControlRequest{Op: OpClose, SessionRef: binding.SessionRef, Reason: exploration.Cancelled, Cause: CloseCauseRestartCleanup})
+}

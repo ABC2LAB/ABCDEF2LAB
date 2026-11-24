@@ -51,6 +51,8 @@ type EvidenceSession struct {
 	ClosedReason exploration.Reason `json:"closed_reason"`
 	RowsAtClose  *uint64            `json:"rows_at_close"`
 	ClosedAtSeal bool               `json:"closed_at_seal"`
+	// ClosedBy는 닫힌 세부 원인이다(restart_cleanup·control_lost). 그 밖의 마감은 칸을 쓰지 않는다(이전 기록과 같은 바이트).
+	ClosedBy string `json:"closed_by,omitempty"`
 }
 
 // EvidenceMarker는 봉인 표식이다. 행 파일을 flush·fsync한 뒤 마지막에 원자적으로 쓴다. 카운터는 경계 자신의 값이고,
@@ -165,14 +167,14 @@ func (e *Evidence) flushLocked() {
 }
 
 // closed는 세션 마감을 남기고 그때까지의 행을 디스크에 내린다.
-func (e *Evidence) closed(reason exploration.Reason, at time.Time) {
+func (e *Evidence) closed(reason exploration.Reason, cause string, at time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.sealed || e.session == nil || e.session.ClosedAt != nil {
 		return
 	}
 	rows := e.rows
-	e.session.ClosedAt, e.session.ClosedReason, e.session.RowsAtClose = &at, reason, &rows
+	e.session.ClosedAt, e.session.ClosedReason, e.session.RowsAtClose, e.session.ClosedBy = &at, reason, &rows, cause
 	e.flushLocked()
 }
 

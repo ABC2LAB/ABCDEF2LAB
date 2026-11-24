@@ -127,6 +127,9 @@ func managementBridgeTask(r *http.Request) (string, bool) {
 
 // managementLiveViewTask는 작업대 실데이터 조회(통제 정책·전송 통제 흐름, 계약 workbench-live-data §3·§4)다.
 // 읽기만 받고, 전송 통제 흐름만 커서 after 하나를 받는다. 값 검사는 실행 쪽 serveLiveData가 한다.
+// E2ModelWritesHeader lets current clients request the optional write summary.
+const E2ModelWritesHeader = "X-Jindo-E2-Model-Writes"
+
 func managementLiveViewTask(r *http.Request) (string, bool) {
 	if r.Method != http.MethodGet {
 		return "", false
@@ -236,6 +239,9 @@ func (b *diagnosisManagementBridge) ServeHTTP(w http.ResponseWriter, r *http.Req
 		out.Header.Set("Last-Event-ID", last)
 	}
 	out.Header.Set("Authorization", r.Header.Get("Authorization"))
+	if strings.HasSuffix(r.URL.Path, "/e2-flow") && r.Header.Get(E2ModelWritesHeader) == "1" {
+		out.Header.Set(E2ModelWritesHeader, "1")
+	}
 	if graphRead {
 		out.Header.Set(reportReadScopeHeader, reportReadDigest(readBinding))
 	}

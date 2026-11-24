@@ -229,14 +229,52 @@ func (s *ExplorationStore) Root() (description, goal string, err error) {
 
 // AddNode writes a typed reasoning node with optional anchors to asset ids.
 func (s *ExplorationStore) AddNode(kind string, payload map[string]any, priority int, state, origin string, anchors []int64) (int64, error) {
+	return s.addNode(kind, payload, priority, state, origin, anchors, 0)
+}
+
+// ErrFactAssetReference는 결속 작업이나 사실의 자산 참조를 확인하지 못했을 때 반환한다.
+var ErrFactAssetReference = errors.New("asset_reference_invalid: use an ID from list_assets or leave asset_ids empty")
+
+// ErrFactAssetLimit은 한 사실에 연결할 수 있는 자산 수를 넘었을 때 반환한다.
+var ErrFactAssetLimit = fmt.Errorf("asset_reference_limit: supply at most %d asset IDs per fact", MaxTaskAssetMutationCount)
+
+// AddTaskFact는 결속 작업에 연결됐거나 list_assets 범위에 속한 자산을 사실의 출처로 받는다.
+func (s *ExplorationStore) AddTaskFact(taskID int64, payload map[string]any, origin string, anchors []int64) (int64, error) {
+	if taskID <= 0 {
+		return 0, ErrFactAssetReference
+	}
+	if len(anchors) > MaxTaskAssetMutationCount {
+		return 0, ErrFactAssetLimit
+	}
+	return s.addNode(KindFact, payload, 5, "confirmed", origin, anchors, taskID)
+}
+
+func (s *ExplorationStore) addNode(kind string, payload map[string]any, priority int, state, origin string, anchors []int64, taskID int64) (int64, error) {
 	raw, _ := json.Marshal(payload)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
 	}
 	defer tx.Rollback()
+	if taskID > 0 {
+		var bound bool
+		if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM tasks WHERE id=$1 AND exploration_id=$2 AND deleted_at IS NULL)`, taskID, s.expID).Scan(&bound); err != nil {
+			return 0, err
+		}
+		if !bound {
+			return 0, ErrFactAssetReference
+		}
+		if err := checkFactAnchorAssets(tx, taskID, anchors); err != nil {
+			return 0, err
+		}
+	}
 	if kind == KindFinding {
 		if err := rejectControlledTaskTx(context.Background(), tx, 0, s.expID, 0); err != nil {
+			return 0, err
+		}
+	}
+	if taskID == 0 {
+		if err := checkAnchorAssets(tx, anchors); err != nil {
 			return 0, err
 		}
 	}
@@ -249,7 +287,7 @@ VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
 	}
 	for _, a := range anchors {
 		if _, err := tx.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, id, a); err != nil {
-			return 0, err
+			return 0, anchorInsertError(err, a)
 		}
 	}
 	return id, tx.Commit()
@@ -290,8 +328,18 @@ func (s *ExplorationStore) Anchor(nodeID, assetID int64) error {
 	if nodeID <= 0 || assetID <= 0 {
 		return nil
 	}
-	_, err := s.db.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, nodeID, assetID)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := checkAnchorAssets(tx, []int64{assetID}); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO exploration_anchors(node_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`, nodeID, assetID); err != nil {
+		return anchorInsertError(err, assetID)
+	}
+	return tx.Commit()
 }
 
 // Link adds a typed exploration edge (idempotent).
@@ -342,7 +390,7 @@ func (s *ExplorationStore) UpdateGoalPayload(id int64, text, vulnclass string) e
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("目标不存在")
+		return fmt.Errorf("목표가 존재하지 않습니다")
 	}
 	return nil
 }
@@ -357,7 +405,7 @@ func (s *ExplorationStore) DeleteGoal(id int64) error {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("目标不存在")
+		return fmt.Errorf("목표가 존재하지 않습니다")
 	}
 	return nil
 }
@@ -413,6 +461,23 @@ func (s *ExplorationStore) SetIntentState(id int64, state string) error {
 SET state=$1, blocked_reason=NULL, content_version=content_version+1, completed_at = CASE WHEN $4 THEN now() ELSE NULL END
 WHERE id=$2 AND exploration_id=$3 AND kind='intent'`, state, id, s.expID, terminal)
 	return err
+}
+
+// IntentStopReasonGoalMet은 목표 달성으로 작업이 끝나 취소된 intent의 사유다(stopped + 이 사유). 실행 결과에서 미완료로
+// 세지 않고 "목표 달성으로 중단"으로 센다(사용자 결정 2026-11-24, #875 발견 6). 원본처럼 목표 달성 때 작업을 바로 끝내는
+// 동작은 그대로다.
+const IntentStopReasonGoalMet = "goal_met"
+
+// CompareAndSetIntentStopped는 CompareAndSetIntentState처럼 expected일 때만 stopped로 바꾸고, 사유를 같이 남긴다.
+func (s *ExplorationStore) CompareAndSetIntentStopped(id int64, expected, reason string) (bool, error) {
+	res, err := s.db.Exec(`UPDATE exploration_nodes
+SET state='stopped', blocked_reason=NULLIF($4,''), content_version=content_version+1, completed_at=now()
+WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state=$3`, id, s.expID, expected, reason)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 // CompareAndSetIntentState transitions one local intent only when its current
@@ -619,7 +684,7 @@ func (s *ExplorationStore) CancelIntent(id int64) (IntentCleanup, error) {
 				exploration_id, worker, kind, summary, metadata,
 				input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at)
 				VALUES ($1,'token-ledger','result',$2,$3,$4,$5,$6,$7,$8)`,
-				s.expID, fmt.Sprintf("已取消意图 #%d 的 Token 计量", iid), metadata,
+				s.expID, fmt.Sprintf("취소된 의도 #%d의 토큰 사용량", iid), metadata,
 				bucket.Usage.InputTokens, bucket.Usage.OutputTokens,
 				bucket.Usage.CacheReadTokens, bucket.Usage.CacheWriteTokens, bucket.Day); err != nil {
 				return out, err

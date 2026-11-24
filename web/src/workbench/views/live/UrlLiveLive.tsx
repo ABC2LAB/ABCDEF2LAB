@@ -64,7 +64,8 @@ import s from "../../workbench.module.css";
 import { ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
 import { PriceCapsNotice } from "./PriceCapsNotice";
-import { ProductVerdictReport, productConfirmedCount, useProductVerdicts } from "./productVerdictViews";
+import { ProductKgGraphSection } from "./productKgGraphView";
+import { ProductVerdictReport, productConfirmationSummary, useProductVerdicts } from "./productVerdictViews";
 import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
@@ -659,6 +660,8 @@ export function UrlLiveLive() {
   const saved = usePoll(() => fetchRemediation(savedTask as string, "internal"), [savedTask], {
     enabled: visible && !!savedTask,
   });
+  const savedVerdicts = useProductVerdicts(savedTask, visible);
+  const savedConfirmation = productConfirmationSummary(savedVerdicts);
   if (!handle || !job) {
     return (
       <>
@@ -799,7 +802,12 @@ export function UrlLiveLive() {
   if (ended && saved.data && !saved.error) {
     const savedFindings = saved.data.entries.filter((e) => diagnosticOutcome(e) !== "negative");
     const confirmed = savedFindings.filter((e) => diagnosticOutcome(e) === "confirmed").length;
-    stats.push({ k: "발견", v: String(savedFindings.length), sub: `확정 ${confirmed}` });
+    const summary = `판정 확정 ${confirmed + savedConfirmation.confirmed}`;
+    stats.push({
+      k: "발견",
+      v: String(savedFindings.length),
+      sub: savedConfirmation.notice ? `${summary} · ${savedConfirmation.notice}` : summary,
+    });
   } else if (!ended && found)
     // 일부만 왔으면 받은 행 수에 '+' — 전체 수는 모른다(candidate_total null). 받은 수를 전체로 쓰지 않는다
     stats.push({
@@ -1497,6 +1505,8 @@ export type PocInfo = {
   excluded: string | null;
   /** 탐색 흐름 수(있을 때만): 방문한 페이지 · 발견한 API */
   crawl: { visited: number; found: number } | null;
+  productConfirmed?: number;
+  productConfirmationNotice?: string | null;
 };
 
 /**
@@ -1521,8 +1531,10 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
   // 확정 전(검토 필요 · 미실행 · 결과 불명)까지 합한 수를 '취약점 n건'으로 쓰면 확정 수처럼 읽혀 합계를 두지 않고 판정별로만
   // 센다. 확정이 맨 앞(절대규칙 5, #773 이동찬 · 이경준 P2)
   out.push(
-    `- 취약점: 확정 ${count("confirmed")}건 · 검토 필요 ${count("review")}건 · 미실행 ${count("not_executed")}건 · 결과 불명 ${count("unknown")}건`,
+    `- 취약점: 확정 ${count("confirmed") + (info.productConfirmed ?? 0)}건 · 검토 필요 ${count("review")}건 · 미실행 ${count("not_executed")}건 · 결과 불명 ${count("unknown")}건`,
   );
+  if (info.productConfirmed) out.push(`- 제품 확정 판정: ${info.productConfirmed}건`);
+  if (info.productConfirmationNotice) out.push(`- ${mdInline(info.productConfirmationNotice)}`);
   if (info.crawl) out.push(`- 탐색: 방문 ${info.crawl.visited} · 발견한 API ${info.crawl.found}`);
   out.push("", "**취약점**", "");
   if (!list.length) out.push("저장된 취약점이 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.");
@@ -1693,9 +1705,9 @@ export function UrlReportLive() {
     enabled: visible && !!taskId,
   });
   // 확정 단계(IDOR) 판정: 요약 '판정 확정' 칸이 일반 후보 판정만 세서 제품 판정 CONFIRMED 가 '확정 0'으로만 보였다(#875
-  // 실측 7절 1(나)). 평가 · 일반 판정과 섞지 않고(계약 product-verdict-list §2(f)) 그 칸 아래 줄에 따로 적는다. 아래 구획과 한 번만 읽는다
+  // 실측 7절 1(나)). 내보내기와 같은 확정 합계를 표시하고, 제품 판정 출처는 아래 줄에 남긴다.
   const verdicts = useProductVerdicts(taskId, visible);
-  const productConfirmed = verdicts.error ? 0 : productConfirmedCount(verdicts.data);
+  const { confirmed: productConfirmed, notice: productConfirmationNotice } = productConfirmationSummary(verdicts);
   // 저장된 실행 기록(diagnosis-run)은 보고서에서 더 쓰지 않는다(사용자 11/19 — 실행 종료 기록 · 요청 수를 뺌)
   // 자산 커버리지 (요약 칸): 서버 task 의 방문 · 검사한 자산 비율(판정 커버리지 아님 · 리뷰 #479).
   // 꺼졌거나 못 읽으면 값을 만들지 않고 "—"
@@ -1819,6 +1831,8 @@ export function UrlReportLive() {
           model: profile ? `${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}` : null,
           excluded: job.input.excluded_paths?.split("\n").filter(Boolean).join(", ") || null,
           crawl: flow ? { visited: flow.counts.visited, found: flow.counts.found } : null,
+          productConfirmed,
+          productConfirmationNotice,
         }}
       />
     );
@@ -1953,9 +1967,10 @@ export function UrlReportLive() {
                 </div>
                 <div className={s.cell}>
                   <div className={s.k}>판정 확정</div>
-                  <div className={s.v}>{counts.confirmed}</div>
+                  <div className={s.v}>{counts.confirmed + productConfirmed}</div>
                   <div className={s.sub}>
-                    {productConfirmed ? `증거 충분 · 확정 단계 확정 ${productConfirmed}` : "증거 충분"}
+                    {productConfirmationNotice ??
+                      (productConfirmed ? `증거 충분 · 확정 단계 확정 ${productConfirmed}` : "증거 충분")}
                   </div>
                 </div>
                 <div className={s.cell}>
@@ -2011,6 +2026,9 @@ export function UrlReportLive() {
               </div>
               <div role="tabpanel" id="rp-graph" aria-label="자산 지식 그래프" hidden={tab !== "graph"}>
                 <ReportAssetGraph taskId={taskId} active={visible && tab === "graph"} />
+                {/* 제품 소유 · 접근 그래프(계약 product-access-map §5, #877 G2): 자산 그래프 아래 따로. 자산 그래프와 잇지 않고
+                    서로의 실패를 가리지 않는다. 제품 관리 중계가 아니면(404) 두지 않는다 */}
+                <ProductKgGraphSection taskId={taskId} active={visible && tab === "graph"} />
               </div>
               <div
                 role="tabpanel"

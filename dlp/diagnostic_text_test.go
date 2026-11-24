@@ -53,6 +53,75 @@ func TestDiagnosticTextCredentialDelimiters(t *testing.T) {
 	}
 }
 
+func TestDiagnosticTextMasksInlineAccountPairs(t *testing.T) {
+	for _, tc := range []struct{ in, context string }{
+		{"fixture1/synthetic-one, fixture2/synthetic-two 평문으로 노출됨", "평문으로 노출됨"},
+		{"계정 비밀번호 fixture1(synthetic-one), fixture2(synthetic-two, admin=true) 노출", "admin=true"},
+	} {
+		got := DiagnosticText(tc.in)
+		if strings.Contains(got, "synthetic-") || !strings.Contains(got, "자격정보 2건") || !strings.Contains(got, tc.context) {
+			t.Errorf("보고서의 자격값 또는 관찰 근거 처리 실패: %q", got)
+		}
+	}
+	if got := DiagnosticText("서비스 /users/v1 경로를 확인함"); got != "서비스 /users/v1 경로를 확인함" {
+		t.Fatal("일반 경로를 자격값으로 처리했다")
+	}
+}
+
+func TestDiagnosticTextMarkdownCredentials(t *testing.T) {
+	for _, input := range []string{
+		"- **Password**: `synthetic-pass`",
+		"**비밀번호**: `synthetic-pass`",
+		"plaintext passwords `synthetic-pass`",
+		"Session token `synthetic-token`",
+		`Password "synthetic\"secret"`,
+	} {
+		if got := DiagnosticText(input); strings.Contains(got, "synthetic") || strings.Contains(got, `secret"`) {
+			t.Errorf("마크다운 자격값이 남음: %q", got)
+		}
+	}
+}
+
+func TestDiagnosticTextMarkdownCredentialTable(t *testing.T) {
+	in := "비밀번호 노출 확인\n| 계정 | Password |\n| --- | --- |\n| admin | synthetic-one |\n| tester | synthetic-two |\n\n후속 검토 필요"
+	got := DiagnosticText(in)
+	if !strings.Contains(got, "자격정보 2건 노출됨") || !strings.Contains(got, "후속 검토 필요") ||
+		strings.Contains(got, "synthetic-") || strings.Contains(got, "| admin |") {
+		t.Fatalf("자격정보 표 가림 실패: %q", got)
+	}
+	plain := "일반 표\n| 이름 | 상태 |\n| --- | --- |\n| admin | ready |"
+	if got := DiagnosticText(plain); got != plain {
+		t.Fatalf("일반 표가 바뀜: %q", got)
+	}
+}
+
+func TestDiagnosticTextCountedExcludesFormatsAndAddresses(t *testing.T) {
+	for _, input := range []string{
+		"비밀번호 변경 요청은 HTTP/1.1 200으로 성공했다",
+		"토큰은 application/json 본문으로 전달했다",
+		"비밀번호 HS256(약한 키)는 사용하지 않는다",
+		"토큰 서비스는 localhost:5000에서 실행된다",
+	} {
+		got, count := DiagnosticTextCounted(input)
+		if count != 0 || got != input {
+			t.Errorf("형식을 자격 값으로 셈: %q, %d", got, count)
+		}
+	}
+	if got, count := DiagnosticTextCounted("비밀번호 문서 https://owned.test/read 참고"); count != 0 || strings.Contains(got, "https://owned.test") {
+		t.Fatalf("주소 가림을 자격 값으로 셈: %d %q", count, got)
+	}
+	if got, count := DiagnosticTextCounted("credentials leaked: alpha:s3cret beta:s3cret"); count != 2 || strings.Contains(got, "s3cret") {
+		t.Fatalf("콜론 자격 쌍 처리 실패: %d %q", count, got)
+	}
+	got, count := DiagnosticTextCounted("비밀번호 alpha/synthetic-one, beta(synthetic-two) 노출\n- **Password**: `synthetic-three`\npassword=[REDACTED]\n연락 user@owned.test")
+	if count != 3 || strings.Contains(got, "synthetic-") {
+		t.Fatalf("자격 값 건수 또는 가림 오류: %d %q", count, got)
+	}
+	if _, count := DiagnosticTextCounted("문서 https://owned.test/read, 연락 user@owned.test"); count != 0 {
+		t.Fatalf("주소·이메일을 자격 값으로 셈: %d", count)
+	}
+}
+
 func TestCredentialTextMasksCredentialsButKeepsAddresses(t *testing.T) {
 	in := "Set-Cookie: sid=synthetic-session-41c2; Path=/\nAuthorization: Bearer synthetic-bearer-41c2\n{\"email\":\"user@owned.test\",\"password\":\"synthetic-pass-41c2\"}\n" +
 		"token=synthetic-token-41c2 eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlLXN5bnRoZXRpYw next https://owned.test/read/item"

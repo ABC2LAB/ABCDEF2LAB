@@ -179,3 +179,23 @@ func TestShutdownSealsEvidence(t *testing.T) {
 		t.Fatal("boundary reused a sealed evidence directory")
 	}
 }
+
+// 조회 끊김 시간(세션 수명, #892): 칸이 없으면 30초가 Manager에 실제로 들어가고, 준 값은 그대로 들어간다. 음수·하한(5초)보다
+// 짧은 값은 시작하지 않는다(1ms면 모든 세션이 바로 닫힌다).
+func TestBuildSessionHeartbeat(t *testing.T) {
+	for _, tc := range []struct {
+		ms   int
+		want time.Duration
+		ok   bool
+	}{{0, 30 * time.Second, true}, {45000, 45 * time.Second, true}, {5000, 5 * time.Second, true}, {4999, 0, false}, {1, 0, false}, {-1, 0, false}} {
+		c := validConfig(t)
+		c.SessionHeartbeatMS = tc.ms
+		p, err := build(c)
+		if (err == nil) != tc.ok {
+			t.Fatalf("session_heartbeat_ms=%d: err=%v", tc.ms, err)
+		}
+		if err == nil && p.manager.Heartbeat != tc.want {
+			t.Fatalf("session_heartbeat_ms=%d: Heartbeat=%v, want %v", tc.ms, p.manager.Heartbeat, tc.want)
+		}
+	}
+}

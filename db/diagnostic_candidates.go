@@ -36,6 +36,10 @@ type DiagnosticCandidate struct {
 	ObservedAt        time.Time `json:"observed_at"`
 	Evidence          string    `json:"evidence"`
 	OutputTruncated   bool      `json:"output_truncated"`
+	// LanguageMixed는 모델이 쓴 설명·조치·근거에 한자·가나가 섞인 채 저장됐다는 표시다('다른 언어 섞임'). LanguageRewrites는
+	// 그 때문에 다시 쓰게 한 횟수(0·1)다(2026-11-24, agent/e2_diagnostic_candidate_lang.go). 둘 다 0이면 칸을 쓰지 않는다.
+	LanguageMixed    bool `json:"language_mixed,omitempty"`
+	LanguageRewrites int  `json:"language_rewrites,omitempty"`
 }
 
 var ErrDiagnosticCandidate = errors.New("diagnostic_candidate_invalid")
@@ -63,6 +67,10 @@ func (c DiagnosticCandidate) Validate() error {
 	if len(c.RunRef) > 256 || len(c.CallRef) > 256 || strings.TrimSpace(c.Name) == "" ||
 		len(c.Name) > 512 || strings.TrimSpace(c.VulnClass) == "" || len(c.VulnClass) > 128 ||
 		len(c.Summary) > 8192 || len(c.Remediation) > 8192 || len(c.Evidence) > 256<<10 {
+		return ErrDiagnosticCandidate
+	}
+	// 섞임 표시는 한 번 다시 쓰게 한 뒤에만 붙는다.
+	if c.LanguageRewrites < 0 || c.LanguageRewrites > 1 || c.LanguageMixed && c.LanguageRewrites != 1 {
 		return ErrDiagnosticCandidate
 	}
 	switch c.Classification {
@@ -341,4 +349,27 @@ func decodeDiagnosticCandidate(id int64, raw []byte, taskID int64, runRef string
 	c = c.NormalizedSeverity()
 	c.ID = id
 	return c, nil
+}
+
+// CountDiagnosticCandidateLanguage는 한 실행(run_ref)의 진단 후보 가운데 한국어 칸 언어 섞임 때문에 다시 쓰게 한 횟수의
+// 합과 '다른 언어 섞임' 표시가 붙은 후보 수다(실행 기록 칸, 2026-11-24). 저장되지 않은 다시 쓰기 요청은 세지 않는다.
+func CountDiagnosticCandidateLanguage(ctx context.Context, q DiagnosticCandidateQueryer, explorationID int64, runRef string) (rewrites, mixed int, err error) {
+	if explorationID <= 0 || runRef == "" {
+		return 0, 0, ErrDiagnosticCandidate
+	}
+	rows, err := q.QueryContext(ctx, `SELECT COALESCE(sum(CASE WHEN n.payload->'diagnostic_candidate_v1'->>'language_rewrites'='1' THEN 1 ELSE 0 END),0),
+  COALESCE(sum(CASE WHEN n.payload->'diagnostic_candidate_v1'->>'language_mixed'='true' THEN 1 ELSE 0 END),0)
+FROM exploration_nodes n
+WHERE n.exploration_id=$1 AND n.origin=$2 AND n.kind='fact' AND n.payload->'diagnostic_candidate_v1'->>'run_ref'=$3`, explorationID, diagnosticCandidateOrigin, runRef)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, 0, errors.Join(ErrDiagnosticCandidate, rows.Err())
+	}
+	if err := rows.Scan(&rewrites, &mixed); err != nil {
+		return 0, 0, err
+	}
+	return rewrites, mixed, rows.Err()
 }

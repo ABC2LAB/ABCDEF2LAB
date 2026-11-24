@@ -2,6 +2,7 @@ package report
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/Autumn-27/artex/remediation"
 	"html"
@@ -67,6 +68,61 @@ func TestDiagnosticReportInternalSharedAndEscaping(t *testing.T) {
 		t.Fatal("shared counts changed")
 	}
 }
+
+func TestDiagnosticReportMasksProseCredentials(t *testing.T) {
+	in := diagnosticFixture()
+	in.Entries[0].Summary = "The default password is `synthetic-pass-83z`. The response confirmed that the configuration was exposed."
+	in.Entries[0].Evidence = "Session token `synthetic-token-83z`\n인증 쿠키는 `synthetic-cookie-83z`"
+	in.Entries[0].Report = "비밀번호 노출\n| 계정 | Password |\n| --- | --- |\n| admin | synthetic-pass-83z |\n| tester | synthetic-pass-84z |"
+	in.Entries[0].Evidence += "\nfixture1/synthetic-one, fixture2/synthetic-two 평문으로 노출됨"
+	for _, shared := range []bool{false, true} {
+		in.Shared = shared
+		out, err := DiagnosticHTML(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(out), "synthetic-") {
+			t.Fatalf("credential exposed (shared=%t)", shared)
+		}
+		if !shared && !strings.Contains(string(out), "자격정보 2건 노출됨") {
+			t.Fatal("credential table count missing")
+		}
+		if !shared && !strings.Contains(string(out), "configuration was exposed") {
+			t.Fatal("lost the non-secret finding context")
+		}
+		if !shared && !strings.Contains(string(out), "자격정보 2건") {
+			t.Fatal("lost the evidence count")
+		}
+	}
+}
+
+func TestDiagnosticReportSummarizesNewCredentialRedactions(t *testing.T) {
+	in := diagnosticFixture()
+	in.Entries[0].Summary = "비밀번호 alpha/synthetic-one, beta(synthetic-two) 노출"
+	in.Entries[0].Evidence = "- **Password**: `synthetic-three`"
+	in.Entries[0].Report = "비밀번호 노출\n| 계정 | Password |\n| --- | --- |\n| tester | synthetic-four |"
+	in.Entries[1].Summary = "비밀번호 변경 요청은 HTTP/1.1 200, 토큰은 application/json 본문"
+	in.Entries[1].Evidence = "이미 가린 값 password=[REDACTED], 주소 user@owned.test"
+	for _, shared := range []bool{false, true} {
+		in.Shared = shared
+		prepared, err := PrepareDiagnostic(in)
+		if err != nil || prepared.ExposedCredentialValues != 4 {
+			t.Fatalf("shared=%v 노출 건수=%d 오류=%v", shared, prepared.ExposedCredentialValues, err)
+		}
+		body, err := DiagnosticHTML(in)
+		if err != nil || !strings.Contains(string(body), "대상이 노출한 자격 값: 노출됨 4건") || strings.Contains(string(body), "synthetic-") {
+			t.Fatalf("shared=%v HTML 요약 또는 가림 오류: %v", shared, err)
+		}
+		doc, err := DiagnosticDOCX(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		word := wordDocumentText(t, readWord(t, doc)["word/document.xml"])
+		if !strings.Contains(word, "대상이 노출한 자격 값: 노출됨 4건") || strings.Contains(word, "synthetic-") {
+			t.Fatalf("shared=%v DOCX 요약 또는 가림 오류", shared)
+		}
+	}
+}
 func TestDiagnosticReportRejectsUnverifiedConfirmationAndBounds(t *testing.T) {
 	for _, modify := range []func(*DiagnosticReport){
 		func(in *DiagnosticReport) { in.Entries[3].Outcome = "confirmed" },
@@ -92,6 +148,36 @@ func TestDiagnosticReportRejectsUnverifiedConfirmationAndBounds(t *testing.T) {
 	}
 	if _, err := DiagnosticHTML(in); err == nil {
 		t.Fatal("overflow accepted")
+	}
+}
+
+func TestPrepareDiagnosticValidatesProductConfirmation(t *testing.T) {
+	valid := DiagnosticProductConfirmation{VerdictID: "42", ResourceType: "document", EvidenceCalls: 1}
+	for _, tc := range []struct {
+		name   string
+		change func(*DiagnosticProductConfirmation)
+	}{
+		{"non-numeric verdict ID", func(row *DiagnosticProductConfirmation) { row.VerdictID = "verdict-42" }},
+		{"non-canonical verdict ID", func(row *DiagnosticProductConfirmation) { row.VerdictID = "042" }},
+		{"non-positive verdict ID", func(row *DiagnosticProductConfirmation) { row.VerdictID = "0" }},
+		{"zero evidence calls", func(row *DiagnosticProductConfirmation) { row.EvidenceCalls = 0 }},
+		{"negative evidence calls", func(row *DiagnosticProductConfirmation) { row.EvidenceCalls = -1 }},
+		{"unknown seal reason", func(row *DiagnosticProductConfirmation) { row.SealUnconfirmedReason = "unexpected" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := diagnosticFixture()
+			in.ProductConfirmed = []DiagnosticProductConfirmation{valid}
+			tc.change(&in.ProductConfirmed[0])
+			if _, err := PrepareDiagnostic(in); !errors.Is(err, ErrExportBlocked) {
+				t.Fatalf("잘못된 제품 판정을 허용함: %v", err)
+			}
+		})
+	}
+	in := diagnosticFixture()
+	in.ProductConfirmed = []DiagnosticProductConfirmation{valid}
+	prepared, err := PrepareDiagnostic(in)
+	if err != nil || prepared.Confirmed != 4 || prepared.ByType["IDOR"] != 1 || prepared.ByType["제품 접근통제(IDOR)"] != 1 {
+		t.Fatalf("일반·제품 판정의 집계가 다름: %+v, %v", prepared.ByType, err)
 	}
 }
 

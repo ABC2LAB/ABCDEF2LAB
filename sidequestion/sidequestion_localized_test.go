@@ -71,8 +71,8 @@ func TestSideQuestionBrainPreserved(t *testing.T) {
 				break
 			}
 		}
-		if !han {
-			t.Errorf("%s: 두뇌 프롬프트가 더 이상 중국어가 아닙니다(벤치마크 드리프트 위험)", c.label)
+		if han {
+			t.Errorf("%s: 모델 프롬프트에 중국어 한자가 남아 있습니다", c.label)
 		}
 	}
 }

@@ -81,6 +81,47 @@ type diagnosticCandidateStore interface {
 func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTPExecution, state *e2HTTPToolState, onSaved ...func()) actool.CoreTool {
 	// 같은 워커 안의 중복 제출은 순차 처리하고 DB는 intent 잠금으로 중복을 제어한다.
 	var mu sync.Mutex
+	// languageAsked는 한국어 칸 언어 섞임으로 다시 쓰게 한 후보다(후보마다 한 번만, e2_diagnostic_candidate_lang.go). 후보는
+	// call_ref 하나로 가리지 않는다 — 같은 호출에서 유형·이름이 다른 후보를 따로 저장하므로 저장소의 같은 후보 기준
+	// (candidateLanguageKey)을 쓴다.
+	// languageHeld는 다시 쓰게 하면서 붙잡아 둔 첫 제출이다. 모델이 다시 내지 않고 끝나면 Worker 끝에서 '다른 언어 섞임'
+	// 표시를 붙여 저장한다(후보를 잃지 않는다, flushHeldCandidates).
+	languageAsked := map[string]bool{}
+	languageHeld := map[string]db.DiagnosticCandidate{}
+	saved := func(ctx context.Context, c db.DiagnosticCandidate, event func(name, status, reason, ref string)) (int64, bool) {
+		id, err := store.RecordDiagnosticCandidate(ctx, c)
+		if err != nil {
+			event("candidate_saved", "failed", "candidate_store_failed", c.CallRef)
+			return 0, false
+		}
+		event("candidate_saved", "manual_review_required", "", c.CallRef)
+		for _, done := range onSaved {
+			if done != nil {
+				done()
+			}
+		}
+		return id, true
+	}
+	if state != nil && store != nil {
+		state.mu.Lock()
+		state.candidateFlush = func(ctx context.Context) {
+			mu.Lock()
+			defer mu.Unlock()
+			refs := make([]string, 0, len(languageHeld))
+			for ref := range languageHeld {
+				refs = append(refs, ref)
+			}
+			sort.Strings(refs)
+			for _, ref := range refs {
+				c := languageHeld[ref]
+				delete(languageHeld, ref)
+				saved(ctx, c, func(name, status, reason, ref string) {
+					diagnosticAgentEvent(ctx, diagnosticlog.Event{Event: name, Stage: "candidate_storage", Status: status, ReasonCode: reason, TaskID: binding.TaskID, RunRef: binding.RunRef, IntentID: binding.IntentID, CallRef: ref, Tool: "submit_diagnostic_candidate"})
+				})
+			}
+		}
+		state.mu.Unlock()
+	}
 	schema := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{
 		"suggested_severity": map[string]any{"type": "string", "enum": []string{"critical", "high", "medium", "low", "info"}},
 		"severity_rationale": map[string]any{"type": "string", "maxLength": db.MaxSeverityRationaleBytes, "description": "A short single-line Korean explanation grounded in actual observed impact and known prerequisites. Keep it within 1,024 UTF-8 bytes (about 300 Korean characters); long explanations are truncated at a UTF-8 boundary with an explicit omission marker. No credentials or invented CVSS."},
@@ -200,22 +241,31 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 				candidate.SuggestedSeverity, candidate.SeverityRationale, candidate.SeveritySource = severity, boundedSeverityRationale(redact(rationale)), db.WorkerEstimate
 			}
 			candidate = candidate.NormalizedSeverity()
+			// 한국어 칸 언어 섞임은 저장될 글(가린 뒤)로 본다. 처음이면 붙잡아 두고 다시 쓰게 하며, 다시 써도 섞이면 표시를
+			// 붙여 저장한다(회차·후보를 막지 않는다).
+			mixed := candidateLanguageMixed(candidate.Summary, candidate.Remediation, candidate.SeverityRationale)
+			key := candidateLanguageKey(candidate)
+			if languageAsked[key] {
+				candidate.LanguageMixed, candidate.LanguageRewrites = mixed, 1
+			}
 			if candidate.Validate() != nil {
 				event("candidate_validated", "failed", "candidate_binding_invalid", "")
 				return actool.Errorf("diagnostic_candidate_binding_invalid"), nil
 			}
+			if mixed && !languageAsked[key] {
+				languageAsked[key] = true
+				candidate.LanguageMixed, candidate.LanguageRewrites = true, 1
+				languageHeld[key] = candidate
+				event("candidate_validated", "failed", "candidate_language_mixed", in.CallRef)
+				return actool.Errorf(candidateLanguageMixedError), nil
+			}
 			event("candidate_validated", "succeeded", "", in.CallRef)
-			id, err := store.RecordDiagnosticCandidate(ctx, candidate)
-			if err != nil {
-				event("candidate_saved", "failed", "candidate_store_failed", in.CallRef)
+			id, ok := saved(ctx, candidate, event)
+			if !ok {
+				// 다시 쓴 제출을 저장하지 못하면 붙잡아 둔 첫 제출은 그대로 둔다(Worker 끝에 표시를 붙여 저장해 후보를 잃지 않는다).
 				return actool.Errorf("diagnostic_candidate_store_failed"), nil
 			}
-			event("candidate_saved", "manual_review_required", "", in.CallRef)
-			for _, saved := range onSaved {
-				if saved != nil {
-					saved()
-				}
-			}
+			delete(languageHeld, key)
 			return actool.Text("Unconfirmed candidate recorded: " + strconv.FormatInt(id, 10) + ". Manual review required; this is not an E3 verdict or confirmed finding."), nil
 		},
 	})
