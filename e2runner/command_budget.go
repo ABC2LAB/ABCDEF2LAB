@@ -55,6 +55,13 @@ func startCommandBudget(parent context.Context, d time.Duration) (context.Contex
 	ctx, cancel := context.WithCancelCause(parent)
 	attach := make(chan approvalWaiter, 1)
 	done := make(chan struct{})
+	// 남은 예산이 없으면(원격 왕복이 다 씀) 돌려주기 전에 닫는다. 고루틴 안에서 닫으면 그 사이 러너가 슬롯을 잡고 call을
+	// 만들어 이미 만료된 명령이 송신까지 갈 수 있다(#910 이동찬 리뷰).
+	if d <= 0 {
+		cancel(context.DeadlineExceeded)
+		close(done)
+		return ctx, func(approvalWaiter) {}, func() {}
+	}
 	go func() {
 		defer close(done)
 		remaining := d

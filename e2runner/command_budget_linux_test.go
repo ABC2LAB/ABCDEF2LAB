@@ -67,4 +67,10 @@ func TestRunnerCommandBudgetPausesWhileApprovalPending(t *testing.T) {
 	if result.Trusted.Termination != TerminationTimeout || result.Trusted.Classification != "transient_failure" {
 		t.Fatalf("time before the runner not charged to the budget: class=%s termination=%q", result.Trusted.Classification, result.Trusted.Termination)
 	}
+	// 시작 시각이 예산보다 오래됐으면(원격 왕복이 예산을 다 씀) call을 만들지 않고 대상에도 보내지 않는다(#910 이동찬 리뷰).
+	before, sent := len(fixture.execution.Calls()), received.Load()
+	result, err = fixture.runner.Run(WithCommandBudgetFrom(t.Context(), time.Second, time.Now().Add(-5*time.Second)), "curl --silent --show-error --max-time 4 '"+target.URL+"/allowed'")
+	if !AdmissionNotSent(result) || err == nil || len(fixture.execution.Calls()) != before || received.Load() != sent {
+		t.Fatalf("exhausted budget opened a call: notSent=%v err=%v calls=%d→%d received=%d→%d", AdmissionNotSent(result), err, before, len(fixture.execution.Calls()), sent, received.Load())
+	}
 }

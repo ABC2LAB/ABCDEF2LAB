@@ -84,6 +84,18 @@ func TestCommandBudgetExpiresWithoutApprovalWait(t *testing.T) {
 	}
 }
 
+// 남은 예산이 없으면 돌려주기 전에 이미 닫혀 있다(러너가 슬롯·call을 만들기 전에 본다, #910 이동찬 리뷰).
+func TestCommandBudgetExhaustedClosesSynchronously(t *testing.T) {
+	for _, d := range []time.Duration{0, -time.Second} {
+		ctx, attach, stop := startCommandBudget(context.Background(), d)
+		if ctx.Err() == nil || !commandTimedOut(ctx) {
+			t.Fatalf("exhausted budget %v still open on return", d)
+		}
+		attach(&fakeWaiter{})
+		stop()
+	}
+}
+
 // 승인을 기다리는 동안은 예산이 줄지 않고, 대기가 끝나면 남은 예산이 다시 흐른다(#898 발견 3).
 func TestCommandBudgetPausesWhileApprovalWaits(t *testing.T) {
 	const budget = 60 * time.Millisecond

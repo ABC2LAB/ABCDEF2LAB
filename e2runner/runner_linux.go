@@ -233,6 +233,10 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 	}
 	ctx, attachBudget, stopBudget := startCommandBudget(ctx, limit)
 	defer stopBudget()
+	// 예산이 이미 끝났으면 슬롯·call 없이 미송신으로 끝낸다(#910 이동찬 리뷰). 슬롯을 잡은 뒤에도 아래에서 한 번 더 본다.
+	if ctx.Err() != nil {
+		return r.admissionNotSent(ctx, intentID)
+	}
 	expiry := time.NewTimer(time.Until(r.cfg.Execution.Snapshot().ExpiresAt))
 	defer expiry.Stop()
 	acquire := func(gate chan struct{}) bool {

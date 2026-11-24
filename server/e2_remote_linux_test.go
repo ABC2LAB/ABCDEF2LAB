@@ -564,3 +564,19 @@ func TestE2RemoteCarriesCommandBudget(t *testing.T) {
 		t.Fatalf("command without budget: err=%v class=%s termination=%q", err, plain.Trusted.Classification, plain.Trusted.Termination)
 	}
 }
+
+// 시작 시각이 예산보다 오래됐으면(원격 왕복이 예산을 다 씀) Host가 call을 만들지 않고 대상에도 보내지 않는다(#910 이동찬 리뷰).
+func TestE2RemoteExhaustedBudgetOpensNoCall(t *testing.T) {
+	f := startE2RemoteFixture(t)
+	run := f.acquire(t)
+	ctx := context.Background()
+	calls, sent := len(run.Calls()), f.received.Load()
+	expired, err := run.RunForIntent(e2runner.WithCommandBudgetFrom(ctx, time.Second, time.Now().Add(-5*time.Second)), 17, f.curl("/allowed"))
+	if !e2runner.AdmissionNotSent(expired) || err == nil || len(run.Calls()) != calls || f.received.Load() != sent {
+		t.Fatalf("exhausted budget opened a host call: notSent=%v err=%v calls=%d→%d received=%d→%d", e2runner.AdmissionNotSent(expired), err, calls, len(run.Calls()), sent, f.received.Load())
+	}
+	// 같은 Host에서 예산이 남은 요청은 그대로 보낸다(위 거부가 대상 쪽 문제 때문이 아님).
+	if result, err := run.RunForIntent(e2runner.WithCommandBudget(ctx, 5*time.Second), 17, f.curl("/allowed")); err != nil || !result.Trusted.Final || f.received.Load() != sent+1 {
+		t.Fatalf("budgeted request after refusal: err=%v final=%v received=%d", err, result.Trusted.Final, f.received.Load())
+	}
+}
