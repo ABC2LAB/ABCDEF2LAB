@@ -3,7 +3,7 @@
 // 버튼은 서버 흐름 조건(crawling · diagnosing, 명령 31개 미만)일 때만 있고, 결과는 서버 스냅숏(paused)으로만 그린다.
 
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
@@ -16,7 +16,7 @@ import { catalog, handle, running, scope } from "@/lib/diagnosis/diagnosis-url-f
 
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
-import { PauseButton, useStopConfirm } from "../views/live/workflowViews";
+import { PAUSE_HINT, PauseButton, useStopConfirm } from "../views/live/workflowViews";
 
 const job = {
   ...running,
@@ -203,17 +203,44 @@ describe("종료 확인 상자 — 일시정지 안내", () => {
     );
   }
 
-  it("탐색 · 심화 진단 중이면 '나중에 이어 하려면 일시정지'를 붙이고, 그 밖에는 붙이지 않는다", () => {
+  const openBox = () => {
+    const r = render(<Stop />);
+    fireEvent.click(screen.getByRole("button", { name: "종료" }));
+    const box = screen.getByRole("alertdialog");
+    return { r, box };
+  };
+
+  it("지금 일시정지를 누를 수 있을 때만 안내하고, 시간 상한은 계속 흐른다고 쓴다(#913 리뷰)", () => {
     setFlow();
-    const a = render(<Stop />);
-    fireEvent.click(screen.getByRole("button", { name: "종료" }));
-    expect(
-      within(screen.getByRole("alertdialog")).getByText(/나중에 이어 하려면 일시정지를 쓰세요/),
-    ).toBeInTheDocument();
-    a.unmount();
+    const a = openBox();
+    expect(a.box).toHaveTextContent(PAUSE_HINT);
+    expect(PAUSE_HINT).toContain("일시정지 중에도 점검 시간 상한은 흐릅니다");
+    expect(a.box).not.toHaveTextContent("나중에 이어 하려면");
+    a.r.unmount();
+    // 범위 확인 대기(일시정지 없는 단계)
     setFlow({ stage: "awaiting_selection" });
-    render(<Stop />);
-    fireEvent.click(screen.getByRole("button", { name: "종료" }));
-    expect(screen.getByRole("alertdialog")).not.toHaveTextContent("일시정지");
+    const b = openBox();
+    expect(b.box).not.toHaveTextContent("일시정지");
+    b.r.unmount();
+  });
+
+  it("명령 31개(일시정지 잠김) · 이미 일시정지 · 결과 불명이면 안내를 빼서 버튼과 어긋나지 않는다(#913 리뷰 이동찬 P2)", () => {
+    const commands = Array.from({ length: 31 }, (_, i) => ({ key: `k${i}`, revision: i + 1, operation: "selection" }));
+    const cases: [string, Partial<WorkflowSnapshot>, Record<string, unknown>][] = [
+      ["명령 31개", { commands } as Partial<WorkflowSnapshot>, {}],
+      ["이미 일시정지", { paused: true }, {}],
+      ["명령 결과 불명", {}, { flowUncertain: true }],
+    ];
+    for (const [name, over, more] of cases) {
+      setFlow(over, more);
+      const pause = render(<PauseButton />);
+      const button = screen.queryByRole("button", { name: "일시정지" });
+      // 버튼이 없거나([다시 시작]) 잠겨 있다
+      if (button) expect(button, name).toBeDisabled();
+      pause.unmount();
+      const x = openBox();
+      expect(x.box, name).not.toHaveTextContent(PAUSE_HINT);
+      x.r.unmount();
+    }
   });
 });
