@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"slices"
@@ -20,7 +21,13 @@ import (
 	"github.com/Autumn-27/artex/report"
 )
 
-const followupSuffix = "/remediation-followup"
+const (
+	followupSuffix        = "/remediation-followup"
+	followupTimeout       = 15 * time.Second
+	maxFollowupQueryBytes = 8 << 10
+	maxFollowupEditBytes  = 8 << 10
+	maxObservedHTTPStatus = 599
+)
 
 type followupQuery struct {
 	source, current, general int64
@@ -34,7 +41,7 @@ func parseFollowup(r *http.Request) (followupQuery, bool) {
 	id, suffix := strings.CutSuffix(id, followupSuffix)
 	source, okID := verdictDetailID(id)
 	q.source = source
-	if !ok || !suffix || !okID || r.URL.RawPath != "" || len(r.URL.RawQuery) > 8192 {
+	if !ok || !suffix || !okID || r.URL.RawPath != "" || len(r.URL.RawQuery) > maxFollowupQueryBytes {
 		return q, false
 	}
 	values, err := url.ParseQuery(r.URL.RawQuery)
@@ -80,26 +87,33 @@ type followupScope struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 type followupItem struct {
-	Entry          string          `json:"entry_id"`
-	Record         string          `json:"record_id"`
-	Title          string          `json:"title"`
-	Summary        string          `json:"original_observation"`
-	Criteria       []string        `json:"criteria"`
-	Digest         string          `json:"original_digest,omitempty"`
-	EvidenceDigest string          `json:"original_evidence_digest,omitempty"`
-	RootFix        []string        `json:"requested_changes,omitempty"`
-	Result         string          `json:"result"`
-	Reason         string          `json:"reason,omitempty"`
-	Review         *followupReview `json:"review,omitempty"`
+	Entry            string            `json:"entry_id"`
+	Record           string            `json:"record_id"`
+	Title            string            `json:"title"`
+	Summary          string            `json:"original_observation"`
+	Criteria         []string          `json:"criteria"`
+	Digest           string            `json:"original_digest,omitempty"`
+	EvidenceDigest   string            `json:"original_evidence_digest,omitempty"`
+	RootFix          []string          `json:"requested_changes,omitempty"`
+	OriginalRequests []followupRequest `json:"original_requests,omitempty"`
+	Result           string            `json:"result"`
+	Reason           string            `json:"reason,omitempty"`
+	Review           *followupReview   `json:"review,omitempty"`
 }
+type followupRequest struct {
+	Method    string `json:"method"`
+	Path      string `json:"path"`
+	VulnClass string `json:"vuln_class,omitempty"`
+}
+
 type followupEvidence struct {
+	followupRequest
 	ID         string `json:"step_id"`
 	Digest     string `json:"binding_digest"`
 	Number     int    `json:"number"`
-	Method     string `json:"method"`
 	Status     int    `json:"http_status"`
-	Path       string `json:"path"`
 	Reviewable bool   `json:"reviewable"`
+	comparable bool
 }
 type followupFinding struct {
 	Entry       string             `json:"entry_id"`
@@ -152,6 +166,11 @@ func followupOriginals(data report.DiagnosticReport, source *diagnosisprep.Job, 
 			item.RootFix = e.RemediationBundle.RootFix
 			item.EvidenceDigest = e.RemediationBundle.EvidenceDigest
 			item.Digest = e.RemediationBundle.InputDigest
+			for _, step := range followupSteps(e) {
+				if step.comparable && !slices.Contains(item.OriginalRequests, step.followupRequest) {
+					item.OriginalRequests = append(item.OriginalRequests, step.followupRequest)
+				}
+			}
 		}
 		items = append(items, item)
 	}
@@ -180,17 +199,28 @@ func followupSteps(e report.DiagnosticEntry) []followupEvidence {
 	for _, v := range append(envelope.Related, envelope.callEvidence) {
 		call := v.Trusted.Call
 		for _, o := range call.Observations {
-			if o.Decision == "allowed" && o.ResponseComplete && o.ForwardAttempted && o.AuditComplete && !o.ResponseTruncated && o.StatusCode >= 200 && o.StatusCode <= 599 {
+			if o.Decision == "allowed" && o.ResponseComplete && o.ForwardAttempted && o.AuditComplete && !o.ResponseTruncated && o.StatusCode >= http.StatusOK && o.StatusCode <= maxObservedHTTPStatus {
 				observed[key{call.CallRef, fmt.Sprintf("attempt-%d", o.Sequence)}] = o
 			}
 		}
 	}
+	class := strings.ToLower(strings.TrimSpace(e.VulnClass))
+	if class == "unknown" || class != report.DiagnosticText(class) || strings.ContainsAny(class, "{}[]") {
+		class = ""
+	}
 	var result []followupEvidence
 	for _, s := range e.Steps {
 		o, ok := observed[key{s.CallRef, s.SourceStepID}]
-		if ok && !s.Truncated && s.Method == o.Method {
-			result = append(result, followupEvidence{ID: s.ID, Digest: s.BindingDigest, Number: s.Number, Method: s.Method, Status: o.StatusCode, Path: report.DiagnosticText(s.Path)})
+		if !ok || s.Truncated || s.Method == "" || s.Method != o.Method {
+			continue
 		}
+		displayPath := report.DiagnosticText(s.Path)
+		_, pathOK := pathscope.Parse(s.Path)
+		// 접두 뒤 경로나 보호된 조각을 가린 표시값은 서로 다른 끝점을 가리킬 수 있다.
+		comparable := class != "" && pathOK && strings.HasPrefix(s.Path, "/") &&
+			!strings.ContainsAny(s.Path, "{}[]*;") && displayPath == s.Path && s.Path == o.Endpoint
+		result = append(result, followupEvidence{ID: s.ID, Digest: s.BindingDigest, Number: s.Number, Status: o.StatusCode,
+			followupRequest: followupRequest{Method: s.Method, Path: displayPath, VulnClass: class}, comparable: comparable})
 	}
 	return result
 }
@@ -256,7 +286,7 @@ func followupObservations(job *diagnosisprep.Job, data report.DiagnosticReport, 
 // 진단 당시 허용된 요청도 현재 승인에서 빠질 수 있다. 정확 일치 경로는 당시 query 없는
 // 경로로 승인된 경우에만 확인한다. 관찰에는 query가 보존되지 않는다.
 func canReviewObservation(step followupEvidence, job *diagnosisprep.Job, scope followupScope) bool {
-	if job.Scope == nil || !job.Started || job.State != diagnosisprep.Completed || (scope.State != "review_required" && scope.State != "changed") {
+	if !step.comparable || job.Scope == nil || !job.Started || job.State != diagnosisprep.Completed || (scope.State != "review_required" && scope.State != "changed") {
 		return false
 	}
 	if !strings.HasPrefix(step.Path, "/") || !slices.Contains(scope.Methods, step.Method) || !slices.Contains(job.Scope.Methods, step.Method) {
@@ -304,6 +334,21 @@ func (b *diagnosisManagementBridge) followupScope(ctx context.Context, owner str
 	return followupScope{State: state, Paths: t.PathPrefixes, Methods: t.Methods, Requests: t.Requests, ExpiresAt: t.ExpiresAt}, nil
 }
 
+// 원문 오류에는 쿼리·경로 등이 섞일 수 있으므로 고정된 단계와 사유만 기록한다.
+func logFollowupFailure(stage string, err error) {
+	reason := "unavailable"
+	var coded interface{ SQLState() string }
+	if errors.As(err, &coded) {
+		switch coded.SQLState() {
+		case "42P01":
+			reason = "table_missing"
+		case "42501":
+			reason = "permission_denied"
+		}
+	}
+	log.Printf("[이행점검] 처리 실패 단계=%s 사유=%s", stage, reason)
+}
+
 func followupError(w http.ResponseWriter, code int) {
 	writeErr(w, code, map[int]string{400: "이행점검 입력을 확인하세요.", 401: "인증이 필요합니다.", 403: "선택한 보고서의 조회 권한을 확인할 수 없습니다.", 404: "선택한 조치 기록이 없습니다.", 405: "지원하지 않는 이행점검 요청입니다.", 409: "보고서의 대상·버전·근거가 일치하지 않습니다. 다시 조회하세요.", 422: "저장된 보고서의 크기나 근거를 확인하세요.", 503: "이행점검 기록을 조회할 수 없습니다."}[code])
 }
@@ -320,7 +365,7 @@ func (b *diagnosisManagementBridge) serveRemediationFollowup(w http.ResponseWrit
 		followupError(w, 400)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), followupTimeout)
 	defer cancel()
 	r = r.WithContext(ctx)
 	owner, err := b.authenticate(r)
@@ -352,7 +397,8 @@ func (b *diagnosisManagementBridge) serveRemediationFollowup(w http.ResponseWrit
 		ref := strconv.FormatInt(id, 10)
 		j, err := b.candidateJob(ctx, owner, ref)
 		if err != nil {
-			followupError(w, 503)
+			logFollowupFailure("job_authorize", err)
+			followupError(w, http.StatusServiceUnavailable)
 			return
 		}
 		if j == nil {
@@ -376,7 +422,8 @@ func (b *diagnosisManagementBridge) serveRemediationFollowup(w http.ResponseWrit
 	}
 	scope, err := b.followupScope(ctx, owner, source)
 	if err != nil {
-		followupError(w, 503)
+		logFollowupFailure("target_approval", err)
+		followupError(w, http.StatusServiceUnavailable)
 		return
 	}
 	reports := map[int64]report.DiagnosticReport{}
@@ -386,7 +433,11 @@ func (b *diagnosisManagementBridge) serveRemediationFollowup(w http.ResponseWrit
 		}
 		data, err := followupReport(ctx, b.readPool, j, b.candidateEndpoint, owner)
 		if err != nil {
-			followupError(w, diagnosticReadFailureCode(err))
+			code := diagnosticReadFailureCode(err)
+			if code == http.StatusServiceUnavailable {
+				logFollowupFailure("report_read", err)
+			}
+			followupError(w, code)
 			return
 		}
 		reports[id] = data
@@ -399,13 +450,14 @@ func (b *diagnosisManagementBridge) serveRemediationFollowup(w http.ResponseWrit
 	}
 	if q.current != 0 {
 		if edit != nil {
-			if code := saveFollowupReview(ctx, b.readPool, q, page, owner, *edit); code != 200 {
+			if code := saveFollowupReview(ctx, b.readPool, q, page, owner, *edit); code != http.StatusOK {
 				followupError(w, code)
 				return
 			}
 		}
 		if err := applyFollowupReviews(ctx, b.readPool, q, &page); err != nil {
-			followupError(w, 503)
+			logFollowupFailure("review_read", err)
+			followupError(w, http.StatusServiceUnavailable)
 			return
 		}
 	}
@@ -430,8 +482,8 @@ func (p followupDraft) unreviewedReason() string {
 		return "result_unavailable"
 	}
 	bindings := p.Current.bindings()
-	for _, available := range bindings {
-		if available {
+	for _, step := range bindings {
+		if step.Reviewable {
 			return "no_linked_review"
 		}
 	}

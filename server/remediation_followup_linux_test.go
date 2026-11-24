@@ -72,6 +72,8 @@ func TestRemediationFollowupProduct(t *testing.T) {
 		job := *proof.Job
 		scope := *job.Scope
 		scope.ScopeRef = "scope-" + scope.TargetRef
+		scope.PathPrefixes = []string{"/safe", "/other"}
+		scope.Methods = []string{"GET", "HEAD"}
 		job.TaskID = fmt.Sprint(id)
 		job.ID = "job-" + job.TaskID
 		job.Scope = &scope
@@ -104,7 +106,7 @@ func TestRemediationFollowupProduct(t *testing.T) {
 	url := fmt.Sprintf("/api/tasks/%d/remediation-followup", source)
 	get := fmt.Sprintf("?current_task=%d", current)
 	both := get + fmt.Sprintf("&general_task=%d", general)
-	call := func(method, suffix, token string, edit *followupEdit, want int) followupDraft {
+	request := func(t *testing.T, method, suffix, token string, edit *followupEdit, want int) followupDraft {
 		t.Helper()
 		body := ""
 		if edit != nil {
@@ -132,11 +134,15 @@ func TestRemediationFollowupProduct(t *testing.T) {
 		}
 		return p
 	}
+	call := func(method, suffix, token string, edit *followupEdit, want int) followupDraft {
+		return request(t, method, suffix, token, edit, want)
+	}
+	o := e2proxy.HTTPObservation{Sequence: 1, AttemptRef: "test", Method: "GET", Endpoint: "/safe", Decision: "allowed", StatusCode: 200, ResponseComplete: true, ForwardAttempted: true, AuditComplete: true, ObservedAt: time.Now().UTC()}
 	add := func(task int64, run string, obs ...e2proxy.HTTPObservation) string {
 		return fmt.Sprintf("candidate-%d", diagnosticServerRunCandidate(t, s, task, run, "completed", "XSS", obs...))
 	}
-	action := func(task int64) string {
-		e := add(task, "run-job-"+fmt.Sprint(task))
+	action := func(task int64, obs ...e2proxy.HTTPObservation) string {
+		e := add(task, "run-job-"+fmt.Sprint(task), obs...)
 		in, err := db.LoadDiagnosticRemediationSource(t.Context(), s.m.pg.DB, task, e)
 		if err != nil {
 			t.Fatal(err)
@@ -146,7 +152,7 @@ func TestRemediationFollowupProduct(t *testing.T) {
 		}
 		return e
 	}
-	a, b := action(source), action(source)
+	a, b := action(source, o), action(source)
 	foreign := action(current)
 	token := session.Token
 	p := call("GET", "", "", nil, 401)
@@ -163,7 +169,6 @@ func TestRemediationFollowupProduct(t *testing.T) {
 	if p.General.ResultState != "available" || len(p.General.Findings) != 0 {
 		t.Fatal("완료 후 0건")
 	}
-	o := e2proxy.HTTPObservation{Sequence: 1, AttemptRef: "test", Method: "GET", Endpoint: "/safe", Decision: "allowed", StatusCode: 200, ResponseComplete: true, ForwardAttempted: true, AuditComplete: true, ObservedAt: time.Now().UTC()}
 	proofEntry := add(current, "run-job-"+fmt.Sprint(current), o)
 	c := add(general, "run-job-"+fmt.Sprint(general))
 	add(current, "another-run", o)
@@ -171,16 +176,22 @@ func TestRemediationFollowupProduct(t *testing.T) {
 	if p.Items[0].Entry != a || len(p.Items[0].Criteria) == 0 || p.Items[0].Digest == "" || p.Items[0].Result != "inconclusive" || p.Current.ResultState != "partial" || len(p.General.Findings) != 1 || p.General.Findings[0].Entry != c {
 		t.Fatal("근거 없이 확정되거나 회차가 섞임", p)
 	}
-	var step followupEvidence
-	for _, x := range p.Current.Findings {
-		if x.Entry == proofEntry && len(x.Steps) == 1 {
-			step = x.Steps[0]
+	findStep := func(t *testing.T, p followupDraft, entry string) followupEvidence {
+		t.Helper()
+		for _, x := range p.Current.Findings {
+			if x.Entry == entry && len(x.Steps) == 1 {
+				return x.Steps[0]
+			}
 		}
+		t.Fatal("저장된 감사 근거 없음", entry)
+		return followupEvidence{}
 	}
-	if step.ID == "" {
-		t.Fatalf("저장된 감사 근거 없음 %+v", p.Current.Findings)
-	}
+	step := findStep(t, p, proofEntry)
 	original := p.Items[0]
+	if !step.Reviewable || len(original.OriginalRequests) != 1 ||
+		original.OriginalRequests[0] != (followupRequest{Method: "GET", Path: "/safe", VulnClass: "xss"}) {
+		t.Fatal("원래 조치의 비교 근거 누락", original.OriginalRequests)
+	}
 	rev := int64(0)
 	edit := followupEdit{Entry: a, Record: original.Record, OriginalDigest: original.Digest, Outcome: "fixed", Comparable: true, CriteriaMet: true, ExpectedRevision: &rev, EvidenceEntry: proofEntry, StepID: step.ID, BindingDigest: step.Digest}
 	bad := edit
@@ -189,6 +200,45 @@ func TestRemediationFollowupProduct(t *testing.T) {
 	bad = edit
 	bad.BindingDigest = strings.Repeat("0", 64)
 	call("PUT", get, token, &bad, 409)
+
+	for _, tc := range []struct {
+		name, path, method, class string
+		reviewable                bool
+	}{
+		{"경로 불일치", "/other", "GET", "XSS", true},
+		{"메서드 불일치", "/safe", "HEAD", "XSS", true},
+		{"유형 불일치", "/safe", "GET", "IDOR", true},
+		{"가린 경로", "/safe/{resource}", "GET", "XSS", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observation := o
+			observation.Endpoint, observation.Method = tc.path, tc.method
+			id := diagnosticServerRunCandidate(t, s, current, "run-job-"+fmt.Sprint(current), "completed", tc.class, observation)
+			t.Cleanup(func() {
+				if _, err := s.m.pg.Exec("DELETE FROM exploration_nodes WHERE id=$1", id); err != nil {
+					t.Error(err)
+				}
+			})
+			entry := fmt.Sprintf("candidate-%d", id)
+			candidate := findStep(t, request(t, "GET", get, token, nil, 200), entry)
+			if candidate.Reviewable != tc.reviewable {
+				t.Fatal("현재 회차 안에서의 관찰 적격 상태", candidate)
+			}
+			bad := edit
+			bad.EvidenceEntry, bad.StepID, bad.BindingDigest = entry, candidate.ID, candidate.Digest
+			request(t, "PUT", get, token, &bad, 409)
+			bad.Outcome, bad.CriteriaMet = "reproduced", false
+			request(t, "PUT", get, token, &bad, 409)
+		})
+	}
+	withoutOriginal := call("GET", get+"&entry="+b, token, nil, 200).Items[0]
+	if len(withoutOriginal.OriginalRequests) != 0 {
+		t.Fatal("관찰 없는 원래 조치에 비교 근거가 생김")
+	}
+	bad = edit
+	bad.Entry, bad.Record, bad.OriginalDigest = withoutOriginal.Entry, withoutOriginal.Record, withoutOriginal.Digest
+	call("PUT", get, token, &bad, 409)
+
 	incomplete := o
 	incomplete.AuditComplete = false
 	incompleteEntry := add(current, "run-job-"+fmt.Sprint(current), incomplete)
@@ -204,7 +254,7 @@ func TestRemediationFollowupProduct(t *testing.T) {
 		t.Fatal("승인 범위 변경 누락")
 	}
 	call("PUT", get, token, &edit, 409)
-	endpoint.target.PathPrefixes = []string{"/safe"}
+	endpoint.target.PathPrefixes = []string{"/safe", "/other"}
 	currentJob := endpoint.jobs[fmt.Sprint(current)]
 	currentJob.Input.ExcludedPaths = "/safe"
 	call("PUT", get, token, &edit, 409)
@@ -225,6 +275,17 @@ func TestRemediationFollowupProduct(t *testing.T) {
 	if got.Result != "fixed" || got.Review == nil || got.Review.Revision != 1 || got.Review.Reviewer != "ARTEX" || lookup(p, b).Result != "inconclusive" {
 		t.Fatal("원래 조치별 판정", p.Items)
 	}
+	// 현재 승인이 만료되면 저장된 판본을 보존한 채 이번 결과를 확인 불가로 표시한다.
+	expires := endpoint.target.ExpiresAt
+	endpoint.target.ExpiresAt = time.Now().UTC().Add(-time.Minute)
+	p = call("GET", get, token, nil, 200)
+	expired := lookup(p, a)
+	if p.Scope.State != "expired" || expired.Result != "inconclusive" || expired.Reason != "review_evidence_changed" ||
+		expired.Review == nil || expired.Review.Revision != 1 || expired.Review.EvidenceEntry != "" {
+		t.Fatal("승인 만료 뒤 기존 판정이 현재 결과에 남음", expired)
+	}
+	call("PUT", get, token, &edit, 409)
+	endpoint.target.ExpiresAt = expires
 	p = call("GET", both+"&entry="+b, token, nil, 200)
 	refs := map[followupReference]int{}
 	for _, ref := range p.Additional {

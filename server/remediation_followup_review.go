@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -39,7 +40,7 @@ func readFollowupEdit(w http.ResponseWriter, r *http.Request) *followupEdit {
 	if err != nil || kind != "application/json" {
 		return nil
 	}
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 8192))
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxFollowupEditBytes))
 	var edit followupEdit
 	if err != nil || strictJSON(raw, &edit) != nil || edit.ExpectedRevision == nil || *edit.ExpectedRevision < 0 {
 		return nil
@@ -69,32 +70,34 @@ func readFollowupEdit(w http.ResponseWriter, r *http.Request) *followupEdit {
 
 type followupBinding struct{ entry, step, digest string }
 
-func (run followupRun) bindings() map[followupBinding]bool {
-	out := map[followupBinding]bool{}
+func (run followupRun) bindings() map[followupBinding]followupEvidence {
+	out := map[followupBinding]followupEvidence{}
 	for _, f := range run.Findings {
 		for _, s := range f.Steps {
-			out[followupBinding{f.Entry, s.ID, s.Digest}] = s.Reviewable
+			out[followupBinding{f.Entry, s.ID, s.Digest}] = s
 		}
 	}
 	return out
 }
 
-func saveFollowupReview(ctx context.Context, pool *sql.DB, q followupQuery, page followupDraft, owner string, edit followupEdit) int {
-	valid := false
-	for _, i := range page.Items {
-		if i.Entry == edit.Entry && i.Record == edit.Record && i.Digest == edit.OriginalDigest && len(i.Criteria) > 0 {
-			valid = true
-			break
-		}
+func (item followupItem) acceptsEvidence(outcome string, ref followupBinding, bindings map[followupBinding]followupEvidence) bool {
+	if ref.step == "" {
+		return outcome == "inconclusive"
 	}
-	if !valid || !page.Current.Ready {
+	step, exists := bindings[ref]
+	return exists && (outcome == "inconclusive" || step.Reviewable && slices.Contains(item.OriginalRequests, step.followupRequest))
+}
+
+func saveFollowupReview(ctx context.Context, pool *sql.DB, q followupQuery, page followupDraft, owner string, edit followupEdit) int {
+	if !page.Current.Ready {
 		return http.StatusConflict
 	}
-	if edit.StepID != "" {
-		reviewable, exists := page.Current.bindings()[followupBinding{edit.EvidenceEntry, edit.StepID, edit.BindingDigest}]
-		if !exists || edit.Outcome != "inconclusive" && !reviewable {
-			return http.StatusConflict
-		}
+	index := slices.IndexFunc(page.Items, func(item followupItem) bool {
+		return item.Entry == edit.Entry && item.Record == edit.Record && item.Digest == edit.OriginalDigest && len(item.Criteria) > 0
+	})
+	ref := followupBinding{edit.EvidenceEntry, edit.StepID, edit.BindingDigest}
+	if index < 0 || !page.Items[index].acceptsEvidence(edit.Outcome, ref, page.Current.bindings()) {
+		return http.StatusConflict
 	}
 	record, _ := verdictDetailID(edit.Record)
 	args := []any{q.source, q.current, record, edit.OriginalDigest, edit.EvidenceEntry, edit.StepID, edit.BindingDigest, edit.Outcome, edit.Reason, owner}
@@ -110,10 +113,12 @@ func saveFollowupReview(ctx context.Context, pool *sql.DB, q followupQuery, page
 			WHERE source_task=$1 AND current_task=$2 AND record_id=$3 AND revision=$11`, append(args, *edit.ExpectedRevision)...)
 	}
 	if err != nil {
+		logFollowupFailure("review_write", err)
 		return http.StatusServiceUnavailable
 	}
 	n, err := result.RowsAffected()
 	if err != nil {
+		logFollowupFailure("review_write", err)
 		return http.StatusServiceUnavailable
 	}
 	if n == 1 {
@@ -125,6 +130,7 @@ func saveFollowupReview(ctx context.Context, pool *sql.DB, q followupQuery, page
 		WHERE source_task=$1 AND current_task=$2 AND record_id=$3 AND original_digest=$4 AND evidence_entry=$5
 		AND step_id=$6 AND binding_digest=$7 AND outcome=$8 AND reason=$9 AND reviewer=$10 AND revision-1=$11)`, append(args, *edit.ExpectedRevision)...).Scan(&replay)
 	if err != nil {
+		logFollowupFailure("review_replay", err)
 		return http.StatusServiceUnavailable
 	}
 	if replay {
@@ -159,8 +165,8 @@ func applyFollowupReviews(ctx context.Context, pool *sql.DB, q followupQuery, pa
 			return err
 		}
 		item := byRecord[id]
-		_, exists := valid[followupBinding{r.EvidenceEntry, r.StepID, r.BindingDigest}]
-		if digest == "" || digest != item.Digest || (r.StepID == "" && outcome != "inconclusive") || (r.StepID != "" && !exists) {
+		ref := followupBinding{r.EvidenceEntry, r.StepID, r.BindingDigest}
+		if digest == "" || digest != item.Digest || !item.acceptsEvidence(outcome, ref, valid) {
 			item.Reason = "review_evidence_changed"
 			item.Review = &followupReview{Revision: r.Revision, Reviewer: r.Reviewer, ReviewedAt: r.ReviewedAt}
 			continue

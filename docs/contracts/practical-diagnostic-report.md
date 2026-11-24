@@ -34,6 +34,7 @@
 
 ## 구현 계약
 
+- 저장 조치와 후속 회차 관찰의 대조는 [이행점검 API 계약](remediation-followup.md)을 따른다.
 - 저장 요청 승인 이력은 같은 작업·소유자·회차에서 ID 순서로 최대 100건을 싣는다. 같은 조회 스냅샷의 전체 건수가 더 많으면 내부용·공유용 HTML과 Word 모두에 전체 건수와 표시 건수를 밝힌다.
 - `reproduction.FromStored`는 호스트 소유 `observed` 관측 중 실제 시각·실행·원본 Step·증거 참조가 모두 있는 행만 사용하며 저장 순서를 유지한다. E③는 저장 manifest의 owner read / cross read / 비교 snapshot을 독립 결속 검사한 뒤 투영한다. E③ manifest에 없는 HTTP 경로·일반 call ID는 공란으로 보존한다.
 - Step에는 task/entry/run/call/원본 Step/evidence version/evidence digest와 전체 정규화 관측의 SHA256 결속을 둔다. Step ID는 그 결속에서 결정한다. 내용·회차·증거가 바뀌면 이전 이미지를 재사용하지 않는다.
