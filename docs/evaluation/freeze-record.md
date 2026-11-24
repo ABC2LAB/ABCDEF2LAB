@@ -26,6 +26,7 @@
 |---|---|---|---|
 | 가격 상한(입력/출력, USD per 1M) | 규칙: 세션 시작 직전 재조회 단가 × 1.5(올림), 세션 안 고정(`--resume`도 시작 때 값). 이어 돌릴 때의 시작 조건: 상한 ≥ 지금 단가 × 1.2(`provider_price_headroom`, 새 세션은 × 1.5라 늘 통과). 고정 숫자가 아니다. 예: 2026-11-22 단가 0.19 / 1.70 → `285000` / `2550000` | 실행 절차 §4, `official_session.py --provider-probe` | Go 3 파일럿(VAmPI): `price_caps` 285000 / 2550000(규칙 × 1.5, 여유 1.2), O 회차 `o_manifest_caps`도 같음. Juice Shop 파일럿: `price_caps` 285000 / 2550000(`source` rule, × 1.5, `headroom_ok`), O 회차 `o_manifest_caps` 같음. 공식 세션 `<채움>`(시작 직전 재조회 단가로 다시 정한다) |
 | 모델 호출 하나의 시간 상한 | 170초 (`timeout_seconds`) | 실행 절차 §4 | — |
+| 동시 모델 호출 | 4 (`max_concurrent`, 제품 OpenRouter launch 기본값 `runtime_limits.model_concurrency` 4와 같음). 11/19 실행 절차를 분리 배치 기준으로 다시 쓸 때 1로 적혔다(근거 문서 없음). 옛 절차([archive](../archive/official-run-e2-legacy.md))의 동시 슬롯 규칙('`worker_count`에 Planner를 더한 수 이상', `install-limits-decision.md` §9 근거)은 그때 빠졌다. 11/24 VAmPI 6회차에서 O 세 회차 모두 모델 호출이 겹친 시간 0(호출 시간 합 = 바쁜 시간)이었고, B는 동시에 불렀다(호출 시간 합이 바쁜 시간의 1.7~3.4배). 측정 설정이 O만 묶는 것을 풀어 B와 같게 둔다. 근거는 VAmPI 파일럿뿐이고 Juice Shop 결과는 보지 않았다 | 실행 절차 §4, `install-limits-decision.md` §9 | 공식 세션 manifest의 값 `<채움>` |
 | 연속 일시 오류 상한 | 8 (`max_consecutive_transient_errors`) | 실행 절차 §4 | — |
 | 연속 상한 뒤 동작 | 60초 쉬고 시험 호출 1번, 처음 쉰 때부터 5분 넘으면 잠금 | `llmpolicy/openrouter_cooldown.go` | #858, dev 머지 커밋 `dd3385a2`(2026-11-22 16:07Z) |
 | 호출당 입력·출력 토큰 상한, 요청 수·비용 상한 | 실행 절차 §4 예시 값 | 실행 절차 §4 | 공식 세션 manifest의 값 `<채움>` |
