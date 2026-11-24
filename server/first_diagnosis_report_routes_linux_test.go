@@ -262,6 +262,16 @@ func checkFirstDiagnosisStoredReportFlow(t *testing.T, runtime *FirstDiagnosisHT
 	if report.Code != 200 || report.Header().Get("Content-Disposition") == "" || !strings.Contains(html.UnescapeString(report.Body.String()), record.Bundle.AIPrompt) {
 		t.Fatal("report export differs")
 	}
+	reviewQuery := "&audience=internal&format=review-json"
+	reviews := request("GET", "/api/report/diagnostic?task="+task.ID+reviewQuery, "")
+	var reviewPage struct {
+		TaskID  string            `json:"task_id"`
+		Entries []json.RawMessage `json:"entries"`
+	}
+	if reviews.Code != 200 || json.Unmarshal(reviews.Body.Bytes(), &reviewPage) != nil ||
+		reviewPage.TaskID != task.ID || reviewPage.Entries == nil || len(reviewPage.Entries) != 0 {
+		t.Fatal("저장 보고서 전용 경로에서 빈 검토 목록을 읽지 못함")
+	}
 	shared := list(false)
 	if shared.Record == nil || shared.Record.Bundle != nil || shared.SourceDigest != "" {
 		t.Fatal("shared details exposed")
@@ -277,6 +287,7 @@ func checkFirstDiagnosisStoredReportFlow(t *testing.T, runtime *FirstDiagnosisHT
 		{"POST", base, string(raw), 403},
 		{"GET", fmt.Sprintf("/api/report/diagnostic/remediation/prompt?task=%s&entry=%s&record=%d&digest=%s", task.ID, entry, record.ID, record.Bundle.InputDigest), "", 403},
 		{"GET", "/api/report/diagnostic?task=999999999", "", 403},
+		{"GET", "/api/report/diagnostic?task=999999999" + reviewQuery, "", 403},
 		{"POST", "/api/report/diagnostic/remediation?task=999999999&audience=internal", string(raw), 403},
 		{"GET", base + "&task=" + task.ID, "", 403},
 		{"POST", "/api/tasks/" + task.ID + "/resume", "{}", 403},
