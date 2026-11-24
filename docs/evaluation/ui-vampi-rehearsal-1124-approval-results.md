@@ -28,14 +28,14 @@
 | 13:46:56 | 실행 단계, 탐색(crawling) |
 | 13:51:09 | 인증 준비: 시험 계정 로그인 2번, 둘 다 200 |
 | 13:51:10 | 탐색 끝, 경로 선택 대기 |
-| 13:58:01 | 경로 선택 반영(9개), 진단 단계 |
+| 13:58:01 | 경로 선택 반영(10개), 진단 단계 |
 | 13:58:28 | 첫 요청 승인 요청 |
 | 14:11:16 | 마지막 요청 승인 요청 |
 | 14:12:23 | 계획자 목표 달성 판정(목표 3개 모두 met), 진행 중 작업자 1개 취소(stopped) |
 | 14:12:23 | 확정 단계(E③) **꺼짐** `test_accounts_unavailable`, 요청 0·쓰기 0 |
 | 14:12:24 | 결과 저장, 실행 결과 `complete` |
 
-경로 선택은 사용자가 9개를 골랐다: GET `/books/v1`, GET `/books/v1/bookTitle77`, GET `/books/v1/book_title`, POST `/books/v1`, GET `/me`, GET `/users/v1`, GET `/users/v1/_debug`, GET `/users/v1/username`, PUT `/users/v1/username/email`. 탐색이 찾은 17개 가운데 화면·문서 파일(`/`, `/ui`, `/ui/`, `/ui/swagger-ui-bundle.js`, `/openapi.json`, HEAD `/`)과 POST `/users/v1/login`·`/users/v1/register`는 고르지 않았다.
+경로 선택은 10개였다(보고서 '실제 탐색·선택 기록'): GET `/books/v1`, GET `/books/v1/bookTitle77`, GET `/books/v1/book_title`, POST `/books/v1`, GET `/me`, GET `/users/v1`, GET `/users/v1/_debug`, GET `/users/v1/username`, POST `/users/v1/login`, PUT `/users/v1/username/email`. 탐색이 찾은 17개 가운데 화면·문서 파일(`/`, `/ui`, `/ui/`, `/ui/swagger-ui-bundle.js`, `/openapi.json`, HEAD `/`)과 POST `/users/v1/register`는 고르지 않았다.
 
 ## 3. 요청 승인 (사용자 승인 모드)
 
@@ -48,7 +48,7 @@
 | 취소 | 8 | 안 보냄 | `closed`: 운영자가 결정하기 전에 모델 명령이 먼저 끝나 승인 요청이 닫힘 |
 | 시간 초과(600초 만료) | 0 | — | 이번 회차에서는 일부러 두지 않았다 |
 
-경로별(승인·거부·취소): GET `/me` 8·2·3, GET `/books/v1/bookTitle77` 4·1·2, GET `/books/v1/book_title` 2·3·1, GET `/users/v1/_debug` 4·4·0, GET `/users/v1/username` 4·0·0, POST `/books/v1` 2·3·0, POST `/users/v1/login` 2·0·2, PUT `/users/v1/username/email` 4·1·0. 운영자가 고르지 않은 POST `/users/v1/login`이 승인 요청으로 온 것은 모델이 그 경로를 불렀기 때문이다(승인 대상 범위는 대상 승인 경로 접두, 경로 선택은 진단 계획 입력).
+경로별(승인·거부·취소): GET `/me` 8·2·3, GET `/books/v1/bookTitle77` 4·1·2, GET `/books/v1/book_title` 2·3·1, GET `/users/v1/_debug` 4·4·0, GET `/users/v1/username` 4·0·0, POST `/books/v1` 2·3·0, POST `/users/v1/login` 2·0·2, PUT `/users/v1/username/email` 4·1·0. 고르지 않은 경로로 가는 요청은 승인 요청 없이 정책 거부로 막혔다(§4 정책 거부 22).
 
 결정까지 걸린 시간(승인·거부 44건, 승인 요청 생성 → 결정): 최소 1.0초 · 중앙값 5.3초 · 최대 13.9초. 취소 8건은 운영자가 누르기 전에 닫혔다.
 
@@ -132,7 +132,6 @@
 | 1 | 사용자 승인 모드 회차에서 확정 단계가 `test_accounts_unavailable`로 꺼짐 | §6 | 원인 확인 뒤 수정 PR(실행 경로) |
 | 2 | 이미 닫힌(`closed`) 승인 요청을 누르면 화면이 "결정 결과를 확인하지 못했습니다. 다시 보내지 말고 목록을 다시 조회하세요."라고만 보임. 요청이 이미 끝났다고 알려 주지 않음 | `web/src/workbench/views/live/approvals.tsx` 결정 전 `getRequestApproval`이 `live: false`면 같은 문구 | 화면(경준·재상) |
 | 3 | 모델 명령이 승인을 오래 기다리지 못해 승인 요청 8건이 운영자가 누르기 전에 닫힘(그 요청은 보내지 않음). 승인 기한은 600초인데 실제로는 명령 쪽 시간 제한이 먼저 끝남 | §3 취소 8 | 진단 도구 시간 제한과 승인 대기를 맞출지 결정 필요 |
-| 4 | 경로 선택에서 고르지 않은 경로(POST `/users/v1/login`)로도 승인 요청이 옴. 운영자가 '경로 선택 = 보낼 수 있는 범위'로 오해할 수 있음 | §3 | 화면 문구 또는 계획 입력 설명 |
 | 5 | 첫 시작 실패(같은 종류: 이미 열려 있던 탭의 목록 배지가 새로고침 뒤에도 끝난 점검 0건, 이동찬 관찰. 새 브라우저로 열면 '끝난 점검 1' 정상, 러너 14:4x 확인): 화면 시작에서 "응답을 확인하지 못했어요. 자동 재전송하지 않고 같은 진단의 상태만 다시 조회해 주세요."가 떴고 탐색으로 안 넘어감. 서버에는 초안만 생기고(시작 안 됨) 준비 서비스 로그는 비어 있었음. 새 브라우저 기록으로는 초안 만들기 201·범위 확인 200 정상 | 재현 `rehearsal/repro_start.py` | 다시 시도해 넘어감. 원인 미확정(앞 설치 때 열린 탭의 저장 상태로 추정, 서버 쪽 경로는 정상) |
 | 6a | 종료 뒤 요청 승인 이력 조회: HTML 보고서에는 52건이 남지만, 승인 목록·개별 API(`/api/tasks/1/request-approvals`, `…/{id}`)는 403 "선택한 작업의 저장 보고서만 사용할 수 있습니다" | API 응답 | 끝난 회차 화면에서도 같은 이력을 볼 수 있게(화면·서버) |
 | 6b | 끝난 점검 화면 "보낸 요청 50건"과 E② 송신 56건의 세는 범위가 다름(차이 = 프로그램 로그인 6) | §4 | 화면 문구에 범위 명시 |
