@@ -3,17 +3,19 @@
 // 레일의 실제 값 조각: 결정 대기 배지 · 이 브라우저가 이어 보는 점검 줄(진행 중 · 끝난 점검 묶음) · 계정 메뉴의 분석 모델 · 진단 모드.
 // 서버에 진단 목록 API 가 없어 점검 줄은 이어 보는 진단 하나뿐이다(전체 목록·집계를 만들어 채우지 않는다).
 
-import { type ReactNode, useEffect, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useState } from "react";
 
-import { activeURLRun, endedURLRun } from "@/lib/diagnosis/diagnosis-runs";
-import { urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
+import { activeURLRun, endedURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
+import { readURLStatus, urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
 import { readRequestApprovalState } from "@/lib/diagnosis/request-approvals";
 
+import { cx } from "../lib/cx";
 import { useShell, type View } from "../shell";
 import { Icon } from "../ui/icons";
 import s from "../workbench.module.css";
 import { useHiddenRunIDs } from "./hiddenRuns";
-import { useUrl } from "./urlDiagnosis";
+import { maskSecrets } from "./mask";
+import { selectUrlRun, useUrl } from "./urlDiagnosis";
 import { scanViewFor, URL_ENDED_STATES, URL_PRESTART_STATES, urlHost, urlStateText } from "./urlMap";
 import { useUrlRuns } from "./urlRunList";
 import { usePoll } from "./usePoll";
@@ -102,6 +104,86 @@ function RailSection({
   );
 }
 
+const NO_RUNS: URLRunSummary[] = [];
+/** 레일 한 묶음에 줄을 몇 개까지 그리는가. 넘으면 마지막에 '전체 n건'(그 목록 화면으로) */
+const RAIL_MAX_ROWS = 6;
+
+/**
+ * 서버 목록 줄에는 대상 주소가 없어(product-run-list 계약) 줄마다 그 점검 상태를 한 번 읽어 주소를 채운다. 주소는 점검마다
+ * 바뀌지 않아 주체 · 점검별로 한 번만 읽는다. 못 읽으면 점검 이름 · 작업 번호로 대신한다(줄을 숨기지 않는다).
+ */
+const hostCache = new Map<string, string>();
+function useRunHost(id: string, owner: string | null): string | null {
+  const key = `${owner ?? ""}:${id}`;
+  const [host, setHost] = useState<string | null>(() => hostCache.get(key) ?? null);
+  useEffect(() => {
+    const known = hostCache.get(key);
+    if (known !== undefined || !owner) {
+      setHost(known ?? null);
+      return;
+    }
+    let live = true;
+    readURLStatus(id, owner)
+      .then((j) => {
+        const h = urlHost(j.input.target_url);
+        hostCache.set(key, h);
+        if (live) setHost(h);
+      })
+      .catch(() => {
+        // 주소 대신 이름으로 보인다(상태는 목록 값 그대로). 다음에 다시 그릴 때 다시 읽는다
+      });
+    return () => {
+      live = false;
+    };
+  }, [id, owner, key]);
+  return host;
+}
+
+/** 서버 목록의 점검 한 줄: 주소(못 읽으면 이름) · 상태. 누르면 그 점검을 열고 그 목록 화면으로(이어 보는 줄과 같다) */
+function ServerRunRow({ run, list }: { run: URLRunSummary; list: View }) {
+  const { goTo } = useShell();
+  const owner = useUrlRuns((st) => st.owner);
+  const writeBusy = useUrl((st) => st.writeBusy);
+  const host = useRunHost(run.id, owner);
+  const name = run.display_name?.trim();
+  let title = run.task_id ? `작업 ${run.task_id}` : "점검";
+  if (host) title = host;
+  else if (name) title = maskSecrets(name);
+  const sub = `${urlStateText(run.state)}${run.action_required ? " · 확인 필요" : ""}`;
+  return (
+    <button
+      className={s.rs}
+      type="button"
+      data-url-run={run.id}
+      disabled={writeBusy}
+      onClick={() =>
+        void selectUrlRun(run).then((ok) => {
+          if (ok) goTo(list);
+        })
+      }
+    >
+      <span className={s.mk} aria-hidden="true" />
+      <span className={s.host}>{title}</span>
+      <span className={s.rsub}>{sub}</span>
+    </button>
+  );
+}
+
+/** 묶음 안 줄들. RAIL_MAX_ROWS 를 넘으면 앞 줄만 두고 마지막에 '전체 n건'(그 목록 화면으로) */
+function RailRows({ items, list }: { items: ReactNode[]; list: View }) {
+  const { goTo } = useShell();
+  if (items.length <= RAIL_MAX_ROWS) return <>{items}</>;
+  return (
+    <>
+      {items.slice(0, RAIL_MAX_ROWS - 1)}
+      <button className={cx(s.rs, s["rs-more"])} type="button" onClick={() => goTo(list)}>
+        <span className={s.mk} aria-hidden="true" />
+        <span className={s.host}>{`전체 ${items.length}건`}</span>
+      </button>
+    </>
+  );
+}
+
 /**
  * 진행 중 / 끝난 점검. 이 브라우저가 이어 보는 진단 한 줄을 알맞은 묶음에 둔다(결과 불명은 끝난 것으로 두지 않는다).
  * 줄을 누르면 진행 중이면 진행 중인 점검, 끝났으면 끝난 점검 화면으로 간다 (시안 v54).
@@ -130,50 +212,41 @@ export function LiveRailTasks() {
       <span className={s.rsub}>{sub}</span>
     </button>
   ) : null;
-  const running = !!row && !ended;
-  const done = !!row && ended;
-  // 이 브라우저가 이어 보는 점검이 없어도 서버에 진행 중 점검이 있으면 그 수를 세고 진행 목록으로 안내한다(사용자 2026-11-22,
-  // 1차 리허설 F14: 브라우저를 다시 띄운 뒤 "진행 중 0"으로 보여 승인 대기를 놓칠 수 있었다)
-  const serverActive = useUrlRuns((st) => (st.page?.runs ?? []).filter(activeURLRun).length);
-  const unfollowed = !handle && serverActive > 0;
-  let runCount = 0;
-  let runBody: ReactNode = <div className={s["lv-rempty"]}>진행 중인 점검 없음</div>;
-  if (running) {
-    runCount = 1;
-    runBody = row;
-  } else if (unfollowed) {
-    runCount = serverActive;
-    runBody = (
-      <button className={s.rs} type="button" onClick={() => goTo("running")}>
-        <span className={s.mk} aria-hidden="true" />
-        <span className={s.host}>{`이어 보지 않는 진행 중 점검 ${serverActive}건`}</span>
-        <span className={s.rsub}>진행 중인 점검 목록에서 열기</span>
-      </button>
-    );
-  }
-  // 끝난 점검도 같다: 이어 보는 점검이 없으면 서버 끝난 점검 수를 세고 끝난 점검 목록으로 안내한다(2026-11-22 화면 수정 확인
-  // F14b: 브라우저를 다시 띄운 뒤 서버에 끝난 점검이 있어도 "끝난 점검 없음"이었다. 목록 화면 판정과 같은 endedURLRun)
-  // 화면에서 숨긴 끝난 점검(live/hiddenRuns)은 세지 않는다
+  // 서버 점검 목록의 점검도 줄마다 주소 · 상태 한 줄로 보인다(사용자 11/24: '이어 보지 않는 … n건 · 목록에서 열기' 같은 말
+  // 없이). 이 브라우저가 이어 보는 점검은 그 줄(위 row, 실시간 상태)로 바꿔 끼운다. 진행 중은 서버의 진행 중 점검(브라우저를
+  // 다시 띄워도 승인 대기를 놓치지 않게 — 1차 리허설 F14), 끝난 점검은 화면에서 숨긴 것(live/hiddenRuns)을 뺀 것
   const runOwner = useUrlRuns((st) => st.owner);
   const hiddenRuns = useHiddenRunIDs(runOwner);
-  const serverEnded = useUrlRuns(
-    (st) => (st.page?.runs ?? []).filter((row) => endedURLRun(row) && !hiddenRuns.includes(row.id)).length,
-  );
-  let doneCount = 0;
-  let doneBody: ReactNode = <div className={s["lv-rempty"]}>끝난 점검 없음</div>;
-  if (done) {
-    doneCount = 1;
-    doneBody = row;
-  } else if (!handle && serverEnded > 0) {
-    doneCount = serverEnded;
-    doneBody = (
-      <button className={s.rs} type="button" onClick={() => goTo("finished")}>
-        <span className={s.mk} aria-hidden="true" />
-        <span className={s.host}>{`이어 보지 않는 끝난 점검 ${serverEnded}건`}</span>
-        <span className={s.rsub}>끝난 점검 목록에서 열기</span>
-      </button>
+  const serverRuns = useUrlRuns((st) => st.page?.runs ?? NO_RUNS);
+  const followedID = handle?.id ?? job?.id ?? null;
+  const section = (pick: (r: URLRunSummary) => boolean, mine: boolean) => {
+    const rows = serverRuns.filter((r) => pick(r) && !hiddenRuns.includes(r.id));
+    const items: ReactNode[] = rows.map((r) =>
+      row && r.id === followedID ? (
+        // 이어 보는 줄은 서버 목록에 들어오기 전후로 같은 열쇠를 써서 다시 만들지 않는다(누르던 줄이 바뀌지 않게)
+        <Fragment key="followed">{row}</Fragment>
+      ) : (
+        <ServerRunRow key={r.id} run={r} list={endedURLRun(r) ? "finished" : "running"} />
+      ),
     );
-  }
+    // 이어 보는 점검이 아직 서버 목록에 없으면(막 만든 초안 · 목록 갱신 전) 맨 위에 둔다
+    if (mine && row && !rows.some((r) => r.id === followedID)) items.unshift(<Fragment key="followed">{row}</Fragment>);
+    return items;
+  };
+  const runItems = section(activeURLRun, !!row && !ended);
+  const doneItems = section(endedURLRun, !!row && ended);
+  const runCount = runItems.length;
+  const doneCount = doneItems.length;
+  const runBody: ReactNode = runCount ? (
+    <RailRows items={runItems} list="running" />
+  ) : (
+    <div className={s["lv-rempty"]}>진행 중인 점검 없음</div>
+  );
+  const doneBody: ReactNode = doneCount ? (
+    <RailRows items={doneItems} list="finished" />
+  ) : (
+    <div className={s["lv-rempty"]}>끝난 점검 없음</div>
+  );
   return (
     <>
       <RailSection id="run" title="진행 중" count={runCount}>

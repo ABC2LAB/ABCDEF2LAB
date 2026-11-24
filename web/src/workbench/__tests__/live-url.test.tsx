@@ -763,14 +763,15 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(screen.getByLabelText(/점검할 사이트 주소/)).toBeDisabled();
   });
 
-  it("끝난 점검을 이어 보면 입력이 잠긴 이유와 [새로 입력]으로 새 점검을 안내하고, 누르면 진단 모드를 고를 수 있다", async () => {
+  it("끝난 점검을 보다가 새 점검에 오면 그 점검을 떼고 바로 빈 입력 — 잠금 안내 · [새로 입력] 없음(사용자 11/24)", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
     mount("new");
-    expect(await screen.findByText(/끝난 점검이라 입력이 잠겨 있습니다/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/점검할 사이트 주소/)).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "새로 입력" }));
     await waitFor(() => expect(screen.getByLabelText(/점검할 사이트 주소/)).toBeEnabled());
+    expect(screen.getByLabelText(/점검할 사이트 주소/)).toHaveValue("");
+    expect(useUrl.getState().handle).toBeNull();
+    expect(screen.queryByText(/입력이 잠겨 있습니다/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "새로 입력" })).toBeNull();
     fireEvent.change(screen.getByLabelText(/점검할 사이트 주소/), { target: { value: "https://target.example/" } });
     fireEvent.click(screen.getByRole("button", { name: /다음/ }));
     const auto = screen.getByRole("radio", { name: /^AI 자동/ });
@@ -1195,8 +1196,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     mount("live");
     const finds = await screen.findByRole("region", { name: "발견 후보" });
     expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
-    // 고르기 전에는 보고서 자료를 읽지 않는다
-    expect(a.fetchRemediation).not.toHaveBeenCalled();
+    // 후보 줄에는 무슨 취약점인지(보고서 자료의 그 후보 제목)를 붙인다 — 고르기 전에도 읽는다(사용자 11/24). 아직 저장 안 된
+    // 후보는 번호 그대로
+    await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
+    const row1 = (await within(finds).findByText("후보 1")).closest("li") as HTMLElement;
+    expect(row1).toHaveTextContent(/후보 1후보 #1 · 관측/);
+    expect(within(finds).getByText("후보 #2").closest("li")).toHaveTextContent(/^위험도 미평가후보 #2관측/);
     fireEvent.click(await within(finds).findByRole("button", { name: /후보 #1/ }));
     expect(within(finds).getByRole("button", { name: /후보 #1/ })).toHaveAttribute("aria-current", "true");
     const side = await screen.findByRole("complementary", { name: "취약점 상세" });
@@ -1206,7 +1211,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 아직 저장되지 않은 후보는 그렇게 적는다('없음'으로 단정하지 않음)
     fireEvent.click(within(finds).getByRole("button", { name: /후보 #2/ }));
     expect(await within(side).findByText(/이 후보의 상세가 아직 저장되지 않았습니다/)).toBeInTheDocument();
-    fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로" }));
+    fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로 돌아가기" }));
     expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
     expect(screen.queryByRole("complementary", { name: "취약점 상세" })).toBeNull();
   });
@@ -1742,7 +1747,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(side).getByRole("heading", { name: "후보 2" })).toBeInTheDocument();
     // 끝난 점검은 이미 읽은 저장 결과를 쓴다(다시 부르지 않음)
     expect(a.fetchRemediation).toHaveBeenCalledTimes(1);
-    fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로" }));
+    fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로 돌아가기" }));
     expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
   });
 
@@ -2061,7 +2066,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 페이지를 연 동안 목록 · 오른쪽 발견 상세 패널은 두지 않는다
     expect(screen.queryByRole("tabpanel", { name: "취약점 목록" })).toBeNull();
     expect(screen.queryByRole("complementary", { name: "취약점 상세" })).toBeNull();
-    fireEvent.click(within(page).getByRole("button", { name: "취약점 목록으로" }));
+    fireEvent.click(within(page).getByRole("button", { name: "취약점 목록으로 돌아가기" }));
     expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
     const back = screen.getByRole("tabpanel", { name: "취약점 목록" });
     // 돌아오면 연 발견이 골라져 있다
@@ -2117,7 +2122,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 주소창에 #finding — 같은 발견이 단독 화면에 뜬다
     act(() => go("finding"));
     expect(await screen.findByRole("heading", { level: 2, name: "후보 2" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "취약점 목록으로" }));
+    fireEvent.click(screen.getByRole("button", { name: "취약점 목록으로 돌아가기" }));
     // 보고서로 돌아오면 상세 페이지가 아니라 발견 목록
     expect(await screen.findByRole("tabpanel", { name: "취약점 목록" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
@@ -3399,16 +3404,12 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
     expect(acct).toHaveTextContent("등록됨 · 로그인해서 점검");
     const decl = screen.getByRole("region", { name: "정책 선언" });
     expect(await within(decl).findByText("있음 · 소유자 전용 종류 1개")).toBeInTheDocument();
-    // 세부 관리는 이 자리에서 펼친다(계정 분류 화면에 안 감)
-    const toggle = within(acct).getByRole("button", { name: "자세히 관리" });
-    fireEvent.click(toggle);
-    expect(await within(acct).findByRole("region", { name: "대상 로그인 방식" })).toBeInTheDocument();
-    // A · B 말고 다른 계정이 없으면 '다른 계정' 칸은 두지 않는다
-    expect(within(acct).queryByRole("region", { name: "다른 계정" })).toBeNull();
-    expect(acct).toHaveTextContent("비밀번호 · 토큰 · 세션 값은 화면에 남기지 않고 서버 보호 파일로만 보냅니다.");
+    // 로그인 방식은 같은 상자 맨 위에 늘 있다(사용자 11/24: 시험 계정 말고 로그인 방식도). [자세히 관리]는 없다
+    expect(
+      within(box.getByRole("region", { name: "대상 로그인 방식" })).getByLabelText("로그인 경로 (POST)"),
+    ).toBeInTheDocument();
+    expect(within(acct).queryByRole("button", { name: "자세히 관리" })).toBeNull();
     expect(goTo).not.toHaveBeenCalledWith("classify");
-    fireEvent.click(within(acct).getByRole("button", { name: "닫기" }));
-    expect(within(acct).queryByRole("region", { name: "대상 로그인 방식" })).toBeNull();
     fireEvent.click(within(decl).getByRole("button", { name: "정책 선언" }));
     expect(goTo).toHaveBeenCalledWith("declaration");
     expect(useWb.getState().focusTarget?.id).toBe(TARGET_ID);
