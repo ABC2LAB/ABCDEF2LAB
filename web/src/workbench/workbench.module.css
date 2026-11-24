@@ -5629,3 +5629,17 @@ button.smm:hover {
   color: var(--warn);
   font-weight: 600;
 }
+
+/* 업무 규칙 검토 칸(#914 인계): 사람이 확인할 일이라 노란 테두리 카드로 */
+.brr {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--warn-line);
+  border-radius: 8px;
+  background: var(--warn-bg);
+}
+.brr h3 {
+  margin: 0;
+}
