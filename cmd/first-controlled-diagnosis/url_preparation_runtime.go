@@ -539,7 +539,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	if b.product != nil && l.productTarget != nil {
 		runtime := d.runtime
 		confirmation := newProductE3Confirmation(b.config.RunsDir, execution.Job.ID, *l.productTarget, b.product.targets,
-			func() map[string]string { return launchAccountAuth(runtime) })
+			func() map[string]string { return launchAccountAuthForE3(runtime) })
 		if local, ok := runtime.(*server.FirstDiagnosisHTTPRuntime); ok {
 			confirmation.handle = local.E3HandleReason
 			confirmation.store = local.RecordProductVerdict
@@ -771,6 +771,14 @@ func launchAccountAuth(runtime any) map[string]string {
 		return diagnosis.CloneAccountAuth(a.AccountAuth())
 	}
 	return nil
+}
+
+// E③ 시작 검사는 최초 준비 기록 대신 같은 회차에 지금 결속된 세션을 본다. 뒤이어 E③가 재로그인·신원을 확인한다.
+func launchAccountAuthForE3(runtime any) map[string]string {
+	if a, ok := runtime.(interface{ AccountAuthForE3() map[string]string }); ok {
+		return diagnosis.CloneAccountAuth(a.AccountAuthForE3())
+	}
+	return launchAccountAuth(runtime)
 }
 
 func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error) {
