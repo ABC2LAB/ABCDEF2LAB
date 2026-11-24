@@ -2143,11 +2143,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("report");
     const list = await screen.findByRole("tabpanel", { name: "취약점 목록" });
-    // 발견 칸 보조 글은 0건 등급을 빼고 확정 · 예상 · 위험도 미평가로 묶는다(사용자 11/18 '간단하게').
+    // 발견 칸 보조 글은 0건 등급을 빼고 확정 · 검토 필요 · 위험도 미평가로 묶는다(사용자 11/18 '간단하게', 11/24 '예상' 뺌).
     // 확정 0 이라 '확정 …'은 없고, 결과 불명(후보 4)의 높음은 예상으로 세지 않는다
     const strip = screen.getByRole("region", { name: "판정 집계" });
     expect((within(strip).getByText("취약점").parentElement as HTMLElement).lastElementChild).toHaveTextContent(
-      /^예상 높음 1, 낮음 1 · 위험도 미평가 2$/,
+      /^검토 필요 높음 1, 낮음 1 · 위험도 미평가 2$/,
     );
     const names = () =>
       [...(document.getElementById("rList") as HTMLElement).querySelectorAll("button")].map(
@@ -2536,8 +2536,8 @@ describe("레일 (URL 진단)", () => {
     fireEvent.click(row);
     expect(goTo).toHaveBeenCalledWith("running");
     expect(screen.getByText("끝난 점검 없음")).toBeInTheDocument();
-    // 지금 보는 화면이 이 점검이 아니면 빨간 현재 표시를 하지 않는다
-    expect(row).not.toHaveAttribute("aria-current");
+    // 대시보드는 이 점검을 오른쪽에 보이므로 빨간 현재 표시를 단다(사용자 11/24)
+    expect(row).toHaveAttribute("aria-current", "true");
   });
 });
 
@@ -2601,12 +2601,20 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     expect(within(sec).queryByRole("group", { name: "위험도로 거르기" })).toBeNull();
     // 위치가 제목과 같기만 해서 위치 줄을 그리지 않는다 (시안 v83)
     expect(screen.queryByRole("navigation", { name: "위치" })).toBeNull();
-    // 요약 4칸 (시안 v77): 결과 저장 전 발견 · 결과 확인은 0 이 아니라 "—", 서버에 없는 토큰 30일 집계는 자리만
+    // 요약 4칸(숫자만): 결과 저장 전 발견 · 결과 확인은 0 이 아니라 "—", 서버에 없는 토큰 30일 집계는 자리만
     const strip = screen.getByRole("region", { name: "요약" });
     const cell = (k: string) => within(strip).getByText(k).parentElement as HTMLElement;
     expect(cell("발견 · 검토 대상")).toHaveTextContent(/^발견 · 검토 대상—결과가 저장되면 셉니다$/);
     expect(cell("결과 확인")).toHaveTextContent(/^결과 확인—/);
     expect(cell("토큰 사용량 · 최근 30일")).toHaveTextContent(/^토큰 사용량 · 최근 30일— 연결 전.*점검당 평균 —$/);
+    // 그 아래 원형 게이지 4개(사용자 11/24): 결과 저장 전 위험도 · 판정은 "—"와 이유, 탐색 흐름이 없는 점검은 탐색도 "—"
+    const rings = screen.getByRole("region", { name: "분포" });
+    const ring = (k: string) => within(rings).getByRole("region", { name: k });
+    expect(ring("위험도")).toHaveTextContent("—");
+    expect(ring("위험도")).toHaveTextContent("결과가 저장되면 셉니다");
+    expect(ring("판정")).toHaveTextContent("결과가 저장되면 셉니다");
+    expect(ring("탐색")).toHaveTextContent("탐색 흐름이 있는 점검에서 셉니다");
+    expect(within(ring("위험도")).getByRole("img")).toHaveAccessibleName("결과 저장 전");
     // 진행 중 줄 (시안 activeRowHtml): 진행 막대 · % 자리는 두되 서버에 진행률이 없어 빈 막대 · '—%'(0% 로 만들지 않음)
     const activeRow = within(screen.getByRole("region", { name: "진행 중인 점검" })).getByRole("button", {
       name: /job-1/,
@@ -2650,16 +2658,33 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     const noSev = sec.querySelector("[data-dsel='fd-candidate-5']") as HTMLElement;
     expect(within(noSev).getByText("위험도 미평가")).toBeInTheDocument();
     for (const r of sec.querySelectorAll("[data-dsel^='fd-']")) expect(r.textContent).not.toMatch(/\d{1,2}:\d{2}/);
-    // 요약 4칸: 정상 대조를 뺀 4건 · 위험도별 수 · 결과 확인(결과 불명 + 미실행) 0
+    // 요약 4칸(숫자만): 정상 대조를 뺀 4건 · 확정 · 검토 필요 수 · 결과 확인(결과 불명 + 미실행) 0
     const strip = screen.getByRole("region", { name: "요약" });
     const cell = (k: string) => within(strip).getByText(k).parentElement as HTMLElement;
     expect(within(cell("발견 · 검토 대상")).getByText("4")).toBeInTheDocument();
     expect(cell("발견 · 검토 대상")).toHaveTextContent(
-      "확정 심각 1 · 확정 높음 1 · 확정 중간 0 · 확정 낮음 0 · 확정 정보성 0 · 예상 중간 1",
+      "확정 심각 1 · 확정 높음 1 · 확정 중간 0 · 확정 낮음 0 · 확정 정보성 0 · 검토 필요 중간 1",
     );
+    expect(strip.querySelector("#dSevStack")).toBeNull();
     expect(cell("결과 확인")).toHaveTextContent("결과 불명 0 · 미실행 0");
     // 끝난 점검이라 결정할 것이 없다 (시안 v77 '모두 결정함')
     expect(cell("결정 대기")).toHaveTextContent(/^결정 대기0모두 결정함$/);
+    // 그 아래 원형 게이지(사용자 11/24): 정상 대조를 뺀 4건을 위험도 · 판정으로 나눠 보이고, 끝난 점검이라 승인 대기 줄은 없다
+    const rings = screen.getByRole("region", { name: "분포" });
+    const ring = (k: string) => within(rings).getByRole("region", { name: k });
+    // 위험도: 확정된 것만(가운데 2) — 후보의 예상 등급은 넣지 않고 '예상'이라는 말도 없다(사용자 11/24, 위험도 계약)
+    expect(within(ring("위험도")).getByRole("img")).toHaveAccessibleName(
+      "확정 2건 · 심각 1 · 높음 1 · 중간 0 · 낮음 0",
+    );
+    expect(ring("위험도")).not.toHaveTextContent("예상");
+    // 심각 · 높음 · 중간 · 낮음은 0 이어도 늘 두고(사용자 11/24), 정보성 · 미평가는 있을 때만(여기선 확정 미평가가 없다)
+    const sevLegend = [...ring("위험도").querySelectorAll("li")].map((li) => li.textContent);
+    expect(sevLegend).toEqual(["심각1", "높음1", "중간0", "낮음0"]);
+    // 판정: 확정 2 / 전체 4, 판단 불가(결과 불명 + 미실행) 0
+    expect(ring("판정")).toHaveTextContent("2/4");
+    expect(within(ring("판정")).getByRole("img")).toHaveAccessibleName("확정 2 · 검토 필요 2 · 판단 불가 0");
+    // 끝난 점검이라 승인 대기 줄은 없다(카드가 노랗지 않음)
+    expect(ring("전송 통제")).not.toHaveTextContent("승인 대기");
     // 처음 상세는 가장 위험한 발견. 끝난 점검의 발견이라 보고서로 간다 (시안 inspFor fd-blog)
     const detail = screen.getByRole("complementary", { name: "선택한 항목 상세" });
     expect(within(detail).getByText("발견 2")).toBeInTheDocument();

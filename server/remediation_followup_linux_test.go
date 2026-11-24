@@ -131,7 +131,7 @@ func TestRemediationFollowupProduct(t *testing.T) {
 		return p
 	}
 	add := func(task int64, run string, obs ...e2proxy.HTTPObservation) string {
-		return fmt.Sprintf("candidate-%d", diagnosticServerRunCandidate(t, s, task, run, "completed", obs...))
+		return fmt.Sprintf("candidate-%d", diagnosticServerRunCandidate(t, s, task, run, "completed", "XSS", obs...))
 	}
 	action := func(task int64) string {
 		e := add(task, "run-job-"+fmt.Sprint(task))

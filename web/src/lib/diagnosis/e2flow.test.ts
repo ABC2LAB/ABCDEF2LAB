@@ -5,9 +5,10 @@ import { e2Attempt, e2Flow } from "./e2flow-fixtures";
 vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), apiFetch: vi.fn() }));
 beforeEach(() => vi.resetAllMocks());
 describe("계약 §4 사유·단계와 송신 관측", () => {
-  it("16개 정본 사유를 정확히 유지한다", () => expect(Object.keys(REASON_LABEL)).toHaveLength(16));
+  it("17개 정본 사유를 정확히 유지한다", () => expect(Object.keys(REASON_LABEL)).toHaveLength(17));
   it.each<E2Reason>([
     "policy_denied",
+    "workflow_paused",
     "unsupported",
     "invalid",
     "budget_exhausted",
@@ -51,6 +52,23 @@ describe("계약 §4 사유·단계와 송신 관측", () => {
   });
   it.each(["audit_failed", "unknown"] as const)("%s는 성공·차단으로 승격하지 않는다", (reason) =>
     expect(decisionClass(e2Attempt({ reason }))).toBe("unknown"));
+  it("일시정지 차단 사유를 읽고 화면에 구분한다", () => {
+    const value = e2Flow();
+    const a = e2Attempt({
+      reason: "workflow_paused",
+      decision: "denied",
+      forward_attempted: false,
+      request_written: false,
+      response_received: false,
+      response_complete: false,
+      status_code: 0,
+    });
+    value.calls[0].attempts = [a];
+    const parsed = parseE2Flow(value).calls[0].attempts[0];
+    expect(parsed.reason).toBe("workflow_paused");
+    expect(REASON_LABEL[parsed.reason]).toBe("진단 흐름 일시정지");
+    expect(decisionClass(parsed)).toBe("deny");
+  });
   it("알 수 없는 reason/stage/decision을 원문 표시 없이 불명으로 정규화한다", () => {
     const value = e2Flow();
     Object.assign(value.calls[0].attempts[0], {

@@ -105,7 +105,15 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 	} else {
 		w.paragraph("Normal", "저장된 승인 범위 상세 미확보 또는 공유용 비공개. 작업 목표는 승인 범위가 아닙니다.")
 	}
-	w.paragraph("Normal", "모델 사용량 기록 상태: "+in.ModelRecordState+". 기록 부재를 미실행으로 단정하지 않습니다.")
+	if len(in.ModelAccounting) == 0 {
+		w.paragraph("Normal", "저장된 준비·진단 단계 모델 정산 기록이 없습니다. 모델 미실행을 뜻하지 않습니다.")
+	} else {
+		w.paragraph("Normal", "저장된 준비·진단 단계별 모델 사용량입니다. 비용 수치는 미확정 호출이 있으면 실제 청구액과 다를 수 있으며 단계 합계나 최종 청구액으로 단정하지 않습니다.")
+		for _, row := range in.ModelAccounting {
+			w.paragraph("Normal", fmt.Sprintf("%s · 호출 %d건 · 오류 %d건 · 입력 %d토큰 · 출력 %d토큰 · 기록 비용 %s", row.PhaseText, row.Requests, row.Errors, row.InputTokens, row.OutputTokens, row.CostText))
+		}
+	}
+	w.paragraph("Normal", "작업별 LLM 세부 사용량 행 상태: "+in.ModelRecordState+". 단계별 정산 기록과 별개입니다.")
 	if in.ModelRecordsOmitted > 0 {
 		w.paragraph("Normal", fmt.Sprintf("추가 모델 사용량 묶음 %d개 생략. 저장된 원본 기록은 유지합니다.", in.ModelRecordsOmitted))
 	}
@@ -128,6 +136,9 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		w.paragraph("Normal", "구조화된 탐색·Planner/Worker 수행 기록 미확보. 미검사 범위를 수행 완료로 표시하지 않습니다.")
 	}
 	if len(in.WorkflowApprovals) > 0 {
+		if summary := in.WorkflowApprovalSummary(); summary != "" {
+			w.paragraph("Normal", summary)
+		}
 		rows := [][]string{{"메서드·경로", "승인 결정", "실행 상태"}}
 		for _, a := range in.WorkflowApprovals {
 			path := a.Path
@@ -194,6 +205,11 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		w.paragraph(style, e.ID+" · "+e.Title)
 		w.paragraph("Heading2", "① 판정과 영향")
 		w.table([][]string{{"항목", "값"}, {"고유 ID / 유형", e.ID + " / " + e.VulnClass}, {"판정 / 검증", e.Outcome + " / " + e.Verification}, {"위험도 / 상태", e.SeverityText() + " / " + e.Status}, {"실행 / intent", e.Run + " / " + strconv.FormatInt(e.IntentID, 10)}, {"증거 버전 / digest", strconv.FormatInt(e.EvidenceVersion, 10) + " / " + e.Digest}})
+		if review := e.BusinessRuleReview; review != nil {
+			w.paragraph("Heading2", "업무 규칙 미확인 · 판정 보류")
+			w.paragraph("Normal", review.Observation)
+			w.paragraph("Normal", "검토 질문(선택): "+review.Question)
+		}
 		if e.Stale {
 			w.paragraph("Normal", "증거 버전 불일치: 오래된 자료를 확정으로 집계하지 않습니다.")
 		}

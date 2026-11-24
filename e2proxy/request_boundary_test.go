@@ -11,6 +11,7 @@ import (
 )
 
 type selectiveBoundary struct {
+	pause          bool
 	deny           bool
 	afterFail      bool
 	after          atomic.Int64
@@ -21,6 +22,9 @@ type selectiveBoundary struct {
 
 func (b *selectiveBoundary) Before(context.Context, RequestView) error {
 	count := b.before.Add(1)
+	if b.pause {
+		return errors.Join(ErrWorkflowPaused, context.DeadlineExceeded)
+	}
 	if b.deny || b.denyAfterFirst && count > 1 {
 		return ErrDenied
 	}
@@ -163,5 +167,40 @@ func TestProjectionFailureStopsAdmissionWithoutLosingWireAudit(t *testing.T) {
 	snapshot := execution.Snapshot()
 	if !snapshot.AuditComplete || snapshot.Counts.Unknown != 0 {
 		t.Fatal("optional projection poisoned wire audit", snapshot)
+	}
+}
+
+func TestPausedRequestHasDistinctAuditReasonWithoutSending(t *testing.T) {
+	audit := &coreRecorder{}
+	var observed Receipt
+	const origin = "http://127.0.0.1:1"
+	cfg := coreConfig(t, origin, audit, 4)
+	cfg.RequestBoundary = &selectiveBoundary{pause: true}
+	cfg.AttemptPathObserver = func(r Receipt, _ string) { observed = r }
+	_, call := coreOpen(t, cfg)
+
+	_, receipt, err := call.Do(t.Context(), coreRequest(t, "GET", origin+"/allowed"))
+	if !errors.Is(err, ErrDenied) || receipt.Decision != "denied" || receipt.ForwardAttempted || !receipt.AuditComplete || receipt.Reason != PolicyDenied {
+		t.Fatalf("unexpected blocked request receipt: %+v (%v)", receipt, err)
+	}
+	if observed.Reason != WorkflowPaused || observed.ForwardAttempted {
+		t.Fatalf("unexpected audit projection: %+v", observed)
+	}
+	audit.mu.Lock()
+	defer audit.mu.Unlock()
+	resultCount := 0
+	for _, event := range audit.events {
+		switch event.Stage {
+		case "intent":
+			t.Fatal("paused request created a dispatch intent")
+		case "result":
+			resultCount++
+			if event.Reason != WorkflowPaused || event.Decision != "denied" || event.ForwardAttempted {
+				t.Fatalf("unexpected audit event: %+v", event)
+			}
+		}
+	}
+	if resultCount != 1 {
+		t.Fatalf("got %d audit results, want one", resultCount)
 	}
 }

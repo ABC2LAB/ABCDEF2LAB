@@ -57,25 +57,24 @@ func TestReportGraphReadRouteClosure(t *testing.T) {
 }
 
 func TestReportGraphPublicProjectionOmitsUntrustedValues(t *testing.T) {
-	g := &db.CoverageGraphData{Nodes: []db.CoverageGraphNode{
+	stored := &db.CoverageGraphData{Nodes: []db.CoverageGraphNode{
 		{Key: "a:2", Kind: "endpoint", AssetID: 2, InScope: true, Tested: true, URL: "https://user:password@owned.test/reset/private-token?token=secret#secret", Label: "secret", PageTitle: "secret", AppName: "secret", ServiceType: "secret", Domain: "?secret", RootDomain: "secret/parameter", IP: "secret"},
 		{Key: "r:secret/parameter", Kind: "root_domain", Domain: "secret/parameter", Label: "secret"},
 		{Key: "c:1", Kind: "company", CompanyID: 1, Label: "secret"},
 	}, Edges: []db.CoverageGraphEdge{{Src: "a:2", Dst: "r:secret/parameter"}}}
-	publicCoverageGraph(g)
+	g := publicCoverageGraph(stored)
 	raw, _ := json.Marshal(g)
 	for _, value := range []string{"secret", "password", "private-token", "user:"} {
 		if strings.Contains(string(raw), value) {
 			t.Fatal("원문 비밀이 공개 DTO에 남음")
 		}
 	}
-	if len(g.Nodes) != 3 || len(g.Edges) != 1 || g.Nodes[0].URL != "https://owned.test" || !g.Nodes[0].Tested || !g.Nodes[0].InScope || g.Edges[0].Dst == "r:secret/parameter" {
+	if len(g.Nodes) != 3 || len(g.Edges) != 1 || g.Nodes[0].URL != "https://owned.test" || g.Nodes[0].DisplayPath != "/{id}/{id}" || !g.Nodes[0].Tested || !g.Nodes[0].InScope || g.Edges[0].Dst == "r:secret/parameter" {
 		t.Fatal("기존 노드·관계·검사 표시 유실")
 	}
 	before := string(raw)
-	publicCoverageGraph(g)
-	raw, _ = json.Marshal(g)
+	raw, _ = json.Marshal(publicCoverageGraph(stored))
 	if before != string(raw) {
-		t.Fatal("공개 투영이 멱등하지 않음")
+		t.Fatal("같은 저장 자료의 공개 투영이 달라짐")
 	}
 }

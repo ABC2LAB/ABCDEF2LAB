@@ -32,10 +32,13 @@
   --lo-bg: #eaf1fa;
   /* 위험도 딱지 전용(사용자 11/23 '색을 확실하게, 높음은 빨강'): 치명 진한 빨강 채움 · 높음 빨강 · 중간 주황 · 낮음 노랑 · 정보 회색.
      오류 · 경고 색(--hi 등)과 나눠 둔다 */
+  /* 심각 = 진한 장미색 바탕 + 흰 글자, 높음 = 연분홍 바탕 + 장미색 글자 + 연한 테두리(사용자 11/24 예시 색. 전엔 심각이
+     어두운 빨강이라 높음과 비슷해 보였다). 글자 대비는 둘 다 4.5:1 이상 */
   --sev-crit: #ffffff;
-  --sev-crit-bg: #8f1414;
-  --sev-hi: #cc1f1f;
-  --sev-hi-bg: #fde6e6;
+  --sev-crit-bg: #e5194f;
+  --sev-hi: #c8103f;
+  --sev-hi-bg: #ffe4ea;
+  --sev-hi-line: #f9b8c8;
   --sev-mid: #b34700;
   --sev-mid-bg: #ffead6;
   --sev-lo: #7a5f00;
@@ -44,6 +47,17 @@
   --sev-info-bg: #eceff2;
   --sev-none: #545d69;
   --sev-none-bg: #f1f3f5;
+  /* 대시보드 원형 게이지 색(사용자 11/24). dataviz 검증기로 밝은 화면 통과: 위험도 심각 · 높음 · 중간 · 낮음, 판정 확정 · 검토,
+     전송 허용 · 막음. 정보성 · 미평가 · 판단 불가 · 결과 불명은 뜻이 '없음'이라 회색 */
+  --ring-crit: #c8103f;
+  --ring-hi: #f06a8d;
+  --ring-mid: #c2570c;
+  --ring-lo: #3d7cc9;
+  --ring-gray: #8a94a0;
+  --ring-gray-2: #c3cad2;
+  --ring-allow: #1a8fae;
+  --ring-block: #c2570c;
+  --ring-track: #e9edf0;
   --ok: #11703f;
   --ok-bg: #e6f4ec;
   --warn: #935100;
@@ -87,9 +101,10 @@
     --lo: #90b6eb;
     --lo-bg: #16263c;
     --sev-crit: #ffffff;
-    --sev-crit-bg: #c42222;
-    --sev-hi: #ff6b6b;
-    --sev-hi-bg: #3f1616;
+    --sev-crit-bg: #e5194f;
+    --sev-hi: #ff7a9c;
+    --sev-hi-bg: #3d1220;
+    --sev-hi-line: #6b2335;
     --sev-mid: #ffa149;
     --sev-mid-bg: #3b2410;
     --sev-lo: #ffd43b;
@@ -98,6 +113,15 @@
     --sev-info-bg: #222a31;
     --sev-none: #9aa3ae;
     --sev-none-bg: #1b2126;
+    --ring-crit: #f0414f;
+    --ring-hi: #c25bb8;
+    --ring-mid: #cf6f1d;
+    --ring-lo: #5a8fd2;
+    --ring-gray: #7d8793;
+    --ring-gray-2: #48525c;
+    --ring-allow: #2496b4;
+    --ring-block: #cf6f1d;
+    --ring-track: #262e35;
     --ok: #5ecb8f;
     --ok-bg: #0f2a1c;
     --warn: #f2b654;
@@ -140,9 +164,10 @@
   --lo: #90b6eb;
   --lo-bg: #16263c;
   --sev-crit: #ffffff;
-  --sev-crit-bg: #c42222;
-  --sev-hi: #ff6b6b;
-  --sev-hi-bg: #3f1616;
+  --sev-crit-bg: #e5194f;
+  --sev-hi: #ff7a9c;
+  --sev-hi-bg: #3d1220;
+  --sev-hi-line: #6b2335;
   --sev-mid: #ffa149;
   --sev-mid-bg: #3b2410;
   --sev-lo: #ffd43b;
@@ -151,6 +176,15 @@
   --sev-info-bg: #222a31;
   --sev-none: #9aa3ae;
   --sev-none-bg: #1b2126;
+  --ring-crit: #f0414f;
+  --ring-hi: #c25bb8;
+  --ring-mid: #cf6f1d;
+  --ring-lo: #5a8fd2;
+  --ring-gray: #7d8793;
+  --ring-gray-2: #48525c;
+  --ring-allow: #2496b4;
+  --ring-block: #cf6f1d;
+  --ring-track: #262e35;
   --ok: #5ecb8f;
   --ok-bg: #0f2a1c;
   --warn: #f2b654;
@@ -1142,6 +1176,7 @@ a.ph:hover {
 .sev.hi {
   background: var(--sev-hi-bg);
   color: var(--sev-hi);
+  box-shadow: inset 0 0 0 1px var(--sev-hi-line);
 }
 .sev.mid {
   background: var(--sev-mid-bg);
@@ -2043,6 +2078,19 @@ a.ph:hover {
   border-radius: 4px;
   padding: 1px 6px;
   color: var(--ink-2);
+}
+/* 유형 딱지 여러 개(CWE 마다 하나): 딱지마다 한 덩어리로 꺾어 테두리가 줄마다 깨지지 않게(사용자 11/24) */
+.chip-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+.chip-list .chip {
+  display: inline-block;
+  max-width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
 }
 .acts {
   display: flex;
@@ -3010,6 +3058,17 @@ button.lr.on {
   font-size: 12px;
   color: var(--ink-3);
 }
+/* 묶음 머리 '포함 n': 이 묶음에서 점검에 넣은 경로 수(알약의 채운 체크와 같은 색) */
+.gc-h .gc-inc {
+  align-self: center;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+}
 .gc-h .gc-s {
   margin-left: auto;
   font-size: 12px;
@@ -3086,19 +3145,34 @@ button.lr.on {
   font-style: normal;
   color: var(--accent-ink);
 }
-/* 범위 확인: 점검에 넣은 경로는 체크 · 강조 테두리, 오른쪽 상세에 보이는 경로는 바탕색 */
+/* 범위 확인: 점검에 넣은 경로는 강조 테두리 한 겹 + 채운 체크 동그라미(사용자 11/24: 포함 표시가 약했다 · 테두리 겹은
+   싫다). 바탕색은 승인 · 로그인 경로가 쓰므로 건드리지 않는다 */
 .pp.inc {
   border-color: var(--accent);
 }
 .pp .pk {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   flex: none;
-  margin-left: 3px;
-  color: var(--accent-ink);
+  margin-left: 2px;
+  padding: 2px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg);
 }
+/* 지금 오른쪽 상세에 보이는 경로: 테두리를 더 두르지 않는다(사용자 11/24: 포함 테두리와 겹이 두 개로 보였다). 회색 바탕 +
+   굵은 경로 글자만. 승인 · 로그인 경로는 제 바탕을 두고 글자만 굵게 */
 .pp[aria-current="true"] {
+  background: var(--well);
+}
+.pp.ap[aria-current="true"] {
+  background: var(--warn-bg);
+}
+.pp.login[aria-current="true"] {
   background: var(--accent-bg);
+}
+.pp[aria-current="true"] .pt {
+  font-weight: 700;
 }
 /* 여러 개 고르기(삭제)의 고르기 네모칸: 알약 전체를 칠하지 않고 메서드 옆 네모칸에만 체크한다 */
 .pp .pck {
@@ -5431,4 +5505,127 @@ button.smm:hover {
 .app .vb.solo,
 .app.insp-min .vb.solo {
   grid-template-columns: minmax(0, 1fr);
+}
+/* 대시보드 원형 게이지 줄(사용자 11/24): 카드 4개(넓으면 한 줄, 좁으면 2 · 1 줄). 카드 = 제목 · 원 + 범례 · 작은 글 */
+.drings {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 1280px) {
+  .drings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .drings {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.dring {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.dring.warn {
+  border-color: var(--warn-line);
+}
+.dring h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.dring-b {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.dring-ring {
+  position: relative;
+  flex: none;
+  width: 104px;
+  height: 104px;
+}
+.dring-ring svg {
+  display: block;
+}
+.dring-ring circle {
+  transition: stroke-dasharray 0.4s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dring-ring circle {
+    transition: none;
+  }
+}
+.dring-c {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.dring-c b {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.dring-c span {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.dring-l {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+  font-size: 12.5px;
+}
+.dring-l li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.dring-sw {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+}
+.dring-l span {
+  color: var(--ink-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dring-l b {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.dring-n {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.dring-n .warn {
+  color: var(--warn);
+  font-weight: 600;
 }

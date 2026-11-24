@@ -417,6 +417,7 @@ func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir
 		return nil, E2HTTPAuthNotSent
 	}
 	if status := counter.begin(label); status != "" {
+		logAccountAuthNotSent(ctx, label)
 		return nil, status
 	}
 	defer func() { counter.finish(label, result == E2HTTPAuthAuthenticated && len(header) > 0) }()
@@ -428,6 +429,7 @@ func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir
 	}
 	call, err := begin()
 	if err != nil {
+		logAccountAuthNotSent(ctx, label)
 		return nil, E2HTTPAuthNotSent
 	}
 	// Worker Bash 결과가 없는 서버 호출이라 마감 대조에서 따로 센다(#555).
@@ -472,6 +474,7 @@ func e2HTTPAuthPrep(ctx context.Context, execution *e2proxy.Execution, dir, orig
 	if err != nil {
 		for _, account := range auth.Accounts {
 			out.AccountAuth[account.Label] = E2HTTPAuthNotSent
+			logAccountAuthNotSent(ctx, account.Label)
 		}
 		return out, nil
 	}
@@ -487,9 +490,28 @@ func e2HTTPAuthPrep(ctx context.Context, execution *e2proxy.Execution, dir, orig
 	return out, nil
 }
 
-func authPrepOne(ctx context.Context, call *e2proxy.Call, execution *e2proxy.Execution, dir, origin string, login diagnosisprep.TargetLogin, account E2HTTPFileAuthAccount, sessions E2HTTPSessions) string {
+func logAccountAuthNotSent(ctx context.Context, label string) {
+	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "account_auth_checked", Stage: "execution",
+		Status: "not_sent", ReasonCode: "auth_not_sent", AccountLabel: label})
+}
+
+func authPrepOne(ctx context.Context, call *e2proxy.Call, execution *e2proxy.Execution, dir, origin string, login diagnosisprep.TargetLogin, account E2HTTPFileAuthAccount, sessions E2HTTPSessions) (result string) {
+	reason := ""
+	defer func() {
+		status := "failed"
+		if result == E2HTTPAuthAuthenticated {
+			status = "succeeded"
+		} else if result == E2HTTPAuthResultUnknown {
+			status = "unknown"
+		} else if result == E2HTTPAuthNotSent {
+			status = "not_sent"
+		}
+		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "account_auth_checked", Stage: "execution",
+			Status: status, ReasonCode: reason, AccountLabel: account.Label, CallRef: call.Ref()})
+	}()
 	raw, err := e2HTTPPinnedBytes(dir, account.Credential, maxAuthCredentialBytes)
 	if err != nil {
+		reason = "auth_credential_unavailable"
 		return E2HTTPAuthNotSent
 	}
 	var cred struct {
@@ -499,6 +521,7 @@ func authPrepOne(ctx context.Context, call *e2proxy.Call, execution *e2proxy.Exe
 	decodeErr := json.Unmarshal(raw, &cred)
 	clear(raw)
 	if decodeErr != nil || cred.Username == "" || cred.Password == "" {
+		reason = "auth_credential_unavailable"
 		return E2HTTPAuthNotSent
 	}
 	// 비밀번호는 보내기 전에 이 실행의 보호 값으로 등록한다. 대상이 나중에 다른 응답에 비밀번호를 그대로 되돌려 주면 그
@@ -506,6 +529,7 @@ func authPrepOne(ctx context.Context, call *e2proxy.Call, execution *e2proxy.Exe
 	// 로그인하지 않는다.
 	if execution.AddProtectedPasswords([]byte(cred.Password)) != nil {
 		cred.Username, cred.Password = "", ""
+		reason = "auth_password_unprotectable"
 		return E2HTTPAuthNotSent
 	}
 	body, contentType := authPrepBody(login, cred.Username, cred.Password)
@@ -513,6 +537,7 @@ func authPrepOne(ctx context.Context, call *e2proxy.Call, execution *e2proxy.Exe
 	defer clear(body)
 	req, err := http.NewRequestWithContext(ctx, login.Method, origin+login.Path, bytes.NewReader(body))
 	if err != nil {
+		reason = "auth_request_invalid"
 		return E2HTTPAuthNotSent
 	}
 	req.Header.Set("Content-Type", contentType)
@@ -521,27 +546,36 @@ func authPrepOne(ctx context.Context, call *e2proxy.Call, execution *e2proxy.Exe
 	case err == nil:
 	case errors.Is(err, e2proxy.ErrAuthSession):
 		if receipt.StatusCode >= http.StatusBadRequest {
+			reason = "auth_login_rejected"
 			return E2HTTPAuthLoginFailed
 		}
+		reason = "auth_session_unavailable"
 		return E2HTTPAuthSessionNotFound
 	case receipt.Reason == e2proxy.Unknown:
 		// 대상이 받았을 수 있다. 다시 보내지 않는다.
+		reason = "auth_request_unknown"
 		return E2HTTPAuthResultUnknown
 	default:
+		reason = "auth_not_sent"
 		return E2HTTPAuthNotSent
 	}
 	values := authSessionValues(login, session)
 	if len(values) == 0 {
+		reason = "auth_session_value_missing"
 		return E2HTTPAuthSessionNotFound
 	}
 	if err := execution.AddRedactValues(values...); err != nil {
 		// 가릴 수 없는 세션(길이·JWT 조각까지 포함한 개수 상한)은 모델용 세션으로 내보내지 않는다. 계정 세션 칸이 모자란
 		// 경우는 사유와 누적 횟수를 회차 진단 기록에 남긴다(값·라벨은 남기지 않음).
 		if errors.Is(err, e2proxy.ErrSessionRedactCapacity) {
+			reason = "session_redaction_capacity"
 			refusals := execution.SessionRedactRefusals()
 			log.Printf("[e2-http] 시험 계정 세션 가림 칸이 모자라 새 세션을 받지 않음(누적 %d번)", refusals)
 			_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "service_request_finished", Stage: "execution",
 				Status: "failed", ReasonCode: "session_redaction_capacity", Count: refusals, CountKnown: true})
+		}
+		if reason == "" {
+			reason = "auth_session_redact_failed"
 		}
 		return E2HTTPAuthSessionNotFound
 	}

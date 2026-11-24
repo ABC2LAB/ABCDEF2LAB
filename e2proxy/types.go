@@ -29,6 +29,7 @@ const (
 	Complete        Reason = "complete"
 	Unsupported     Reason = "unsupported"
 	PolicyDenied    Reason = "policy_denied"
+	WorkflowPaused  Reason = "workflow_paused"
 	Closed          Reason = "closed"
 	AuditFailed     Reason = "audit_failed"
 	Expired         Reason = "expired"

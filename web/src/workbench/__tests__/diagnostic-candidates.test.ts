@@ -162,8 +162,9 @@ describe("표시 글", () => {
 
   it("등급 없음은 미평가로 두고 낮음 · 정보성으로 바꾸지 않는다", () => {
     expect(candidateSeverityText(null)).toBe("위험도 미평가");
-    expect(candidateSeverityText("high")).toBe("예상 높음");
-    expect(candidateSeverityText("info")).toBe("예상 정보성");
+    // '예상' 말은 붙이지 않는다(사용자 11/24) — 확정이 아님은 줄의 '검토 필요'가 말한다
+    expect(candidateSeverityText("high")).toBe("높음");
+    expect(candidateSeverityText("info")).toBe("정보성");
   });
 
   it("오류 글은 상태별 고정 문장이고 서버 원문을 싣지 않는다", () => {

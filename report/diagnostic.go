@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/dlp"
@@ -26,11 +27,18 @@ const MaxDiagnosticCaptureBytes = 4 << 20
 const MaxDiagnosticExportBytes = MaxDiagnosticReportBytes + MaxDiagnosticCaptureBytes
 const MaxDiagnosticModelRecords = 64
 
+// MaxWorkflowApprovals는 보고서에 싣는 저장 승인 이력의 상한이다.
+const MaxWorkflowApprovals = 100
+
 // DiagnosticReport는 선택한 task의 저장 결과만 표현한다. 판정과 처리 상태는 별개다.
 type WorkflowApproval struct{ Method, Path, State, ExecutionState, Attempt string }
 type DiagnosticModelRecord struct {
 	Model, Worker string
 	Records       int64
+}
+type DiagnosticModelAccounting struct {
+	Phase, PhaseText, CostText                              string
+	Requests, Errors, InputTokens, OutputTokens, CostMicros int64
 }
 
 type DiagnosticProductConfirmation struct {
@@ -45,10 +53,12 @@ type DiagnosticReport struct {
 	TaskCreatedAt           time.Time
 	ApprovedScope           *diagnosisprep.Scope
 	ModelRecords            []DiagnosticModelRecord
+	ModelAccounting         []DiagnosticModelAccounting
 	ModelRecordState        string
 	ModelRecordsOmitted     int64
 	Workflow                *diagnosisflow.Snapshot
 	WorkflowApprovals       []WorkflowApproval
+	WorkflowApprovalTotal   int64
 	// Run은 저장된 실행 종료 기록이다(없으면 nil). RunText는 PrepareDiagnostic이 채우는 요약 한 줄이다.
 	Run                                               *DiagnosticRun
 	RunText                                           string
@@ -65,7 +75,17 @@ type DiagnosticReport struct {
 	Confirmed, Review, NotExecuted, Unknown, Negative int
 	BySeverity, ByType                                map[string]int
 }
+
+// BusinessRuleReview는 저장 관찰에 대한 업무 규칙 검토 안내다.
+type BusinessRuleReview struct {
+	Status      string `json:"status"`
+	Reason      string `json:"reason"`
+	Observation string `json:"observation"`
+	Question    string `json:"question"`
+}
+
 type DiagnosticEntry struct {
+	BusinessRuleReview                                        *BusinessRuleReview
 	Steps                                                     []reproduction.Step
 	StepsTruncated                                            bool
 	SourceLoadFailed                                          bool
@@ -95,6 +115,14 @@ var diagnosticID = regexp.MustCompile(`^(candidate|finding|verdict)-[1-9][0-9]*$
 
 func DiagnosticText(s string) string { return dlp.DiagnosticText(s) }
 
+// WorkflowApprovalSummary는 승인 이력 일부만 실었을 때 저장된 전체 건수와 표시 건수를 알린다.
+func (r DiagnosticReport) WorkflowApprovalSummary() string {
+	if r.WorkflowApprovalTotal <= int64(len(r.WorkflowApprovals)) {
+		return ""
+	}
+	return fmt.Sprintf("승인 이력 %d건 중 앞 %d건을 표시합니다.", r.WorkflowApprovalTotal, len(r.WorkflowApprovals))
+}
+
 // 템플릿 자동 이스케이프만 사용하며 링크·스크립트·외부 리소스를 만들지 않는다.
 func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 	if in.TaskID <= 0 || in.GeneratedAt.IsZero() || len(in.Entries)+len(in.ProductConfirmed) > MaxFindings {
@@ -102,7 +130,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 	}
 	in.ExposedCredentialValues = 0
 	if in.Workflow != nil {
-		if in.Workflow.Format != diagnosisflow.Version || in.Workflow.TaskID != strconv.FormatInt(in.TaskID, 10) || len(in.Workflow.Endpoints) > 32 || len(in.WorkflowApprovals) > 100 {
+		if in.Workflow.Format != diagnosisflow.Version || in.Workflow.TaskID != strconv.FormatInt(in.TaskID, 10) || len(in.Workflow.Endpoints) > diagnosisflow.MaxWorkflowEndpoints {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		raw, _ := json.Marshal(in.Workflow)
@@ -124,6 +152,12 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			flow.CurrentPath = ""
 		}
 		in.Workflow = &flow
+	}
+	approvalRows := int64(len(in.WorkflowApprovals))
+	if approvalRows > MaxWorkflowApprovals || in.WorkflowApprovalTotal < 0 ||
+		in.WorkflowApprovalTotal != 0 && in.WorkflowApprovalTotal < approvalRows ||
+		in.WorkflowApprovalTotal > approvalRows && approvalRows != MaxWorkflowApprovals {
+		return DiagnosticReport{}, ErrExportBlocked
 	}
 	in.WorkflowApprovals = append([]WorkflowApproval(nil), in.WorkflowApprovals...)
 	for i := range in.WorkflowApprovals {
@@ -168,6 +202,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		in.TaskTitle = "[REDACTED]"
 		in.ApprovedScope = nil
 		in.ModelRecords = nil
+		in.ModelAccounting = nil
 	}
 	in.Confirmed, in.Review, in.NotExecuted, in.Unknown, in.Negative = 0, 0, 0, 0, 0
 	in.SourceFailures = 0
@@ -319,6 +354,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		if in.Shared {
+			e.BusinessRuleReview = nil
 			e.RemediationBundle = nil
 			e.RemediationSource = nil
 			e.Status = "[REDACTED]"
@@ -514,11 +550,11 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 </style></head><body>
 <h1>웹 취약점 진단 결과보고서</h1><p>진단 종합 보고서 · 문서 형식 diagnostic-report/v2</p><h2>목차</h2><ol><li>취약점 진단 개요</li><li>진단 방법 및 수행 현황</li><li>진단 결과 요약</li><li>취약점별 상세 결과</li><li>증적 부록</li></ol><p>작업 #{{.TaskID}} · 전체 저장 회차 · 생성 {{.GeneratedAt}}</p>
 {{if .Shared}}<p>공유용 마스킹 사본. 자유문장과 원문 증거는 포함하지 않습니다.</p>{{else}}<p>인증된 관리자용 상세 사본. 자격정보 형식을 가렸습니다. 외부 공유 전 별도 검토가 필요합니다.</p>{{end}}
-<h2>1장. 취약점 진단 개요</h2><p>작업 {{.TaskTitle}} · 작업 생성 {{.TaskCreatedAt}}</p>{{with .ApprovedScope}}<h3>해당 회차의 저장 승인 범위</h3><dl><dt>대상</dt><dd>{{.Origin}}</dd><dt>경로·메서드</dt><dd>{{join .PathPrefixes ", "}} · {{join .Methods ", "}}</dd><dt>승인 방식·만료</dt><dd>{{.ApprovalMode}} · {{.ExpiresAt}}</dd><dt>요청·모델 요청 상한</dt><dd>{{.Budget.Requests}} · {{.Budget.ModelRequests}}</dd>{{with .Model}}<dt>승인 모델 정책</dt><dd>{{.Model}} · {{.Provider}}</dd>{{end}}</dl>{{else}}<p>저장된 승인 범위 상세 미확보 또는 공유용 비공개. 작업 목표를 승인 범위로 간주하지 않습니다.</p>{{end}}<h3>저장된 모델·실행 정보</h3><p>사용량 기록 상태 {{.ModelRecordState}}. 기록 부재를 미실행으로 단정하지 않습니다.</p>{{if .ModelRecordsOmitted}}<p>추가 모델 사용량 묶음 {{.ModelRecordsOmitted}}개 생략. 저장된 원본 기록은 유지합니다.</p>{{end}}<ul>{{range .ModelRecords}}<li>{{.Model}} · {{.Worker}} · 사용량 기록 {{.Records}}행</li>{{end}}</ul><h3>진단 범위와 한계</h3><p>선택한 작업에 직접 속한 저장 결과만 포함합니다. 연결된 다른 작업·전체 자산·모든 검사항목의 검사 완료를 의미하지 않습니다.
+<h2>1장. 취약점 진단 개요</h2><p>작업 {{.TaskTitle}} · 작업 생성 {{.TaskCreatedAt}}</p>{{with .ApprovedScope}}<h3>해당 회차의 저장 승인 범위</h3><dl><dt>대상</dt><dd>{{.Origin}}</dd><dt>경로·메서드</dt><dd>{{join .PathPrefixes ", "}} · {{join .Methods ", "}}</dd><dt>승인 방식·만료</dt><dd>{{.ApprovalMode}} · {{.ExpiresAt}}</dd><dt>요청·모델 요청 상한</dt><dd>{{.Budget.Requests}} · {{.Budget.ModelRequests}}</dd>{{with .Model}}<dt>승인 모델 정책</dt><dd>{{.Model}} · {{.Provider}}</dd>{{end}}</dl>{{else}}<p>저장된 승인 범위 상세 미확보 또는 공유용 비공개. 작업 목표를 승인 범위로 간주하지 않습니다.</p>{{end}}<h3>저장된 모델·실행 정보</h3>{{if .ModelAccounting}}<p>저장된 준비·진단 단계별 모델 사용량입니다. 비용 수치는 미확정 호출이 있으면 실제 청구액과 다를 수 있으며 단계 합계나 최종 청구액으로 단정하지 않습니다.</p><ul>{{range .ModelAccounting}}<li>{{.PhaseText}} · 호출 {{.Requests}}건 · 오류 {{.Errors}}건 · 입력 {{.InputTokens}}토큰 · 출력 {{.OutputTokens}}토큰 · 기록 비용 {{.CostText}}</li>{{end}}</ul>{{else}}<p>저장된 준비·진단 단계 모델 정산 기록이 없습니다. 모델 미실행을 뜻하지 않습니다.</p>{{end}}<p>작업별 LLM 세부 사용량 행 상태 {{.ModelRecordState}}. 이 상태는 위 단계별 정산 기록과 별개입니다.</p>{{if .ModelRecordsOmitted}}<p>추가 모델 사용량 묶음 {{.ModelRecordsOmitted}}개 생략. 저장된 원본 기록은 유지합니다.</p>{{end}}<ul>{{range .ModelRecords}}<li>{{.Model}} · {{.Worker}} · 사용량 기록 {{.Records}}행</li>{{end}}</ul><h3>진단 범위와 한계</h3><p>선택한 작업에 직접 속한 저장 결과만 포함합니다. 연결된 다른 작업·전체 자산·모든 검사항목의 검사 완료를 의미하지 않습니다.
 실행 허용 범위·계정 준비·대상·기간은 각 실행 기록에서 확인해야 합니다. 기록되지 않은 관찰, 캡처, 원인이나 검증 성공을 생성하지 않습니다.
 새 대상 요청·로그인·재현·외부 리소스 조회 없이 저장 자료만 사용했습니다.</p>
 <h2>2장. 진단 방법 및 수행 현황</h2><p>아래 내용은 실제 저장한 실행·탐색 기록입니다. 목록에 없는 검사나 환경·모델은 수행·확인한 것으로 추정하지 않습니다.</p>{{with .Workflow}}<h3>실제 탐색·선택 기록</h3><p>모드 {{.Mode}} · 저장 단계 {{.Stage}} · 마지막 저장 {{.UpdatedAt}}. 이 기록은 재실행 권한 또는 현재 실행 중임의 증거가 아닙니다.</p><p>발견 {{.Counts.Found}} · 응답 관찰 {{.Counts.Visited}} · 요청 쓰기 {{.Counts.Sent}} · 전송 시도 {{.Counts.Attempted}} · 차단 {{.Counts.Blocked}} · 불명 {{.Counts.Unknown}}</p><table><thead><tr><th>메서드</th><th>경로</th><th>실제 방문</th><th>선택</th><th>응답</th><th>증거 call</th></tr></thead><tbody>{{range .Endpoints}}<tr><td>{{.Method}}</td><td>{{.Path}}</td><td>{{.Visited}}</td><td>{{.Selected}}</td><td>{{.Status}}</td><td>{{.CallRef}}</td></tr>{{end}}</tbody></table><p>제한된 정적 탐색입니다. 미방문·미선택 항목을 검사 완료로 표시하지 않습니다. 엔드포인트 선택과 개별 송신 승인은 별개입니다.</p>{{end}}
-{{if .WorkflowApprovals}}<h3>저장된 요청 승인 이력</h3><table><thead><tr><th>메서드</th><th>경로</th><th>결정</th><th>전송 결과</th><th>attempt</th></tr></thead><tbody>{{range .WorkflowApprovals}}<tr><td>{{.Method}}</td><td>{{if $.Shared}}[공유용 경로 비공개]{{else}}{{.Path}}{{end}}</td><td>{{.State}}</td><td>{{.ExecutionState}}</td><td>{{.Attempt}}</td></tr>{{end}}</tbody></table>{{end}}
+{{if .WorkflowApprovals}}<h3>저장된 요청 승인 이력</h3>{{with .WorkflowApprovalSummary}}<p>{{.}}</p>{{end}}<table><thead><tr><th>메서드</th><th>경로</th><th>결정</th><th>전송 결과</th><th>attempt</th></tr></thead><tbody>{{range .WorkflowApprovals}}<tr><td>{{.Method}}</td><td>{{if $.Shared}}[공유용 경로 비공개]{{else}}{{.Path}}{{end}}</td><td>{{.State}}</td><td>{{.ExecutionState}}</td><td>{{.Attempt}}</td></tr>{{end}}</tbody></table>{{end}}
 <h2>3장. 진단 결과 요약</h2><h3>관리자 요약</h3><p>실행 결과: {{.RunText}}. 실행 결과는 취약점이 없다는 뜻이 아닙니다.</p>{{if .SourceFailures}}<p>근거 불러오기 실패: {{.SourceFailures}}건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.</p>{{end}}{{if .ExposedCredentialValues}}<p>대상이 노출한 자격 값: 노출됨 {{.ExposedCredentialValues}}건. 보고서에서는 값을 가렸습니다.</p>{{end}}
 <table><thead><tr><th>확정</th><th>검토 필요</th><th>미실행</th><th>오류·결과 불명</th><th>비취약 판정</th></tr></thead>
 <tbody><tr><td>{{.Confirmed}}</td><td>{{.Review}}</td><td>{{.NotExecuted}}</td><td>{{.Unknown}}</td><td>{{.Negative}}</td></tr></tbody></table>
@@ -538,7 +574,9 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 {{if .LanguageMixed}}<p>다른 언어 섞임: 모델이 쓴 설명·조치·근거에 한자·가나가 섞여 있습니다. 한 번 한국어로 다시 쓰게 했지만 남았습니다.</p>{{end}}
 {{if .Stale}}<p>주의: 증거와 상세 보고서 버전이 달라 확정 집계에서 제외했습니다. 갱신이 필요합니다.</p>{{end}}
 {{if .Truncated}}<p>주의: 실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.</p>{{end}}
-<h4>① 판정과 영향</h4><h5>관찰과 주장</h5><pre>{{if .Summary}}{{.Summary}}{{else}}추가 설명 미기록{{end}}</pre><h4>저장된 상세 설명</h4><pre>{{if .Report}}{{.Report}}{{else}}별도 상세 보고서 미작성{{end}}</pre>
+<h4>① 판정과 영향</h4>
+{{with .BusinessRuleReview}}<h5>업무 규칙 미확인 · 판정 보류</h5><p>{{.Observation}}</p><p>검토 질문(선택): {{.Question}}</p>{{end}}
+<h5>관찰과 주장</h5><pre>{{if .Summary}}{{.Summary}}{{else}}추가 설명 미기록{{end}}</pre><h4>저장된 상세 설명</h4><pre>{{if .Report}}{{.Report}}{{else}}별도 상세 보고서 미작성{{end}}</pre>
 <h4>② 재현 절차 및 스크린샷</h4>{{if .SourceLoadFailed}}<p>근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.</p>{{end}}
 {{if .StepsTruncated}}<p>실행 관측 목록이 잘렸습니다. 전체 재현 절차로 해석하지 마세요.</p>{{end}}
 {{range .Steps}}<section><h5>Step {{.Number}}. {{.Title}}</h5><p>{{.Method}} {{if .Path}}{{.Path}}{{else}}비민감 경로 미기록{{end}}</p><p>사전 조건: {{.Prerequisites}}</p><pre>{{.Observation}}</pre>{{if .Truncated}}<p>이 단계의 관측이 잘렸습니다.</p>{{end}}<p>시각 {{.ObservedAt}} · 원본 단계 {{.SourceStepID}} · 실행 {{.RunRef}} · 호출 {{.CallRef}} · 근거 {{.EvidenceRef}} · 증거 {{.EvidenceVersion}} / {{.EvidenceDigest}}</p>{{if eq .Capture.Status "captured"}}<figure><img src="{{captureURI .}}" alt="실행 당시 수집한 비민감 영역 캡처" style="max-width:100%;height:auto"><figcaption>캡처 {{.Capture.CapturedAt}} · SHA256 {{.Capture.Digest}}</figcaption></figure>{{else}}<p>스크린샷 미확보 — 저장된 요청 시도와 관찰 기록을 확인하세요 · 상태 {{captureStatus .Capture.Status}}</p>{{end}}</section>{{else}}<p>구조화된 실제 재현 단계 미확보. 아래 저장 근거를 확인하세요. 실행하지 않은 절차를 생성하지 않습니다.</p>{{end}}

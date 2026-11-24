@@ -128,14 +128,21 @@ describe("증거 펼치기", () => {
 });
 
 describe("레일 현재 표시", () => {
-  it("이 점검의 화면을 보고 있을 때만 그 줄에 aria-current 를 단다", () => {
+  it("이 점검의 화면(대시보드 포함)을 보고 있을 때만 그 줄에 aria-current 를 단다", () => {
     useUrl.setState({ handle, job, verified: true, flow, flowVerified: true });
     const { rerender } = render(
-      <ShellContext.Provider value={shell("dashboard")}>
+      <ShellContext.Provider value={shell("declaration")}>
         <LiveRailTasks />
       </ShellContext.Provider>,
     );
     expect(screen.getByRole("button", { name: /target\.example/ })).not.toHaveAttribute("aria-current");
+    // 대시보드도 이 점검을 오른쪽에 보여 현재 표시를 단다(사용자 11/24)
+    rerender(
+      <ShellContext.Provider value={shell("dashboard")}>
+        <LiveRailTasks />
+      </ShellContext.Provider>,
+    );
+    expect(screen.getByRole("button", { name: /target\.example/ })).toHaveAttribute("aria-current", "true");
     rerender(
       <ShellContext.Provider value={shell("scope")}>
         <LiveRailTasks />
@@ -338,8 +345,12 @@ describe("범위 확인 · 한 번에 고르기", () => {
     const box = within(found).getByRole("checkbox", { name: `${products} 묶음 전체 점검에 포함` });
     // 읽기 1 은 기본 포함, 같은 묶음의 삭제 1 은 범위 밖 → 고를 수 있는 것은 전부 들어가 있어 체크
     expect(box).toBeChecked();
+    // 묶음 머리에 이 묶음에서 점검에 넣은 경로 수(사용자 11/24: 포함 표시가 약했다), 하나도 없으면 두지 않는다
+    const head = box.parentElement as HTMLElement;
+    expect(within(head).getByText("포함 1")).toBeInTheDocument();
     fireEvent.click(box);
     expect(box).not.toBeChecked();
+    expect(within(head).queryByText(/^포함 /)).toBeNull();
     // 결과 안내 글은 두지 않는다(알약 표시로 보인다)
     expect(within(found).queryByRole("status")).toBeNull();
     expect(within(found).queryAllByRole("button", { name: /점검에 포함/ })).toHaveLength(0);
@@ -1462,6 +1473,26 @@ describe("점검 진행", () => {
     expect(gaugeSegments({ ...flow, stage: "unknown" }, false)).toBeNull();
   });
 
+  it("심화 진단 중 머리에 [일시정지]가 종료 옆에 있고, 흐름이 일시정지면 [다시 시작] · '일시정지됨' (11/24 사용자 결정)", () => {
+    useUrl.setState({ handle, job, verified: true, flow: { ...flow, stage: "diagnosing" }, flowVerified: true });
+    const a = render(
+      <ShellContext.Provider value={shell("live")}>
+        <UrlLiveLive />
+      </ShellContext.Provider>,
+    );
+    expect(screen.getByRole("button", { name: "일시정지" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "종료" })).toBeInTheDocument();
+    a.unmount();
+    useUrl.setState({ flow: { ...flow, stage: "diagnosing", paused: true } });
+    render(
+      <ShellContext.Provider value={shell("live")}>
+        <UrlLiveLive />
+      </ShellContext.Provider>,
+    );
+    expect(screen.getByRole("button", { name: "다시 시작" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getAllByText("일시정지됨").length).toBeGreaterThan(0);
+  });
+
   it("계획 목록이 상한(20개)만큼 꽉 차 오면 상태 카드 계획 칸은 'N+ · 목록 일부만 받음' (전체 완료율로 쓰지 않음)", () => {
     const twenty = Array.from({ length: 20 }, (_, i) => ({ id: i + 1, state: "done", title: `계획 ${i + 1}` }));
     useUrl.setState({
@@ -1619,7 +1650,7 @@ describe("점검 진행", () => {
     const stat = (k: string) => within(stats).getByText(k).parentElement as HTMLElement;
     expect(stat("계획")).toHaveTextContent(/^계획1\/2완료$/);
     expect(stat("심화 점검")).toHaveTextContent(/^심화 점검1\/3마감$/);
-    await waitFor(() => expect(stat("발견 후보")).toHaveTextContent(/^발견 후보3예상 심각 · 높음 1$/));
+    await waitFor(() => expect(stat("발견 후보")).toHaveTextContent(/^발견 후보3심각 · 높음 1$/));
     await waitFor(() => expect(stat("확인 필요")).toHaveTextContent(/^확인 필요2승인 대기$/));
     expect(stat("확인 필요").className).toMatch(/warn/);
     // 계획 단계 목록 · '계획 보기/접기'는 없다(완료 수만 숫자 칸에), 서버 진단 활동 칸도 없다 (사용자 11/17)
@@ -1646,16 +1677,14 @@ describe("점검 진행", () => {
     expect(screen.getAllByText("확인 필요")).toHaveLength(1);
     // 발견 후보 목록: 최근 순, 줄마다 예상 등급(없으면 미평가) · 후보 번호 / 관측 시각 · 검토 필요, 첫 목록엔 '새로' 없음
     const finds = screen.getByRole("region", { name: "발견 후보" });
-    expect(finds.querySelector("[class*=vbar]")).toHaveTextContent(
-      /^예상 심각 0예상 높음 1예상 중간 0예상 낮음 0예상 정보성 1위험도 미평가 1$/,
-    );
+    expect(finds.querySelector("[class*=vbar]")).toHaveTextContent(/^심각 0높음 1중간 0낮음 0정보성 1위험도 미평가 1$/);
     expect(within(finds).getByText("3건 · 최근 순")).toBeInTheDocument();
     expect(within(finds).getByText(/검증 전 후보입니다/)).toBeInTheDocument();
     const rows = [...(document.getElementById("lFinds") as HTMLElement).children] as HTMLElement[];
     expect(rows.map((r) => r.textContent?.replace(/\d{2}:\d{2}:\d{2}/, "HH:MM:SS"))).toEqual([
-      "예상 높음후보 #12관측 HH:MM:SS · 검토 필요",
+      "높음후보 #12관측 HH:MM:SS · 검토 필요",
       "위험도 미평가후보 #11관측 HH:MM:SS · 검토 필요",
-      "예상 정보성후보 #9관측 HH:MM:SS · 검토 필요",
+      "정보성후보 #9관측 HH:MM:SS · 검토 필요",
     ]);
     // 목록 응답엔 제목 · 경로 · 증거가 없어 줄은 그대로 두고, 누르면 오른쪽에 보고서 자료로 상세를 띄운다(사용자 11/23)
     expect(within(finds).queryAllByRole("button")).toHaveLength(3);
@@ -1663,7 +1692,7 @@ describe("점검 진행", () => {
     expect(within(finds).queryByText("새로")).toBeNull();
     // 확정처럼 읽히는 말은 두지 않는다 (절대규칙 5)
     expect(finds).not.toHaveTextContent(/확정 높음|검토 확인|오탐 처리|취약점 없음/);
-    expect(within(finds).getByText(/등급은 Worker 가 붙인 예상값/)).toBeInTheDocument();
+    expect(within(finds).getByText(/등급은 Worker 가 붙인 값이라 확정이 아니고/)).toBeInTheDocument();
     expect(cands.fetchLiveCandidates).toHaveBeenCalledWith("42", expect.any(AbortSignal));
     // 활동 기록은 두지 않는다(사용자 11/17): 서버가 원문 대신 고정 문장만 줘 보여 줄 내용이 없다
     expect(screen.queryByRole("region", { name: "활동 기록" })).toBeNull();

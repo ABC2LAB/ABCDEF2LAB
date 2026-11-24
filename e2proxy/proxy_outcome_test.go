@@ -45,7 +45,7 @@ func TestProxyOutcomeOfReceipt(t *testing.T) {
 	}
 }
 
-// 사유를 새로 만들면 모델에 돌려줄 설명도 함께 정해야 한다. 설명이 없으면 그 사유는 invalid로 뭉개진다.
+// 프록시가 모델에 반환하는 실패 사유는 고정 설명을 가진다.
 func TestProxyOutcomeHintsCoverEveryReason(t *testing.T) {
 	source, err := os.ReadFile("types.go")
 	if err != nil {
@@ -58,9 +58,9 @@ func TestProxyOutcomeHintsCoverEveryReason(t *testing.T) {
 	ascii := regexp.MustCompile(`^[\x20-\x7e]+$`)
 	for _, match := range declared {
 		reason := Reason(match[1])
-		if reason == Complete {
+		if reason == Complete || reason == WorkflowPaused {
 			if _, ok := proxyOutcomeHints[reason]; ok {
-				t.Fatal("complete is not a failure outcome")
+				t.Fatalf("%s must not have a model hint", reason)
 			}
 			continue
 		}

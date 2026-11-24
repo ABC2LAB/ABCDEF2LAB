@@ -69,6 +69,9 @@ func managementBridgeTask(r *http.Request) (string, bool) {
 	if task, ok := reportGraphRequestTask(r); ok {
 		return strconv.FormatInt(task, 10), true
 	}
+	if id, ok := savedApprovalRequestTask(r); ok {
+		return strconv.FormatInt(id, 10), true
+	}
 	if requestApprovalRoute(r) {
 		if r.URL.RawQuery != "" {
 			return "", false

@@ -27,7 +27,8 @@ export function entrySeverity(entry: RemediationEntry): SeverityLevel | null {
 export function entrySeverityLabel(entry: RemediationEntry): string {
   const value = entrySeverity(entry);
   if (!value) return "위험도 미평가";
-  return `${diagnosticOutcome(entry) === "review" ? "예상 " : ""}${SEVERITY_LABELS[value]}`;
+  // '예상' 말은 붙이지 않는다(사용자 11/24). 검토 필요 항목은 판정 딱지('검토 필요')가 확정이 아님을 말한다
+  return SEVERITY_LABELS[value];
 }
 
 export function validSeverityRationale(value: unknown): value is string {

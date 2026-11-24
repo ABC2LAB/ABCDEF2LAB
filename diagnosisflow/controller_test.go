@@ -562,8 +562,8 @@ func TestPauseWaitAndFailedStorageDenyNewSideEffects(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
 	defer cancel()
-	if err = c.Before(ctx, e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/item"}); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatal("pause did not stop admission", err)
+	if err = c.Before(ctx, e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/item"}); !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, e2proxy.ErrWorkflowPaused) {
+		t.Fatal("pause did not stop admission with a pause reason", err)
 	}
 	if _, err = c.Command(t.Context(), "ARTEX", "resume", "resume-once", paused.Revision, nil); err != nil {
 		t.Fatal(err)
