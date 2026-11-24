@@ -1055,6 +1055,10 @@ func (c *Call) preserveOutcomeLocked(r Receipt, err error) {
 func (c *Call) finish(ctx context.Context, r Receipt, observe ...func(Receipt)) (Receipt, error) {
 	r.At = time.Now().UTC()
 	err := c.e.recordBounded(ctx, Event{Stage: "result", Receipt: r})
+	// 모델 응답·호출 결과에는 기존 정책 거부를 보내고, 정본 감사에는 구체적인 거부 사유를 남긴다.
+	if r.Reason == WorkflowPaused {
+		r.Reason = PolicyDenied
+	}
 	r.AuditComplete = err == nil && r.Reason != AuditFailed
 	for _, capture := range observe {
 		capture(r)
@@ -1352,7 +1356,9 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		var boundaryErr error
 		rr, aerr := c.finish(ctx, r, func(rr Receipt) {
 			c.observeHTTP(req, resp, rr)
-			c.observeAttemptPath(req, rr)
+			attempt := rr
+			attempt.Reason = r.Reason
+			c.observeAttemptPath(req, attempt)
 			// 인증 준비는 진단 요청이 아니라 워크플로 요청 경계에 알리지 않는다(진단 쓰기 수와 따로 셈).
 			if purpose == "" && c.e.cfg.RequestBoundary != nil && req != nil && req.URL != nil {
 				boundaryErr = c.e.cfg.RequestBoundary.After(context.WithoutCancel(ctx), RequestView{Method: req.Method, URL: req.URL.String(), BodyPresent: req.ContentLength != 0}, rr)
@@ -1459,9 +1465,11 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		r.Decision, r.Reason = "denied", PolicyDenied
 		return finish(nil, ErrDenied)
 	}
-	if boundary != nil && boundary.Before(ctx, view) != nil {
-		r.Decision, r.Reason = "denied", PolicyDenied
-		return finish(nil, ErrDenied)
+	if boundary != nil {
+		if err := boundary.Before(ctx, view); err != nil {
+			r.Decision, r.Reason = "denied", boundaryDenialReason(err)
+			return finish(nil, ErrDenied)
+		}
 	}
 	needsApproval := e.needsRequestApproval(purpose, method, body, view)
 	if needsApproval {
@@ -1528,9 +1536,11 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		defer cancelSend()
 		e3.sendCtx = ctx
 	}
-	if boundary != nil && boundary.Before(ctx, view) != nil {
-		r.Decision, r.Reason = "denied", PolicyDenied
-		return finish(nil, ErrDenied)
+	if boundary != nil {
+		if err := boundary.Before(ctx, view); err != nil {
+			r.Decision, r.Reason = "denied", boundaryDenialReason(err)
+			return finish(nil, ErrDenied)
+		}
 	}
 	// 동시 송신 자리는 승인 대기 뒤에 잡는다. 사람 승인을 기다리는 요청이 다른 송신의 자리를 막지 않는다.
 	// 자리를 기다리는 동안 취소·철회·만료·운영자 중지가 오면 보내지 않고 끝낸다. 자리를 얻은 뒤 아래에서
@@ -1554,9 +1564,11 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	defer func() { <-e.slots }()
 	// 자리를 기다리는 동안 워크플로 일시정지·단계 종료·선택 해제가 있었을 수 있다. 기다린 요청은 요청 경계를 다시
 	// 본다(#487 리뷰 P2). 기다리지 않은 요청은 위 검사 그대로다.
-	if waited && boundary != nil && boundary.Before(ctx, view) != nil {
-		r.Decision, r.Reason = "denied", PolicyDenied
-		return finish(nil, ErrDenied)
+	if waited && boundary != nil {
+		if err := boundary.Before(ctx, view); err != nil {
+			r.Decision, r.Reason = "denied", boundaryDenialReason(err)
+			return finish(nil, ErrDenied)
+		}
 	}
 	if e3 != nil && !e3.current() {
 		r.Decision, r.Reason = "denied", Revoked

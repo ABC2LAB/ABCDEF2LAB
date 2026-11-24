@@ -452,6 +452,18 @@ func TestFirstDiagnosisStoppedToolOutcome(t *testing.T) {
 	}{
 		// 보내지 않음만: 받는다.
 		{name: "killed-after-denial", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, ""), want: accept},
+		{name: "canceled-while-workflow-paused", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, e2runner.TerminationCanceled),
+			change: func(_ *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				a[0].Reason = e2proxy.WorkflowPaused
+				return a
+			}, want: accept},
+		{name: "workflow-paused-receipt-with-forward-attempt", attempts: []e2proxy.Receipt{stoppedDenied(1, e2proxy.PolicyDenied)}, result: stoppedResult("policy_not_executed", false, -1, e2runner.TerminationCanceled),
+			change: func(_ *e2runner.TrustedResult, a []e2proxy.Receipt) []e2proxy.Receipt {
+				a[0].Reason = e2proxy.WorkflowPaused
+				a[0].ForwardAttempted = true
+				a[0].NotSent = false
+				return a
+			}, want: reject},
 		{name: "killed-after-unsupported", attempts: []e2proxy.Receipt{stoppedAttempt(1, "unsupported", e2proxy.Unsupported, false, false, false, false)}, result: stoppedResult("unsupported", false, -1, ""), want: accept},
 		{name: "forward-not-attempted-closed", attempts: []e2proxy.Receipt{stoppedAllowedNotSent(1, e2proxy.Closed)}, result: stoppedResult(e2runner.ClassificationForwardNotAttempted, false, -1, ""), want: accept},
 		{name: "forward-not-attempted-dial-refused-before-connect", attempts: []e2proxy.Receipt{stoppedAnswered(1), stoppedAllowedNotSent(2, e2proxy.TransportFailed)}, result: stoppedResult(e2runner.ClassificationForwardNotAttempted, true, 0, ""), want: accept},
