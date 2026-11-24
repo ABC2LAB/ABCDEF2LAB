@@ -134,6 +134,7 @@
 | `complete` | 허용 | 응답 받음 |
 | `withheld` | 허용(응답 보류) | 응답 보류·잘림 |
 | `policy_denied` | 차단 | 정책 밖(범위·메서드·위험 요청) |
+| `workflow_paused` | 차단 | 진단 흐름 일시정지로 대기 중 요청이 만료되거나 취소됨 |
 | `unsupported` | 차단 | 지원 안 하는 요청 |
 | `invalid` | 차단 | 잘못된 요청 |
 | `budget_exhausted` | 차단 | 예산 소진 |
