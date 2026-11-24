@@ -79,7 +79,7 @@ func newDiagnosisManagementAuthentication(ctx context.Context, pool *sql.DB, key
 		}
 		var hash string
 		var err error
-		if _, ok := reportGraphRequestTask(r); ok || ProductCandidatePath(r) || FindingVerdictDetailPath(r) || ProductVerdictListPath(r) || ProductAccessMapPath(r) {
+		if _, ok := reportGraphRequestTask(r); ok || ProductCandidatePath(r) || FindingVerdictDetailPath(r) || ProductVerdictListPath(r) || ProductAccessMapPath(r) || strings.HasSuffix(r.URL.Path, followupSuffix) {
 			hash, err = s.reloadReportPassHash(r.Context())
 		} else {
 			hash, err = s.reloadPassHash()
