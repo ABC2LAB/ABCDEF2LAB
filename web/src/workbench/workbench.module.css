@@ -4954,6 +4954,25 @@ button.smm:hover {
   gap: 14px;
   max-width: 400px;
 }
+/* 관문(로그인 · 연결 안내)을 남은 칸 가운데에 둔다(사용자 11/24). 상자 폭은 400px 까지 */
+.lv-gate-wrap {
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  /* 바깥은 옅은 회색이라 가운데 로그인 상자가 떠 보인다 */
+  background: var(--well);
+}
+.lv-gate-wrap > .lv-gate {
+  width: 100%;
+}
+/* 로그인 창은 상자 안에(사용자 11/24 '밋밋하다') */
+.lv-gate-card {
+  padding: 28px 28px 24px;
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
+}
 .lv-gate-h {
   font-size: 16px;
 }

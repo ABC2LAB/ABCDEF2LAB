@@ -230,7 +230,7 @@ function LoginPanel() {
   };
 
   return (
-    <form className={s["lv-gate"]} onSubmit={(e) => void submit(e)} noValidate>
+    <form className={cx(s["lv-gate"], s["lv-gate-card"])} onSubmit={(e) => void submit(e)} noValidate>
       <div className={s.sec}>
         <h2 className={s["lv-gate-h"]}>엔진 로그인</h2>
         <p className={s.help}>
@@ -338,7 +338,8 @@ export function LiveGate({ title, children }: { title: string; children: ReactNo
           </div>
         </div>
       </header>
-      <div className={s.vm}>{body}</div>
+      {/* 로그인 · 연결 안내는 화면 가운데(사용자 11/24) */}
+      <div className={cx(s.vm, s["lv-gate-wrap"])}>{body}</div>
     </>
   );
 }
