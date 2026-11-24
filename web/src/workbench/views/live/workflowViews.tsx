@@ -764,6 +764,8 @@ function EndpointCards({
               <span className={s.n}>
                 {pick.multi ? `${rows.filter((e) => pick.picked.has(e.id)).length}/${rows.length}` : rows.length}
               </span>
+              {/* 이 묶음에서 점검에 넣은 경로 수(사용자 11/24: 포함 표시가 약했다). 없으면 두지 않는다 */}
+              {!pick.multi && onN ? <span className={s["gc-inc"]}>{`포함 ${onN}`}</span> : null}
             </div>
             <div className={s.pills}>
               {pills.map((e) => {

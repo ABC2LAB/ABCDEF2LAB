@@ -338,8 +338,12 @@ describe("범위 확인 · 한 번에 고르기", () => {
     const box = within(found).getByRole("checkbox", { name: `${products} 묶음 전체 점검에 포함` });
     // 읽기 1 은 기본 포함, 같은 묶음의 삭제 1 은 범위 밖 → 고를 수 있는 것은 전부 들어가 있어 체크
     expect(box).toBeChecked();
+    // 묶음 머리에 이 묶음에서 점검에 넣은 경로 수(사용자 11/24: 포함 표시가 약했다), 하나도 없으면 두지 않는다
+    const head = box.parentElement as HTMLElement;
+    expect(within(head).getByText("포함 1")).toBeInTheDocument();
     fireEvent.click(box);
     expect(box).not.toBeChecked();
+    expect(within(head).queryByText(/^포함 /)).toBeNull();
     // 결과 안내 글은 두지 않는다(알약 표시로 보인다)
     expect(within(found).queryByRole("status")).toBeNull();
     expect(within(found).queryAllByRole("button", { name: /점검에 포함/ })).toHaveLength(0);
