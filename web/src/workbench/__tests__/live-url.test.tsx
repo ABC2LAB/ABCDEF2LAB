@@ -2851,7 +2851,9 @@ it("선택적 승인 범위는 읽기 사전 승인과 쓰기 건별 확인을 �
 });
 
 describe("실행 결과 한 줄(urlOutcomeText)", () => {
-  const counts = (c: Partial<Record<"done" | "policy_limited" | "incomplete" | "unknown" | "stopped", number>>) => ({
+  const counts = (
+    c: Partial<Record<"done" | "policy_limited" | "incomplete" | "unknown" | "stopped" | "goal_met", number>>,
+  ) => ({
     done: 0,
     policy_limited: 0,
     incomplete: 0,
@@ -2880,12 +2882,21 @@ describe("실행 결과 한 줄(urlOutcomeText)", () => {
     ],
     [{ state: "cancelled", intent_outcomes: counts({ done: 1, stopped: 2 }) }, "중지됨 · 끝난 1 / 끊긴 2"],
     [
+      { state: "cancelled", intent_outcomes: counts({ done: 1, goal_met: 2, stopped: 4 }) },
+      "중지됨 · 끝난 1 · 목표 달성(계획자 판단)으로 중단 2 / 끊긴 4",
+    ],
+    [
       { state: "completed", outcome: "partial", intent_outcomes: counts({ done: 1, incomplete: 1, unknown: 2 }) },
       "일부 완료 · 남은 작업 1 · 결과 불명 2",
     ],
     [
       { state: "completed", outcome: "partial", intent_outcomes: counts({ done: 1, unknown: 1 }) },
       "일부 완료 · 결과 불명 1",
+    ],
+    // 목표 달성으로 작업이 끝나 멈춘 작업은 남은 작업이 아니라 complete에 따로 보인다(#875 발견 6).
+    [
+      { state: "completed", outcome: "complete", intent_outcomes: counts({ done: 3, policy_limited: 2, goal_met: 2 }) },
+      "계획한 작업 모두 마감 · 정책상 검증 안 됨 2 · 목표 달성(계획자 판단)으로 중단 2",
     ],
     [{ state: "completed" }, ""],
   ] as const)("%o → %s", (job, text) => {

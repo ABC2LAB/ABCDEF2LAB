@@ -415,6 +415,23 @@ WHERE id=$2 AND exploration_id=$3 AND kind='intent'`, state, id, s.expID, termin
 	return err
 }
 
+// IntentStopReasonGoalMet은 목표 달성으로 작업이 끝나 취소된 intent의 사유다(stopped + 이 사유). 실행 결과에서 미완료로
+// 세지 않고 "목표 달성으로 중단"으로 센다(사용자 결정 2026-11-24, #875 발견 6). 원본처럼 목표 달성 때 작업을 바로 끝내는
+// 동작은 그대로다.
+const IntentStopReasonGoalMet = "goal_met"
+
+// CompareAndSetIntentStopped는 CompareAndSetIntentState처럼 expected일 때만 stopped로 바꾸고, 사유를 같이 남긴다.
+func (s *ExplorationStore) CompareAndSetIntentStopped(id int64, expected, reason string) (bool, error) {
+	res, err := s.db.Exec(`UPDATE exploration_nodes
+SET state='stopped', blocked_reason=NULLIF($4,''), content_version=content_version+1, completed_at=now()
+WHERE id=$1 AND exploration_id=$2 AND kind='intent' AND state=$3`, id, s.expID, expected, reason)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
 // CompareAndSetIntentState transitions one local intent only when its current
 // state still matches expected. It is the state boundary used by pause/resume and
 // worker settlement, so a stale API read cannot overwrite a concurrent finish.

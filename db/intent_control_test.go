@@ -283,3 +283,49 @@ func TestCancelIntentPreservesOutputsYieldedByAnotherIntent(t *testing.T) {
 		}
 	}
 }
+
+// 목표 달성으로 끝나 취소된 intent는 stopped에 사유 goal_met을 남긴다(#875 발견 6). running이 아니면 바꾸지 않는다.
+func TestCompareAndSetIntentStoppedRecordsReason(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) - skipping", err)
+	}
+	defer d.Close()
+	expID, err := d.CreateExploration("intent stop reason", "goal met")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	store := d.Exploration(expID)
+	intentID, err := store.AddIntent(map[string]any{"summary": "running when goal met"}, 1, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := store.CompareAndSetIntentStopped(intentID, "running", IntentStopReasonGoalMet); err != nil || changed {
+		t.Fatalf("open intent changed: %v %v", changed, err)
+	}
+	if claimed, err := store.ClaimIntent(intentID, "worker"); err != nil || !claimed {
+		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
+	}
+	if changed, err := store.CompareAndSetIntentStopped(intentID, "running", IntentStopReasonGoalMet); err != nil || !changed {
+		t.Fatalf("stop: %v %v", changed, err)
+	}
+	node, err := store.GetNode(intentID)
+	if err != nil || node == nil || node.State != "stopped" || node.BlockedReason != IntentStopReasonGoalMet {
+		t.Fatalf("stopped intent: %+v %v", node, err)
+	}
+	// 사유 없이 멈춘 intent는 사유 칸이 비어 있다(지금처럼 incomplete로 센다).
+	other, err := store.AddIntent(map[string]any{"summary": "killed"}, 1, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := store.ClaimIntent(other, "worker"); err != nil || !claimed {
+		t.Fatal(err)
+	}
+	if changed, err := store.CompareAndSetIntentStopped(other, "running", ""); err != nil || !changed {
+		t.Fatal(err)
+	}
+	if node, err := store.GetNode(other); err != nil || node.BlockedReason != "" {
+		t.Fatalf("unreasoned stop: %+v %v", node, err)
+	}
+}

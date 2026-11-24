@@ -143,6 +143,9 @@ export type URLIntentOutcomes = {
   incomplete: number;
   unknown: number;
   stopped: number;
+  /** 목표 달성으로 작업이 끝나 멈춘 작업(#875 발견 6). 남은 작업이 아니라 partial에 넣지 않는다. 파서는 늘 채우고(이 칸
+   *  이전 서버 기록은 0), 화면 안에서 만든 값은 비어 있을 수 있어 선택 칸이다. */
+  goal_met?: number;
 };
 export const URL_ACCOUNT_AUTH_RESULTS = [
   "authenticated",
@@ -589,13 +592,16 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
 function intentOutcomes(v: unknown): URLIntentOutcomes {
   const keys = ["done", "policy_limited", "incomplete", "unknown", "stopped"] as const;
   if (!object(v) || !keys.every((k) => natural(v[k]))) return invalid();
-  exact(v, [...keys]);
+  // goal_met은 이 칸이 생기기 전 서버 기록에는 없다(그때는 0). 있으면 자연수여야 한다.
+  if (v.goal_met !== undefined && !natural(v.goal_met)) return invalid();
+  exact(v, [...keys, "goal_met"]);
   return {
     done: v.done as number,
     policy_limited: v.policy_limited as number,
     incomplete: v.incomplete as number,
     unknown: v.unknown as number,
     stopped: v.stopped as number,
+    goal_met: (v.goal_met as number | undefined) ?? 0,
   };
 }
 /** 계정별 인증 결과 맵(§3.4). 라벨은 서버 등록 라벨 규칙 그대로(`diagnosisprep.ValidAccountLabel`: 영숫자로 시작,
@@ -618,10 +624,11 @@ function accountAuth(v: unknown): URLAccountAuth {
   }
   return out;
 }
-/** 서버 계약 대조식(§3.2): no_intents ⇔ 모두 0, complete ⇔ done+policy_limited ≥ 1이고 나머지 0, partial ⇔ 나머지 ≥ 1. */
+/** 서버 계약 대조식(§3.2): no_intents ⇔ 모두 0, complete ⇔ done+policy_limited+goal_met ≥ 1이고 남은 작업 0,
+ *  partial ⇔ incomplete+unknown+stopped ≥ 1. 목표 달성으로 중단(goal_met)은 남은 작업이 아니다. */
 export function runOutcome(c: URLIntentOutcomes): "complete" | "partial" | "no_intents" {
   if (c.incomplete + c.unknown + c.stopped > 0) return "partial";
-  if (c.done + c.policy_limited > 0) return "complete";
+  if (c.done + c.policy_limited + (c.goal_met ?? 0) > 0) return "complete";
   return "no_intents";
 }
 function validRunResult(

@@ -78,7 +78,7 @@ func firstDiagnosisSupervisorExplorationBudget(t *testing.T, manager *Manager, i
 			done := e2.task.explorationDone
 			e2.task.mu.Unlock()
 			counts, countErr := firstDiagnosisIntentOutcomes(t.Context(), manager.pg.DB, task.ExpID)
-			out, closing := firstDiagnosisClosingOutcomes(counts, firstDiagnosisBudgetLimited(task, budget))
+			out, closing := firstDiagnosisClosingOutcomes(counts, firstDiagnosisBudgetLimited(task, budget), task)
 			_, allowed := e2.explorationBudgetOutcome(task, budget, out)
 			t.Fatalf("supervisor failed: outcome_error=%v stage_budget=%v stage_done=%v proof=%v valid=%v allowed=%v count_error=%v closing=%v incomplete=%d running=%d unknown=%d task_status=%s provider=%d requests=%d known=%v limited=%v status=%s reason=%s phase=%s observed=%d", errors.Is(err, ErrFirstDiagnosisOutcome), errors.Is(stageErr, ErrE2HTTPBudgetLimited), done, proof != nil, proof != nil && proof.validFlow(), allowed, countErr != nil, closing, out.Incomplete, counts.running, out.Unknown, task.lifecycleSnapshot().Status, provider.calls.Load(), usage.Requests, usage.UsageKnown, budget.LimitReached(), snap.ExplorationStatus, snap.ExplorationReason, snap.Stage, snap.Counts.ExplorationRequests)
 		}
@@ -133,6 +133,14 @@ func firstDiagnosisSupervisorExplorationBudget(t *testing.T, manager *Manager, i
 		budget.mu.Unlock()
 		if _, ok := e2.explorationBudgetOutcome(task, budget, diagnosis.IntentOutcomes{Done: 1, Incomplete: 1}); ok {
 			t.Fatal("unexecuted diagnostic done accepted")
+		}
+		// 목표 달성으로 중단된 진단 작업도 진단이 돈 실행이라 탐색 예산 마감(no_intents·partial)으로 받지 않는다.
+		if _, ok := e2.explorationBudgetOutcome(task, budget, diagnosis.IntentOutcomes{GoalMet: 1}); ok {
+			t.Fatal("goal-met diagnostic work accepted as exploration budget close")
+		}
+		// 같은 상태에서 진단 작업이 없으면 탐색 예산 마감이다(위 거부가 이 조건 때문만은 아닌지).
+		if _, ok := e2.explorationBudgetOutcome(task, budget, diagnosis.IntentOutcomes{Incomplete: 1}); !ok {
+			t.Fatal("exploration budget close rejected")
 		}
 	})
 }

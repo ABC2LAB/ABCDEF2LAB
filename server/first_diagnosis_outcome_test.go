@@ -3,6 +3,8 @@ package server
 import (
 	"testing"
 
+	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosis"
 )
 
@@ -73,7 +75,7 @@ func TestFirstDiagnosisClosingOutcomes(t *testing.T) {
 		{"limit-counts-open-incomplete", 2, 0, true, true, 2},
 		{"limit-without-open", 0, 0, true, true, 0},
 	} {
-		out, closing := firstDiagnosisClosingOutcomes(firstDiagnosisIntentCounts{outcomes: base, open: tc.open, running: tc.running}, tc.forced)
+		out, closing := firstDiagnosisClosingOutcomes(firstDiagnosisIntentCounts{outcomes: base, open: tc.open, running: tc.running}, tc.forced, nil)
 		if closing != tc.closing || closing && (out.Incomplete != tc.incomplete || out.Done != 1) {
 			t.Fatalf("%s: closing=%v out=%+v", tc.name, closing, out)
 		}
@@ -109,7 +111,8 @@ func TestSupervisorClosureResult(t *testing.T) {
 	}
 }
 
-// 목표 달성(작업 done)이나 실행 상한이면 Planner를 기다리지 않고 마감하고, 남은 open intent는 incomplete다(C26).
+// 목표 달성(작업 done)이나 실행 상한이면 Planner를 기다리지 않고 마감한다(C26). 목표 달성 마감에서 남은 open intent는
+// 미완료가 아니라 목표 달성으로 중단이라 실행 결과는 complete다(#875 발견 6). 실행 상한 마감은 지금처럼 incomplete다.
 func TestFirstDiagnosisForcedCloseOnGoalMet(t *testing.T) {
 	task := &Task{}
 	if firstDiagnosisForcedClose(false, task) || !firstDiagnosisForcedClose(true, task) || firstDiagnosisForcedClose(false, nil) {
@@ -119,9 +122,34 @@ func TestFirstDiagnosisForcedCloseOnGoalMet(t *testing.T) {
 	if !firstDiagnosisGoalMet(task) || !firstDiagnosisForcedClose(false, task) {
 		t.Fatal("goal met not forcing the close")
 	}
-	out, closing := firstDiagnosisClosingOutcomes(firstDiagnosisIntentCounts{outcomes: diagnosis.IntentOutcomes{Done: 1}, open: 2}, firstDiagnosisForcedClose(false, task))
-	if !closing || out != (diagnosis.IntentOutcomes{Done: 1, Incomplete: 2}) || out.Outcome() != diagnosis.OutcomePartial {
+	out, closing := firstDiagnosisClosingOutcomes(firstDiagnosisIntentCounts{outcomes: diagnosis.IntentOutcomes{Done: 1, GoalMet: 2}, open: 2}, false, task)
+	if !closing || out != (diagnosis.IntentOutcomes{Done: 1, GoalMet: 4}) || out.Outcome() != diagnosis.OutcomeComplete {
 		t.Fatalf("goal-met close: %+v %v", out, closing)
+	}
+	// 실행 상한으로 마감하면(목표 미달성) 시작하지 못한 open은 지금처럼 미완료이고 partial이다.
+	out, closing = firstDiagnosisClosingOutcomes(firstDiagnosisIntentCounts{outcomes: diagnosis.IntentOutcomes{Done: 1}, open: 2}, true, &Task{})
+	if !closing || out != (diagnosis.IntentOutcomes{Done: 1, Incomplete: 2}) || out.Outcome() != diagnosis.OutcomePartial {
+		t.Fatalf("limit close: %+v %v", out, closing)
+	}
+}
+
+// 그래프 투영: 목표 달성 사유가 붙은 stopped만 goal_met이고, 사유 없는 stopped(Planner kill_work·그 밖의 종료 뒤 취소)는
+// 지금처럼 incomplete다.
+func TestFirstDiagnosisIntentOutcomeGoalMet(t *testing.T) {
+	for _, tc := range []struct{ state, reason, want string }{
+		{"stopped", db.IntentStopReasonGoalMet, intentOutcomeGoalMet},
+		{"stopped", "", intentOutcomeIncomplete},
+		{"stopped", "e2_http_policy_limited", intentOutcomeIncomplete},
+		{"blocked", db.IntentStopReasonGoalMet, intentOutcomeIncomplete},
+		{"exhausted", "", intentOutcomeIncomplete},
+	} {
+		if got := firstDiagnosisIntentOutcome(tc.state, tc.reason); got != tc.want {
+			t.Fatalf("%s/%s: %s", tc.state, tc.reason, got)
+		}
+	}
+	// goal_met만 남으면 complete, 미완료가 섞이면 partial이다.
+	if (diagnosis.IntentOutcomes{GoalMet: 2}).Outcome() != diagnosis.OutcomeComplete || (diagnosis.IntentOutcomes{GoalMet: 2, Incomplete: 1}).Outcome() != diagnosis.OutcomePartial {
+		t.Fatal("goal_met outcome rule")
 	}
 }
 
@@ -140,5 +168,13 @@ func TestSupervisorRunResultOnlyAfterCompletion(t *testing.T) {
 	got.IntentOutcomes.Done = 99
 	if s.RunResult().IntentOutcomes.Done != 1 {
 		t.Fatal("result shared by reference")
+	}
+}
+
+// 엔진은 목표 달성 취소 원인(agent.AbortGoalMet)의 code로 stopped 사유를 정한다. 두 이름이 어긋나면 목표 달성 중단이
+// 다시 미완료로 세지므로 같은 값인지 고정한다.
+func TestGoalMetAbortCodeMatchesStopReason(t *testing.T) {
+	if agent.AbortGoalMet.Code != db.IntentStopReasonGoalMet {
+		t.Fatalf("abort code %q != stop reason %q", agent.AbortGoalMet.Code, db.IntentStopReasonGoalMet)
 	}
 }
