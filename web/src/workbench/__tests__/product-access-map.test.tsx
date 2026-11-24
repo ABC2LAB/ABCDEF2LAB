@@ -18,7 +18,7 @@ import { buildCellResolver, checkAccessMapResponse, mapApiAccessMap } from "@/li
 
 import { isProductAccessMapShapeError, parseProductAccessMap } from "../live/productAccessMap";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
-import { ProductAccessMapGrid } from "../views/live/productAccessMapView";
+import { ProductAccessMapSection } from "../views/live/productAccessMapSection";
 import { AccessMapPanel } from "../views/live/UrlAccessMapLive";
 import golden from "./product-access-map.server-golden.json";
 
@@ -307,10 +307,10 @@ describe("parseProductAccessMap", () => {
   });
 });
 
-describe("ProductAccessMapGrid", () => {
+describe("ProductAccessMapSection — 격자 보기(기본)", () => {
   it("종류 × A/B 격자: 소유 칸은 중립 문구, 확정 · 판정 불가 · 공유 선언을 서버 상태대로(평가 지도와 같은 글)", async () => {
     serve(cases.completed);
-    render(<ProductAccessMapGrid taskId={cases.completed.task_id} active />);
+    render(<ProductAccessMapSection taskId={cases.completed.task_id} active />);
     const table = await screen.findByRole("table", { name: "자원 종류 × 소유 · 교차 계정 제품 접근통제 격자" });
     expect(within(table).getByRole("columnheader", { name: /tester-a\s*소유\(A\)/ })).toBeInTheDocument();
     expect(within(table).getByRole("columnheader", { name: /tester-b\s*교차\(B\)/ })).toBeInTheDocument();
@@ -331,7 +331,7 @@ describe("ProductAccessMapGrid", () => {
 
   it("합계 칩은 저장된 판정 불가와 판정 없는 칸을 합치지 않는다", async () => {
     serve(cases.interrupted_suspected);
-    render(<ProductAccessMapGrid taskId={cases.interrupted_suspected.task_id} active />);
+    render(<ProductAccessMapSection taskId={cases.interrupted_suspected.task_id} active />);
     const counts = await screen.findByTestId("product-map-counts");
     expect(counts.querySelector("[data-tally='suspected']")).toHaveTextContent("취약 의심 1");
     expect(counts.querySelector("[data-tally='no_verdict']")).toHaveTextContent("판정 기록 · 근거 없음 1");
@@ -344,7 +344,7 @@ describe("ProductAccessMapGrid", () => {
 
   it("확정 단계 결과가 없으면 격자 대신 안내만", async () => {
     serve(cases.pending);
-    render(<ProductAccessMapGrid taskId={cases.pending.task_id} active />);
+    render(<ProductAccessMapSection taskId={cases.pending.task_id} active />);
     expect(await screen.findByTestId("product-map-pending")).toHaveTextContent("확정 단계가 끝나면");
     expect(screen.queryByRole("table")).toBeNull();
     // 안내 화면에서도 다시 읽을 수 있다 — 확정 단계가 끝나면 같은 화면에서 격자로 바뀐다
@@ -356,7 +356,7 @@ describe("ProductAccessMapGrid", () => {
 
   it("숨긴 행 건수와 칸의 '숨긴 판정일 수 있음'을 보이고, 판정 없음을 안전으로 칠하지 않는다", async () => {
     serve(cases.hidden);
-    render(<ProductAccessMapGrid taskId={cases.hidden.task_id} active />);
+    render(<ProductAccessMapSection taskId={cases.hidden.task_id} active />);
     const table = await screen.findByRole("table", { name: /제품 접근통제 격자/ });
     expect(screen.getByRole("note")).toHaveTextContent("판정 기록 무결성 확인 실패 1건");
     expect(within(table).getByRole("row", { name: /document/ })).toHaveTextContent("숨긴 판정이 이 종류일 수 있음");
@@ -364,17 +364,17 @@ describe("ProductAccessMapGrid", () => {
 
   it("409 는 사유별 안내, 404 는 구획 없음, 형식 오류는 경고", async () => {
     serve(new ApiError(409, "product_access_map_roles_undeclared"));
-    const a = render(<ProductAccessMapGrid taskId="2" active />);
+    const a = render(<ProductAccessMapSection taskId="2" active />);
     expect(await screen.findByRole("note")).toHaveTextContent("계정 역할이 없어");
     expect(screen.queryByRole("alert")).toBeNull();
     a.unmount();
     serve(new ApiError(404, "not found"));
-    const b = render(<ProductAccessMapGrid taskId="2" active />);
+    const b = render(<ProductAccessMapSection taskId="2" active />);
     await waitFor(() => expect(apiFetch).toHaveBeenCalled());
     await waitFor(() => expect(b.container).toBeEmptyDOMElement());
     b.unmount();
     serve({ format: "nope" });
-    render(<ProductAccessMapGrid taskId="2" active />);
+    render(<ProductAccessMapSection taskId="2" active />);
     expect(await screen.findByRole("alert")).toHaveTextContent("응답 형식을 확인하지 못해");
   });
 
@@ -387,7 +387,7 @@ describe("ProductAccessMapGrid", () => {
     raw.cells = raw.cells.filter((c) => c.resource_type !== "note");
     raw.cells[1].evidence_seal = { status: "confirmed", reason: null };
     serve(raw);
-    render(<ProductAccessMapGrid taskId={raw.task_id} active />);
+    render(<ProductAccessMapSection taskId={raw.task_id} active />);
     const table = await screen.findByRole("table", { name: /제품 접근통제 격자/ });
     expect(within(table).getAllByRole("row")).toHaveLength(1 + 2);
     const states = [...table.querySelectorAll("[data-state]")].map((el) => el.getAttribute("data-state"));
@@ -409,8 +409,8 @@ describe("ProductAccessMapGrid", () => {
 
   it("탭이 안 보이거나 작업이 없으면 부르지 않는다", () => {
     serve(cases.completed);
-    render(<ProductAccessMapGrid taskId="2" active={false} />);
-    render(<ProductAccessMapGrid taskId={null} active />);
+    render(<ProductAccessMapSection taskId="2" active={false} />);
+    render(<ProductAccessMapSection taskId={null} active />);
     expect(apiFetch).not.toHaveBeenCalled();
   });
 });

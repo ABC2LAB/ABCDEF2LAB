@@ -31,7 +31,7 @@ import { useUrl, useUrlSelectionKey } from "../../live/urlDiagnosis";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
-import { ProductAccessMapGrid } from "./productAccessMapView";
+import { ProductAccessMapSection } from "./productAccessMapSection";
 import { BackButton, UrlHead } from "./urlParts";
 
 /**
@@ -408,7 +408,7 @@ export function AccessMapPanel({ active }: { active: boolean }) {
         </section>
       ) : null}
       {/* 제품 접근통제 지도는 평가 KG 격자와 축 출처가 달라 따로 둔다(product-access-map §3). 평가 지도가 409(KG 미등록)여도 읽는다 */}
-      <ProductAccessMapGrid taskId={taskId} active={active} />
+      <ProductAccessMapSection taskId={taskId} active={active} />
     </>
   );
 }
