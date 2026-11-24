@@ -5126,6 +5126,11 @@ button.smm:hover {
   font-size: 12px;
   color: var(--rail-mut);
 }
+/* 레일 묶음 줄이 많을 때 마지막 '전체 n건' 줄: 목록 화면으로 가는 줄이라 흐리게 */
+.rs.rs-more .host {
+  font-weight: 400;
+  opacity: 0.75;
+}
 /* 레일: 두 칸 스위치 (데이터 원천) */
 .swatches .sw-row.lv-two {
   grid-template-columns: repeat(2, minmax(0, 1fr));
