@@ -2536,8 +2536,8 @@ describe("레일 (URL 진단)", () => {
     fireEvent.click(row);
     expect(goTo).toHaveBeenCalledWith("running");
     expect(screen.getByText("끝난 점검 없음")).toBeInTheDocument();
-    // 지금 보는 화면이 이 점검이 아니면 빨간 현재 표시를 하지 않는다
-    expect(row).not.toHaveAttribute("aria-current");
+    // 대시보드는 이 점검을 오른쪽에 보이므로 빨간 현재 표시를 단다(사용자 11/24)
+    expect(row).toHaveAttribute("aria-current", "true");
   });
 });
 

@@ -128,14 +128,21 @@ describe("증거 펼치기", () => {
 });
 
 describe("레일 현재 표시", () => {
-  it("이 점검의 화면을 보고 있을 때만 그 줄에 aria-current 를 단다", () => {
+  it("이 점검의 화면(대시보드 포함)을 보고 있을 때만 그 줄에 aria-current 를 단다", () => {
     useUrl.setState({ handle, job, verified: true, flow, flowVerified: true });
     const { rerender } = render(
-      <ShellContext.Provider value={shell("dashboard")}>
+      <ShellContext.Provider value={shell("declaration")}>
         <LiveRailTasks />
       </ShellContext.Provider>,
     );
     expect(screen.getByRole("button", { name: /target\.example/ })).not.toHaveAttribute("aria-current");
+    // 대시보드도 이 점검을 오른쪽에 보여 현재 표시를 단다(사용자 11/24)
+    rerender(
+      <ShellContext.Provider value={shell("dashboard")}>
+        <LiveRailTasks />
+      </ShellContext.Provider>,
+    );
+    expect(screen.getByRole("button", { name: /target\.example/ })).toHaveAttribute("aria-current", "true");
     rerender(
       <ShellContext.Provider value={shell("scope")}>
         <LiveRailTasks />

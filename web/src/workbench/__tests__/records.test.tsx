@@ -359,7 +359,7 @@ describe("레일 → 진행 중인 점검 · 끝난 점검", () => {
     useUrl.setState({ handle, job: running, verified: true });
     const goTo = vi.fn<(v: View) => void>();
     const { rerender } = render(
-      <ShellContext.Provider value={shell("dashboard", { goTo })}>
+      <ShellContext.Provider value={shell("declaration", { goTo })}>
         <LiveRailTasks />
       </ShellContext.Provider>,
     );

@@ -186,7 +186,8 @@ export function LiveRailTasks() {
   const ended = !!job && URL_ENDED_STATES.includes(job.state);
   const to: View = job ? scanViewFor(job, stage) : "live";
   const list: View = ended ? "finished" : "running";
-  const here = route === list || (to === "new" ? route === "new" : SCAN_VIEWS.includes(route));
+  // 대시보드도 이 점검을 오른쪽에 보이므로 현재 표시(빨간 점)를 단다(사용자 11/24: 대시보드 목록에서 눌러도 레일에 안 떴다)
+  const here = route === list || route === "dashboard" || (to === "new" ? route === "new" : SCAN_VIEWS.includes(route));
   const row = handle ? (
     <button
       className={s.rs}
