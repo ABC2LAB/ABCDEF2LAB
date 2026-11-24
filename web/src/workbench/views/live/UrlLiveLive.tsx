@@ -68,7 +68,7 @@ import { flowStageText, MAX_FLOW_PLAN, type WorkflowSnapshot } from "../../live/
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { Markdown } from "../../ui/Markdown";
-import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
+import { InspHead, InspOpenButton, Isec, PaneToggle, useScrollTopOnChange, vulnClassParts } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalQueue, useRequestApprovals } from "./approvals";
 import { CoverageGraphSection } from "./coverageGraphView";
@@ -429,7 +429,7 @@ function LiveCandidates({
         </div>
       ) : null}
       <p className={s.help}>
-        {`점검 중에 저장된 검증 전 후보입니다(모두 검토 필요). 등급은 Worker 가 붙인 예상값이고, 확정 여부는 점검이 끝난 뒤 보고서의 판정에서 봅니다.${
+        {`점검 중에 저장된 검증 전 후보입니다(모두 검토 필요). 등급은 Worker 가 붙인 값이라 확정이 아니고, 확정 여부는 점검이 끝난 뒤 보고서의 판정에서 봅니다.${
           page?.truncated
             ? ` 후보가 많아 최근 ${page.returned}건만 받았고, 위 집계도 받은 ${page.returned}건 기준입니다.`
             : ""
@@ -666,6 +666,8 @@ export function UrlLiveLive() {
   // (진행 중 후보는 'candidate-<id>')로 둔다
   const [pick, setPick] = useState<{ task: string; entry: string } | null>(null);
   const picked = pick && pick.task === job?.task_id ? pick.entry : null;
+  // 다른 후보를 고르면 오른쪽 패널을 맨 위로(사용자 11/24)
+  const liveInspRef = useScrollTopOnChange<HTMLElement>(picked);
   const runEnded = !job || URL_ENDED_STATES.includes(job.state);
   // 같은 자료로 후보 줄에 취약점 이름도 붙인다(사용자 11/24). 그래서 고른 동안만이 아니라 후보가 있으면 읽고, 새 후보가
   // 오면 바로 다시 읽는다(그 사이엔 쉬었다가)
@@ -850,7 +852,7 @@ export function UrlLiveLive() {
     stats.push({
       k: "발견 후보",
       v: found.truncated ? `${found.returned}+` : String(found.returned),
-      sub: found.truncated ? `최근 ${found.returned}건만 받음` : `예상 심각 · 높음 ${highUp}`,
+      sub: found.truncated ? `최근 ${found.returned}건만 받음` : `심각 · 높음 ${highUp}`,
     });
   if (g.runReadable)
     stats.push({ k: "확인 필요", v: String(a.pending.length), sub: "승인 대기", warn: a.pending.length > 0 });
@@ -950,7 +952,7 @@ export function UrlLiveLive() {
         </div>
         {/* 오른쪽 진행 요약: 서버가 점검 중에 주는 값만(전송 통제 · 탐색 현황 · 커버리지 · 점검 정보).
             발견은 가운데에 둔다(점검 중엔 발견 후보, 끝나면 저장된 결과) */}
-        <aside className={s.vi} id="lInsp" aria-label={picked ? "취약점 상세" : "진행 요약"}>
+        <aside className={s.vi} id="lInsp" ref={liveInspRef} aria-label={picked ? "취약점 상세" : "진행 요약"}>
           {picked && job.task_id ? (
             <LiveCandidateDetail
               entry={picked}
@@ -1283,7 +1285,7 @@ export function FindingDetail({
       <div className={s.fdet}>
         <StatusCard e={e} />
         {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
-          <Isec t="예상 심각도 근거 · 모델 제안">
+          <Isec t="심각도 근거 · 모델 제안">
             <p>{maskSecrets(e.severity_rationale ?? "")}</p>
             <p className={s.help}>이 등급은 검토 우선순위 제안이며 취약점 확정이나 CVSS 점수가 아닙니다.</p>
           </Isec>
@@ -1335,7 +1337,19 @@ function StatusCard({ e, host }: { e: RemediationEntry; host?: string | null }) 
         </div>
         <div>
           <dt>유형</dt>
-          <dd>{e.vuln_class ? <span className={s.chip}>{maskSecrets(e.vuln_class)}</span> : "—"}</dd>
+          <dd>
+            {e.vuln_class ? (
+              <span className={s["chip-list"]}>
+                {vulnClassParts(maskSecrets(e.vuln_class)).map((part) => (
+                  <span key={part} className={s.chip}>
+                    {part}
+                  </span>
+                ))}
+              </span>
+            ) : (
+              "—"
+            )}
+          </dd>
         </div>
         <div>
           <dt>{entryPathLabel(e)}</dt>
@@ -1414,7 +1428,7 @@ export function FindingPage({
           {/* E③ 확정 단계 판정: 이 후보를 참조하는 제품 판정이 있을 때만(목록과 같은 표시 규칙) */}
           <VerdictDetailCard taskId={taskId} entryId={e.entry_id} />
           {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
-            <Isec t="예상 심각도 근거 · 모델 제안">
+            <Isec t="심각도 근거 · 모델 제안">
               <p>{maskSecrets(e.severity_rationale ?? "")}</p>
               <p className={s.help}>이 등급은 검토 우선순위 제안이며 취약점 확정이나 CVSS 점수가 아닙니다.</p>
             </Isec>
@@ -1709,6 +1723,8 @@ export function UrlReportLive() {
   const [tab, setTab] = useState<RTab>("list");
   const tabRefs = useRef<Partial<Record<RTab, HTMLButtonElement | null>>>({});
   const [sel, setSel] = useState<string | null>(null);
+  // 다른 취약점을 고르면 오른쪽 패널을 맨 위로(사용자 11/24)
+  const reportInspRef = useScrollTopOnChange<HTMLElement>(sel);
   // 오른쪽 패널 머리 '상세 보기'로 연 발견 (그 발견이 목록에서 사라지면 — 다른 점검 등 — 목록으로 돌아간다).
   // 단독 발견 상세(#finding)도 같은 발견을 보도록 공용 상태(findingPick)에 둔다
   const detail = usePickedFinding(taskId);
@@ -1948,7 +1964,7 @@ export function UrlReportLive() {
                   <div className={s.sub}>
                     {[
                       confirmedSev && `확정 ${confirmedSev}`,
-                      estimatedSev && `예상 ${estimatedSev}`,
+                      estimatedSev && `검토 필요 ${estimatedSev}`,
                       noSev ? `위험도 미평가 ${noSev}` : "",
                     ]
                       .filter(Boolean)
@@ -2058,7 +2074,7 @@ export function UrlReportLive() {
               </div>
             </section>
           </div>
-          <aside className={s.vi} id="rInsp" aria-label="취약점 상세">
+          <aside className={s.vi} id="rInsp" ref={reportInspRef} aria-label="취약점 상세">
             <FindingDetail
               e={chosen}
               host={host}

@@ -164,9 +164,9 @@ const SEVERITY_TEXT: Record<SeverityLevel, string> = {
   info: "정보성",
 };
 
-/** 후보 등급 딱지 글(심각도 계약 '예상 높음 · 검토 필요'). 등급 없음은 '위험도 미평가' — 낮음으로 바꾸지 않는다. */
+/** 후보 등급 딱지 글. '예상' 말은 붙이지 않는다(사용자 11/24 — 확정이 아니라는 건 줄의 '검토 필요'가 말한다). 등급 없음은 '위험도 미평가' — 낮음으로 바꾸지 않는다. */
 export function candidateSeverityText(sev: SeverityLevel | null): string {
-  return sev ? `예상 ${SEVERITY_TEXT[sev]}` : "위험도 미평가";
+  return sev ? SEVERITY_TEXT[sev] : "위험도 미평가";
 }
 
 /** 목록 머리 건수 글. 일부만 왔으면 받은 행 수로 '최근 N건만 표시'(전체 수는 모른다). */

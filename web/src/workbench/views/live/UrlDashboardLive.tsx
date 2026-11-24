@@ -11,6 +11,7 @@ import { type ReactNode, useState } from "react";
 
 import { activeURLRun, endedURLRun } from "@/lib/diagnosis/diagnosis-runs";
 import { diagnosticOutcome } from "@/lib/diagnosis/diagnostic-results";
+import { type E2Counts, getE2Flow } from "@/lib/diagnosis/e2flow";
 import type { RemediationEntry } from "@/lib/diagnosis/remediation";
 import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
 import { entrySeverity } from "@/lib/diagnosis/severity";
@@ -28,9 +29,10 @@ import { useUrlRuns } from "../../live/urlRunList";
 import { usePoll } from "../../live/usePoll";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
-import { InspHead, InspOpenButton, Isec, PaneToggle } from "../../ui/parts";
+import { InspHead, InspOpenButton, Isec, PaneToggle, useScrollTopOnChange } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
+import { Ring, RingCard, type RingSeg } from "./dashRings";
 import { JobSummary, jobResult, pendingRows, useCoveragePct } from "./jobSummary";
 import { ReportReadError, RunListControls, RunListStatus, RunRow, SelectedRunStatus } from "./runRows";
 import { EntryEp, FindingDetail, ORDER, Outcome, Sev, UnfollowedActiveRuns } from "./UrlLiveLive";
@@ -61,20 +63,13 @@ const FIND_CHIPS: ReadonlyArray<Chip<SevF>> = [
 ];
 const sevOf = (e: RemediationEntry): SevF => sevKey(entrySeverity(e) ?? "") ?? "none";
 /** 위험도 막대 색 (시안 v77 요약 칸). 등급 없음은 옅은 선색. */
-const SEV_BAR: Readonly<Record<SevF, string>> = {
-  crit: "var(--crit)",
-  hi: "var(--hi)",
-  mid: "var(--mid)",
-  lo: "var(--lo)",
-  none: "var(--rule-2)",
-  info: "var(--muted)",
-};
 
 /**
  * 대시보드 맨 위 요약 4칸 (시안 strip). 서버에 진단 목록 · 30일 집계가 없어 이 브라우저가 이어 보는 점검 하나의
  * 실제 값만 센다. 모르는 값은 "—". 시안의 토큰 30일 집계 · 점검당 평균은 서버 집계가 없어 칸만 두고
  * '연결 전' 딱지를 붙이며, 이 점검의 서버 기록(model_usage)은 보조 줄에 보인다.
  */
+/** 맨 위 요약 칸: 숫자만(사용자 11/24 — 분포는 그 아래 원형 게이지 줄이 보인다) */
 function DashStrip({
   found,
   ready,
@@ -92,15 +87,15 @@ function DashStrip({
   /** 이 점검의 모델 토큰 (서버 기록이 없으면 null) */
   tokens: { input: number; output: number } | null;
 }) {
-  const bySev = (k: SevF) => found.filter((e) => diagnosticOutcome(e) === "confirmed" && sevOf(e) === k).length;
   const byOutcome = (o: string) => found.filter((e) => diagnosticOutcome(e) === o).length;
+  const bySev = (k: SevF) => found.filter((e) => diagnosticOutcome(e) === "confirmed" && sevOf(e) === k).length;
   const sevSub = SEV_RANK.filter((k) => k !== "none" || bySev(k) > 0)
     .map((k) => `확정 ${k === "none" ? "위험도 미평가" : SEVL[k]} ${bySev(k)}`)
     .join(" · ");
   const estimates = SEV_RANK.filter((k) => k !== "none")
     .map((k) => {
       const count = found.filter((e) => diagnosticOutcome(e) === "review" && sevOf(e) === k).length;
-      return count ? `예상 ${SEVL[k]} ${count}` : "";
+      return count ? `검토 필요 ${SEVL[k]} ${count}` : "";
     })
     .filter(Boolean)
     .join(" · ");
@@ -122,12 +117,8 @@ function DashStrip({
         <div className={s.v} id="dSevN">
           {ready ? found.length : "—"}
         </div>
-        {ready && found.length ? (
-          <div className={s.stack} id="dSevStack" aria-hidden="true">
-            {SEV_RANK.map((k) => (bySev(k) ? <i key={k} style={{ flex: bySev(k), background: SEV_BAR[k] }} /> : null))}
-          </div>
-        ) : null}
         <div className={s.sub} id="dSevSub">
+          {/* 위험도 계약: 확정 분포와 예상(검토 필요) 분포를 섞지 않고 따로 적는다 */}
           {ready ? [sevSub, estimates].filter(Boolean).join(" · ") : "결과가 저장되면 셉니다"}
         </div>
       </div>
@@ -159,6 +150,166 @@ function DashStrip({
           {tokens ? `이 점검 · 입력 ${tokText(tokens.input)} · 출력 ${tokText(tokens.output)}` : "점검당 평균 —"}
         </div>
       </div>
+    </section>
+  );
+}
+
+/** 원 색(위험도). 정보성 · 미평가는 '없음'에 가까워 회색 */
+const SEV_RING: Readonly<Record<SevF, string>> = {
+  crit: "var(--ring-crit)",
+  hi: "var(--ring-hi)",
+  mid: "var(--ring-mid)",
+  lo: "var(--ring-lo)",
+  info: "var(--ring-gray)",
+  none: "var(--ring-gray-2)",
+};
+/** 진행 중 점검의 전송 통제 수를 다시 읽는 간격(ms). 끝난 점검은 한 번만 */
+const E2_RING_POLL_MS = 10_000;
+
+/**
+ * 요약 숫자 칸 아래 원형 게이지 4개(사용자 11/24, dashRings.tsx 설명). 이어 보는 점검 하나의 값이다. 서버 값이 없으면 '—'와
+ * 이유를 두고 지어내지 않는다. 발견 수는 결과가 저장된 뒤에만(보고서와 같은 원장), 검토 필요는 확정이 아니다(규칙 5).
+ */
+function DashRingRow({
+  found,
+  ready,
+  explore,
+  e2,
+  e2Note,
+  approvals,
+  selecting,
+}: {
+  /** 정상 대조를 뺀 발견 (결과 저장 전에는 ready=false) */
+  found: readonly RemediationEntry[];
+  ready: boolean;
+  /** 탐색 흐름 수(흐름이 없거나 아직 못 읽었으면 null) */
+  explore: { found: number; visited: number } | null;
+  /** E② 전송 수(못 읽었으면 null) */
+  e2: E2Counts | null;
+  /** e2 가 없을 때 이유 */
+  e2Note: string;
+  /** 승인 대기 수 (모르면 null) */
+  approvals: number | null;
+  /** 점검할 경로 선택 대기 중인가 */
+  selecting: boolean;
+}) {
+  const by = (o: string) => found.filter((e) => diagnosticOutcome(e) === o).length;
+  const total = found.length;
+  // ① 위험도: 확정된 것만 센다(diagnostic-candidate-severity 계약: 확정 분포엔 확정만). 후보의 예상 등급은 이 원에 넣지 않고
+  // '예상'이라는 말도 두지 않는다(사용자 11/24: 너무 별로). 후보(검토 필요) 수는 옆 '판정' 원에 있다
+  const sevSegs: RingSeg[] = SEV_RANK.map((k) => ({
+    key: k,
+    label: k === "none" ? "위험도 미평가" : SEVL[k],
+    value: found.filter((e) => diagnosticOutcome(e) === "confirmed" && sevOf(e) === k).length,
+    color: SEV_RING[k],
+  }));
+  // 범례: 심각 · 높음 · 중간 · 낮음은 0 이어도 늘 둔다(사용자 11/24), 정보성 · 미평가는 있을 때만
+  const always: readonly string[] = ["crit", "hi", "mid", "lo"];
+  const sevRows = sevSegs.filter((g) => always.includes(g.key) || g.value > 0);
+  const sumOf = (segs: readonly RingSeg[]) => segs.reduce((n, g) => n + g.value, 0);
+  // ② 판정
+  const confirmed = by("confirmed");
+  const review = by("review");
+  const undecided = by("unknown") + by("not_executed");
+  const verdictSegs: RingSeg[] = [
+    { key: "confirmed", label: "확정", value: confirmed, color: "var(--ring-crit)" },
+    { key: "review", label: "검토 필요", value: review, color: "var(--ring-lo)" },
+    { key: "undecided", label: "판단 불가", value: undecided, color: "var(--ring-gray)" },
+  ];
+  // ③ 탐색
+  const visitPct = explore && explore.found > 0 ? Math.round((explore.visited / explore.found) * 100) : null;
+  // ④ 전송 통제
+  const blocked = e2 ? e2.denied + e2.unsupported : 0;
+  const unsure = e2 ? e2.unknown + e2.transient : 0;
+  const e2Segs: RingSeg[] = e2
+    ? [
+        { key: "allowed", label: "허용", value: e2.allowed, color: "var(--ring-allow)" },
+        { key: "blocked", label: "막음", value: blocked, color: "var(--ring-block)" },
+        { key: "unsure", label: "결과 불명 · 실패", value: unsure, color: "var(--ring-gray)" },
+      ]
+    : [];
+  const waiting = [approvals ? `승인 대기 ${approvals}` : null, selecting ? "경로 선택 대기" : null].filter(Boolean);
+  const dash = "—";
+  let sevNote = "결과가 저장되면 셉니다";
+  if (ready && total) sevNote = "확정된 취약점의 위험도";
+  else if (ready) sevNote = "저장된 결과에 검토 대상이 없습니다(취약점이 없다는 뜻은 아닙니다)";
+  const e2Text = e2 ? "E② 가 받은 진단 요청(탐색 요청은 제외)" : e2Note;
+  return (
+    <section className={s.drings} aria-label="분포">
+      <RingCard
+        title="위험도"
+        ring={
+          <Ring
+            segs={sevSegs}
+            total={ready ? sumOf(sevSegs) : 0}
+            center={ready ? sumOf(sevSegs) : dash}
+            caption="확정"
+            label={
+              ready
+                ? `확정 ${sumOf(sevSegs)}건${sevRows.map((g) => ` · ${g.label} ${g.value}`).join("")}`
+                : "결과 저장 전"
+            }
+          />
+        }
+        legend={sevRows.map((g) => ({ key: g.key, label: g.label, value: g.value, color: g.color }))}
+        note={sevNote}
+      />
+      <RingCard
+        title="판정"
+        ring={
+          <Ring
+            segs={verdictSegs}
+            total={ready ? total : 0}
+            center={ready ? `${confirmed}/${total}` : dash}
+            caption="확정"
+            label={ready ? `확정 ${confirmed} · 검토 필요 ${review} · 판단 불가 ${undecided}` : "결과 저장 전"}
+          />
+        }
+        legend={ready ? verdictSegs.map((g) => ({ key: g.key, label: g.label, value: g.value, color: g.color })) : []}
+        note={ready ? "판단 불가 = 결과 불명 + 미실행" : "결과가 저장되면 셉니다"}
+      />
+      <RingCard
+        title="탐색"
+        ring={
+          <Ring
+            segs={
+              explore ? [{ key: "visited", label: "방문", value: explore.visited, color: "var(--ring-allow)" }] : []
+            }
+            total={explore ? explore.found : 0}
+            center={visitPct === null ? dash : `${visitPct}%`}
+            caption="방문"
+            label={explore ? `발견한 API ${explore.found} 중 방문 ${explore.visited}` : "탐색 기록 없음"}
+          />
+        }
+        legend={
+          explore
+            ? [
+                { key: "found", label: "발견한 API", value: explore.found },
+                { key: "visited", label: "방문", value: explore.visited, color: "var(--ring-allow)" },
+              ]
+            : []
+        }
+        note={explore ? "탐색이 찾은 API 중 직접 방문한 비율" : "탐색 흐름이 있는 점검에서 셉니다"}
+      />
+      <RingCard
+        title="전송 통제"
+        warn={waiting.length > 0}
+        ring={
+          <Ring
+            segs={e2Segs}
+            total={e2?.attempts ?? 0}
+            center={e2 ? e2.attempts : dash}
+            caption="진단 요청"
+            label={
+              e2
+                ? `진단 요청 ${e2.attempts} · 허용 ${e2.allowed} · 막음 ${blocked} · 결과 불명 · 실패 ${unsure}`
+                : e2Note
+            }
+          />
+        }
+        legend={e2Segs.map((g) => ({ key: g.key, label: g.label, value: g.value, color: g.color }))}
+        note={waiting.length ? <span className={s.warn}>{waiting.join(" · ")}</span> : e2Text}
+      />
     </section>
   );
 }
@@ -199,6 +350,15 @@ export function UrlDashboardLive() {
   const remFor = !rem.error && reportTask && rem.data && String(rem.data.task_id) === reportTask ? rem.data : null;
   const found = remFor ? dashFindings(remFor.entries) : [];
   const result = remFor && job ? jobResult(job, remFor.entries) : null;
+  // 전송 통제 원: E② 전송 기록 수(끝난 점검도 읽힌다). 시작한 점검만, 진행 중이면 쉬었다가 다시 읽는다
+  const e2Task = job?.started && job.task_id ? job.task_id : null;
+  const e2 = usePoll((signal) => getE2Flow(e2Task, undefined, signal), [e2Task], {
+    enabled: visible && !!e2Task,
+    intervalMs: ended ? 0 : E2_RING_POLL_MS,
+  });
+  let e2Note = "점검이 시작되면 셉니다";
+  if (e2Task && e2.error) e2Note = "전송 기록을 읽지 못했습니다";
+  else if (e2Task) e2Note = "전송 기록을 읽는 중";
   const [ff, setFf] = useState<SevF | "all">("all");
   const [findAll, setFindAll] = useState(false);
   const shown = ff === "all" ? found : found.filter((e) => sevOf(e) === ff);
@@ -211,6 +371,8 @@ export function UrlDashboardLive() {
   else if (found[0]) sel = { kind: "finding", id: found[0].entry_id };
   else if (first) sel = { kind: "approval", id: first.id };
 
+  // 다른 항목을 고르면 오른쪽 패널을 맨 위로(사용자 11/24)
+  const inspRef = useScrollTopOnChange<HTMLElement>(sel.kind === "job" ? "job" : `${sel.kind}:${sel.id}`);
   const host = handle ? urlHost(handle.input.target_url) : null;
   // 보낼 요청 승인 대기 줄: 사용자 승인 모드가 아니면 없음([]), 아직 못 읽었으면 모름(null)
   const pending = pendingRows(approvalsOn, a);
@@ -376,6 +538,17 @@ export function UrlDashboardLive() {
                 : null
             }
           />
+          <DashRingRow
+            found={found}
+            ready={!!remFor}
+            explore={
+              flow && job?.input.workflow_mode ? { found: flow.counts.found, visited: flow.counts.visited } : null
+            }
+            e2={e2Task && !e2.error ? (e2.data?.counts ?? null) : null}
+            e2Note={e2Note}
+            approvals={pending ? pending.length : null}
+            selecting={!!job && flow?.stage === "awaiting_selection"}
+          />
           <section className={s.sec} aria-labelledby="dTodoH">
             <div className={s.sh}>
               <div className={s["sh-t"]}>
@@ -460,7 +633,7 @@ export function UrlDashboardLive() {
             )}
           </section>
         </div>
-        <aside className={s.vi} id="dInsp" aria-label="선택한 항목 상세">
+        <aside className={s.vi} id="dInsp" ref={inspRef} aria-label="선택한 항목 상세">
           {insp}
         </aside>
         <PaneToggle />
