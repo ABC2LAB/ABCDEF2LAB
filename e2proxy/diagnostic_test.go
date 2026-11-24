@@ -34,7 +34,7 @@ func TestHTTPObservationBoundedIndependentProjection(t *testing.T) {
 		t.Fatal("observation ceiling lost")
 	}
 	first := result.Observations[0]
-	if first.Endpoint != "/allowed/{resource}" || first.StatusCode != 200 || !first.AuditComplete || len(first.Technologies) != 1 {
+	if first.Endpoint != "/allowed/{resource}" || first.ExactFunction || first.StatusCode != 200 || !first.AuditComplete || len(first.Technologies) != 1 {
 		t.Fatalf("wrong projection %+v", first)
 	}
 	raw, _ := json.Marshal(result)
@@ -46,6 +46,30 @@ func TestHTTPObservationBoundedIndependentProjection(t *testing.T) {
 	result.Observations[0].Technologies[0].Name = "changed"
 	if c.Result().Observations[0].Technologies[0].Name != "Caddy" {
 		t.Fatal("snapshot alias")
+	}
+}
+
+func TestHTTPObservationExactFunctionExcludesQueryAndResource(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("synthetic"))
+	}))
+	defer target.Close()
+	_, call := coreOpen(t, coreConfig(t, target.URL, &coreRecorder{}, 3))
+	for _, path := range []string{"/allowed", "/allowed?mode=other", "/allowed/other"} {
+		resp, _, err := call.Do(context.Background(), coreRequest(t, "GET", target.URL+path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}
+	result, err := call.Close(context.Background())
+	if err != nil || len(result.Observations) != 3 {
+		t.Fatalf("observations %d err=%v", len(result.Observations), err)
+	}
+	if !result.Observations[0].ExactFunction || result.Observations[1].ExactFunction || result.Observations[2].ExactFunction {
+		t.Fatalf("exact-function projection: %+v", result.Observations)
 	}
 }
 

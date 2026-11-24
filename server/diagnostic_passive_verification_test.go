@@ -11,6 +11,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/report"
 )
 
@@ -24,7 +25,7 @@ func storePassiveCandidate(t *testing.T, s *Server, taskID int64, claim, first, 
 		t.Fatal(err)
 	}
 	obs := func(ref, state string) e2proxy.HTTPObservation {
-		out := e2proxy.HTTPObservation{Sequence: 1, AttemptRef: ref, Method: "GET", Endpoint: "/documents", RuleRef: "approved-rule", Decision: "allowed", StatusCode: 200, ResponseComplete: true, ForwardAttempted: true, AuditComplete: true, ObservedAt: time.Now().UTC()}
+		out := e2proxy.HTTPObservation{Sequence: 1, AttemptRef: ref, Method: "GET", Endpoint: "/documents", ExactFunction: true, RuleRef: "approved-rule", Decision: "allowed", StatusCode: 200, ResponseComplete: true, ForwardAttempted: true, AuditComplete: true, ObservedAt: time.Now().UTC()}
 		if claim == "server_version_banner" {
 			out.Technologies = []e2proxy.HTTPTechnology{{Name: "Example", Version: state, Header: "Server"}}
 		} else {
@@ -43,7 +44,9 @@ func storePassiveCandidate(t *testing.T, s *Server, taskID int64, claim, first, 
 		class = "information_disclosure"
 	}
 	primary := call("passive-call-a", obs("passive-attempt-a", first))
-	primary["related_calls"] = []any{call("passive-call-b", obs("passive-attempt-b", second))}
+	if second != "" {
+		primary["related_calls"] = []any{call("passive-call-b", obs("passive-attempt-b", second))}
+	}
 	raw, err := json.Marshal(primary)
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +57,154 @@ func storePassiveCandidate(t *testing.T, s *Server, taskID int64, claim, first, 
 		t.Fatal(err)
 	}
 	return id
+}
+
+func TestPassiveV2ProductPostSaveAndRunningReportPostgres(t *testing.T) {
+	for _, tc := range []struct {
+		name, first, second          string
+		status                       int
+		confirmed, negative, pending int
+		sourceUnavailable            bool
+		cancelled                    bool
+		mixed                        bool
+	}{
+		{"confirmed", "nosniff_missing", "nosniff_missing", 200, 1, 0, 0, false, false, false},
+		{"mixed", "nosniff_missing", "nosniff_missing", 200, 1, 0, 1, false, false, true},
+		{"normal", "nosniff_present", "nosniff_present", 404, 0, 1, 0, false, false, false},
+		{"conflict", "nosniff_missing", "nosniff_present", 404, 0, 0, 1, false, false, false},
+		{"missing", "nosniff_missing", "", 404, 0, 0, 1, false, false, false},
+		{"source-unavailable", "nosniff_missing", "nosniff_missing", 503, 0, 0, 1, true, false, false},
+		{"cancelled", "nosniff_missing", "nosniff_missing", 404, 0, 0, 1, false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, f, request := trafficEvidenceServer(t)
+			stored, err := s.m.pg.GetFinding(f.FindingID)
+			if err != nil || stored.TaskID == nil {
+				t.Fatal(err)
+			}
+			taskID := *stored.TaskID
+			if err := saveDiagnosisVerificationPolicy(t.Context(), s.m.pg.DB, taskID, passiveRunRef); err != nil {
+				t.Fatal(err)
+			}
+			candidateID := storePassiveCandidate(t, s, taskID, "html_nosniff_missing", tc.first, "")
+			if tc.mixed {
+				storePassiveCandidate(t, s, taskID, "server_version_banner", "2.8", "")
+			}
+			rows, err := s.m.ResolveTask(fmt.Sprint(taskID)).Store.ListDiagnosticCandidates(taskID, passiveRunRef, 2)
+			wantCandidates := 1
+			if tc.mixed {
+				wantCandidates = 2
+			}
+			if err != nil || len(rows) != wantCandidates || rows[0].ID != candidateID {
+				t.Fatalf("candidate read n=%d err=%v", len(rows), err)
+			}
+			var raw struct {
+				Trusted e2runner.TrustedResult `json:"trusted"`
+			}
+			if err := json.Unmarshal([]byte(rows[0].Evidence), &raw); err != nil {
+				t.Fatal(err)
+			}
+			primary := raw.Trusted
+			primary.ProcessDrained, primary.ProxyDrained, primary.Execution.AuditComplete = true, true, true
+			calls := []e2runner.TrustedResult{primary}
+			if tc.second != "" {
+				other := primary
+				other.Call = e2proxy.CloneCallResult(primary.Call)
+				other.Call.CallRef = "call-after-save"
+				other.Call.Observations[0].AttemptRef = "attempt-after-save"
+				other.Call.Observations[0].HTMLSecurity = tc.second
+				calls = append(calls, other)
+			}
+			if tc.sourceUnavailable {
+				calls = nil
+			}
+			path := fmt.Sprintf("/api/report/diagnostic?task=%d", taskID)
+			for _, query := range []string{"&audience=internal", "&audience=shared", "&audience=internal&format=docx"} {
+				got := request("GET", path+query, "")
+				if got.Code != 409 {
+					t.Fatalf("running report %s: %d", query, got.Code)
+				}
+			}
+			review := request("GET", path+"&audience=internal&format=review-json", "")
+			if review.Code != 200 || !strings.Contains(review.Body.String(), "verification_not_complete") {
+				t.Fatalf("running review %d", review.Code)
+			}
+			state := requestApprovalRunState{RunRef: passiveRunRef, Phase: "closed", Outcome: "completed", DrainComplete: true}
+			if tc.cancelled {
+				state.Outcome = "cancelled"
+			}
+			var wg sync.WaitGroup
+			failures := make(chan error, 2)
+			for i := 0; i < 2; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					failures <- saveDiagnosisRunRecordGoal(t.Context(), s.m.pg.DB, taskID, state, nil, nil, nil, calls)
+				}()
+			}
+			wg.Wait()
+			close(failures)
+			for err := range failures {
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			var payload []byte
+			if err := s.m.pg.QueryRowContext(t.Context(), `SELECT payload FROM exploration_nodes WHERE exploration_id=(SELECT exploration_id FROM tasks WHERE id=$1) AND origin=$2`, taskID, diagnosisRunOrigin).Scan(&payload); err != nil {
+				t.Fatal(err)
+			}
+			var record diagnosisRunRecord
+			if err := json.Unmarshal(payload, &record); err != nil {
+				t.Fatal(err)
+			}
+			if record.Verification == nil || record.Verification.Version != diagnosisVerificationV2 || record.Verification.NonIDORConfirmed != tc.confirmed || record.Verification.NonIDORNegative != tc.negative || record.Verification.VerificationPending != tc.pending || record.Verification.SourceUnavailable != tc.sourceUnavailable {
+				t.Fatalf("v2 result %+v", record.Verification)
+			}
+			hash, err := s.reloadPassHash()
+			if err != nil {
+				t.Fatal(err)
+			}
+			token, err := signJWT(s.signingKey(hash))
+			if err != nil {
+				t.Fatal(err)
+			}
+			runRequest := httptest.NewRequest("GET", fmt.Sprintf("/api/tasks/%d/diagnosis-run", taskID), nil)
+			runRequest.Header.Set("Authorization", "Bearer "+token)
+			runResponse := httptest.NewRecorder()
+			s.serveDiagnosisRun(runResponse, runRequest, taskID)
+			var visible diagnosisRunRecord
+			if runResponse.Code != 200 || json.Unmarshal(runResponse.Body.Bytes(), &visible) != nil || visible.Verification == nil || visible.Verification.Version != diagnosisVerificationV2 || visible.Verification.NonIDORConfirmed != tc.confirmed {
+				t.Fatalf("diagnosis-run projection %d", runResponse.Code)
+			}
+			closedReview := request("GET", path+"&audience=internal&format=review-json", "")
+			if closedReview.Code != 200 || !strings.Contains(closedReview.Body.String(), record.Verification.Candidates[0].Result.Reason) {
+				t.Fatalf("closed review %d", closedReview.Code)
+			}
+			if tc.confirmed > 0 && (len(record.Verification.Candidates[0].Result.Sources) != 2 || !strings.Contains(closedReview.Body.String(), "scope_digest")) {
+				t.Fatal("independent source provenance missing")
+			}
+			got := request("GET", path+"&audience=internal", "")
+			if got.Code != tc.status {
+				t.Fatalf("closed report %d: %s", got.Code, got.Body.String())
+			}
+			if tc.confirmed > 0 {
+				if !strings.Contains(got.Body.String(), "HTML 문서 보안 헤더 누락") {
+					t.Fatal("missing confirmed entry")
+				}
+				if tc.mixed && strings.Contains(got.Body.String(), "Server 응답 헤더의 버전 노출") {
+					t.Fatal("unconfirmed candidate exported")
+				}
+				word := request("GET", path+"&audience=internal&format=docx", "")
+				if word.Code != 200 {
+					t.Fatalf("docx %d", word.Code)
+				}
+				shared := request("GET", path+"&audience=shared", "")
+				if shared.Code != 200 || strings.Contains(shared.Body.String(), "모델 주장") {
+					t.Fatalf("shared report %d", shared.Code)
+				}
+			}
+		})
+	}
 }
 
 func TestConfirmedReportProjectionKeepsE3Once(t *testing.T) {
