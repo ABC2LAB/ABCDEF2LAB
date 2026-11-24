@@ -254,6 +254,8 @@ export type EngineCoverageNode = {
   ip?: string;
   url?: string;
   port?: number;
+  /** 엔드포인트만: 경로 구조를 가린 표시값(`/`, `/{id}/{id}` …, docs/contracts/coverage-graph-display-path.md). 없으면 생략 */
+  display_path?: string;
 };
 /** child → parent 포함 관계 (endpoint→service→subdomain/ip→root_domain→company) */
 export type EngineCoverageEdge = { src: string; dst: string };
