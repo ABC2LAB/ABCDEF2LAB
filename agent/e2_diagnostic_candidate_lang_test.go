@@ -109,7 +109,8 @@ func TestForeignScriptFragments(t *testing.T) {
 	for _, f := range findings {
 		total += len(f.Fragments)
 	}
-	if len(findings) != 4 || total != languageFragmentsTotal || len(findings[2].Fragments) != 0 || len(findings[3].Fragments) != 0 {
+	if len(findings) != 4 || total != languageFragmentsTotal || len(findings[0].Fragments) != languageFragmentsPerField ||
+		len(findings[1].Fragments) != languageFragmentsPerField || len(findings[2].Fragments) != 0 || len(findings[3].Fragments) != 0 {
 		t.Fatalf("전체 상한(칸은 모두 남김): %+v", findings)
 	}
 	request := candidateLanguageRewriteRequest(findings, 1)
@@ -237,6 +238,13 @@ func TestCandidateLanguageMixedSavedWithFlag(t *testing.T) {
 	raw, _ := json.Marshal(c)
 	if !strings.Contains(string(raw), `"language_mixed":true`) || !strings.Contains(string(raw), `"language_rewrites":2`) {
 		t.Fatalf("저장 칸: %s", raw)
+	}
+	// 저장이 끝난 같은 후보를 또 내면 다시 쓰게 하지 않고 앞의 횟수로 저장한다(같은 후보에 요청이 끝없이 쌓이지 않음).
+	if isErr, text := call(candidateInput("관찰 근거", "소유자 검사를 넣습니다"+kanaText, mixedRationale)); isErr {
+		t.Fatalf("저장한 후보를 다시 냈는데 또 다시 쓰게 함: %q", text)
+	}
+	if len(store.candidates) != 2 || !store.candidates[1].LanguageMixed || store.candidates[1].LanguageRewrites != 2 {
+		t.Fatalf("같은 후보 다시 냄: %+v", store.candidates)
 	}
 }
 
