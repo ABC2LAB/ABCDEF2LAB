@@ -232,7 +232,13 @@ const APPROVAL_TONE: Readonly<Record<RequestApproval["state"], string>> = {
  * — 무엇을 보내는지 본 뒤에 정하게(예전 상자가 미리보기를 접지 않던 이유와 같다). 대기 줄이 위(먼저 온 것부터), 끝난 줄은
  * 아래(최근 것부터). 결정한 요청도 목록에 남아 무엇을 눌렀는지 볼 수 있다.
  */
-export function ApprovalQueue({ a, planTitle }: { a: Approvals; planTitle: (intentId: RequestApproval["intent_id"]) => string | undefined }) {
+export function ApprovalQueue({
+  a,
+  planTitle,
+}: {
+  a: Approvals;
+  planTitle: (intentId: RequestApproval["intent_id"]) => string | undefined;
+}) {
   const [open, setOpen] = useState<string | null>(null);
   if (!a.rows.length) return null;
   const at = (r: RequestApproval) => Date.parse(r.created_at) || 0;
