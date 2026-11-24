@@ -506,3 +506,92 @@ FROM (VALUES (-1, 8, 'ARTEX', 'owned'), (-2, 7, 'OTHER', 'owned'), (-3, 7, 'ARTE
 		t.Fatal("wrong approval scope or order")
 	}
 }
+
+// 저장된 흐름 기록의 엔드포인트가 많아도(#898 회차 2: 58개 → 보고서 422, #908) 보고서 조회 API가 내부용·공유용 HTML과
+// Word, 검토 목록(review-json)을 모두 200으로 내보내고 행 수가 맞는다. report 패키지 고정 시험
+// (TestWorkflowReportEndpointLimits)이 보는 생성 단계에 더해 DB 저장 기록 → 조회 API 구간을 고정한다. 보고서 경로는
+// 합성 회차가 보고서를 내보내지 않아 이 고정 시험으로 확인한다(CONTRIBUTING.md '커밋과 PR' 8).
+func TestDiagnosticWorkflowReportManyStoredEndpoints(t *testing.T) {
+	const endpoints = 58
+	s, f, request := trafficEvidenceServer(t)
+	stored, err := s.m.pg.GetFinding(f.FindingID)
+	if err != nil || stored.TaskID == nil {
+		t.Fatal("저장된 작업 조회 실패", err)
+	}
+	task := *stored.TaskID
+	ctx := t.Context()
+	if err := diagnosisflow.Migrate(ctx, s.m.pg.DB); err != nil {
+		t.Fatal(err)
+	}
+	jobID := fmt.Sprintf("many-endpoints-%d", task)
+	// 작업 삭제(trafficEvidenceServer 정리)보다 먼저 흐름 기록을 지운다. 정리는 등록 역순으로 돈다.
+	t.Cleanup(func() {
+		for _, query := range []string{`DELETE FROM diagnosis_workflow_events WHERE job_id=$1`, `DELETE FROM diagnosis_workflows WHERE job_id=$1`} {
+			if _, err := s.m.pg.Exec(query, jobID); err != nil {
+				t.Logf("흐름 기록 정리 실패: %v", err)
+			}
+		}
+	})
+	snapshot := diagnosisflow.Snapshot{
+		Format: diagnosisflow.Version, JobID: jobID, TaskID: strconv.FormatInt(task, 10), Revision: 1,
+		RunRef: "many-endpoints", Mode: diagnosisflow.Manual, Stage: "completed",
+	}
+	for i := 1; i <= endpoints; i++ {
+		snapshot.Endpoints = append(snapshot.Endpoints, diagnosisflow.Endpoint{Method: "GET", Path: fmt.Sprintf("/stored-endpoint-%03d", i)})
+	}
+	if err := (diagnosisflow.Postgres{DB: s.m.pg.DB}).Create(ctx, diagnosisflow.Record{Owner: "ARTEX", Snapshot: snapshot}); err != nil {
+		t.Fatal(err)
+	}
+	// 검토 목록에는 업무 규칙 미확인으로 보류된 IDOR 후보 하나만 실린다(TestDiagnosticReportBusinessRuleReview와 같은 조건).
+	observation := e2proxy.HTTPObservation{
+		Sequence: 1, AttemptRef: "synthetic-attempt", Method: "GET", Endpoint: "/sensitive-fixture-path",
+		Decision: "allowed", StatusCode: 200, ResponseComplete: true, ForwardAttempted: true,
+		AuditComplete: true, ObservedAt: time.Now().UTC(),
+	}
+	deferred := diagnosticServerCandidateWithClass(t, s, task, "completed", "IDOR", observation)
+	diagnosticServerCandidate(t, s, task, "completed", observation)
+
+	path := fmt.Sprintf("/api/report/diagnostic?task=%d", task)
+	for _, c := range []struct {
+		query, row string
+		shared     bool
+	}{
+		{"&audience=internal", "/stored-endpoint-", false},
+		{"&audience=internal&format=docx", "/stored-endpoint-", false},
+		{"", "[공유용 경로 비공개]", true},
+		{"&format=docx", "[공유용 경로 비공개]", true},
+	} {
+		response := request("GET", path+c.query, "")
+		if response.Code != 200 {
+			t.Fatalf("%q 상태 %d", c.query, response.Code)
+		}
+		body := response.Body.String()
+		if strings.Contains(c.query, "docx") {
+			body = string(wordParts(t, response.Body.Bytes())["word/document.xml"])
+		}
+		if got := strings.Count(body, c.row); got != endpoints {
+			t.Errorf("%q 엔드포인트 행 %d, 기대 %d", c.query, got, endpoints)
+		}
+		if c.shared && strings.Contains(body, "/stored-endpoint-") {
+			t.Errorf("%q 공유용에 저장 경로가 보임", c.query)
+		}
+	}
+
+	response := request("GET", path+"&format=review-json&audience=internal", "")
+	if response.Code != 200 {
+		t.Fatalf("검토 목록 상태 %d", response.Code)
+	}
+	var decoded struct {
+		TaskID  string `json:"task_id"`
+		Entries []struct {
+			ID, Status, Reason string
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.TaskID != strconv.FormatInt(task, 10) || len(decoded.Entries) != 1 ||
+		decoded.Entries[0].ID != fmt.Sprintf("candidate-%d", deferred) || decoded.Entries[0].Reason != "business_rule_unverified" {
+		t.Fatalf("검토 목록 행이 맞지 않음: %+v", decoded)
+	}
+}

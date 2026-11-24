@@ -72,6 +72,7 @@ npm run build:static
    - 탐색 경계: `exploreboundary/`, `exploresandbox/`, `exploration/`
    - 설치: `cmd/first-controlled-diagnosis/product_install*`, `deploy/product/`, `deploy/engine-isolated/`, `install.sh`, `update.sh`, `reset-password.sh`, `docker-compose.yml`, `Dockerfile*`
    - DB 스키마: `db/*.sql`
+8. 보고서 내보내기 경로(`report/`, `server/diagnostic_*`, `server/report_*`, `cmd/first-controlled-diagnosis/report.go`)는 `합성 통과` 라벨 대신 큰 회차 고정 시험으로 확인합니다. 지금 합성 회차는 보고서를 내보내지 않기 때문입니다. 고정 시험은 `report` 패키지 `TestWorkflowReportEndpointLimits`(엔드포인트 58·256개로 내부용·공유용 HTML·Word 생성, 257개 거부)와 `server` 패키지 `TestDiagnosticWorkflowReportManyStoredEndpoints`(엔드포인트 58개가 저장된 흐름 기록으로 보고서 조회 API의 내부용·공유용 HTML·Word와 검토 목록 `review-json`이 모두 200이고 행 수가 맞음)입니다. 이 경로를 바꾼 PR은 이 시험이 CI에서 통과해야 하고, 보고서 상한·형식을 바꾸면 고정 시험도 같은 PR에서 함께 고칩니다.
 
 루트 설정·CI·Compose·라이선스 변경은 저장소 관리자와 조율합니다.
 자동 도구 서명이나 개인 작업 세션 링크를 커밋·PR 본문에 넣지 않습니다.
