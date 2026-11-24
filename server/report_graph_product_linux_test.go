@@ -482,11 +482,14 @@ func TestProductReportGraphsOwnedPostgres(t *testing.T) {
 	t.Run("assets-and-edges", func(t *testing.T) {
 		assertReadOnly(t, func() {
 			code, raw := request("GET", taskPath+"/coverage-graph", session.Token)
-			var g db.CoverageGraphData
+			var g coverageGraphPublic
 			if code != 200 || json.Unmarshal(raw, &g) != nil || len(g.Nodes) != 2 || len(g.Edges) != 1 || strings.Contains(string(raw), "private-token") {
 				t.Fatal("실제 그래프 조회 실패", code, string(raw))
 			}
 			for _, n := range g.Nodes {
+				if (n.AssetID == endpointID && n.DisplayPath != "/{id}") || (n.AssetID != endpointID && n.DisplayPath != "") || n.URL != target.URL || n.Label != target.URL {
+					t.Fatal("엔드포인트의 표시 경로 또는 기존 origin 계약 불일치")
+				}
 				if n.AssetID == foreignID {
 					t.Fatal("다른 Job 자산 노출")
 				}
@@ -525,7 +528,7 @@ func TestProductReportGraphsOwnedPostgres(t *testing.T) {
 			if !ids[fmt.Sprintf("a:%d", serviceID)] || !ids[fmt.Sprintf("a:%d", endpointID)] || ids[fmt.Sprintf("a:%d", foreignID)] || len(tasks) != 1 {
 				t.Fatal("KG v1 자산 집합", string(raw))
 			}
-			if strings.Contains(string(raw), "private-token") || strings.Contains(string(raw), strings.TrimPrefix(target.URL, "http://")) {
+			if strings.Contains(string(raw), "private-token") || strings.Contains(string(raw), strings.TrimPrefix(target.URL, "http://")) || strings.Contains(string(raw), "display_path") {
 				t.Fatal("KG v1 응답에 URL 원문")
 			}
 		})
