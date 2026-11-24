@@ -102,7 +102,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 	}
 	in.ExposedCredentialValues = 0
 	if in.Workflow != nil {
-		if in.Workflow.Format != diagnosisflow.Version || in.Workflow.TaskID != strconv.FormatInt(in.TaskID, 10) || len(in.Workflow.Endpoints) > 32 || len(in.WorkflowApprovals) > 100 {
+		if in.Workflow.Format != diagnosisflow.Version || in.Workflow.TaskID != strconv.FormatInt(in.TaskID, 10) || len(in.Workflow.Endpoints) > diagnosisflow.MaxWorkflowEndpoints || len(in.WorkflowApprovals) > 100 {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		raw, _ := json.Marshal(in.Workflow)

@@ -1,9 +1,12 @@
 package report
 
 import (
-	"github.com/Autumn-27/artex/diagnosisflow"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/Autumn-27/artex/diagnosisflow"
 )
 
 func TestWorkflowReportTaskBindingEscapingAndSharedProjection(t *testing.T) {
@@ -25,5 +28,54 @@ func TestWorkflowReportTaskBindingEscapingAndSharedProjection(t *testing.T) {
 	in.Workflow.TaskID = "8"
 	if _, err = DiagnosticHTML(in); err == nil {
 		t.Fatal("cross-task workflow attached")
+	}
+}
+
+func TestWorkflowReportEndpointLimits(t *testing.T) {
+	for _, count := range []int{58, diagnosisflow.MaxWorkflowEndpoints} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			in := diagnosticFixture()
+			in.Workflow = &diagnosisflow.Snapshot{Format: diagnosisflow.Version, TaskID: "7", Mode: diagnosisflow.Manual, Stage: "completed"}
+			for i := 1; i <= count; i++ {
+				in.Workflow.Endpoints = append(in.Workflow.Endpoints, diagnosisflow.Endpoint{
+					Method: "GET", Path: fmt.Sprintf("/stored-endpoint-%03d", i),
+				})
+			}
+
+			for _, shared := range []bool{false, true} {
+				in.Shared = shared
+				html, err := DiagnosticHTML(in)
+				if err != nil {
+					t.Fatalf("HTML (shared=%t): %v", shared, err)
+				}
+				docx, err := DiagnosticDOCX(in)
+				if err != nil {
+					t.Fatalf("DOCX (shared=%t): %v", shared, err)
+				}
+				word := readWord(t, docx)["word/document.xml"]
+				row := "/stored-endpoint-"
+				if shared {
+					row = "[공유용 경로 비공개]"
+					if strings.Contains(string(html), "/stored-endpoint-") || strings.Contains(string(word), "/stored-endpoint-") {
+						t.Fatal("shared export exposed stored paths")
+					}
+				}
+				if got := strings.Count(string(html), row); got != count {
+					t.Errorf("HTML (shared=%t) shows %d endpoint rows, want %d", shared, got, count)
+				}
+				if got := strings.Count(string(word), row); got != count {
+					t.Errorf("DOCX (shared=%t) shows %d endpoint rows, want %d", shared, got, count)
+				}
+			}
+		})
+	}
+
+	in := diagnosticFixture()
+	in.Workflow = &diagnosisflow.Snapshot{
+		Format: diagnosisflow.Version, TaskID: "7",
+		Endpoints: make([]diagnosisflow.Endpoint, diagnosisflow.MaxWorkflowEndpoints+1),
+	}
+	if _, err := PrepareDiagnostic(in); !errors.Is(err, ErrExportBlocked) {
+		t.Fatalf("above installation limit: %v", err)
 	}
 }
