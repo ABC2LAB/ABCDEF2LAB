@@ -341,6 +341,48 @@ export function WorkflowNotice() {
   );
 }
 
+/** 일시정지가 가능한 흐름 단계(서버 diagnosisflow controller 의 pause 조건과 같다). */
+const PAUSABLE_STAGES: readonly string[] = ["crawling", "diagnosing"];
+/** 서버가 받는 명령 기록 상한(32) — 일시정지는 31개부터 거부되고 재개는 늘 받는다(diagnosisflow controller). */
+const PAUSE_COMMAND_LIMIT = 31;
+
+/**
+ * 일시정지 · 다시 시작 버튼 (탐색 · 심화 진단 중에만). 흐름 API(POST /api/product/workflows/{id}/pause · resume)만 쓴다 —
+ * 점검 제어 API(/api/tasks/{id}/control)의 일시정지는 회차를 끝내는 중지라 부르지 않는다(개발 계획 2026-11-24 사용자 결정,
+ * 11/24 화면 VAmPI 회차 2: 일시정지 30초 동안 대상 송신 0, 재개 뒤 바로 다시 송신). 결과는 서버 흐름 스냅숏(paused)으로만 그린다.
+ */
+export function PauseButton() {
+  // 목록에서 다시 연 점검(조회 결속)도 누를 수 있다 — 범위 선택과 같다(사용자 2026-11-22, F16). 서버가 흐름 결속 · 주체를 다시 본다
+  const flow = useUrl((st) => st.flow),
+    busy = useUrl((st) => st.flowBusy),
+    verified = useUrl((st) => st.flowVerified),
+    uncertain = useUrl((st) => st.flowUncertain),
+    job = useUrl((st) => st.job),
+    jobVerified = useUrl((st) => st.verified),
+    jobUncertain = useUrl((st) => st.uncertain);
+  const active = job && ["preparing", "running"].includes(job.state) && flow && PAUSABLE_STAGES.includes(flow.stage);
+  if (!active) return null;
+  return (
+    <button
+      className={s.btn}
+      type="button"
+      disabled={
+        !verified ||
+        uncertain ||
+        busy ||
+        !jobVerified ||
+        jobUncertain ||
+        (!flow.paused && flow.commands.length >= PAUSE_COMMAND_LIMIT)
+      }
+      aria-pressed={flow.paused}
+      onClick={() => void runWorkflowAction(flow.paused ? "resume" : "pause")}
+    >
+      <Icon name={flow.paused ? "play" : "pause"} />
+      <span>{flow.paused ? "다시 시작" : "일시정지"}</span>
+    </button>
+  );
+}
+
 /**
  * 점검 종료(중지) 버튼 + 확인 상자 (시안 lEnd · lConfirm). 종료는 되돌릴 수 없어 한 번 더 묻는다.
  * "종료"(점검 진행)는 빨간 버튼, "점검 취소"(자산 탐색 · 범위 확인)는 시안처럼 보통 버튼이다.
@@ -350,6 +392,7 @@ export function useStopConfirm(label: "종료" | "점검 취소"): { button: Rea
   const g = useUrlGates();
   const jobUncertain = useUrl((st) => st.uncertain);
   const jobVerified = useUrl((st) => st.verified);
+  const flow = useUrl((st) => st.flow);
   const [open, setOpen] = useState(false);
   const opener = useRef<HTMLButtonElement>(null);
   const yes = useRef<HTMLButtonElement>(null);
@@ -357,6 +400,8 @@ export function useStopConfirm(label: "종료" | "점검 취소"): { button: Rea
     if (open) yes.current?.focus();
   }, [open]);
   const verb = label === "종료" ? "종료" : "취소";
+  // 일시정지는 탐색 흐름이 있는 점검의 탐색 · 심화 진단 중에만 있다 (PauseButton 과 같은 조건)
+  const canPause = !!flow && PAUSABLE_STAGES.includes(flow.stage);
   const button = (
     <>
       {jobUncertain || !jobVerified ? <UrlRefreshButton small={false} /> : null}
@@ -381,7 +426,9 @@ export function useStopConfirm(label: "종료" | "점검 취소"): { button: Rea
         <ul>
           <li>새 요청을 보내지 않고, 응답을 받지 못한 요청은 전송 불명으로 기록합니다.</li>
           <li>{`모은 증거와 발견은 남기고, ${verb} 시점까지의 결과로 보고서를 만듭니다.`}</li>
-          <li>끝내지 못한 항목은 미실행으로 남깁니다.</li>
+          <li>
+            {`끝내지 못한 항목은 미실행으로 남깁니다.${canPause ? " 나중에 이어 하려면 일시정지를 쓰세요." : ""}`}
+          </li>
         </ul>
         <div className={s.acts}>
           <button
@@ -1002,6 +1049,7 @@ export function WorkflowCrawlLive() {
         }
         acts={
           <>
+            <PauseButton />
             {stop.button}
             <InspOpenButton>기록 상세</InspOpenButton>
             {/* [탐색 결과] · [진단 결과▾](예시 화면 진입)는 뺐다(사용자 11/17). 화면 자체는 남아 주소(#explore 등)로 열린다 */}
