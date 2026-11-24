@@ -3399,16 +3399,12 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
     expect(acct).toHaveTextContent("등록됨 · 로그인해서 점검");
     const decl = screen.getByRole("region", { name: "정책 선언" });
     expect(await within(decl).findByText("있음 · 소유자 전용 종류 1개")).toBeInTheDocument();
-    // 세부 관리는 이 자리에서 펼친다(계정 분류 화면에 안 감)
-    const toggle = within(acct).getByRole("button", { name: "자세히 관리" });
-    fireEvent.click(toggle);
-    expect(await within(acct).findByRole("region", { name: "대상 로그인 방식" })).toBeInTheDocument();
-    // A · B 말고 다른 계정이 없으면 '다른 계정' 칸은 두지 않는다
-    expect(within(acct).queryByRole("region", { name: "다른 계정" })).toBeNull();
-    expect(acct).toHaveTextContent("비밀번호 · 토큰 · 세션 값은 화면에 남기지 않고 서버 보호 파일로만 보냅니다.");
+    // 로그인 방식은 같은 상자 맨 위에 늘 있다(사용자 11/24: 시험 계정 말고 로그인 방식도). [자세히 관리]는 없다
+    expect(
+      within(box.getByRole("region", { name: "대상 로그인 방식" })).getByLabelText("로그인 경로 (POST)"),
+    ).toBeInTheDocument();
+    expect(within(acct).queryByRole("button", { name: "자세히 관리" })).toBeNull();
     expect(goTo).not.toHaveBeenCalledWith("classify");
-    fireEvent.click(within(acct).getByRole("button", { name: "닫기" }));
-    expect(within(acct).queryByRole("region", { name: "대상 로그인 방식" })).toBeNull();
     fireEvent.click(within(decl).getByRole("button", { name: "정책 선언" }));
     expect(goTo).toHaveBeenCalledWith("declaration");
     expect(useWb.getState().focusTarget?.id).toBe(TARGET_ID);

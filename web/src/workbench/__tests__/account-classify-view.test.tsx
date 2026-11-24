@@ -357,7 +357,7 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
     expect(await screen.findByLabelText("로그인 경로 (POST)")).toHaveValue("/session/new");
     expect(screen.getByLabelText("응답 JSON 칸 (점으로 구분)")).toHaveValue("data.access");
     expect(screen.getByLabelText("헤더 값 앞붙임 (선택)")).toHaveValue("Token ");
-    expect(loginSection().getByText(/저장된 로그인 방식이 있습니다/)).toBeInTheDocument();
+    expect(loginSection().getByText(/저장됨 · 바꾸면 다음 점검부터/)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("로그인 경로 (POST)"), { target: { value: "/session/start" } });
     fireEvent.click(screen.getByRole("button", { name: "로그인 방식 저장" }));
     await screen.findByText("저장했습니다.");

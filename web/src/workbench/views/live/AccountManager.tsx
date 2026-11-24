@@ -8,7 +8,7 @@
 // ※ §8 fail-closed: 서버 분류 'test'(승인된 시험)만 시험 계정. real · 미표시 · 판단 불가는 실계정 취급.
 // ※ 쓰기: 등록(label) · 시험 표시(mark-test, 진술 동의 필요) · 표시 해제(unmark) · 자격 등록 · 로그인 방식 저장.
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import {
@@ -16,21 +16,15 @@ import {
   accountWriteFailureText,
   type ClassifiedAccount,
   classLabel,
-  EMPTY_TARGET_LOGIN,
   getAccounts,
-  getTargetLogin,
   MIN_USABLE_PASSWORD_BYTES,
   markTestAccount,
   type ProductTargetRef,
-  parseCookieNames,
   passwordTooShortForRun,
   setAccountCredential,
-  setTargetLogin,
   summarizeAccounts,
-  type TargetLogin,
   unmarkAccount,
   validAccountCredential,
-  validTargetLogin,
 } from "../../live/accounts";
 import { confirmationPlanOf } from "../../live/confirmationPlan";
 import { getDeclaration } from "../../live/declaration";
@@ -59,7 +53,6 @@ export function AccountManager({
   owner?: string;
   cross?: string;
 }) {
-  const uid = useId();
   // 부르는 쪽이 렌더마다 새 객체를 넘겨도 같은 대상이면 다시 읽지 않는다
   const { id: targetId, origin: targetOrigin, state: targetState } = target;
   const tref = useMemo<ProductTargetRef>(
@@ -93,13 +86,6 @@ export function AccountManager({
   const [busy, setBusy] = useState(false);
   const [writeError, setWriteError] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
-  // 대상 로그인 방식: 서버 저장값(null = 미설정)과 입력 중 값. 자격 값이 없는 설정이라 상태에 둔다.
-  const [login, setLogin] = useState<TargetLogin | null>(null);
-  const [loginDraft, setLoginDraft] = useState<TargetLogin>(EMPTY_TARGET_LOGIN);
-  const [cookieText, setCookieText] = useState("");
-  const [loginState, setLoginState] = useState<"loading" | "ready" | "failed">("loading");
-  const [loginError, setLoginError] = useState("");
-  const [loginSaved, setLoginSaved] = useState(false);
   // 자격 입력 칸을 연 계정 라벨. 칸 값은 상태가 아니라 DOM(비제어 입력)에만 있다.
   const [credentialFor, setCredentialFor] = useState<string | null>(null);
   // 자격 등록 뒤 안내(계정 라벨과 바이트 하한만 담는다, 값 없음). 서버는 짧은 비밀번호도 저장해 목록은 '자격 등록됨'이 되므로
@@ -136,33 +122,6 @@ export function AccountManager({
     };
   }, [tref]);
 
-  // 고른 대상의 로그인 방식(읽기). 대상이 바뀌면 입력을 비우고 다시 읽는다. 형식 밖 응답은 '미설정'이 아니라 읽기 실패다.
-  useEffect(() => {
-    let live = true;
-    setLogin(null);
-    setLoginDraft(EMPTY_TARGET_LOGIN);
-    setCookieText("");
-    setLoginError("");
-    setLoginSaved(false);
-    setLoginState("loading");
-    getTargetLogin(tref.id)
-      .then((l) => {
-        if (!live) return;
-        setLogin(l);
-        if (l) {
-          setLoginDraft(l);
-          setCookieText(l.cookies.join(", "));
-        }
-        setLoginState("ready");
-      })
-      .catch(() => {
-        if (live) setLoginState("failed");
-      });
-    return () => {
-      live = false;
-    };
-  }, [tref]);
-
   // 위 로그인 상자가 저장한 뒤 목록을 다시 읽는다(응답은 지금 대상일 때만)
   function reloadAccounts() {
     const t = tref;
@@ -175,35 +134,6 @@ export function AccountManager({
       .catch(() => {
         if (current.current === t.id) setAccountsFailed(true);
       });
-  }
-
-  const draftLogin: TargetLogin = { ...loginDraft, cookies: parseCookieNames(cookieText) };
-  const editLogin = (patch: Partial<TargetLogin>) => {
-    setLoginDraft((d) => ({ ...d, ...patch }));
-    setLoginSaved(false);
-  };
-
-  // 로그인 방식 저장. 응답은 시작한 대상이 아직 화면 대상일 때만 반영한다(아래 doWrite 와 같은 귀속 규칙).
-  function saveLogin() {
-    if (busy) return;
-    const t = tref;
-    const draft = draftLogin;
-    setBusy(true);
-    setLoginError("");
-    setLoginSaved(false);
-    setTargetLogin(t.id, draft)
-      .then((saved) => {
-        if (current.current !== t.id) return;
-        setLogin(saved);
-        setLoginDraft(saved);
-        setCookieText(saved.cookies.join(", "));
-        setLoginSaved(true);
-        onChanged?.();
-      })
-      .catch((e: unknown) => {
-        if (current.current === t.id) setLoginError(accountWriteFailureText(e));
-      })
-      .finally(() => setBusy(false));
   }
 
   // 자격 등록. 칸 값은 여기서 한 번 읽고 곧바로 비운다(보내지 않는 경우도 — 화면·DOM 에 남기지 않는다). 값은 요청 본문에만
@@ -285,161 +215,6 @@ export function AccountManager({
           }}
         />
       ) : null}
-      <section className={s.isec} aria-label="대상 로그인 방식">
-        <h2>대상 로그인 방식</h2>
-        {loginState === "loading" ? <p className={s.empty}>불러오는 중…</p> : null}
-        {loginState === "failed" ? <p className={s.empty}>로그인 방식을 불러오지 못했습니다.</p> : null}
-        {loginState === "ready" ? (
-          <>
-            <p className={s.help}>
-              {login
-                ? "저장된 로그인 방식이 있습니다. 바꾸면 다음 실행부터 씁니다."
-                : "저장된 로그인 방식이 없습니다 — 실행이 시험 계정으로 로그인하지 않습니다."}{" "}
-              실행에는 로그인 방식이 있고, 시험 계정으로 표시되고, 자격이 등록된 계정만 쓰입니다. 로그인 경로는 이
-              대상의 승인 경로 안이어야 합니다(서버 확인). 자격 값은 여기 넣지 않습니다.
-            </p>
-            <div className={s.two}>
-              <div className={s.field}>
-                <label className={s.lbl} htmlFor={`${uid}-loginPath`}>
-                  로그인 경로 (POST)
-                </label>
-                <input
-                  id={`${uid}-loginPath`}
-                  className={s.inp}
-                  value={loginDraft.path}
-                  onChange={(e) => editLogin({ path: e.target.value })}
-                  placeholder="/ 로 시작 · query 없이"
-                  spellCheck={false}
-                />
-              </div>
-              <div className={s.field}>
-                <label className={s.lbl} htmlFor={`${uid}-loginFormat`}>
-                  본문 형식
-                </label>
-                <select
-                  id={`${uid}-loginFormat`}
-                  className={s.inp}
-                  value={loginDraft.format}
-                  onChange={(e) => editLogin({ format: e.target.value === "form" ? "form" : "json" })}
-                >
-                  <option value="json">JSON</option>
-                  <option value="form">form (x-www-form-urlencoded)</option>
-                </select>
-              </div>
-              <div className={s.field}>
-                <label className={s.lbl} htmlFor={`${uid}-loginUsernameField`}>
-                  사용자명 칸 이름
-                </label>
-                <input
-                  id={`${uid}-loginUsernameField`}
-                  className={s.inp}
-                  value={loginDraft.usernameField}
-                  onChange={(e) => editLogin({ usernameField: e.target.value })}
-                  spellCheck={false}
-                />
-              </div>
-              <div className={s.field}>
-                <label className={s.lbl} htmlFor={`${uid}-loginPasswordField`}>
-                  비밀번호 칸 이름
-                </label>
-                <input
-                  id={`${uid}-loginPasswordField`}
-                  className={s.inp}
-                  value={loginDraft.passwordField}
-                  onChange={(e) => editLogin({ passwordField: e.target.value })}
-                  spellCheck={false}
-                />
-              </div>
-              <div className={s.field}>
-                <label className={s.lbl} htmlFor={`${uid}-loginSessionKind`}>
-                  세션 위치
-                </label>
-                <select
-                  id={`${uid}-loginSessionKind`}
-                  className={s.inp}
-                  value={loginDraft.sessionKind}
-                  onChange={(e) => editLogin({ sessionKind: e.target.value === "cookies" ? "cookies" : "header" })}
-                >
-                  <option value="header">응답 JSON 칸 → 요청 헤더</option>
-                  <option value="cookies">쿠키</option>
-                </select>
-              </div>
-              {loginDraft.sessionKind === "cookies" ? (
-                <div className={s.field}>
-                  <label className={s.lbl} htmlFor={`${uid}-loginCookies`}>
-                    세션 쿠키 이름 (쉼표로 구분 · 최대 8개)
-                  </label>
-                  <input
-                    id={`${uid}-loginCookies`}
-                    className={s.inp}
-                    value={cookieText}
-                    onChange={(e) => {
-                      setCookieText(e.target.value);
-                      setLoginSaved(false);
-                    }}
-                    spellCheck={false}
-                  />
-                </div>
-              ) : (
-                <>
-                  <div className={s.field}>
-                    <label className={s.lbl} htmlFor={`${uid}-loginJsonField`}>
-                      응답 JSON 칸 (점으로 구분)
-                    </label>
-                    <input
-                      id={`${uid}-loginJsonField`}
-                      className={s.inp}
-                      value={loginDraft.jsonField}
-                      onChange={(e) => editLogin({ jsonField: e.target.value })}
-                      spellCheck={false}
-                    />
-                  </div>
-                  <div className={s.field}>
-                    <label className={s.lbl} htmlFor={`${uid}-loginHeader`}>
-                      요청 헤더 이름
-                    </label>
-                    <input
-                      id={`${uid}-loginHeader`}
-                      className={s.inp}
-                      value={loginDraft.header}
-                      onChange={(e) => editLogin({ header: e.target.value })}
-                      spellCheck={false}
-                    />
-                  </div>
-                  <div className={s.field}>
-                    <label className={s.lbl} htmlFor={`${uid}-loginPrefix`}>
-                      헤더 값 앞붙임 (선택)
-                    </label>
-                    <input
-                      id={`${uid}-loginPrefix`}
-                      className={s.inp}
-                      value={loginDraft.prefix}
-                      onChange={(e) => editLogin({ prefix: e.target.value })}
-                      spellCheck={false}
-                    />
-                  </div>
-                </>
-              )}
-            </div>
-            <div className={s.now}>
-              <button
-                className={s.btn}
-                type="button"
-                disabled={busy || !validTargetLogin(draftLogin)}
-                onClick={saveLogin}
-              >
-                로그인 방식 저장
-              </button>
-              {loginSaved ? <span role="status">저장했습니다.</span> : null}
-            </div>
-            {loginError ? (
-              <p className={s.empty} role="alert">
-                {loginError}
-              </p>
-            ) : null}
-          </>
-        ) : null}
-      </section>
 
       {/* 다른 계정: 시험 계정 A · B 는 위 로그인 상자에서 다 한다(자격 · 표시 해제 · 시험 표시, 사용자 11/24). 여기는 그 밖에
           등록돼 있는 계정만 — 없으면 이 칸을 두지 않는다. 숫자 칸 · 긴 설명 · 라벨 적어 등록하는 칸은 뺐다 */}

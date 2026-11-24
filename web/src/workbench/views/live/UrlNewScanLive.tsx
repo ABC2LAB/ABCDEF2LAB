@@ -37,7 +37,6 @@ import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
 import { CloseInspButton, HelpTip, InspOpenButton, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { AccountManager } from "./AccountManager";
 import { ApprovedWriteNotice } from "./ApprovedWriteNotice";
 import { ExternalModelSettings } from "./ExternalModelSettings";
 import { QuickTestAccount } from "./QuickTestAccount";
@@ -362,10 +361,6 @@ export function UrlNewScanLive() {
       controller.abort();
     };
   }, [tv, consentKey]);
-  // [자세히 관리]로 이 자리에서 계정 분류 화면과 같은 관리(로그인 방식 · 등록 · 시험 표시 · 해제 · 자격)를 펼친다(사용자 11/24).
-  // 대상이 바뀌면 닫는다
-  const [acctOpenFor, setAcctOpenFor] = useState<string | null>(null);
-  const acctOpen = !!approvedTargetId && acctOpenFor === approvedTargetId;
   let tvOrigin = "";
   try {
     tvOrigin = tv ? new URL(tv).origin : "";
@@ -818,35 +813,6 @@ export function UrlNewScanLive() {
                     onAdded={() => setAccountRevision((n) => n + 1)}
                   />
                   {acctBody}
-                  {approvedTargetId ? (
-                    <div className={s.acts}>
-                      <button
-                        className={cx(s.btn, s.sm)}
-                        type="button"
-                        aria-expanded={acctOpen}
-                        onClick={() => setAcctOpenFor(acctOpen ? null : approvedTargetId)}
-                      >
-                        {acctOpen ? "닫기" : "자세히 관리"}
-                      </button>
-                    </div>
-                  ) : null}
-                  {approvedTargetId && acctOpen ? (
-                    <div className={s["acct-edit"]}>
-                      {/* 절대규칙 2 · S09 고지(계정 분류 화면과 같은 뜻, 짧게) */}
-                      <div className={s.note} role="note">
-                        <Icon name="info" />
-                        <span>비밀번호 · 토큰 · 세션 값은 화면에 남기지 않고 서버 보호 파일로만 보냅니다.</span>
-                      </div>
-                      {/* 로그인 상자(A · B)는 위에 이미 있어 펼친 관리에는 두지 않는다 */}
-                      <AccountManager
-                        target={{ id: approvedTargetId, origin: tvOrigin, state: "approved" }}
-                        pair={false}
-                        owner={confirmationPlan?.ownerAccount}
-                        cross={confirmationPlan?.crossAccount}
-                        onChanged={() => setAccountRevision((n) => n + 1)}
-                      />
-                    </div>
-                  ) : null}
                 </div>
               </section>
             </div>

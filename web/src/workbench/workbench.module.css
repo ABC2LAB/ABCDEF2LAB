@@ -3921,7 +3921,7 @@ button.smm:hover {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-width: 520px;
+  max-width: 640px;
   padding: 18px 20px;
   border: 1px solid var(--rule);
   border-radius: 12px;
@@ -3931,6 +3931,16 @@ button.smm:hover {
 .acct-quick h3 {
   margin: 0;
   font-size: 14px;
+}
+/* 상자 안 '로그인 방식' 칸: 아래 시험 계정과 줄로 나눈다 */
+.acct-login {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.acct-quick-h {
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
 }
 .acct-pair {
   display: flex;
