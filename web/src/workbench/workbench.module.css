@@ -32,10 +32,13 @@
   --lo-bg: #eaf1fa;
   /* 위험도 딱지 전용(사용자 11/23 '색을 확실하게, 높음은 빨강'): 치명 진한 빨강 채움 · 높음 빨강 · 중간 주황 · 낮음 노랑 · 정보 회색.
      오류 · 경고 색(--hi 등)과 나눠 둔다 */
+  /* 심각 = 진한 장미색 바탕 + 흰 글자, 높음 = 연분홍 바탕 + 장미색 글자 + 연한 테두리(사용자 11/24 예시 색. 전엔 심각이
+     어두운 빨강이라 높음과 비슷해 보였다). 글자 대비는 둘 다 4.5:1 이상 */
   --sev-crit: #ffffff;
-  --sev-crit-bg: #8f1414;
-  --sev-hi: #cc1f1f;
-  --sev-hi-bg: #fde6e6;
+  --sev-crit-bg: #e5194f;
+  --sev-hi: #c8103f;
+  --sev-hi-bg: #ffe4ea;
+  --sev-hi-line: #f9b8c8;
   --sev-mid: #b34700;
   --sev-mid-bg: #ffead6;
   --sev-lo: #7a5f00;
@@ -87,9 +90,10 @@
     --lo: #90b6eb;
     --lo-bg: #16263c;
     --sev-crit: #ffffff;
-    --sev-crit-bg: #c42222;
-    --sev-hi: #ff6b6b;
-    --sev-hi-bg: #3f1616;
+    --sev-crit-bg: #e5194f;
+    --sev-hi: #ff7a9c;
+    --sev-hi-bg: #3d1220;
+    --sev-hi-line: #6b2335;
     --sev-mid: #ffa149;
     --sev-mid-bg: #3b2410;
     --sev-lo: #ffd43b;
@@ -140,9 +144,10 @@
   --lo: #90b6eb;
   --lo-bg: #16263c;
   --sev-crit: #ffffff;
-  --sev-crit-bg: #c42222;
-  --sev-hi: #ff6b6b;
-  --sev-hi-bg: #3f1616;
+  --sev-crit-bg: #e5194f;
+  --sev-hi: #ff7a9c;
+  --sev-hi-bg: #3d1220;
+  --sev-hi-line: #6b2335;
   --sev-mid: #ffa149;
   --sev-mid-bg: #3b2410;
   --sev-lo: #ffd43b;
@@ -1142,6 +1147,7 @@ a.ph:hover {
 .sev.hi {
   background: var(--sev-hi-bg);
   color: var(--sev-hi);
+  box-shadow: inset 0 0 0 1px var(--sev-hi-line);
 }
 .sev.mid {
   background: var(--sev-mid-bg);
