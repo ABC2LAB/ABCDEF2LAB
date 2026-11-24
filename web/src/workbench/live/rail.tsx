@@ -133,7 +133,8 @@ function ServerRunRow({ run, list }: { run: URLRunSummary; list: View }) {
     urlStateText(run.state),
     info?.mode,
     run.started_at ? clockOf(run.started_at).slice(0, 5) : null,
-    run.action_required ? "확인 필요" : null,
+    // 끝난 점검엔 '확인 필요'를 붙이지 않는다(승인 만료 뒤 서버가 끝난 점검까지 켠다, 사용자 11/24)
+    run.action_required && !endedURLRun(run) ? "확인 필요" : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -185,7 +186,8 @@ export function LiveRailTasks() {
   const ended = !!job && URL_ENDED_STATES.includes(job.state);
   const to: View = job ? scanViewFor(job, stage) : "live";
   const list: View = ended ? "finished" : "running";
-  const here = route === list || (to === "new" ? route === "new" : SCAN_VIEWS.includes(route));
+  // 대시보드도 이 점검을 오른쪽에 보이므로 현재 표시(빨간 점)를 단다(사용자 11/24: 대시보드 목록에서 눌러도 레일에 안 떴다)
+  const here = route === list || route === "dashboard" || (to === "new" ? route === "new" : SCAN_VIEWS.includes(route));
   const row = handle ? (
     <button
       className={s.rs}
