@@ -417,6 +417,7 @@ func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir
 		return nil, E2HTTPAuthNotSent
 	}
 	if status := counter.begin(label); status != "" {
+		logAccountAuthNotSent(ctx, label)
 		return nil, status
 	}
 	defer func() { counter.finish(label, result == E2HTTPAuthAuthenticated && len(header) > 0) }()
@@ -428,6 +429,7 @@ func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir
 	}
 	call, err := begin()
 	if err != nil {
+		logAccountAuthNotSent(ctx, label)
 		return nil, E2HTTPAuthNotSent
 	}
 	// Worker Bash 결과가 없는 서버 호출이라 마감 대조에서 따로 센다(#555).
@@ -472,8 +474,7 @@ func e2HTTPAuthPrep(ctx context.Context, execution *e2proxy.Execution, dir, orig
 	if err != nil {
 		for _, account := range auth.Accounts {
 			out.AccountAuth[account.Label] = E2HTTPAuthNotSent
-			_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "account_auth_checked", Stage: "execution",
-				Status: "not_sent", ReasonCode: "auth_not_sent", AccountLabel: account.Label})
+			logAccountAuthNotSent(ctx, account.Label)
 		}
 		return out, nil
 	}
@@ -487,6 +488,11 @@ func e2HTTPAuthPrep(ctx context.Context, execution *e2proxy.Execution, dir, orig
 		out.AccountAuth[account.Label] = authPrepOne(ctx, call, execution, dir, origin, auth.Login, account, out.Sessions)
 	}
 	return out, nil
+}
+
+func logAccountAuthNotSent(ctx context.Context, label string) {
+	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "account_auth_checked", Stage: "execution",
+		Status: "not_sent", ReasonCode: "auth_not_sent", AccountLabel: label})
 }
 
 func authPrepOne(ctx context.Context, call *e2proxy.Call, execution *e2proxy.Execution, dir, origin string, login diagnosisprep.TargetLogin, account E2HTTPFileAuthAccount, sessions E2HTTPSessions) (result string) {
