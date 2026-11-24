@@ -1738,9 +1738,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByRole("region", { name: "발견 후보" })).toBeNull();
     expect(document.getElementById("lFindsEnded")).toBeNull();
     expect(document.body).not.toHaveTextContent("점검이 끝나 진행 중 후보 목록");
-    // 상태 카드 숫자 칸: 발견 2 · 판정 확정 0
-    expect(within(document.getElementById("lMeta") as HTMLElement).getByText("발견").parentElement).toHaveTextContent(
-      /^발견2판정 확정 0$/,
+    // 제품 판정 경로가 없는 서버(404)는 기존 합계만 표시한다.
+    await waitFor(() =>
+      expect(within(document.getElementById("lMeta") as HTMLElement).getByText("발견").parentElement).toHaveTextContent(
+        /^발견2판정 확정 0$/,
+      ),
     );
     fireEvent.click(rows[1]);
     expect(goTo).not.toHaveBeenCalledWith("report");
@@ -1818,6 +1820,38 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
         /^발견1판정 확정 1$/,
       ),
     );
+  });
+
+  it.each(["live", "report"] as const)("제품 판정 조회 중과 503 실패를 확정 합계에 표시한다 (%s)", async (view) => {
+    const { ApiError } = await import("@/lib/diagnosis/api");
+    const pending = Promise.withResolvers<never>();
+    pv.reply = () => pending.promise;
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [confirmed(1)] });
+    mount(view);
+    const summary =
+      view === "live"
+        ? await within(await screen.findByRole("region", { name: "지금 상태" })).findByText("발견")
+        : within(await screen.findByRole("region", { name: "판정 집계" })).getByText("판정 확정");
+    const cell = summary.parentElement as HTMLElement;
+    const known = view === "live" ? "판정 확정 1" : "판정 확정1";
+    expect(cell).toHaveTextContent(known);
+    expect(cell).toHaveTextContent("확정 단계 판정 읽는 중");
+
+    await act(async () => pending.reject(new ApiError(503, "unavailable")));
+
+    const unreadable = "확정 단계 판정 읽지 못함 · 합계에 빠짐";
+    expect(cell).toHaveTextContent(known);
+    expect(cell).toHaveTextContent(unreadable);
+    expect(cell).not.toHaveTextContent("읽는 중");
+    if (view === "report") {
+      fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));
+      expect(cell).toBeVisible();
+      expect(cell).toHaveTextContent(unreadable);
+      fireEvent.click(screen.getByRole("tab", { name: "보고서" }));
+      expect(screen.getByRole("region", { name: "취약점 점검 보고서" })).toHaveTextContent(unreadable);
+    }
   });
 
   it("보고서 Markdown의 합계와 제품 확정 출처를 함께 표시한다", () => {

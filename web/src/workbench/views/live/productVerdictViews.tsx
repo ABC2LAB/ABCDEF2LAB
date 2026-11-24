@@ -46,14 +46,25 @@ export function useProductVerdicts(taskId: string | null, active: boolean): Poll
   });
 }
 
-/** 보고서 내보내기와 같은 기준으로 동결본까지 대조한 제품 확정만 센다. */
-export function productConfirmedCount(list: ProductVerdictList | null | undefined): number {
-  return (list?.items ?? []).filter((r) => r.recordStatus === "verified" && r.oracleValue === "confirmed").length;
-}
-
 /** 404 = 제품 관리 중계가 아니라 이 경로가 없다(소스 서버 등) → 구획을 두지 않는다('판정 없음'으로 그리지 않음). */
 function notInstalled(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404;
+}
+
+/** 동결본까지 대조한 확정만 세고, 제품 판정을 합계에 반영하지 못한 상태를 요약에 표시한다. */
+export function productConfirmationSummary({
+  data,
+  error,
+  loading,
+}: Pick<Poll<ProductVerdictList>, "data" | "error" | "loading">): { confirmed: number; notice: string | null } {
+  if (error && !loading) {
+    return { confirmed: 0, notice: notInstalled(error) ? null : "확정 단계 판정 읽지 못함 · 합계에 빠짐" };
+  }
+  if (!data || error) {
+    return { confirmed: 0, notice: "확정 단계 판정 읽는 중" };
+  }
+  const confirmed = data.items.filter((r) => r.recordStatus === "verified" && r.oracleValue === "confirmed").length;
+  return { confirmed, notice: null };
 }
 
 function failText(error: unknown): string {
