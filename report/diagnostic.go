@@ -65,7 +65,17 @@ type DiagnosticReport struct {
 	Confirmed, Review, NotExecuted, Unknown, Negative int
 	BySeverity, ByType                                map[string]int
 }
+
+// BusinessRuleReview는 저장 관찰에 대한 업무 규칙 검토 안내다.
+type BusinessRuleReview struct {
+	Status      string `json:"status"`
+	Reason      string `json:"reason"`
+	Observation string `json:"observation"`
+	Question    string `json:"question"`
+}
+
 type DiagnosticEntry struct {
+	BusinessRuleReview                                        *BusinessRuleReview
 	Steps                                                     []reproduction.Step
 	StepsTruncated                                            bool
 	SourceLoadFailed                                          bool
@@ -319,6 +329,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		if in.Shared {
+			e.BusinessRuleReview = nil
 			e.RemediationBundle = nil
 			e.RemediationSource = nil
 			e.Status = "[REDACTED]"
@@ -538,7 +549,9 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 {{if .LanguageMixed}}<p>다른 언어 섞임: 모델이 쓴 설명·조치·근거에 한자·가나가 섞여 있습니다. 한 번 한국어로 다시 쓰게 했지만 남았습니다.</p>{{end}}
 {{if .Stale}}<p>주의: 증거와 상세 보고서 버전이 달라 확정 집계에서 제외했습니다. 갱신이 필요합니다.</p>{{end}}
 {{if .Truncated}}<p>주의: 실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.</p>{{end}}
-<h4>① 판정과 영향</h4><h5>관찰과 주장</h5><pre>{{if .Summary}}{{.Summary}}{{else}}추가 설명 미기록{{end}}</pre><h4>저장된 상세 설명</h4><pre>{{if .Report}}{{.Report}}{{else}}별도 상세 보고서 미작성{{end}}</pre>
+<h4>① 판정과 영향</h4>
+{{with .BusinessRuleReview}}<h5>업무 규칙 미확인 · 판정 보류</h5><p>{{.Observation}}</p><p>검토 질문(선택): {{.Question}}</p>{{end}}
+<h5>관찰과 주장</h5><pre>{{if .Summary}}{{.Summary}}{{else}}추가 설명 미기록{{end}}</pre><h4>저장된 상세 설명</h4><pre>{{if .Report}}{{.Report}}{{else}}별도 상세 보고서 미작성{{end}}</pre>
 <h4>② 재현 절차 및 스크린샷</h4>{{if .SourceLoadFailed}}<p>근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.</p>{{end}}
 {{if .StepsTruncated}}<p>실행 관측 목록이 잘렸습니다. 전체 재현 절차로 해석하지 마세요.</p>{{end}}
 {{range .Steps}}<section><h5>Step {{.Number}}. {{.Title}}</h5><p>{{.Method}} {{if .Path}}{{.Path}}{{else}}비민감 경로 미기록{{end}}</p><p>사전 조건: {{.Prerequisites}}</p><pre>{{.Observation}}</pre>{{if .Truncated}}<p>이 단계의 관측이 잘렸습니다.</p>{{end}}<p>시각 {{.ObservedAt}} · 원본 단계 {{.SourceStepID}} · 실행 {{.RunRef}} · 호출 {{.CallRef}} · 근거 {{.EvidenceRef}} · 증거 {{.EvidenceVersion}} / {{.EvidenceDigest}}</p>{{if eq .Capture.Status "captured"}}<figure><img src="{{captureURI .}}" alt="실행 당시 수집한 비민감 영역 캡처" style="max-width:100%;height:auto"><figcaption>캡처 {{.Capture.CapturedAt}} · SHA256 {{.Capture.Digest}}</figcaption></figure>{{else}}<p>스크린샷 미확보 — 저장된 요청 시도와 관찰 기록을 확인하세요 · 상태 {{captureStatus .Capture.Status}}</p>{{end}}</section>{{else}}<p>구조화된 실제 재현 단계 미확보. 아래 저장 근거를 확인하세요. 실행하지 않은 절차를 생성하지 않습니다.</p>{{end}}

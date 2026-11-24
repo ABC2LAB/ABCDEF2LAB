@@ -91,6 +91,17 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// 자격을 등록했어도 시험 계정 확인을 생략하면 익명 점검은 열리고, 자격은 실행에 결속하지 않는다.
+	unclassified, err := runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal("자격이 있지만 시험 계정 확인을 하지 않은 점검", err)
+	}
+	defer unclassified.clearMaterials()
+	registered, err := r.listAccounts("ARTEX", target.ID)
+	if err != nil || len(registered) != 2 || !registered[0].CredentialConfigured || !registered[1].CredentialConfigured ||
+		unclassified.policy.Auth != nil || len(unclassified.productAccounts) != 0 || unclassified.policy.HeaderMode != e2proxy.HeaderPreserve {
+		t.Fatal("등록 여부와 실행에 결속할 시험 계정 여부를 구분하지 못함")
+	}
 	if _, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err != nil {
 		t.Fatal(err)
 	}
