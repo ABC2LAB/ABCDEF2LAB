@@ -34,6 +34,8 @@ CLOSE_REASONS = frozenset({"completed", "model_error", "runtime_unavailable", "c
 INGRESSES = ("browser", "direct")
 DESTS = frozenset({"approved", "external", "internal", "metadata", "control"})
 SEALED_BY = frozenset({"shutdown", "failure"})
+# 세션이 닫힌 세부 원인(exploreboundary/session.go CloseCause*, 2026-11-24 세션 수명). 보통 마감은 칸이 없다.
+CLOSED_BY = frozenset({"restart_cleanup", "control_lost"})
 
 _ROW_REQUIRED = frozenset({"session_ref", "seq", "at", "decision", "ingress", "dest_class", "method", "has_auth_header"})
 # Go Record의 omitempty 칸. 빠지면 0·빈 값이다.
@@ -107,7 +109,7 @@ def _marker(raw: bytes) -> dict:
     s = m["session"]
     if s is None:
         return m
-    if (not isinstance(s, dict) or set(s) != _SESSION_FIELDS
+    if (not isinstance(s, dict) or set(s) - {"closed_by"} != _SESSION_FIELDS or ("closed_by" in s and not _enum(s["closed_by"], CLOSED_BY))
             or any(not isinstance(s[k], str) or not _REF.fullmatch(s[k]) for k in ("session_ref", "run_ref", "job_id", "target_ref"))
             or not isinstance(s["task_id"], str) or not _TASK.fullmatch(s["task_id"])
             or type(s["target_revision"]) is not int or s["target_revision"] < 1

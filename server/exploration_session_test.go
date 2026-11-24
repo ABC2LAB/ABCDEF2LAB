@@ -60,16 +60,38 @@ type explorationFixtureLease struct {
 	closeErr   error
 	closes     int
 	events     *explorationEvents
+	// statuses는 상태 조회 수다(실행기가 경계에 보내는 생존 신호, 2026-11-24 세션 수명).
+	statuses atomic.Int32
+	// heartbeat가 있으면 경계의 조회 끊김 닫기를 흉내 낸다: 앞 조회(처음은 heartbeatFrom)부터 heartbeat가 넘게 지나 조회가
+	// 오면 그때 이미 닫혀 있었던 것으로 보고 runtime_unavailable로 닫는다. maxGap은 본 조회 간격 가운데 가장 긴 것이다.
+	heartbeat     time.Duration
+	heartbeatFrom time.Time
+	maxGap        time.Duration
 }
 
 func (l *explorationFixtureLease) Status(context.Context) (exploration.State, error) {
+	l.statuses.Add(1)
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.heartbeat > 0 {
+		now := time.Now()
+		if gap := now.Sub(l.heartbeatFrom); gap > l.maxGap {
+			l.maxGap = gap
+		}
+		if now.Sub(l.heartbeatFrom) > l.heartbeat && l.state.Active {
+			l.state.Active, l.state.ClosedReason = false, exploration.RuntimeUnavailable
+		}
+		l.heartbeatFrom = now
+	}
 	return l.state, l.err
 }
 func (l *explorationFixtureLease) Close(_ context.Context, reason exploration.Reason) (exploration.State, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// 마지막 조회부터 닫기까지의 간격도 본다(조회가 아예 멈춘 경우를 놓치지 않게).
+	if l.heartbeat > 0 && time.Since(l.heartbeatFrom) > l.maxGap {
+		l.maxGap = time.Since(l.heartbeatFrom)
+	}
 	l.closes++
 	l.events.add("boundary:close")
 	l.state.Active = false
@@ -111,6 +133,8 @@ type explorationFixtureProvider struct {
 	invalid   atomic.Bool
 	block     bool
 	started   chan struct{}
+	// stall은 첫 모델 호출이 응답하기까지 걸리는 시간이다(429 재시도 대기처럼 제공자 호출 안에서 오래 걸리는 경우).
+	stall time.Duration
 	// firstTool·firstInput은 첫 턴에 부를 도구를 바꾼다(비면 브라우저 이동).
 	firstTool, firstInput string
 }
@@ -132,6 +156,13 @@ func (p *explorationFixtureProvider) Complete(ctx context.Context, r llm.Complet
 		close(p.started)
 		<-ctx.Done()
 		return llm.Message{}, "", llm.Usage{}, ctx.Err()
+	}
+	if n == 1 && p.stall > 0 {
+		select {
+		case <-time.After(p.stall):
+		case <-ctx.Done():
+			return llm.Message{}, "", llm.Usage{}, ctx.Err()
+		}
 	}
 	name, input := "mcp__explore_browser__browser_navigate", `{"url":"https://owned.test/"}`
 	if n == 1 && p.firstTool != "" {
@@ -350,6 +381,76 @@ func TestExplorationSessionBoundaryRevocationCancelsWorkerAndCleansUp(t *testing
 		t.Fatal("revocation reason or no-new-call fence lost")
 	}
 }
+
+// 상태 조회(경계에 보내는 생존 신호)는 모델 호출과 따로 도는 감시 고루틴이 보낸다. 모델 응답이 오래 걸리는 동안에도 조회가
+// 이어져, 경계의 조회 끊김 감지(Heartbeat)가 세션을 잘못 닫지 않는다(2026-11-24 세션 수명).
+func TestExplorationSessionPollsBoundaryWhileModelCallBlocks(t *testing.T) {
+	o, b, _, _, p := explorationSessionFixture(t, exploration.BrowserToolNames())
+	p.block = true
+	p.started = make(chan struct{})
+	s, err := OpenExplorationSession(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = s.Run(ctx, o.Worker, agent.ExplorationRunOptions{TargetURL: "https://owned.test/", Reporter: &explorationFixtureReporter{}, MaxTurns: 5, MaxDuration: time.Second}, nil)
+	}()
+	select {
+	case <-p.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start")
+	}
+	// 모델 호출이 막혀 있는 동안 조회 주기(5ms)의 20배 넘게 기다린다.
+	before := b.lease.statuses.Load()
+	time.Sleep(40 * o.StatusInterval)
+	during := b.lease.statuses.Load() - before
+	if during < 10 {
+		t.Fatalf("모델 호출이 막힌 동안 상태 조회가 멈춤: %d번", during)
+	}
+	if b.lease.closed() != 0 {
+		t.Fatal("모델 응답을 기다리는 동안 세션을 닫음")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancel did not stop worker")
+	}
+}
+
+// 11/23 화면 VAmPI처럼 탐색 중 모델 응답이 오래 안 오는 경우(여기서는 5분, 429 재시도 대기 포함)에도 실행기의 상태 조회는
+// 따로 돌아서 경계의 조회 끊김 닫기(제품 30초)에 걸리지 않는다. 제품 비율(조회 1초 : 끊김 30초 : 무응답 300초)을 100분의 1로
+// 줄여 돈다: 조회 10ms, 끊김 300ms, 무응답 3초. 모델 응답이 온 뒤 탐색은 보통대로 끝난다(경계가 닫은 것이 아님).
+func TestExplorationSessionSurvivesFiveMinuteModelStall(t *testing.T) {
+	const scale = 100
+	o, b, _, _, p := explorationSessionFixture(t, exploration.BrowserToolNames())
+	o.StatusInterval = time.Second / scale
+	b.lease.mu.Lock()
+	b.lease.heartbeat, b.lease.heartbeatFrom = 30*time.Second/scale, time.Now()
+	b.lease.mu.Unlock()
+	p.stall = 5 * time.Minute / scale
+	s, err := OpenExplorationSession(t.Context(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.Run(t.Context(), o.Worker, agent.ExplorationRunOptions{TargetURL: "https://owned.test/", Reporter: &explorationFixtureReporter{}, MaxTurns: 5, MaxDuration: 2 * p.stall}, nil)
+	b.lease.mu.Lock()
+	state, maxGap := b.lease.state, b.lease.maxGap
+	b.lease.mu.Unlock()
+	if state.ClosedReason == exploration.RuntimeUnavailable {
+		t.Fatalf("모델이 느린 동안 조회가 끊겨 경계가 닫음(가장 긴 조회 간격 %v, err=%v calls=%d statuses=%d)", maxGap, err, p.calls.Load(), b.lease.statuses.Load())
+	}
+	if maxGap >= b.lease.heartbeat {
+		t.Fatalf("조회 간격 %v가 끊김 기준 %v에 닿음", maxGap, b.lease.heartbeat)
+	}
+	if err != nil || p.calls.Load() < 3 {
+		t.Fatalf("무응답 뒤 탐색이 이어지지 않음: %v calls=%d result=%+v", err, p.calls.Load(), result)
+	}
+}
+
 func TestExplorationSessionCancellationInterruptsInFlightHTTPAndCleanupSurvivesErrors(t *testing.T) {
 	o, b, browser, f, _ := explorationSessionFixture(t, exploration.BrowserToolNames())
 	f.entered = make(chan struct{})

@@ -56,7 +56,9 @@ type config struct {
 	MaxDeniedRecords int      `json:"max_denied_records"`
 	TimeoutMS        int      `json:"timeout_ms"`
 	CloseWaitMS      int      `json:"close_wait_ms"`
-	LeafValiditySec  int      `json:"leaf_validity_seconds"`
+	// SessionHeartbeatMS는 실행기 상태 조회가 끊겼다고 보는 시간이다(세션 수명, 2026-11-24). 없으면 기본값을 쓴다.
+	SessionHeartbeatMS int `json:"session_heartbeat_ms,omitempty"`
+	LeafValiditySec    int `json:"leaf_validity_seconds"`
 	// EvidenceDir·EvidenceMaxBytes는 평가·수용시험 회차에서만 쓰는 경계 원자료 출력이다(계약 §4.1). 러너가 자기 uid·0700으로
 	// 만든 디렉터리를 이 컨테이너에만 붙이고, 경계도 같은 uid로 띄운다(계측기와 같은 방식). 둘 다 비우면 원자료를 쓰지
 	// 않는다(제품). 바이트 상한은 회차 정책이 정하고 코드 기본값이 없다.
@@ -206,8 +208,12 @@ func build(c config) (*parts, error) {
 			return nil, errors.New("evidence_unavailable")
 		}
 	}
+	heartbeat, err := sessionHeartbeat(c.SessionHeartbeatMS)
+	if err != nil {
+		return nil, err
+	}
 	m := &exploreboundary.Manager{Policy: exploreboundary.Policy{ControlEndpoints: controls, Resolver: res, PathPattern: pattern, MaxDeniedRecords: c.MaxDeniedRecords, Evidence: evidence},
-		CloseWait: time.Duration(c.CloseWaitMS) * time.Millisecond}
+		CloseWait: time.Duration(c.CloseWaitMS) * time.Millisecond, Heartbeat: heartbeat}
 	proxy := func(ingress exploreboundary.Ingress) (*exploreboundary.Proxy, error) {
 		return exploreboundary.NewProxy(exploreboundary.ProxyConfig{Ingress: ingress, Current: m.Current, CA: ca, CAKey: key, Roots: roots,
 			MaxRequestBytes: c.MaxRequestBytes, MaxResponseBytes: c.MaxResponseBytes, MaxTunnels: c.MaxTunnels, Timeout: timeout, LeafValidity: time.Duration(c.LeafValiditySec) * time.Second,
@@ -353,4 +359,24 @@ func main() {
 		fmt.Fprintln(os.Stderr, "탐색 경계가 멈췄습니다.")
 		os.Exit(1)
 	}
+}
+
+// defaultSessionHeartbeat는 실행기 상태 조회가 끊겼다고 보는 기본 시간이다. 실행기는 1초마다 조회하므로(상태 조회는
+// 모델 호출과 따로 돈다) 30배 여유를 둔다. 준비 서비스가 죽은 뒤 남은 브라우저 페이지가 대상에 보낼 수 있는 시간이 이만큼으로 줄어든다.
+const defaultSessionHeartbeat = 30 * time.Second
+
+// minSessionHeartbeat는 설정으로 줄 수 있는 가장 짧은 끊김 시간이다. 실행기 조회 주기(1초)의 5배 아래로 두면 조회 한두 번이
+// 늦기만 해도 살아 있는 세션을 닫는다(1ms 같은 값으로 모든 세션이 바로 닫히지 않게, #892 재상 봇 리뷰).
+const minSessionHeartbeat = 5 * time.Second
+
+// sessionHeartbeat는 설정 칸을 끊김 시간으로 바꾼다. 칸이 없으면(0) 기본값, 음수이거나 하한보다 짧으면 설정 오류다.
+func sessionHeartbeat(ms int) (time.Duration, error) {
+	if ms == 0 {
+		return defaultSessionHeartbeat, nil
+	}
+	d := time.Duration(ms) * time.Millisecond
+	if ms < 0 || d < minSessionHeartbeat {
+		return 0, errors.New("config_invalid")
+	}
+	return d, nil
 }

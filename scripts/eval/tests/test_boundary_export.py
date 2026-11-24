@@ -246,9 +246,16 @@ class StrictStructure(BoundaryExportFixture):
                                        ("profile", {"path_profile": "abc2lab.path-mask/v1"}, None),
                                        ("extra", {"note": "x"}, None), ("open_session", {}, {"closed_at": None}),
                                        ("close_reason", {}, {"closed_reason": "whatever"}), ("task", {}, {"task_id": "07"}),
-                                       ("rows_at_close", {}, {"rows_at_close": 99})):
+                                       ("rows_at_close", {}, {"rows_at_close": 99}), ("closed_by", {}, {"closed_by": "operator"})):
             with self.subTest(name=name):
                 self.assertCode("boundary_export_invalid", self.verify, self.write(marker_changes=changes, session_changes=session))
+
+    def test_closed_by_is_optional_and_known(self):
+        # 세션 수명(2026-11-24): 재시작 정리·조회 끊김으로 닫힌 세션만 closed_by가 있다. 보통 마감은 칸이 없다.
+        for cause in sorted(be.CLOSED_BY):
+            with self.subTest(cause=cause):
+                self.verify(self.write(session_changes={"closed_by": cause}))
+        self.verify(self.write())
 
     def test_block_shape(self):
         block = self.verify(self.write())
@@ -278,7 +285,9 @@ class GoContractDrift(unittest.TestCase):
     def test_field_names(self):
         evidence = self.go("exploreboundary/evidence.go")
         self.assertEqual(self.tags(evidence, "EvidenceMarker"), set(be._MARKER_FIELDS))
-        self.assertEqual(self.tags(evidence, "EvidenceSession"), set(be._SESSION_FIELDS))
+        self.assertEqual(self.tags(evidence, "EvidenceSession"), set(be._SESSION_FIELDS) | {"closed_by"})
+        causes = set(re.findall(r'CloseCause[A-Za-z]+\s*=\s*"([a-z_]+)"', self.go("exploreboundary/session.go")))
+        self.assertEqual(causes, set(be.CLOSED_BY))
         self.assertEqual(self.tags(self.go("exploreboundary/session.go"), "Record"), set(be._ROW_REQUIRED | be._ROW_OPTIONAL))
         for name, value in (("EvidenceFormat", be.FORMAT), ("EvidenceRowsName", be.ROWS), ("EvidenceMarkerName", be.MARKER)):
             self.assertRegex(evidence, name + r'\s*=\s*"' + re.escape(value) + '"')
