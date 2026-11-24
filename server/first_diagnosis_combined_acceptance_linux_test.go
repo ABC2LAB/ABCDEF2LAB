@@ -32,20 +32,39 @@ import (
 // 합성 모델은 명령만 제안한다. 관찰·승인·후보·보고서는 실제 제품 경로에서 생성한다.
 type combinedDiagnosisProvider struct {
 	firstDiagnosisE2Provider
-	submitted bool
+	submitted        bool
+	passive          bool
+	secondSent       bool
+	secondCommand    string
+	candidateCallRef string
 }
 
 func (p *combinedDiagnosisProvider) Complete(ctx context.Context, req llm.CompletionRequest) (llm.Message, string, llm.Usage, error) {
+	if p.passive && p.submitted && !p.secondSent {
+		p.calls++
+		p.secondSent = true
+		input, _ := json.Marshal(map[string]any{"command": p.secondCommand, "timeout_ms": 5000})
+		return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "passive-later-bash", Name: "Bash", Input: input}}}, "tool_use", llm.Usage{}, nil
+	}
 	msg, stop, usage, err := p.firstDiagnosisE2Provider.Complete(ctx, req)
 	if err != nil || p.result == nil || p.submitted {
 		return msg, stop, usage, err
 	}
 	p.submitted = true
-	raw, err := json.Marshal(map[string]any{
-		"call_ref": p.result.Trusted.Call.CallRef, "vulnclass": "access_control",
+	p.candidateCallRef = p.result.Trusted.Call.CallRef
+	class := "access_control"
+	if p.passive {
+		class = "security_headers"
+	}
+	input := map[string]any{
+		"call_ref": p.candidateCallRef, "vulnclass": class,
 		"name": "수동 검토 후보", "summary": "실제 허용 및 거부 관찰을 수동 검토합니다.",
 		"remediation": "접근 권한과 거부 경계를 확인하세요.",
-	})
+	}
+	if p.passive {
+		input["verification_claim"] = "html_nosniff_missing"
+	}
+	raw, err := json.Marshal(input)
 	return llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentBlock{{Type: llm.BlockToolUse, ID: "combined-candidate", Name: "submit_diagnostic_candidate", Input: raw}}}, "tool_use", llm.Usage{}, err
 }
 
@@ -87,10 +106,14 @@ func (c *combinedHTTPClient) login() {
 }
 
 func TestFirstDiagnosisCombinedApprovalCandidateStoredReportOwnedPostgres(t *testing.T) {
-	runFirstDiagnosisCombinedAcceptance(t, false)
+	runFirstDiagnosisCombinedAcceptance(t, false, false)
 }
 
-func runFirstDiagnosisCombinedAcceptance(t *testing.T, browser bool) {
+func TestFirstDiagnosisCombinedPassiveV2PostSaveProductPostgres(t *testing.T) {
+	runFirstDiagnosisCombinedAcceptance(t, false, true)
+}
+
+func runFirstDiagnosisCombinedAcceptance(t *testing.T, browser, passive bool) {
 	helper := firstDiagnosisNativeHelper(t)
 	f := newControlledLocalDatabaseFixture(t)
 	installer := &db.DB{DB: f.Installer}
@@ -135,6 +158,11 @@ func runFirstDiagnosisCombinedAcceptance(t *testing.T, browser bool) {
 		if r.URL.Path != "/allowed" {
 			t.Error("거부한 요청이 대상에 도달함")
 		}
+		if passive {
+			w.Header().Set("Content-Type", "text/html")
+			io.WriteString(w, "<html><body>synthetic fixture</body></html>")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"owned_fixture":true}`)
 	}))
@@ -160,6 +188,9 @@ func runFirstDiagnosisCombinedAcceptance(t *testing.T, browser bool) {
 	policy.OwnerRef = "ARTEX"
 	policy.ApprovalMode = e2proxy.ApprovalConfirmEveryRequest
 	policy.Rules = []E2HTTPFileRule{{Ref: "combined-rule", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/", PathScopeRef: "combined-path", Methods: []string{"GET"}}}
+	if passive {
+		policy.Rules[0].PathPrefix = "/allowed"
+	}
 	policy.Rules[0].ApprovalDisplay.PublicPath = true
 	policy.Limits.CallTimeoutMS = 20000
 	policy.Limits.RequestTimeoutMS = 15000
@@ -196,6 +227,11 @@ func runFirstDiagnosisCombinedAcceptance(t *testing.T, browser bool) {
 	}
 	defer runtime.Close(context.Background())
 	worker := &combinedDiagnosisProvider{firstDiagnosisE2Provider: firstDiagnosisE2Provider{command: "curl --silent --show-error --max-time 15 " + target.URL + "/allowed; curl --silent --show-error --max-time 15 " + target.URL + "/denied"}}
+	if passive {
+		worker.passive = true
+		worker.command = "curl --silent --show-error --max-time 15 " + target.URL + "/allowed"
+		worker.secondCommand = worker.command
+	}
 	planner := &firstDiagnosisPlannerProbeProvider{textOnly: true}
 	// 승인한 작업이 끝나 Planner가 빈 계획을 내도 마감하지 않고, 실행 상한에 닿아야 마감한다(원본과 같은 끝 규칙).
 	watched := firstDiagnosisIdleWatch(installer, task, planner)
@@ -240,7 +276,7 @@ running:
 			if err != nil {
 				t.Fatal("실제 감독 실행 실패", err)
 			}
-			if idle.closedEarly(supervisor) {
+			if idle.closedEarly(supervisor) && !passive {
 				t.Fatal("계획이 비자 실행 상한 전에 마감함(원본에 없는 끝 규칙)")
 			}
 			break running
@@ -269,7 +305,12 @@ running:
 					continue
 				}
 				decision := "deny"
-				if a.Path == "/allowed" {
+				if passive {
+					if a.Path != "/allowed" || len(decisions) > 1 || hits.Load() != int64(len(decisions)) {
+						t.Fatal("수동적 후속 관찰의 승인·송신 순서 불일치")
+					}
+					decision = "allow"
+				} else if a.Path == "/allowed" {
 					decision = "allow"
 					if len(decisions) != 0 || hits.Load() != 0 {
 						t.Fatal("승인 전에 대상 송신")
@@ -306,7 +347,11 @@ running:
 			}
 		}
 	}
-	if len(decisions) != 2 || hits.Load() != 1 || !worker.submitted || planner.calls == 0 {
+	wantHits := int64(1)
+	if passive {
+		wantHits = 2
+	}
+	if len(decisions) != 2 || hits.Load() != wantHits || !worker.submitted || planner.calls == 0 {
 		t.Fatalf("실제 통합 경로 누락: 결정=%d 대상=%d 후보=%v Planner=%d", len(decisions), hits.Load(), worker.submitted, planner.calls)
 	}
 	code, approvalRaw, _ := client.request("GET", approvalBase, "")
@@ -339,7 +384,11 @@ running:
 		t.Fatalf("실제 도구 후보 저장 실패: 건수=%d 오류=%v", len(candidates), err)
 	}
 	candidate := candidates[0]
-	if candidate.Classification != "partial_policy_denial" || candidate.Verification != "manual_review_required" || !strings.Contains(candidate.Evidence, "owned_fixture") || candidate.CallRef != worker.result.Trusted.Call.CallRef {
+	if passive {
+		if candidate.Classification != "completed" || candidate.VerificationClaim != "html_nosniff_missing" || candidate.Verification != "manual_review_required" || candidate.CallRef != worker.candidateCallRef || !strings.Contains(candidate.Evidence, "nosniff_missing") {
+			t.Fatal("후보 저장 시점의 첫 E② 관찰이 다름")
+		}
+	} else if candidate.Classification != "partial_policy_denial" || candidate.Verification != "manual_review_required" || !strings.Contains(candidate.Evidence, "owned_fixture") || candidate.CallRef != worker.result.Trusted.Call.CallRef {
 		t.Fatal("실제 관찰과 저장 후보가 다름")
 	}
 	var findings int
@@ -347,7 +396,11 @@ running:
 		t.Fatal("미검증 후보를 확정 발견으로 저장함")
 	}
 	results := runtime.host.Runtime().Results(task.ID)
-	if len(results) != 1 || !results[0].Final || !results[0].ProcessDrained || !results[0].ProxyDrained || results[0].Call.Counts.Denied != 1 {
+	if passive {
+		if len(results) != 2 || results[0].Call.CallRef == results[1].Call.CallRef || !results[0].Call.Observations[0].ExactFunction || !results[1].Call.Observations[0].ExactFunction {
+			t.Fatal("후보 이후 독립 E② 감사 관찰 누락")
+		}
+	} else if len(results) != 1 || !results[0].Final || !results[0].ProcessDrained || !results[0].ProxyDrained || results[0].Call.Counts.Denied != 1 {
 		t.Fatal("최종 실제 감사와 drain 누락")
 	}
 	modelCalls := worker.calls + planner.calls
@@ -357,7 +410,7 @@ running:
 	if err = supervisor.PersistRunOutcome(context.Background(), nil); err != nil {
 		t.Fatal("종료 결과 저장 실패", err)
 	}
-	if hits.Load() != 1 || worker.calls+planner.calls != modelCalls {
+	if hits.Load() != wantHits || worker.calls+planner.calls != modelCalls {
 		t.Fatal("종료 결과 저장이 모델 또는 대상을 재호출함")
 	}
 	api.Close()
@@ -414,8 +467,16 @@ running:
 		t.Fatalf("저장 보고서 종료 상태 누락: status=%d", status)
 	}
 	counts := saved.Run.Execution.Counts
-	if counts.Calls != 1 || counts.Allowed != 1 || counts.Denied != 1 || counts.Responses != 1 || counts.ForwardAttempted != 1 || counts.Unknown != 0 {
+	wantCalls := 1
+	wantAllowed, wantDenied, wantResponses := uint64(1), uint64(1), uint64(1)
+	if passive {
+		wantCalls, wantAllowed, wantDenied, wantResponses = 2, 2, 0, 2
+	}
+	if counts.Calls != wantCalls || counts.Allowed != wantAllowed || counts.Denied != wantDenied || counts.Responses != wantResponses || counts.ForwardAttempted != wantResponses || counts.Unknown != 0 {
 		t.Fatal("저장된 종료 상태의 실제 송신 건수 불일치")
+	}
+	if passive && (saved.Verification == nil || saved.Verification.Version != diagnosisVerificationV2 || saved.Verification.NonIDORConfirmed != 1 || len(saved.Verification.Candidates) != 1 || len(saved.Verification.Candidates[0].Result.Sources) != 2) {
+		t.Fatal("후보 이후 독립 관찰의 최종 판정 누락")
 	}
 
 	base := "/api/report/diagnostic/remediation?task=" + task.ID + "&audience=internal"
@@ -452,11 +513,15 @@ running:
 		t.Fatal("저장과 복사 본문 불일치")
 	}
 	code, body, headers := client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&download=1", "")
-	if code != 404 || headers.Get("Content-Disposition") != "" || strings.Contains(string(body), record.Bundle.AIPrompt) {
+	if passive {
+		if code != 200 || !strings.Contains(string(body), "HTML 문서 보안 헤더 누락") || strings.Contains(string(body), record.Bundle.AIPrompt) {
+			t.Fatal("독립 검증된 후보의 HTML 보고서 누락")
+		}
+	} else if code != 404 || headers.Get("Content-Disposition") != "" || strings.Contains(string(body), record.Bundle.AIPrompt) {
 		t.Fatal("미확정 후보만 있는 회차에 취약점 보고서가 생성됨")
 	}
 	code, _, _ = client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&format=docx", "")
-	if code != 404 {
+	if passive && code != 200 || !passive && code != 404 {
 		t.Fatal("미확정 후보만 있는 회차에 Word 보고서가 생성됨")
 	}
 	code, body, _ = client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&format=review-json", "")
@@ -483,20 +548,24 @@ running:
 	if browser {
 		ui.run("stale")
 	}
-	if hits.Load() != 1 || worker.calls+planner.calls != modelCalls {
+	if hits.Load() != wantHits || worker.calls+planner.calls != modelCalls {
 		t.Fatal("보고서 조회가 모델 또는 대상을 재호출함")
 	}
 	if err := logger.Close(); err != nil || logger.Incomplete() {
 		t.Fatal("진단 로그 마감 또는 관측 불완전", err)
 	}
-	verifyCombinedDiagnosisLog(t, logger.Path(), grant.TaskID, saved.Run.RunRef, worker.result.Trusted.Call.CallRef, modelCalls, int(reportReads.Load()))
+	logCallRef := worker.result.Trusted.Call.CallRef
+	if passive {
+		logCallRef = worker.candidateCallRef
+	}
+	verifyCombinedDiagnosisLog(t, logger.Path(), grant.TaskID, saved.Run.RunRef, logCallRef, modelCalls, int(reportReads.Load()), int(wantResponses), int(wantDenied), passive)
 	if os.Getenv("ARTEX_DIAGNOSTIC_ACCEPTANCE_DIR") != "" {
 		t.Logf("합성 진단 JSONL 보존: %s (송신=1 허용=1 거부=1 후보=1)", logger.Path())
 	}
 }
 
 // 원문이 아닌 합성 이벤트의 관계와 실측 결과만 검증한다.
-func verifyCombinedDiagnosisLog(t *testing.T, path string, task int64, runRef, callRef string, modelCalls, reportReads int) {
+func verifyCombinedDiagnosisLog(t *testing.T, path string, task int64, runRef, callRef string, modelCalls, reportReads, requests, denied int, passive bool) {
 	t.Helper()
 	file, err := os.Open(path)
 	if err != nil {
@@ -546,19 +615,19 @@ func verifyCombinedDiagnosisLog(t *testing.T, path string, task int64, runRef, c
 			correlated = true
 		}
 		if event.Event == "run_summary" {
-			if event.TargetRequests != 1 || event.Approved != 1 || event.Denied != 1 || event.Candidates != 1 || event.Status != "succeeded" || event.ResultStored == nil || !*event.ResultStored || event.AuditComplete == nil || !*event.AuditComplete || event.ExecutionClosed == nil || !*event.ExecutionClosed {
+			if event.TargetRequests != requests || event.Approved != requests || event.Denied != denied || event.Candidates != 1 || event.Status != "succeeded" || event.ResultStored == nil || !*event.ResultStored || event.AuditComplete == nil || !*event.AuditComplete || event.ExecutionClosed == nil || !*event.ExecutionClosed {
 				t.Fatal("진단 집계가 실제 송신·후보·마감과 다름")
 			}
 			summary = true
 		}
 	}
-	if modelRoles["planner"] == 0 || modelRoles["worker"] == 0 || modelRoles["unknown"] != 0 {
+	if (!passive && modelRoles["planner"] == 0) || (passive && modelRoles["planner"]+modelRoles["goals"] == 0) || modelRoles["worker"] == 0 || modelRoles["unknown"] != 0 {
 		t.Fatalf("실제 모델 역할 관측 누락: %v", modelRoles)
 	}
 	if events["model_call_started"] != modelCalls || events["model_call_finished"] != modelCalls {
 		t.Fatalf("실제 모델 호출과 로그 건수 불일치: calls=%d started=%d finished=%d", modelCalls, events["model_call_started"], events["model_call_finished"])
 	}
-	if !summary || !correlated || events["run_finished"] != 1 || events["result_save_finished"] != 1 || reportReads < 1 || events["report_queried"] != reportReads || events["planner_finished"] == 0 {
+	if !summary || !correlated || events["run_finished"] != 1 || events["result_save_finished"] != 1 || reportReads < 1 || events["report_queried"] != reportReads || !passive && events["planner_finished"] == 0 {
 		t.Fatalf("실제 단계 관측 누락: summary=%v correlation=%v events=%v", summary, correlated, events)
 	}
 }

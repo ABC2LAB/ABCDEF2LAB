@@ -21,7 +21,7 @@ func TestFirstDiagnosisRealBrowserOwnedPostgres(t *testing.T) {
 	if os.Getenv("ARTEX_FIRST_DIAGNOSIS_BROWSER_NODE") == "" || os.Getenv("ARTEX_FIRST_DIAGNOSIS_BROWSER_SCRIPT") == "" || os.Getenv("ARTEX_FIRST_DIAGNOSIS_BROWSER_OUTPUT") == "" {
 		t.Skip("NOT_RUN: 설치된 브라우저·Node 드라이버 경로와 비공개 출력 디렉터리가 필요함")
 	}
-	runFirstDiagnosisCombinedAcceptance(t, true)
+	runFirstDiagnosisCombinedAcceptance(t, true, false)
 }
 
 type firstDiagnosisBrowserFixture struct {
