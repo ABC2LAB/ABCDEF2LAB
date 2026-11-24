@@ -209,7 +209,7 @@ E②를 닫는 순서는 이렇다(사유별로 E②를 닫지 않는다).
 | 자연 마감인데 E② 실행이 한 번도 없음(no_intents 등). 흐름 모드도 마지막 계획이 오류 없이 끝났고 의도가 0이면 이 줄이다(2026-11-22) | completed, no_intents 등 | — | — | 요청 없이 기록: 꺼진 회차는 실제 사유, 켜진 회차는 후보와 관계없이 `start_refused`/`e2_execution_unavailable`(2026-11-22 F12. 인증 준비를 하지 않았으니 계정 인증 결과 없음으로 끄지 않는다. `no_confirmation_candidates`는 어휘에 남아 있지만 지금 만들지 않는다) |
 | 흐름 모드에서 계획 호출이 실패해 의도가 0(진단 Worker가 한 번도 없음) | failed(감독 실패, 진단 로그 사유 `closure_workflow_not_ready`) | 취소 | 마감 정리 | 중지 기록(E② 실행이 없으면 `start_refused`/`e2_execution_unavailable`). 모델 고장을 '시도한 계획 없음'으로 숨기지 않는다 |
 | 운영자 중지(요청 승인 중지 API) | cancelled | 중지 | 중지 경로 | 중지 기록 `interrupted`. 단 첫 E② 실행 전에 중지됐으면(lease_missing) `start_refused`/`e2_execution_unavailable`이다. 회차가 운영자 중지라는 것은 회차 상태(cancelled)에 남는다 |
-| 운영자 일시정지(작업 control pause) | cancelled(운영자 중지와 같음, 엔진 일시정지를 거치지 않음) | 중지 | 중지 경로 | 중지 기록 `interrupted`. 재개는 409 `resume_unsupported`. 화면 버튼은 '종료'(일시정지·다시 시작 없음) |
+| 운영자 일시정지(작업 control pause) | cancelled(운영자 중지와 같음, 엔진 일시정지를 거치지 않음) | 중지 | 중지 경로 | 중지 기록 `interrupted`. 재개는 409 `resume_unsupported`. 화면의 일시정지·다시 시작은 아래에 설명한 워크플로 API를 사용한다. |
 | 회차 도중 운영자 밖 엔진 일시정지(아래 원인 표) | failed(감독 실패, 진단 로그 사유 `engine_paused`·서버 로그에 원인 코드) — 운영자 중지와 따로 | 취소 | 마감 정리 | 중지 기록 `interrupted`. 첫 진단 서버에서 생기는 경로는 없다(방어 경로) |
 | 초안 중지·대상 철회·결속 계정 변경·hard 기한·서비스 종료 | cancelled(사유는 각 경로) | 문맥 취소 | 작업 문맥 취소 | 중지 기록 `interrupted` |
 | 실패(엔진 실패·마감 판정 실패·준비 실패) | failed | 취소 | 마감 정리 | 중지 기록 `interrupted` |
