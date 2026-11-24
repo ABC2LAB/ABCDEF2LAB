@@ -87,9 +87,17 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
     render(withRoute("classify"));
     expect(screen.getByText(/비밀번호 · 토큰 · 세션 값은 읽지도 보이지도 않/)).toBeInTheDocument();
     await pickTarget();
+    // 시험 계정 A(owner)는 위 로그인 상자, 그 밖의 계정(legacy · 실계정 취급)은 아래 '다른 계정' 목록(사용자 11/24)
+    const box = within(screen.getByRole("region", { name: "시험 계정" }));
+    await waitFor(() =>
+      expect(within(box.getByRole("group", { name: "계정 A" })).getByText("계정 A")).toHaveAttribute(
+        "title",
+        "별칭 owner",
+      ),
+    );
     const list = within(screen.getByLabelText("계정 목록"));
-    expect(list.getByText("owner")).toBeInTheDocument();
-    expect(list.getAllByText("시험 계정").length).toBeGreaterThan(0);
+    expect(list.getByText("legacy")).toBeInTheDocument();
+    expect(list.queryByText("owner")).toBeNull();
     expect(list.getAllByText(/실계정 취급/).length).toBeGreaterThan(0);
   });
 
@@ -108,28 +116,45 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
     await pickTarget();
     const list = within(screen.getByLabelText("계정 목록"));
     expect(list.queryByText(/모델 입력 가능/)).toBeNull();
-    const owner = list.getByText("owner").closest("li") as HTMLElement;
-    expect(within(owner).getByText(/권한은 별도/)).toBeInTheDocument();
+    // 줄 아래 작은 글(주소 · '권한은 별도' · 표시자)은 뺐다(사용자 11/24 '로그인 창처럼') — 그래도 권한을 주장하는 말은 없다
+    expect(document.body).not.toHaveTextContent(/모델 입력 가능/);
   });
 
-  it("계정 등록: 라벨 입력 → POST accounts {label}", async () => {
+  // 사용자 11/24: 라벨을 적어 등록하던 칸 대신 맨 위 시험 계정 A · B 로그인 상자(이름 고정)에서 등록 → 시험 표시 → 자격을 한 번에
+  it("시험 계정 A · B 상자: 이름은 고정이고, 빈 줄(B)을 채워 저장하면 등록 → 시험 표시 → 자격 순서로 보낸다", async () => {
     serve();
     render(withRoute("classify"));
     await pickTarget();
-    fireEvent.change(screen.getByLabelText("새 계정 라벨"), { target: { value: "newacct" } });
-    fireEvent.click(screen.getByRole("button", { name: "계정 등록" }));
-    expect(api).toHaveBeenCalledWith(
-      "/api/product/targets/t1/accounts",
-      expect.objectContaining({ method: "POST", body: JSON.stringify({ label: "newacct" }) }),
+    expect(screen.queryByLabelText("새 계정 라벨")).toBeNull();
+    const box = within(screen.getByRole("region", { name: "시험 계정" }));
+    // 선언을 못 읽으면 이미 있는 시험 계정(owner)을 A 로, B 는 기본 이름
+    await waitFor(() =>
+      expect(within(box.getByRole("group", { name: "계정 A" })).getByText("계정 A")).toHaveAttribute(
+        "title",
+        "별칭 owner",
+      ),
     );
-  });
-
-  it("형식 밖 라벨이면 등록 버튼이 막힌다", async () => {
-    serve();
-    render(withRoute("classify"));
-    await pickTarget();
-    fireEvent.change(screen.getByLabelText("새 계정 라벨"), { target: { value: "User@x" } });
-    expect(screen.getByRole("button", { name: "계정 등록" })).toBeDisabled();
+    expect(within(box.getByRole("group", { name: "계정 B" })).getByText("계정 B")).toHaveAttribute(
+      "title",
+      "별칭 tester-b",
+    );
+    fireEvent.change(box.getByLabelText("계정 B 아이디"), { target: { value: "u-b" } });
+    fireEvent.change(box.getByLabelText("계정 B 비밀번호"), { target: { value: "synthetic-pass-b-1234" } });
+    fireEvent.click(box.getByRole("checkbox"));
+    fireEvent.click(box.getByRole("button", { name: "저장" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/api/product/targets/t1/accounts",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ label: "tester-b" }) }),
+      ),
+    );
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/api/product/targets/t1/accounts/tester-b/mark-test",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    expect(box.getByLabelText("계정 B 비밀번호")).toHaveValue("");
   });
 
   it("시험 표시: 진술 동의 뒤에만 POST mark-test", async () => {
@@ -171,8 +196,9 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
     serve();
     render(withRoute("classify"));
     await pickTarget();
-    const owner = within(screen.getByLabelText("계정 목록")).getByText("owner").closest("li") as HTMLElement;
-    fireEvent.click(within(owner).getByRole("button", { name: "표시 해제" }));
+    // 시험 계정 A · B 의 표시 해제는 위 로그인 상자 줄에 있다(사용자 11/24)
+    const a = within(screen.getByRole("region", { name: "시험 계정" })).getByRole("group", { name: "계정 A" });
+    fireEvent.click(await within(a).findByRole("button", { name: "표시 해제" }));
     expect(api).toHaveBeenCalledWith(
       "/api/product/targets/t1/accounts/owner/unmark",
       expect.objectContaining({ method: "POST", body: "{}" }),
@@ -227,10 +253,22 @@ describe("AccountClassifyLive 지연 응답 귀속", () => {
     render(withRoute("classify"));
     const pick = await screen.findByLabelText("분류할 대상");
     fireEvent.change(pick, { target: { value: "t1" } });
-    const a = (await screen.findByText("account-a")).closest("li") as HTMLElement;
-    fireEvent.click(within(a).getByRole("button", { name: "표시 해제" }));
+    // 시험 계정 A(account-a)의 표시 해제는 위 로그인 상자 줄에 있다
+    const box = () => within(screen.getByRole("region", { name: "시험 계정" }));
+    await waitFor(() =>
+      expect(within(box().getByRole("group", { name: "계정 A" })).getByText("계정 A")).toHaveAttribute(
+        "title",
+        "별칭 account-a",
+      ),
+    );
+    fireEvent.click(within(box().getByRole("group", { name: "계정 A" })).getByRole("button", { name: "표시 해제" }));
     fireEvent.change(pick, { target: { value: "t2" } });
-    await screen.findByText("account-b");
+    await waitFor(() =>
+      expect(within(box().getByRole("group", { name: "계정 A" })).getByText("계정 A")).toHaveAttribute(
+        "title",
+        "별칭 account-b",
+      ),
+    );
   }
 
   it.each([
@@ -242,11 +280,14 @@ describe("AccountClassifyLive 지연 응답 귀속", () => {
     await act(async () => {
       settle()[how]();
     });
-    // 선택은 B, 목록도 B 그대로. A의 목록·오류 문구가 끼어들지 않는다.
+    // 선택은 B, 상자도 B 그대로. A 대상의 계정 · 오류 문구가 끼어들지 않는다.
     await waitFor(() => expect(screen.getByLabelText("분류할 대상")).toHaveValue("t2"));
-    const list = screen.getByLabelText("계정 목록");
-    expect(within(list).getByText("account-b")).toBeInTheDocument();
-    expect(within(list).queryByText("account-a")).toBeNull();
+    const box = screen.getByRole("region", { name: "시험 계정" });
+    expect(within(within(box).getByRole("group", { name: "계정 A" })).getByText("계정 A")).toHaveAttribute(
+      "title",
+      "별칭 account-b",
+    );
+    expect(box).not.toHaveTextContent("account-a");
     expect(screen.queryByText(/작업을 처리하지 못했습니다/)).toBeNull();
   });
 });
@@ -383,7 +424,9 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
     serveLogin();
     render(withRoute("classify"));
     await pickTarget();
-    expect(within(row("owner")).getByText("자격 등록됨")).toBeInTheDocument();
+    // A(owner)는 위 로그인 상자 줄, legacy 는 아래 목록 줄
+    const a = within(screen.getByRole("region", { name: "시험 계정" })).getByRole("group", { name: "계정 A" });
+    await waitFor(() => expect(a).toHaveTextContent("자격 등록됨"));
     expect(within(row("legacy")).getByText("자격 없음")).toBeInTheDocument();
   });
 

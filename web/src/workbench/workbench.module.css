@@ -3916,6 +3916,61 @@ button.smm:hover {
   order: 3;
   flex-basis: 100%;
 }
+/* 새 점검 '계정 분류' 칸의 시험 계정 추가 상자: 로그인 창처럼(사용자 11/24) */
+.acct-quick {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 520px;
+  padding: 18px 20px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 1px 2px rgba(16, 20, 28, 0.06);
+}
+.acct-quick h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.acct-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.acct-pair-h {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  font-size: 13px;
+}
+/* 줄 버튼(표시 해제 · 시험 표시)은 오른쪽 끝 */
+.acct-pair-act {
+  margin-left: auto;
+}
+.acct-pair-in {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+@container (max-width: 420px) {
+  .acct-pair-in {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.acct-quick .ckline span {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+/* 새 점검 '계정 분류' 칸에서 펼친 계정 관리(사용자 11/24). 칸 안에서 구획처럼 보이게 위 줄과 띄운다 */
+.acct-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-top: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
 /* 새 점검: 계정 · 정책 선언 상자(사용자 11/23). 대상 칸 아래에서 계정 분류 · 정책 선언으로 잇는다 */
 .prep-box {
   display: flex;
@@ -4953,6 +5008,25 @@ button.smm:hover {
   flex-direction: column;
   gap: 14px;
   max-width: 400px;
+}
+/* 관문(로그인 · 연결 안내)을 남은 칸 가운데에 둔다(사용자 11/24). 상자 폭은 400px 까지 */
+.lv-gate-wrap {
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  /* 바깥은 옅은 회색이라 가운데 로그인 상자가 떠 보인다 */
+  background: var(--well);
+}
+.lv-gate-wrap > .lv-gate {
+  width: 100%;
+}
+/* 로그인 창은 상자 안에(사용자 11/24 '밋밋하다') */
+.lv-gate-card {
+  padding: 28px 28px 24px;
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  background: var(--bg);
+  box-shadow: var(--shadow);
 }
 .lv-gate-h {
   font-size: 16px;
