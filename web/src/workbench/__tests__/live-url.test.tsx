@@ -1737,9 +1737,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(ended).toHaveTextContent(
       "점검이 끝나 진행 중 후보 목록을 더 읽지 않습니다. 결과와 확정 단계 판정 목록은 위 [보고서 보기]에서 봅니다.",
     );
-    // 상태 카드 숫자 칸: 발견 2 · 확정 0
+    // 상태 카드 숫자 칸: 발견 2 · 판정 확정 0
     expect(within(document.getElementById("lMeta") as HTMLElement).getByText("발견").parentElement).toHaveTextContent(
-      /^발견2확정 0$/,
+      /^발견2판정 확정 0$/,
     );
     fireEvent.click(rows[1]);
     expect(goTo).not.toHaveBeenCalledWith("report");
@@ -1783,21 +1783,56 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(header).not.toHaveTextContent("연결 전");
   });
 
-  it("보고서 요약에 검증된 제품 확정만 합산하고 제품 출처를 표시한다", async () => {
+  it.each([
+    ["mixed_integrity", "판정 확정1증거 충분 · 확정 단계 확정 1"],
+    ["source_not_found", "판정 확정0증거 충분"],
+  ])("보고서 요약에 검증된 제품 확정만 합산한다 (%s)", async (fixture, summary) => {
     const { parseProductVerdicts } = await import("../live/productVerdicts");
     const golden = (await import("./product-verdicts.server-golden.json")).default as Record<
       string,
       { task_id: string }
     >;
-    // 진위 확인 통과 CONFIRMED 1 · 진위 실패(값 숨김) 1
-    pv.reply = async () => parseProductVerdicts(golden.mixed_integrity, golden.mixed_integrity.task_id);
+    // 당시 원본 미확인 행에는 confirmed 값이 있어도 요약에 더해지면 안 된다.
+    pv.reply = async () => parseProductVerdicts(golden[fixture], golden[fixture].task_id);
     saveHandle();
     u.readURLStatus.mockResolvedValue(completed);
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
     mount("report");
     const strip = await screen.findByRole("region", { name: "판정 집계" });
     const cell = within(strip).getByText("판정 확정").parentElement as HTMLElement;
-    await waitFor(() => expect(cell).toHaveTextContent(/^판정 확정1증거 충분 · 확정 단계 확정 1$/));
+    if (fixture === "source_not_found") {
+      expect(await screen.findAllByText(/당시 원본 미확인 · 당시 정책 동결본/)).toHaveLength(2);
+    }
+    await waitFor(() => expect(cell.textContent).toBe(summary));
+  });
+
+  it("끝난 점검의 진행 요약에도 검증된 제품 확정 수를 합산한다", async () => {
+    const { parseProductVerdicts } = await import("../live/productVerdicts");
+    const { mixed_integrity: golden } = (await import("./product-verdicts.server-golden.json")).default;
+    pv.reply = async () => parseProductVerdicts(golden, golden.task_id);
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
+    mount("live");
+    await waitFor(() =>
+      expect(within(document.getElementById("lMeta") as HTMLElement).getByText("발견").parentElement).toHaveTextContent(
+        /^발견1판정 확정 1$/,
+      ),
+    );
+  });
+
+  it("보고서 Markdown의 합계와 제품 확정 출처를 함께 표시한다", () => {
+    const md = buildPocMarkdown([candidate(1)], {
+      targetUrl: "https://target.example/",
+      mode: null,
+      model: null,
+      excluded: null,
+      crawl: null,
+      productConfirmed: 2,
+    });
+    expect(md).toContain("- 취약점: 확정 2건 · 검토 필요 1건");
+    expect(md).toContain("- 제품 확정 판정: 2건");
+    expect(md).not.toContain("제품 E③ 확정 단계");
   });
 
   it("보고서는 결과 저장이 확인된 뒤에만 실제 task 의 조치 자료를 부른다", async () => {

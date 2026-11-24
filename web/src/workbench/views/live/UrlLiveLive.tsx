@@ -670,6 +670,8 @@ export function UrlLiveLive() {
   const saved = usePoll(() => fetchRemediation(savedTask as string, "internal"), [savedTask], {
     enabled: visible && !!savedTask,
   });
+  const savedVerdicts = useProductVerdicts(savedTask, visible);
+  const savedProductConfirmed = savedVerdicts.error ? 0 : productConfirmedCount(savedVerdicts.data);
   if (!handle || !job) {
     return (
       <>
@@ -810,7 +812,7 @@ export function UrlLiveLive() {
   if (ended && saved.data && !saved.error) {
     const savedFindings = saved.data.entries.filter((e) => diagnosticOutcome(e) !== "negative");
     const confirmed = savedFindings.filter((e) => diagnosticOutcome(e) === "confirmed").length;
-    stats.push({ k: "발견", v: String(savedFindings.length), sub: `확정 ${confirmed}` });
+    stats.push({ k: "발견", v: String(savedFindings.length), sub: `판정 확정 ${confirmed + savedProductConfirmed}` });
   } else if (!ended && found)
     // 일부만 왔으면 받은 행 수에 '+' — 전체 수는 모른다(candidate_total null). 받은 수를 전체로 쓰지 않는다
     stats.push({
@@ -1534,7 +1536,7 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
   out.push(
     `- 취약점: 확정 ${count("confirmed") + (info.productConfirmed ?? 0)}건 · 검토 필요 ${count("review")}건 · 미실행 ${count("not_executed")}건 · 결과 불명 ${count("unknown")}건`,
   );
-  if (info.productConfirmed) out.push(`- 제품 E③ 확정 단계: ${info.productConfirmed}건`);
+  if (info.productConfirmed) out.push(`- 제품 확정 판정: ${info.productConfirmed}건`);
   if (info.crawl) out.push(`- 탐색: 방문 ${info.crawl.visited} · 발견한 API ${info.crawl.found}`);
   out.push("", "**취약점**", "");
   if (!list.length) out.push("저장된 취약점이 없습니다. 결과가 없다고 안전하다는 뜻은 아닙니다.");
