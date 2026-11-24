@@ -429,7 +429,7 @@ function LiveCandidates({
         </div>
       ) : null}
       <p className={s.help}>
-        {`점검 중에 저장된 검증 전 후보입니다(모두 검토 필요). 등급은 Worker 가 붙인 예상값이고, 확정 여부는 점검이 끝난 뒤 보고서의 판정에서 봅니다.${
+        {`점검 중에 저장된 검증 전 후보입니다(모두 검토 필요). 등급은 Worker 가 붙인 값이라 확정이 아니고, 확정 여부는 점검이 끝난 뒤 보고서의 판정에서 봅니다.${
           page?.truncated
             ? ` 후보가 많아 최근 ${page.returned}건만 받았고, 위 집계도 받은 ${page.returned}건 기준입니다.`
             : ""
@@ -852,7 +852,7 @@ export function UrlLiveLive() {
     stats.push({
       k: "발견 후보",
       v: found.truncated ? `${found.returned}+` : String(found.returned),
-      sub: found.truncated ? `최근 ${found.returned}건만 받음` : `예상 심각 · 높음 ${highUp}`,
+      sub: found.truncated ? `최근 ${found.returned}건만 받음` : `심각 · 높음 ${highUp}`,
     });
   if (g.runReadable)
     stats.push({ k: "확인 필요", v: String(a.pending.length), sub: "승인 대기", warn: a.pending.length > 0 });
@@ -1284,7 +1284,7 @@ export function FindingDetail({
       <div className={s.fdet}>
         <StatusCard e={e} />
         {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
-          <Isec t="예상 심각도 근거 · 모델 제안">
+          <Isec t="심각도 근거 · 모델 제안">
             <p>{maskSecrets(e.severity_rationale ?? "")}</p>
             <p className={s.help}>이 등급은 검토 우선순위 제안이며 취약점 확정이나 CVSS 점수가 아닙니다.</p>
           </Isec>
@@ -1427,7 +1427,7 @@ export function FindingPage({
           {/* E③ 확정 단계 판정: 이 후보를 참조하는 제품 판정이 있을 때만(목록과 같은 표시 규칙) */}
           <VerdictDetailCard taskId={taskId} entryId={e.entry_id} />
           {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
-            <Isec t="예상 심각도 근거 · 모델 제안">
+            <Isec t="심각도 근거 · 모델 제안">
               <p>{maskSecrets(e.severity_rationale ?? "")}</p>
               <p className={s.help}>이 등급은 검토 우선순위 제안이며 취약점 확정이나 CVSS 점수가 아닙니다.</p>
             </Isec>
@@ -1963,7 +1963,7 @@ export function UrlReportLive() {
                   <div className={s.sub}>
                     {[
                       confirmedSev && `확정 ${confirmedSev}`,
-                      estimatedSev && `예상 ${estimatedSev}`,
+                      estimatedSev && `검토 필요 ${estimatedSev}`,
                       noSev ? `위험도 미평가 ${noSev}` : "",
                     ]
                       .filter(Boolean)

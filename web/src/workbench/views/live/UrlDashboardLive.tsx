@@ -95,7 +95,7 @@ function DashStrip({
   const estimates = SEV_RANK.filter((k) => k !== "none")
     .map((k) => {
       const count = found.filter((e) => diagnosticOutcome(e) === "review" && sevOf(e) === k).length;
-      return count ? `예상 ${SEVL[k]} ${count}` : "";
+      return count ? `검토 필요 ${SEVL[k]} ${count}` : "";
     })
     .filter(Boolean)
     .join(" · ");

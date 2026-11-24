@@ -2143,11 +2143,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     mount("report");
     const list = await screen.findByRole("tabpanel", { name: "취약점 목록" });
-    // 발견 칸 보조 글은 0건 등급을 빼고 확정 · 예상 · 위험도 미평가로 묶는다(사용자 11/18 '간단하게').
+    // 발견 칸 보조 글은 0건 등급을 빼고 확정 · 검토 필요 · 위험도 미평가로 묶는다(사용자 11/18 '간단하게', 11/24 '예상' 뺌).
     // 확정 0 이라 '확정 …'은 없고, 결과 불명(후보 4)의 높음은 예상으로 세지 않는다
     const strip = screen.getByRole("region", { name: "판정 집계" });
     expect((within(strip).getByText("취약점").parentElement as HTMLElement).lastElementChild).toHaveTextContent(
-      /^예상 높음 1, 낮음 1 · 위험도 미평가 2$/,
+      /^검토 필요 높음 1, 낮음 1 · 위험도 미평가 2$/,
     );
     const names = () =>
       [...(document.getElementById("rList") as HTMLElement).querySelectorAll("button")].map(
@@ -2663,7 +2663,7 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     const cell = (k: string) => within(strip).getByText(k).parentElement as HTMLElement;
     expect(within(cell("발견 · 검토 대상")).getByText("4")).toBeInTheDocument();
     expect(cell("발견 · 검토 대상")).toHaveTextContent(
-      "확정 심각 1 · 확정 높음 1 · 확정 중간 0 · 확정 낮음 0 · 확정 정보성 0 · 예상 중간 1",
+      "확정 심각 1 · 확정 높음 1 · 확정 중간 0 · 확정 낮음 0 · 확정 정보성 0 · 검토 필요 중간 1",
     );
     expect(strip.querySelector("#dSevStack")).toBeNull();
     expect(cell("결과 확인")).toHaveTextContent("결과 불명 0 · 미실행 0");

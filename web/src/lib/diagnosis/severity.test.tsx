@@ -80,7 +80,9 @@ it("실제 HTTP 파서가 내부 API의 예상 높음을 표시해도 후보는 
       <Outcome o={diagnosticOutcome(data.entries[0])} />
     </>,
   );
-  expect(screen.getByText("예상 높음")).toBeInTheDocument();
+  // 딱지엔 '예상'을 붙이지 않고(사용자 11/24) 확정이 아님은 판정 딱지 '검토 필요'가 말한다
+  expect(screen.getByText("높음")).toBeInTheDocument();
+  expect(screen.queryByText(/예상/)).toBeNull();
   expect(screen.getByText("검토 필요")).toBeInTheDocument();
   expect(requests).toEqual([
     "POST /api/auth/login",
@@ -91,7 +93,7 @@ it.each(["critical", "high", "medium", "low", "info"])("예상 %s는 확정 판�
   const value = { ...entry, severity };
   expect(entrySeverity(value)).toBe(severity);
   expect(diagnosticOutcome(value)).toBe("review");
-  expect(entrySeverityLabel(value)).toMatch(/^예상 /);
+  expect(entrySeverityLabel(value)).not.toMatch(/예상/);
 });
 it.each([
   { severity: undefined },
@@ -180,14 +182,22 @@ it("대시보드는 확정 분포와 후보 예상 분포를 구분하고 예상
   );
   const summary = await screen.findByRole("region", { name: "요약" });
   await waitFor(() => expect(summary).toHaveTextContent("확정 높음 1"));
-  expect(summary).toHaveTextContent("예상 높음 1");
+  // 확정 분포와 검토 필요(후보) 분포는 따로 적는다 — '예상' 대신 '검토 필요'(사용자 11/24)
+  expect(summary).toHaveTextContent("검토 필요 높음 1");
+  expect(summary).not.toHaveTextContent("예상");
   expect(summary).not.toHaveTextContent("확정 높음 2");
   const rows = screen.getByRole("region", { name: "발견 · 검토 대상" });
-  expect(within(rows).getByText("예상 높음")).toBeInTheDocument();
+  expect(within(rows).getAllByText("높음").length).toBeGreaterThan(0);
+  expect(rows).not.toHaveTextContent("예상");
   const confirmedRow = within(rows).getByText(finding.title).closest("button");
   expect(confirmedRow).toHaveTextContent("높음");
   expect(confirmedRow).not.toHaveTextContent("예상");
-  fireEvent.click(within(rows).getByRole("button", { name: /^정보성/ }));
+  // 줄 딱지도 '정보성'으로 시작해 거르기 칩 묶음 안에서 고른다
+  fireEvent.click(
+    within(within(rows).getByRole("group", { name: "위험도로 거르기" })).getByRole("button", { name: /^정보성/ }),
+  );
   expect(within(rows).queryByText(entry.title)).toBeNull();
-  expect(within(rows).getByText("예상 정보성")).toBeInTheDocument();
+  // 거른 뒤 남은 줄은 정보성 후보 하나(칩 글 '정보성'과 줄 딱지가 같이 있다)
+  expect(rows.querySelectorAll("[data-dsel^='fd-']")).toHaveLength(1);
+  expect(rows.querySelector("[data-dsel^='fd-']")).toHaveTextContent(/^정보성/);
 });
