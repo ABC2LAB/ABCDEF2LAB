@@ -156,11 +156,26 @@ describe("setAccountCredential (실 PUT, 값은 본문에만)", () => {
     ["라벨 형식 밖", "Acct@A", "u", "p", "invalid_account_label"],
     ["빈 비밀번호", "acct-a", "u", "", "invalid_account_credential"],
     ["빈 사용자명", "acct-a", "", "p", "invalid_account_credential"],
+    ["사용자명 앞 공백", "acct-a", " u", "p", "invalid_account_credential"],
+    ["사용자명 뒤 공백", "acct-a", "u ", "p", "invalid_account_credential"],
+    ["사용자명 뒤 유니코드 공백", "acct-a", "u\u00a0", "p", "invalid_account_credential"],
+    ["사용자명 앞 NEL 공백", "acct-a", "\u0085u", "p", "invalid_account_credential"],
     ["줄바꿈", "acct-a", "u", "p\nq", "invalid_account_credential"],
     ["비밀번호 513바이트", "acct-a", "u", "x".repeat(513), "invalid_account_credential"],
   ])("%s 이면 보내지 않는다", async (_name, label, username, password, code) => {
     await expect(setAccountCredential("t1", label, username, password)).rejects.toThrow(code);
     expect(api).not.toHaveBeenCalled();
+  });
+
+  it("사용자명 내부 공백과 비밀번호 앞뒤 공백을 그대로 보낸다", async () => {
+    const username = "synthetic user";
+    const password = " synthetic pass ";
+    api.mockResolvedValueOnce({ account: { credential_configured: true } });
+    await expect(setAccountCredential("t1", "acct-a", username, password)).resolves.toBe(true);
+    expect(api).toHaveBeenCalledWith(
+      "/api/product/targets/t1/accounts/acct-a/credential",
+      expect.objectContaining({ body: JSON.stringify({ username, password }) }),
+    );
   });
 
   it("자격 길이는 UTF-8 바이트로 센다(서버와 같게)", () => {
@@ -174,7 +189,7 @@ describe("setAccountCredential (실 PUT, 값은 본문에만)", () => {
 describe("accountWriteFailureText (서버 사유 → 한국어)", () => {
   it.each([
     ["invalid_target_login", /승인 경로 밖/],
-    ["invalid_account_credential", /자격 형식이 맞지 않습니다/],
+    ["invalid_account_credential", /사용자명은 앞뒤 공백 없이/],
     ["target_not_approved", /철회된 대상/],
     ["account_not_found", /계정을 찾지 못했습니다/],
     ["product_control_unavailable", /제품 제어 서비스/],
