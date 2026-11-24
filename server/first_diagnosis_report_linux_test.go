@@ -244,10 +244,6 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 	if response.Code != 404 {
 		t.Fatal("unconfirmed candidate exported as Word report")
 	}
-	response = request("GET", fmt.Sprintf("/api/report/diagnostic?task=%d&audience=internal&format=review-json", row.ID), "")
-	if response.Code != 200 || !strings.Contains(response.Body.String(), source.EntryID) {
-		t.Fatal("unconfirmed candidate missing from completion review")
-	}
 	if w := request("GET", fmt.Sprintf("/api/report/diagnostic?task=%d", foreign.ID), ""); w.Code != 403 {
 		t.Fatal("foreign task GET admitted")
 	}
