@@ -145,7 +145,7 @@ describe("VerdictDetailCard", () => {
     expect(card).toHaveTextContent("판정 사유 정책상 교차 계정 접근 금지");
     expect(within(card).getByTitle("policy_deny_resolved")).toBeInTheDocument();
     expect(card).toHaveTextContent("봉인 확인됨");
-    expect(card).toHaveTextContent("확정 판정 · 검토 대상 후보");
+    expect(card).toHaveTextContent("확정 판정 · 검토 대상 취약점");
   });
 
   it("봉인 미확인이면 값은 두고 사유 라벨을 붙인다", async () => {

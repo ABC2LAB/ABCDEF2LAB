@@ -238,8 +238,8 @@ function FindReadError({ error, onRetry, stale = false }: { error: unknown; onRe
       <Icon name="alert" />
       <span className={s["lv-grow"]}>
         {stale
-          ? `발견 후보를 다시 읽지 못해 갱신이 멈췄습니다${status}. ${candidateErrorText(error)} 아래는 마지막으로 읽은 목록이라 최신이 아닐 수 있습니다.`
-          : `발견 후보를 읽지 못했습니다${status}. ${candidateErrorText(error)}`}
+          ? `발견한 취약점을 다시 읽지 못해 갱신이 멈췄습니다${status}. ${candidateErrorText(error)} 아래는 마지막으로 읽은 목록이라 최신이 아닐 수 있습니다.`
+          : `발견한 취약점을 읽지 못했습니다${status}. ${candidateErrorText(error)}`}
       </span>
       <button className={cx(s.btn, s.sm)} type="button" onClick={onRetry}>
         다시 읽기
@@ -287,13 +287,15 @@ function LiveCandidateDetail({
     ) : null;
   let body: ReactNode = <FindingDetail e={entry} host={host} taskId={taskId} onReload={poll.reload} />;
   if (!entry) {
-    let state: ReactNode = <LoadingRow text="후보 상세를 읽는 중…" />;
+    let state: ReactNode = <LoadingRow text="취약점 상세를 읽는 중…" />;
     if (poll.error) state = <ErrorNote error={poll.error} onRetry={poll.reload} />;
     else if (poll.data)
-      state = <p className={s.empty}>이 후보의 상세가 아직 저장되지 않았습니다. 잠시 뒤 다시 읽습니다.</p>;
+      state = <p className={s.empty}>이 취약점의 상세가 아직 저장되지 않았습니다. 잠시 뒤 다시 읽습니다.</p>;
     body = (
       <>
-        <InspHead title={entryId.startsWith("candidate-") ? `후보 #${entryId.slice("candidate-".length)}` : entryId} />
+        <InspHead
+          title={entryId.startsWith("candidate-") ? `취약점 #${entryId.slice("candidate-".length)}` : entryId}
+        />
         {state}
       </>
     );
@@ -350,17 +352,17 @@ function LiveCandidates({
   );
   const noSev = list.filter((c) => !c.suggestedSeverity).length;
   let lead: ReactNode = null;
-  if (idle === "prestart") lead = <p className={s.empty}>점검 시작이 확인되면 후보를 읽습니다.</p>;
+  if (idle === "prestart") lead = <p className={s.empty}>점검 시작이 확인되면 취약점을 읽습니다.</p>;
   else if (idle === "unknown")
-    lead = <p className={s.empty}>결과 불명인 점검은 후보를 이어 읽지 않습니다. 상태를 다시 조회하세요.</p>;
+    lead = <p className={s.empty}>결과 불명인 점검은 취약점을 이어 읽지 않습니다. 상태를 다시 조회하세요.</p>;
   else if (idle === "unverified")
-    lead = <p className={s.empty}>점검 상태를 확인하지 못해 후보를 읽지 않습니다. 상태를 다시 조회하세요.</p>;
+    lead = <p className={s.empty}>점검 상태를 확인하지 못해 취약점을 읽지 않습니다. 상태를 다시 조회하세요.</p>;
   else if (closed)
     lead = (
       <div className={s.note} role="status" id="lFindsClosed">
         <Icon name="info" />
         <span className={s["lv-grow"]}>
-          {`점검 실행이 닫혀(시작 확인 전 · 마감 · 결과 불명) 후보를 더 읽지 않습니다.${page ? " 아래는 마지막으로 읽은 목록입니다." : ""} 끝난 점검의 결과와 판정은 보고서에서 봅니다.`}
+          {`점검 실행이 닫혀(시작 확인 전 · 마감 · 결과 불명) 취약점을 더 읽지 않습니다.${page ? " 아래는 마지막으로 읽은 목록입니다." : ""} 끝난 점검의 결과와 판정은 보고서에서 봅니다.`}
         </span>
       </div>
     );
@@ -370,7 +372,7 @@ function LiveCandidates({
   else if (!page && failed) body = <FindReadError error={poll.error} onRetry={poll.reload} />;
   else if (!page && !closed) body = <LoadingRow />;
   else if (page && !list.length)
-    body = <p className={s.empty}>아직 나온 후보가 없습니다. 후보가 없다고 안전하다는 뜻은 아닙니다.</p>;
+    body = <p className={s.empty}>아직 나온 취약점이 없습니다. 없다고 안전하다는 뜻은 아닙니다.</p>;
   else if (page)
     body = (
       <ul className={s.lfinds} id="lFinds">
@@ -384,13 +386,12 @@ function LiveCandidates({
             >
               <CandidateSev sev={c.suggestedSeverity} />
               <span className={s["lfind-m"]}>
-                {/* 줄 제목은 무슨 취약점인지(사용자 11/24: 다 '후보 #n'이라 뭔지 몰랐다). 이름을 아직 못 읽었으면 후보 번호 */}
+                {/* 줄 제목은 무슨 취약점인지(사용자 11/24: '후보' 말은 쓰지 않고 취약점 이름). 이름을 아직 못 읽었으면 '취약점 #번호' */}
                 <span className={s["lfind-t"]}>
-                  {titles.get(c.candidateId) ?? `후보 #${c.candidateId}`}
+                  {titles.get(c.candidateId) ?? `취약점 #${c.candidateId}`}
                   {fresh.has(c.candidateId) ? <span className={cx(s.tag, s.new)}>새로</span> : null}
                 </span>
                 <span className={s["lfind-s"]}>
-                  {titles.has(c.candidateId) ? `후보 #${c.candidateId} · ` : null}
                   <time dateTime={c.observedAt} title={dateTimeOf(c.observedAt)}>
                     {`관측 ${clockOf(c.observedAt)}`}
                   </time>
@@ -407,7 +408,7 @@ function LiveCandidates({
   return (
     <section className={s.sec} aria-labelledby="lFindsH">
       <div className={s.sh}>
-        <h2 id="lFindsH">발견 후보</h2>
+        <h2 id="lFindsH">발견한 취약점</h2>
         <span className={s.n} id="lFindsN">
           {countText}
         </span>
@@ -429,9 +430,9 @@ function LiveCandidates({
         </div>
       ) : null}
       <p className={s.help}>
-        {`점검 중에 저장된 검증 전 후보입니다(모두 검토 필요). 등급은 Worker 가 붙인 값이라 확정이 아니고, 확정 여부는 점검이 끝난 뒤 보고서의 판정에서 봅니다.${
+        {`점검 중에 저장된 검증 전 취약점입니다(모두 검토 필요). 등급은 Worker 가 붙인 값이라 확정이 아니고, 확정 여부는 점검이 끝난 뒤 보고서의 판정에서 봅니다.${
           page?.truncated
-            ? ` 후보가 많아 최근 ${page.returned}건만 받았고, 위 집계도 받은 ${page.returned}건 기준입니다.`
+            ? ` 취약점이 많아 최근 ${page.returned}건만 받았고, 위 집계도 받은 ${page.returned}건 기준입니다.`
             : ""
         }`}
       </p>
@@ -672,23 +673,27 @@ export function UrlLiveLive() {
   // 같은 자료로 후보 줄에 취약점 이름도 붙인다(사용자 11/24). 그래서 고른 동안만이 아니라 후보가 있으면 읽고, 새 후보가
   // 오면 바로 다시 읽는다(그 사이엔 쉬었다가)
   const newestCandidate = finds.data?.items[0]?.candidateId ?? null;
+  // 고른 후보가 바뀌어도 다시 읽지 않는다(이미 읽은 자료에 다 있다) — 다시 읽는 동안 줄 이름이 번호로 깜빡이지 않게
   const pickedRem = usePoll(
     () => fetchRemediation(job?.task_id as string, "internal"),
-    [job?.task_id, picked, newestCandidate],
+    [job?.task_id, newestCandidate],
     {
       enabled: visible && !runEnded && !!job?.task_id && (!!picked || !!newestCandidate),
       intervalMs: LIVE_DETAIL_POLL_MS,
     },
   );
+  // 이름은 점검마다 모아 둔다: 다시 읽는 동안(자료가 잠깐 비어도) 한 번 받은 이름은 그대로 보인다
+  const titleBook = useRef<{ task: string | null; names: Map<string, string> }>({ task: null, names: new Map() });
   const candidateTitles = useMemo(() => {
-    const out = new Map<string, string>();
+    const task = job?.task_id ?? null;
+    if (titleBook.current.task !== task) titleBook.current = { task, names: new Map() };
     for (const e of pickedRem.data?.entries ?? []) {
       if (!e.entry_id.startsWith("candidate-")) continue;
       const title = maskSecrets(e.title).trim();
-      if (title) out.set(e.entry_id.slice("candidate-".length), title);
+      if (title) titleBook.current.names.set(e.entry_id.slice("candidate-".length), title);
     }
-    return out;
-  }, [pickedRem.data]);
+    return new Map(titleBook.current.names);
+  }, [pickedRem.data, job?.task_id]);
   const pickEntry = (entry: string) => {
     if (!job?.task_id) return;
     setPick({ task: job.task_id, entry });
@@ -850,7 +855,7 @@ export function UrlLiveLive() {
   } else if (!ended && found)
     // 일부만 왔으면 받은 행 수에 '+' — 전체 수는 모른다(candidate_total null). 받은 수를 전체로 쓰지 않는다
     stats.push({
-      k: "발견 후보",
+      k: "발견한 취약점",
       v: found.truncated ? `${found.returned}+` : String(found.returned),
       sub: found.truncated ? `최근 ${found.returned}건만 받음` : `심각 · 높음 ${highUp}`,
     });

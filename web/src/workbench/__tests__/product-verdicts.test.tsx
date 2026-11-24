@@ -261,7 +261,7 @@ describe("ProductVerdictReport", () => {
     expect(ok).not.toHaveTextContent("검사:");
     expect(ok).not.toHaveTextContent("판정 #");
     expect(ok).toHaveTextContent(`관찰 ${clockOf("2026-11-18T09:00:00.000000Z")}`);
-    expect(ok).toHaveTextContent("확정 판정 · 검토 대상 후보 1건");
+    expect(ok).toHaveTextContent("확정 판정 · 검토 대상 취약점 1건");
     expect(ok).not.toHaveTextContent("수동 검토 필요 그대로");
     expect(failed).toHaveTextContent("값 숨김");
     expect(failed).toHaveTextContent("판정 기록 무결성 확인 실패 · 값 숨김");

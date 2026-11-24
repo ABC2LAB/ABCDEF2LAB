@@ -95,7 +95,7 @@ export function urlOutcomeText(
   // 프로그램이 검증한 사실이 아니라서 문구에 그렇게 적는다(#894 경준 리뷰, 절대 규칙 4).
   if (goalMet > 0) parts.push(`목표 달성(계획자 판단)으로 중단 ${goalMet}`);
   if (job.closing_reason === "budget_limited")
-    parts.push(compact ? "예산 상한에서 마감" : "예산 상한에서 마감 · 찾은 후보는 보존");
+    parts.push(compact ? "예산 상한에서 마감" : "예산 상한에서 마감 · 찾은 취약점은 보존");
   return parts.join(" · ");
 }
 

@@ -1630,7 +1630,7 @@ describe("점검 진행", () => {
     const stat = (k: string) => within(stats).getByText(k).parentElement as HTMLElement;
     expect(stat("계획")).toHaveTextContent(/^계획1\/2완료$/);
     expect(stat("심화 점검")).toHaveTextContent(/^심화 점검1\/3마감$/);
-    await waitFor(() => expect(stat("발견 후보")).toHaveTextContent(/^발견 후보3심각 · 높음 1$/));
+    await waitFor(() => expect(stat("발견한 취약점")).toHaveTextContent(/^발견한 취약점3심각 · 높음 1$/));
     await waitFor(() => expect(stat("확인 필요")).toHaveTextContent(/^확인 필요2승인 대기$/));
     expect(stat("확인 필요").className).toMatch(/warn/);
     // 계획 단계 목록 · '계획 보기/접기'는 없다(완료 수만 숫자 칸에), 서버 진단 활동 칸도 없다 (사용자 11/17)
@@ -1656,15 +1656,15 @@ describe("점검 진행", () => {
     // '확인 필요' 글은 숫자 칸 이름 한 군데
     expect(screen.getAllByText("확인 필요")).toHaveLength(1);
     // 발견 후보 목록: 최근 순, 줄마다 예상 등급(없으면 미평가) · 후보 번호 / 관측 시각 · 검토 필요, 첫 목록엔 '새로' 없음
-    const finds = screen.getByRole("region", { name: "발견 후보" });
+    const finds = screen.getByRole("region", { name: "발견한 취약점" });
     expect(finds.querySelector("[class*=vbar]")).toHaveTextContent(/^심각 0높음 1중간 0낮음 0정보성 1위험도 미평가 1$/);
     expect(within(finds).getByText("3건 · 최근 순")).toBeInTheDocument();
-    expect(within(finds).getByText(/검증 전 후보입니다/)).toBeInTheDocument();
+    expect(within(finds).getByText(/검증 전 취약점입니다/)).toBeInTheDocument();
     const rows = [...(document.getElementById("lFinds") as HTMLElement).children] as HTMLElement[];
     expect(rows.map((r) => r.textContent?.replace(/\d{2}:\d{2}:\d{2}/, "HH:MM:SS"))).toEqual([
-      "높음후보 #12관측 HH:MM:SS · 검토 필요",
-      "위험도 미평가후보 #11관측 HH:MM:SS · 검토 필요",
-      "정보성후보 #9관측 HH:MM:SS · 검토 필요",
+      "높음취약점 #12관측 HH:MM:SS · 검토 필요",
+      "위험도 미평가취약점 #11관측 HH:MM:SS · 검토 필요",
+      "정보성취약점 #9관측 HH:MM:SS · 검토 필요",
     ]);
     // 목록 응답엔 제목 · 경로 · 증거가 없어 줄은 그대로 두고, 누르면 오른쪽에 보고서 자료로 상세를 띄운다(사용자 11/23)
     expect(within(finds).queryAllByRole("button")).toHaveLength(3);

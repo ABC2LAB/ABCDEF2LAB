@@ -171,6 +171,6 @@ describe("표시 글", () => {
     expect(candidateErrorText(new ApiError(403, "candidate_scope_denied"))).toMatch(/권한/);
     expect(candidateErrorText(new ApiError(503, "secret-ish raw"))).not.toContain("secret-ish");
     expect(candidateErrorText(new ApiError(422, "response_limit"))).toMatch(/계약과 달라/);
-    expect(candidateErrorText(new Error("x"))).toBe("후보를 읽지 못했습니다.");
+    expect(candidateErrorText(new Error("x"))).toBe("취약점을 읽지 못했습니다.");
   });
 });
