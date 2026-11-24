@@ -72,8 +72,22 @@ it("정확한 승인 대상의 실제 시험 계정 등록만 조회한다", asy
   expect(await readExternalTestAccountPresence("https://target.example/app")).toEqual({
     hasTestAccounts: true,
     statement: SERVER_EXTERNAL_ACCOUNT_STATEMENT,
+    loginMethodMissing: false,
   });
   expect(vi.mocked(apiFetch).mock.calls[1][0]).toBe("/api/product/targets/target-1/accounts");
+});
+// #914: 자격은 저장됐는데 대상 로그인 방식이 없으면 서버가 login_method_missing: true 를 준다. 시험 계정 · 자격 있음일 때만 본다
+it.each([
+  [{ label: "tester", classification: "test", credential_configured: true, login_method_missing: true }, true],
+  [{ label: "tester", classification: "test", credential_configured: false, login_method_missing: true }, false],
+  [{ label: "tester", classification: "test", credential_configured: true }, false],
+  [{ label: "customer", classification: "real", credential_configured: true, login_method_missing: true }, false],
+  [{ label: "tester", classification: "test", credential_configured: true, login_method_missing: "true" }, false],
+] as const)("로그인 방식 없음은 시험 계정 · 자격 있음 · 참일 때만(%#)", async (account, missing) => {
+  vi.mocked(apiFetch)
+    .mockResolvedValueOnce({ target: { id: "target-1", origin: "https://target.example", state: "approved" } })
+    .mockResolvedValueOnce({ accounts: [account] });
+  expect((await readExternalTestAccountPresence("https://target.example/")).loginMethodMissing).toBe(missing);
 });
 it.each([
   {},
@@ -86,6 +100,7 @@ it.each([
   expect(await readExternalTestAccountPresence("https://target.example/")).toEqual({
     hasTestAccounts: false,
     statement: "",
+    loginMethodMissing: false,
   });
 });
 it("계정 조회 실패·다른 origin은 계정 없음으로 바꾸지 않는다", async () => {
@@ -128,6 +143,7 @@ it.each([
   expect(await readExternalTestAccountPresence("https://target.example/")).toEqual({
     hasTestAccounts: true,
     statement: "",
+    loginMethodMissing: false,
   });
 });
 it.each([

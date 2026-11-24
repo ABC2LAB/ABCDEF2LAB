@@ -102,7 +102,8 @@ import {
   BACKUP_CONFIRMED_STATEMENT,
   EXCLUDE_EXAMPLE,
   EXCLUSIONS_REVIEWED_STATEMENT,
-  STATE_CHANGING_GET_EXAMPLES,
+  excludedLines,
+  excludedOneLine,
 } from "../views/live/UrlNewScanLive";
 import { UrlFacts } from "../views/live/urlParts";
 import { WorkflowCrawlLive } from "../views/live/workflowViews";
@@ -134,11 +135,14 @@ const noop = () => undefined;
 const START_CONFIRMED = { exclusions_reviewed: true, backup_confirmed: true } as const;
 const exclusionsBox = () => screen.getByRole("checkbox", { name: EXCLUSIONS_REVIEWED_STATEMENT });
 const backupBox = () => screen.getByRole("checkbox", { name: BACKUP_CONFIRMED_STATEMENT });
-/** 새 점검 2쪽에서 시작 확인 두 진술에 체크한다. 둘 다 있어야 '승인 범위 확인'이 켜진다. */
+/** 오른쪽 요약 '약관 동의'에서 시작 확인 두 진술에 체크한다(사용자 11/24, 원래 2쪽 점검 설정). 둘 다 있어야 '승인 범위 확인'이 켜진다. 이미 체크한 칸은 그대로 둔다. */
 function tickStartConfirm() {
-  fireEvent.click(exclusionsBox());
-  fireEvent.click(backupBox());
+  for (const box of [exclusionsBox(), backupBox()]) if (!(box as HTMLInputElement).checked) fireEvent.click(box);
 }
+/** 오른쪽 요약 '약관 동의'의 시작 동의(범위 확인 뒤). 같은 칸에 시작 확인 두 칸도 있어 문장으로 찾는다 */
+const START_CONSENT = /위 범위로 점검을 시작합니다|이에 동의하고 비용 상한 안에서/;
+const startConsent = () =>
+  within(screen.getByRole("complementary", { name: "점검 요약" })).getByRole("checkbox", { name: START_CONSENT });
 
 it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조회만 한다", async () => {
   u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
@@ -148,9 +152,7 @@ it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조�
   mount("new");
   const target = await screen.findByLabelText(/점검할 사이트 주소/);
   fireEvent.change(target, { target: { value: "https://target.example/app" } });
-  // 1쪽(대상) → 다음 → 2쪽(분석 모델 · 점검 설정) (시안 v64 ~ v67)
-  fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
-  // 설치된 프로필이 외부 모델뿐이면 '외부 API' 가 골라져 있다
+  // 분석 모델은 1쪽 대상 밑(사용자 11/24). 설치된 프로필이 외부 모델뿐이면 '외부 API' 가 골라져 있다
   expect(screen.getByRole("radio", { name: "외부 API" })).toBeChecked();
   // 범위 확인 전에도 외부 모델 전송은 미리 보인다 (리뷰 #507, 절대규칙 8). '범위 확인 전 기본 원칙' 안내 글은 뺐다(사용자 11/18)
   const sum = screen.getByRole("complementary", { name: "점검 요약" });
@@ -163,6 +165,7 @@ it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조�
   fireEvent.change(key, { target: { value: "synthetic-input-provider-key" } });
   fireEvent.click(screen.getByRole("button", { name: "키 등록" }));
   expect(key).toHaveValue("");
+  // 1쪽 → 다음 → 2쪽(점검 설정) (시안 v64 ~ v67)
   tickStartConfirm();
   await waitFor(() => expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled());
   expect(u.createURLDraft).not.toHaveBeenCalled();
@@ -320,7 +323,7 @@ function candidate(n: number): api.Remediation["entries"][number] {
     severity_source: "worker_estimate",
     severity_rationale: "실제 응답에서 관찰한 문서 노출의 접근통제 영향을 검토해야 합니다.",
     entry_id: `candidate-${n}`,
-    title: `후보 ${n}`,
+    title: `다른 계정 책 조회 ${n}`,
     outcome: "review",
     status: "completed",
     verification: "manual_review_required",
@@ -456,51 +459,54 @@ describe("서버 방식 확인 (catalog)", () => {
     expect(screen.queryByText("기존 점검 다시 열기")).toBeNull();
     expect(screen.queryByRole("link", { name: "진행·시작 전 점검 목록" })).toBeNull();
     expect(screen.queryAllByRole("button", { name: /\.(com|io)$/ })).toHaveLength(0);
-    // 로그인 칸(시안의 계정 A 관리자 · B 일반 입력, 연결 전)은 뺐다 — 대신 '계정 분류' 칸의 시험 계정 A · B(사용자 11/24)
-    expect(screen.queryByRole("radiogroup", { name: "로그인 여부" })).toBeNull();
-    // 시안의 '계정 A (관리자) 아이디' 같은 입력칸은 없다(새 시험 계정 칸은 '계정 A 아이디')
-    expect(screen.queryByLabelText(/^계정 [AB] \(/)).toBeNull();
-    // 대상 승인 전에도 시험 계정 칸은 보인다 — 채울 수는 있고 저장만 승인 뒤에(사용자 11/24)
-    const pair = within(screen.getByRole("region", { name: "시험 계정" }));
-    expect(pair.getByRole("group", { name: "계정 A" })).toHaveTextContent("대상 승인 전");
-    expect(pair.getByLabelText("계정 A 아이디")).toBeEnabled();
-    expect(pair.getByRole("button", { name: "저장" })).toBeDisabled();
-    expect(pair.getByText("대상이 승인되면 저장할 수 있습니다")).toBeInTheDocument();
-    // 2쪽: LLM 서버 주소 · 점검 목표 · 점검 범위 · 워커 수도 고를 수 있다 (지어낸 값 · 연결 상태 없음)
+    // 계정 분류 · 정책 선언 칸 대신 전 로그인 칸(사용자 11/24 저녁 되돌림): 로그인 여부 · 방법(아이디 · 비밀번호 / 쿠키) · 계정 A · B
+    expect(screen.queryByRole("region", { name: "계정 분류" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "정책 선언" })).toBeNull();
+    const login = screen.getByRole("radiogroup", { name: "로그인 여부" });
+    for (const r of within(login).getAllByRole("radio")) expect(r).toBeEnabled();
+    expect(within(login).getByRole("radio", { name: "로그인 없이 점검" })).toBeChecked();
+    expect(screen.getByText("계정이 있어야 함")).toBeVisible();
+    expect(screen.queryByRole("radiogroup", { name: "로그인 방법" })).toBeNull();
+    expect(screen.getAllByText(/^연결 전/).length).toBeGreaterThanOrEqual(2);
+    // 로그인해서 점검: 시안처럼 방법 · 계정 칸이 나오고 입력할 수 있다
+    fireEvent.click(within(login).getByRole("radio", { name: "로그인해서 점검" }));
+    const how = screen.getByRole("radiogroup", { name: "로그인 방법" });
+    expect(within(how).getByRole("radio", { name: "아이디 · 비밀번호" })).toBeChecked();
+    const accounts = screen.getAllByLabelText(/^계정 [AB] /);
+    expect(accounts).toHaveLength(4);
+    for (const el of accounts) {
+      expect(el).toBeEnabled();
+      expect(el).toHaveValue("");
+    }
+    fireEvent.change(accounts[0], { target: { value: "typed-local-id" } });
+    fireEvent.change(accounts[1], { target: { value: "typed-local-secret" } });
+    fireEvent.click(within(how).getByRole("radio", { name: "쿠키 붙여넣기" }));
+    expect(screen.getAllByPlaceholderText("Cookie: session=…")).toHaveLength(2);
+    fireEvent.click(within(how).getByRole("radio", { name: "아이디 · 비밀번호" }));
+    // 1쪽: LLM 서버 주소 · 점검 목표도 고를 수 있다 (지어낸 값 · 연결 상태 없음)
     fireEvent.change(target, { target: { value: "https://target.example/" } });
-    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     expect(screen.getByLabelText("LLM 서버 주소")).toBeEnabled();
     expect(screen.getByLabelText("LLM 서버 주소")).toHaveValue("");
     expect(screen.queryByText(/연결됨/)).toBeNull();
-    // 계정이 있어야 하는 목표(IDOR · 관리자 기능)는 이번 회차가 시험 계정으로 로그인하지 않으면 막힌다(11/24, 실제 결속을 따름)
-    const goals = within(screen.getByRole("group", { name: "점검 목표" }));
-    for (const name of ["남의 정보 보기 (IDOR)", "관리자 기능 접근"])
-      expect(goals.getByRole("checkbox", { name })).toBeDisabled();
-    for (const name of ["로그인 없이 접근", "민감정보 노출"])
-      expect(goals.getByRole("checkbox", { name })).toBeEnabled();
-    for (const box of goals.getAllByRole("checkbox")) expect(box).not.toBeChecked();
-    for (const r of within(screen.getByRole("radiogroup", { name: "점검 범위" })).getAllByRole("radio")) {
-      expect(r).toBeEnabled();
-      expect(r).not.toBeChecked();
+    for (const box of within(screen.getByRole("group", { name: "점검 목표" })).getAllByRole("checkbox")) {
+      expect(box).toBeEnabled();
+      expect(box).not.toBeChecked();
     }
-    fireEvent.click(
-      within(screen.getByRole("radiogroup", { name: "점검 범위" })).getByRole("radio", { name: "꼼꼼하게" }),
-    );
-    expect(screen.getByLabelText("워커 수")).toBeEnabled();
-    expect(screen.getByLabelText("워커 수")).toHaveValue("");
-    fireEvent.change(screen.getByLabelText("워커 수"), { target: { value: "4" } });
     // 꺼진 칸은 시작 조건에 들지 않는다: 주소 · 모델과 시작 확인만으로 범위 확인을 보낼 수 있다
     tickStartConfirm();
     expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled();
+    // 2쪽(점검 범위 · 워커 수 · 쓰기 메서드 요청 안내)은 없앴다(사용자 11/24)
+    expect(screen.queryByRole("radiogroup", { name: "점검 범위" })).toBeNull();
+    expect(screen.queryByLabelText("워커 수")).toBeNull();
+    expect(screen.queryByText("쓰기 요청 범위는 설치 정책과 진단 모드가 정합니다.")).toBeNull();
     // 승인 없이 쓰기 요청을 보내는 선택지는 없다 — 실행 허용은 설치 정책 · 진단 모드가 정함 (절대규칙 3 · 6, 리뷰 #479)
     expect(screen.queryByText(/승인 없이/)).toBeNull();
     expect(screen.queryByText("전체 허용")).toBeNull();
-    expect(screen.getByText("쓰기 요청 범위는 설치 정책과 진단 모드가 정합니다.")).toBeInTheDocument();
     // 연결 전 칸에 넣은 값은 서버 요청 어디에도 실리지 않는다
     fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
     await waitFor(() => expect(u.createURLDraft).toHaveBeenCalled());
     const sent = JSON.stringify(u.createURLDraft.mock.calls);
-    for (const v of ["꼼꼼하게", '"4"']) expect(sent).not.toContain(v);
+    for (const v of ["typed-local-id", "typed-local-secret"]) expect(sent).not.toContain(v);
     // 요약 패널: 시안 줄 그대로, 서버 값이 없는 줄(로그인 · 점검 범위 · 점검 목표)은 '—' 와 연결 전 딱지
     const sum = screen.getByRole("complementary", { name: "점검 요약" });
     expect([...sum.querySelectorAll("dt")].map((dt) => dt.textContent)).toEqual([
@@ -533,13 +539,12 @@ describe("서버 방식 확인 (catalog)", () => {
     expect(screen.getByLabelText("점검 이름 (선택)")).toHaveValue("");
     // 칸 아래 안내 문장은 두지 않는다(사용자 11/23)
     expect(screen.getByLabelText("점검 이름 (선택)")).not.toHaveAccessibleDescription();
-    // 점검 설정은 2쪽에 있다
-    expect(screen.queryByRole("heading", { name: "점검 설정" })).toBeNull();
-    fireEvent.change(target, { target: { value: "https://target.example/" } });
-    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    // 점검 설정(진단 모드 · 제외 경로 · 시작 확인)은 1쪽 맨 아래(사용자 11/24, 원래 2쪽)
     expect(screen.getByRole("heading", { name: "점검 설정" })).toBeInTheDocument();
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
     // 제외 경로 칸의 흐린 예시는 안전 장치 (?) 메모와 같은 주소 (시안 v50)
-    expect(screen.getByLabelText(/^제외 경로/)).toHaveAttribute("placeholder", "/logout\n/delete");
+    // 한 줄에 쉼표로 나눠 적는다(사용자 11/24)
+    expect(screen.getByLabelText(/^제외 경로/)).toHaveAttribute("placeholder", "/logout, /delete");
     // 점검 이름 없이 주소와 시작 확인만으로 범위 확인을 보낼 수 있고, 입력에 display_name 이 없다
     tickStartConfirm();
     const send = screen.getAllByRole("button", { name: "승인 범위 확인" })[0];
@@ -555,6 +560,62 @@ describe("서버 방식 확인 (catalog)", () => {
     });
   });
 
+  it("점검 목표 '기타'를 고르면 옆에 직접 적는 칸이 나오고, 적은 글은 서버로 보내지 않는다 (사용자 11/24)", async () => {
+    mount("new");
+    fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
+      target: { value: "https://target.example/" },
+    });
+    const goals = screen.getByRole("group", { name: "점검 목표" });
+    const other = within(goals).getByRole("checkbox", { name: "기타" });
+    expect(other).not.toBeChecked();
+    expect(screen.queryByRole("textbox", { name: "기타 점검 목표" })).toBeNull();
+    fireEvent.click(other);
+    const box = within(goals).getByRole("textbox", { name: "기타 점검 목표" });
+    // 한 줄 칸: 제어 문자는 남지 않는다
+    fireEvent.change(box, { target: { value: "쿠폰\t중복 사용" } });
+    expect(box).toHaveValue("쿠폰중복 사용");
+    tickStartConfirm();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
+    });
+    expect(JSON.stringify(u.createURLDraft.mock.calls)).not.toContain("쿠폰중복");
+    // 다시 끄면 칸이 사라진다
+    fireEvent.click(other);
+    expect(screen.queryByRole("textbox", { name: "기타 점검 목표" })).toBeNull();
+  });
+
+  it("제외 경로는 한 줄에 쉼표로 나눠 적고, 서버에는 줄마다 하나로 보낸다 (사용자 11/24)", async () => {
+    const limits = {
+      format: "abc2lab.workbench-flow/v1" as const,
+      max_pages: 10,
+      max_endpoints: 20,
+      max_response_bytes: 1000,
+      allow_reversible_writes: false,
+    };
+    u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], workflow: limits }] });
+    mount("new");
+    fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
+      target: { value: "https://target.example/" },
+    });
+    const excl = screen.getByLabelText(/^제외 경로/);
+    expect(excl.tagName).toBe("INPUT");
+    // 쉼표 앞뒤 공백 · 빈 칸은 지운다
+    fireEvent.change(excl, { target: { value: " /logout ,/delete, , /api/reset " } });
+    expect(excl).toHaveValue(" /logout ,/delete, , /api/reset ");
+    tickStartConfirm();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
+    });
+    expect(u.createURLDraft.mock.calls[0][0].excluded_paths).toBe("/logout\n/delete\n/api/reset");
+  });
+
+  it("제외 경로 한 줄 ↔ 줄 바꾸기는 서로 되돌아온다", () => {
+    expect(excludedLines("/a, /b,/c")).toBe("/a\n/b\n/c");
+    expect(excludedLines(" , ")).toBe("");
+    expect(excludedOneLine("/a\n/b\n")).toBe("/a, /b");
+    expect(excludedLines(excludedOneLine(EXCLUDE_EXAMPLE))).toBe(EXCLUDE_EXAMPLE);
+  });
+
   it("점검 이름을 쓰면 앞뒤 공백을 뺀 이름이 display_name 으로 가고, 제어 문자는 칸에 남지 않는다", async () => {
     u.readURLCatalog.mockResolvedValue(catalog);
     mount("new");
@@ -564,7 +625,6 @@ describe("서버 방식 확인 (catalog)", () => {
     const name = screen.getByLabelText("점검 이름 (선택)");
     fireEvent.change(name, { target: { value: "  쇼핑몰\t주문 점검  " } });
     expect(name).toHaveValue("  쇼핑몰주문 점검  ");
-    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     tickStartConfirm();
     await act(async () => {
       fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
@@ -590,7 +650,6 @@ describe("서버 방식 확인 (catalog)", () => {
     fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
       target: { value: "https://target.example/" },
     });
-    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     const sum = screen.getByRole("complementary", { name: "점검 요약" });
     expect(within(sum).getByText("쓰기 요청").nextElementSibling).toHaveTextContent("승인 후 전송");
     expect(within(sum).queryByText("쓰기 요청은 승인 후 전송")).toBeNull();
@@ -615,10 +674,13 @@ describe("서버 방식 확인 (catalog)", () => {
     expect(() => url.urlDiagnosisInput("https://target.example/", "profile-1", "", mode, "/delete?id=3")).toThrow();
   });
 
-  it("탐색 흐름이 없는 프로필은 '점검 설정' 칸을 그리지 않는다", async () => {
+  it("탐색 흐름이 없는 프로필도 1쪽 '점검 설정'(진단 모드 '연결 전' · 시작 확인)은 보이고 제외 경로 칸은 없다", async () => {
     mount("new");
     await screen.findByLabelText(/점검할 사이트 주소/);
-    expect(screen.queryByRole("heading", { name: "점검 설정" })).toBeNull();
+    expect(screen.getByRole("heading", { name: "점검 설정" })).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "진단 모드" }).parentElement).toHaveTextContent("연결 전");
+    expect(exclusionsBox()).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^제외 경로/)).toBeNull();
     expect(screen.queryByLabelText(/작업 이름/)).toBeNull();
   });
 
@@ -651,87 +713,87 @@ describe("서버 방식 확인 (catalog)", () => {
 });
 
 describe("새 점검 → 범위 확인 (URL 진단)", () => {
-  it("새 점검은 두 쪽: 1쪽 대상, 다음(또는 주소 칸 Enter) → 2쪽 분석 모델 · 점검 설정, 이전으로 돌아간다 (시안 v64 ~ v67)", async () => {
+  it("새 점검은 한 쪽: 대상 · 분석 모델 · 로그인 · 점검 설정이 차례로, 주소 칸 Enter 는 범위 확인 제출 (2쪽 없음, 사용자 11/24)", async () => {
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
-    // 1쪽에는 대상만
-    expect(screen.getByRole("heading", { name: "대상" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "분석 모델" })).toBeNull();
-    // 1쪽 [다음] 옆에는 막힌 이유를 두지 않는다 (주소 이유는 주소 칸 밑 안내가 말한다)
-    expect(screen.queryByText("주소를 입력하세요")).toBeNull();
-    // 주소 칸에서 Enter(폼 제출) → 2쪽
+    const order = ["대상", "분석 모델", "로그인", "점검 설정"].map((name) => screen.getByRole("heading", { name }));
+    for (let i = 1; i < order.length; i++)
+      expect(order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("radiogroup", { name: "LLM 실행 위치" })).toBeVisible();
+    expect(screen.getByRole("radiogroup", { name: "진단 모드" })).toBeVisible();
+    // 2쪽 칸(추가 설정 · 점검 범위 · 워커 수)과 쪽 이동 버튼은 없다
+    expect(screen.queryByRole("heading", { name: "추가 설정" })).toBeNull();
+    expect(screen.queryByLabelText("워커 수")).toBeNull();
+    expect(screen.queryByRole("button", { name: /다음/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "이전" })).toBeNull();
+    // 동의 칸(시작 확인 두 칸)은 오른쪽 요약 '약관 동의'에 모은다
+    const summary = screen.getByRole("complementary", { name: "점검 요약" });
+    expect(within(summary).getByRole("heading", { name: "약관 동의" })).toBeInTheDocument();
+    expect(summary).toContainElement(exclusionsBox());
+    expect(summary).toContainElement(backupBox());
+    expect(screen.getByRole("group", { name: "대상 · 분석 모델 · 로그인 · 점검 설정" })).not.toContainElement(
+      exclusionsBox(),
+    );
+    // 주소 칸 Enter(폼 제출)는 범위 확인 — 약관 동의 전에는 초안을 만들지 않는다
     fireEvent.change(target, { target: { value: "https://target.example/" } });
     fireEvent.submit(target.closest("form") as HTMLFormElement);
-    expect(screen.getByRole("heading", { name: "분석 모델" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "대상" })).toBeNull();
     expect(u.createURLDraft).not.toHaveBeenCalled();
-    // 이전 → 1쪽, 입력은 그대로
-    fireEvent.click(screen.getByRole("button", { name: "이전" }));
-    expect(screen.getByRole("heading", { name: "대상" })).toBeInTheDocument();
-    expect(screen.getByLabelText(/점검할 사이트 주소/)).toHaveValue("https://target.example/");
+    tickStartConfirm();
+    await act(async () => {
+      fireEvent.submit(target.closest("form") as HTMLFormElement);
+    });
+    expect(u.createURLDraft).toHaveBeenCalledTimes(1);
   });
 
-  it("쪽 이동 버튼은 바닥 줄 한 곳에만: 1쪽 [다음], 2쪽 [이전][승인 범위 확인] · 쪽 묶음과 요약 패널에는 없다", async () => {
+  it("바닥 줄에는 [승인 범위 확인] 하나와 막힌 이유뿐 · 입력 묶음과 요약 패널에는 진행 버튼이 없다", async () => {
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     const form = target.closest("form") as HTMLFormElement;
-    const step1 = screen.getByRole("group", { name: "대상 · 로그인" });
+    const group = screen.getByRole("group", { name: "대상 · 분석 모델 · 로그인 · 점검 설정" });
     const summary = screen.getByRole("complementary", { name: "점검 요약" });
-    expect(screen.queryByRole("group", { name: "분석 모델 · 점검 설정" })).toBeNull();
     // 화면 머리에는 [취소]만 (계정 분류 버튼은 두지 않는다)
     expect(screen.getByRole("link", { name: "취소" })).toHaveAttribute("href", "#dashboard");
     expect(screen.queryByRole("link", { name: "계정 분류" })).toBeNull();
-    // '다음'은 하나뿐이고 바닥 줄의 폼 제출 버튼이다. 주소가 맞아야 켜진다
-    const next = within(form).getByRole("button", { name: "다음" });
-    expect(next).toHaveAttribute("type", "submit");
-    expect(next).toBeDisabled();
-    expect(step1.contains(next)).toBe(false);
-    expect(within(summary).queryByRole("button", { name: "다음" })).toBeNull();
-    // [다음] 옆에는 막힌 이유를 두지 않는다 (주소 칸 밑 안내가 말한다)
-    expect(next.parentElement).not.toHaveTextContent(/주소를 입력하세요|주소 형식/);
-    fireEvent.change(target, { target: { value: "https://target.example/" } });
-    expect(next).toBeEnabled();
-    fireEvent.click(next);
-    expect(step1).not.toBeVisible();
-    const step2 = screen.getByRole("group", { name: "분석 모델 · 점검 설정" });
-    // 2쪽: 바닥 줄에 [이전][승인 범위 확인], 쪽 묶음 · 요약 패널에는 진행 버튼이 없다
-    const back = within(form).getByRole("button", { name: "이전" });
     const send = within(form).getByRole("button", { name: "승인 범위 확인" });
     expect(send).toHaveAttribute("type", "submit");
-    expect(back.parentElement).toBe(send.parentElement);
-    expect(step2.contains(back) || step2.contains(send)).toBe(false);
+    expect(send).toBeDisabled();
+    expect(group.contains(send)).toBe(false);
     expect(within(summary).queryByRole("button", { name: /승인 범위 확인|다음/ })).toBeNull();
-    fireEvent.click(back);
-    expect(screen.getByRole("group", { name: "대상 · 로그인" })).toBeVisible();
+    expect(send.parentElement?.lastElementChild).toBe(send);
+    expect(send.parentElement).toHaveTextContent("주소를 입력하세요");
+    fireEvent.change(target, { target: { value: "https://target.example/" } });
+    expect(send.parentElement).not.toHaveTextContent("주소를 입력하세요");
+    tickStartConfirm();
+    expect(send).toBeEnabled();
   });
 
   it("외부 API 는 설치된 외부 프로필이 없어도 눌러 칸 모양(제공자 · API 키 · 경고)을 보고, 범위 확인은 보내지 않는다", async () => {
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     fireEvent.change(target, { target: { value: "https://target.example/" } });
-    fireEvent.click(screen.getByRole("button", { name: /다음/ }));
+    // 분석 모델은 1쪽 대상 밑(사용자 11/24)
     const ext = screen.getByRole("radio", { name: "외부 API" });
     expect(ext).toBeEnabled();
     fireEvent.click(ext);
     expect(ext).toBeChecked();
     expect(screen.getByLabelText("제공자")).toHaveDisplayValue("설치된 외부 모델 없음");
     expect(screen.getByText(/운영자가 외부 모델 승인/)).toBeInTheDocument();
-    expect(screen.getByText(/대상 데이터와 프롬프트가 외부 제공자로 전송됩니다/)).toBeInTheDocument();
+    // 외부 제공자 전송 안내 상자는 뺐다(사용자 11/24, 팀 공유)
+    expect(screen.queryByText(/대상 데이터와 프롬프트가 외부 제공자로 전송됩니다/)).toBeNull();
     const send = screen.getByRole("button", { name: "승인 범위 확인" });
     expect(send).toBeDisabled();
     expect(send.parentElement).toHaveTextContent("설치된 외부 모델 프로필이 없습니다");
-    // 로컬로 돌아오면 모델 칸 · 범위 확인이 그대로
+    // 1쪽에서 로컬로 돌아오면 모델 칸 · 범위 확인이 그대로
     fireEvent.click(screen.getByRole("radio", { name: "로컬 실행" }));
     expect(screen.getByLabelText("모델")).toBeInTheDocument();
     tickStartConfirm();
-    expect(send).toBeEnabled();
+    expect(screen.getByRole("button", { name: "승인 범위 확인" })).toBeEnabled();
   });
 
   it("진단 모드는 탐색 흐름이 없는 프로필에서도 보이고 고를 수 있지만 '연결 전' · 초안에 넣지 않는다", async () => {
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     fireEvent.change(target, { target: { value: "https://target.example/" } });
-    fireEvent.click(screen.getByRole("button", { name: /다음/ }));
     const modes = screen.getByRole("radiogroup", { name: "진단 모드" });
     expect(modes.parentElement).toHaveTextContent("연결 전");
     const auto = within(modes).getByRole("radio", { name: /^AI 자동/ });
@@ -773,13 +835,12 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(screen.queryByText(/입력이 잠겨 있습니다/)).toBeNull();
     expect(screen.queryByRole("button", { name: "새로 입력" })).toBeNull();
     fireEvent.change(screen.getByLabelText(/점검할 사이트 주소/), { target: { value: "https://target.example/" } });
-    fireEvent.click(screen.getByRole("button", { name: /다음/ }));
     const auto = screen.getByRole("radio", { name: /^AI 자동/ });
     fireEvent.click(auto);
     expect(auto).toBeChecked();
   });
 
-  it("범위 확인 뒤 단계(승인 범위 다시 확인)는 요약 패널에, 바닥 줄 오른쪽 끝은 그대로 [다음] · 패널 여는 버튼은 없다", async () => {
+  it("범위 확인 뒤 단계(승인 범위 다시 확인)는 요약 패널에, 바닥 줄에는 진행 버튼 · 패널 여는 버튼이 없다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({ ...draft, revision: 2, reason_code: "approval_required" });
     mount("new");
@@ -788,14 +849,10 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     const form = (await screen.findByLabelText(/점검할 사이트 주소/)).closest("form") as HTMLFormElement;
     expect(summary.contains(again)).toBe(true);
     expect(form.contains(again)).toBe(false);
-    const next = within(form).getByRole("button", { name: "다음" });
-    expect(next.parentElement?.lastElementChild).toBe(next);
     // 패널을 접어도 바닥 줄에 패널 여는 버튼('시작 단계 보기')을 두지 않는다
     expect(within(form).queryByRole("button", { name: "시작 단계 보기" })).toBeNull();
-    // 2쪽은 [이전]만: 범위 확인은 이미 했고 다시 확인은 패널에 있다
-    fireEvent.click(next);
-    expect(within(form).getByRole("button", { name: "이전" })).toBeInTheDocument();
-    expect(within(form).queryByRole("button", { name: /승인 범위/ })).toBeNull();
+    // 범위 확인은 이미 했고 다시 확인은 패널에 있어 바닥 줄에 진행 버튼이 없다(쪽 이동도 없음)
+    expect(within(form).queryByRole("button", { name: /승인 범위|다음|이전/ })).toBeNull();
   });
 
   it("주소를 지우면 주소 밑에 입력 안내, 처음 빈 칸에는 띄우지 않는다 (시안 #nHost)", async () => {
@@ -829,21 +886,18 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     const { goTo } = mount("new");
     const target = (await screen.findByLabelText(/점검할 사이트 주소/)) as HTMLInputElement;
     const send = () => screen.getAllByRole("button", { name: "승인 범위 확인" });
-    const nextBtn = () => screen.getAllByRole("button", { name: /다음/ });
-    // 1쪽: 주소가 없거나 틀리면 '다음'이 꺼져 있고, 범위 확인 버튼은 아직 없다
-    expect(nextBtn()[0]).toBeDisabled();
-    expect(screen.queryAllByRole("button", { name: "승인 범위 확인" })).toHaveLength(0);
+    // 주소가 없거나 틀리면 범위 확인 버튼이 꺼져 있다(한 쪽, 사용자 11/24)
+    expect(send()[0]).toBeDisabled();
     fireEvent.change(target, { target: { value: "ftp://target.example/" } });
     expect(screen.getAllByText("http 또는 https 주소만 받습니다.").length).toBeGreaterThan(0);
-    expect(nextBtn()[0]).toBeDisabled();
+    expect(send()[0]).toBeDisabled();
     fireEvent.change(target, { target: { value: "https://target.example/" } });
-    fireEvent.click(nextBtn()[0]);
     expect((screen.getByLabelText("모델") as HTMLSelectElement).value).toBe("profile-1");
     // 범위 확인 전에는 서버 범위가 없다
     expect(screen.queryByText("승인된 사이트 및 경로에만 요청")).toBeNull();
-    // 시작 확인 두 진술이 다 있어야 범위 확인을 보낼 수 있다: 하나만으로는 꺼져 있고, 눌러도 초안을 만들지 않는다
+    // 시작 확인 두 진술(오른쪽 약관 동의)이 다 있어야 범위 확인을 보낼 수 있다: 하나만으로는 꺼져 있고, 눌러도 초안을 만들지 않는다
     expect(send()[0]).toBeDisabled();
-    expect(send()[0].parentElement).toHaveTextContent("시작 확인 두 가지에 체크하세요");
+    expect(send()[0].parentElement).toHaveTextContent("오른쪽 약관 동의 두 가지에 체크하세요");
     fireEvent.click(exclusionsBox());
     expect(send()[0]).toBeDisabled();
     fireEvent.submit(target.closest("form") as HTMLFormElement);
@@ -884,7 +938,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     const start = screen.getByRole("button", { name: "점검 시작" });
     expect(screen.getByRole("complementary", { name: "점검 요약" }).contains(start)).toBe(true);
     expect(start).toBeDisabled();
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(startConsent());
     expect(start).toBeEnabled();
     await act(async () => {
       fireEvent.click(start);
@@ -973,7 +1027,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     u.commandURLDiagnosis.mockRejectedValue(new TypeError("network"));
     const { goTo } = mount("new");
     await screen.findByText("https://target.example · / · GET");
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(startConsent());
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "점검 시작" }));
     });
@@ -991,7 +1045,7 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     u.readURLStatus.mockResolvedValue(perRequest);
     mount("new");
     expect(await screen.findByText(/요청마다 확인하는 프로필은 작업대에서 시작할 수 없습니다/)).toBeVisible();
-    expect(screen.getByRole("checkbox")).toBeDisabled();
+    expect(startConsent()).toBeDisabled();
     expect(screen.getByRole("button", { name: "점검 시작" })).toBeDisabled();
     act(() => useUrl.setState({ confirmed: true }));
     await expect(runUrlAction("start")).resolves.toBe(false);
@@ -1005,7 +1059,9 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     u.readURLStatus.mockResolvedValue({ ...draft, revision: 2, reason_code: "approval_required" });
     mount("new");
     expect(await screen.findByText(/설치자 승인이 필요해요/)).toBeInTheDocument();
-    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(
+      within(screen.getByRole("complementary", { name: "점검 요약" })).queryByRole("checkbox", { name: START_CONSENT }),
+    ).toBeNull();
   });
 
   it("이어 볼 진단이 없으면 새 점검으로 안내한다", async () => {
@@ -1167,7 +1223,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     expect(c.fetchLiveCandidates).toHaveBeenCalledWith("42", expect.any(AbortSignal));
-    const finds = screen.getByRole("region", { name: "발견 후보" });
+    const finds = screen.getByRole("region", { name: "발견한 취약점" });
     expect(within(finds).getByText("1건 · 최근 순")).toBeInTheDocument();
     expect(within(finds).queryByText("새로")).toBeNull();
     c.fetchLiveCandidates.mockResolvedValue(candPage([8, 7], { sev: { 7: "high" } }));
@@ -1182,9 +1238,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     expect(c.fetchLiveCandidates.mock.calls.length).toBe(calls + 1);
     expect(within(finds).getByText("2건 · 최근 순")).toBeInTheDocument();
-    expect(within(finds).getByText("새로").closest("li")).toHaveTextContent("후보 #8");
+    expect(within(finds).getByText("새로").closest("li")).toHaveTextContent("취약점 #8");
     expect(within(finds).getAllByText("새로")).toHaveLength(1);
-    expect(within(finds).getByText("후보 #8").closest("li")).toHaveTextContent(/^위험도 미평가/);
+    expect(within(finds).getByText("취약점 #8").closest("li")).toHaveTextContent(/^위험도 미평가/);
   });
 
   // 사용자 11/23: 점검 중에 나온 후보를 바로 보고 싶다 — 누르면 오른쪽에 PoC · 증거(보고서와 같은 상세)
@@ -1194,23 +1250,24 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     c.fetchLiveCandidates.mockResolvedValue(candPage([2, 1]));
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
     mount("live");
-    const finds = await screen.findByRole("region", { name: "발견 후보" });
+    const finds = await screen.findByRole("region", { name: "발견한 취약점" });
     expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
     // 후보 줄에는 무슨 취약점인지(보고서 자료의 그 후보 제목)를 붙인다 — 고르기 전에도 읽는다(사용자 11/24). 아직 저장 안 된
     // 후보는 번호 그대로
     await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
-    const row1 = (await within(finds).findByText("후보 1")).closest("li") as HTMLElement;
-    expect(row1).toHaveTextContent(/후보 1후보 #1 · 관측/);
-    expect(within(finds).getByText("후보 #2").closest("li")).toHaveTextContent(/^위험도 미평가후보 #2관측/);
-    fireEvent.click(await within(finds).findByRole("button", { name: /후보 #1/ }));
-    expect(within(finds).getByRole("button", { name: /후보 #1/ })).toHaveAttribute("aria-current", "true");
+    const row1 = (await within(finds).findByText("다른 계정 책 조회 1")).closest("li") as HTMLElement;
+    expect(row1).toHaveTextContent(/다른 계정 책 조회 1관측/);
+    expect(row1).not.toHaveTextContent("후보");
+    expect(within(finds).getByText("취약점 #2").closest("li")).toHaveTextContent(/^위험도 미평가취약점 #2관측/);
+    fireEvent.click(await within(finds).findByRole("button", { name: /다른 계정 책 조회 1/ }));
+    expect(within(finds).getByRole("button", { name: /다른 계정 책 조회 1/ })).toHaveAttribute("aria-current", "true");
     const side = await screen.findByRole("complementary", { name: "취약점 상세" });
     expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
-    expect(await within(side).findByRole("heading", { name: "후보 1" })).toBeInTheDocument();
+    expect(await within(side).findByRole("heading", { name: "다른 계정 책 조회 1" })).toBeInTheDocument();
     expect(side).toHaveTextContent("검토 필요");
     // 아직 저장되지 않은 후보는 그렇게 적는다('없음'으로 단정하지 않음)
-    fireEvent.click(within(finds).getByRole("button", { name: /후보 #2/ }));
-    expect(await within(side).findByText(/이 후보의 상세가 아직 저장되지 않았습니다/)).toBeInTheDocument();
+    fireEvent.click(within(finds).getByRole("button", { name: /취약점 #2/ }));
+    expect(await within(side).findByText(/이 취약점의 상세가 아직 저장되지 않았습니다/)).toBeInTheDocument();
     fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로 돌아가기" }));
     expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
     expect(screen.queryByRole("complementary", { name: "취약점 상세" })).toBeNull();
@@ -1227,12 +1284,16 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    fireEvent.click(within(screen.getByRole("region", { name: "발견 후보" })).getByRole("button", { name: /후보 #1/ }));
+    fireEvent.click(
+      within(screen.getByRole("region", { name: "발견한 취약점" })).getByRole("button", {
+        name: /다른 계정 책 조회 1/,
+      }),
+    );
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
     const side = screen.getByRole("complementary", { name: "취약점 상세" });
-    expect(within(side).getByRole("heading", { name: "후보 1" })).toBeInTheDocument();
+    expect(within(side).getByRole("heading", { name: "다른 계정 책 조회 1" })).toBeInTheDocument();
     expect(within(side).queryByRole("alert")).toBeNull();
     a.fetchRemediation.mockRejectedValue(new ApiError(503, "unavailable"));
     await act(async () => {
@@ -1241,7 +1302,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const warn = within(side).getByRole("alert");
     expect(warn).toHaveTextContent("상세를 다시 읽지 못해 갱신이 멈췄습니다 (HTTP 503). 아래는 마지막으로 읽은 상세라");
     // 마지막으로 읽은 상세는 그대로 남는다
-    expect(within(side).getByRole("heading", { name: "후보 1" })).toBeInTheDocument();
+    expect(within(side).getByRole("heading", { name: "다른 계정 책 조회 1" })).toBeInTheDocument();
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1)] });
     fireEvent.click(within(warn).getByRole("button", { name: "다시 읽기" }));
     await act(async () => {
@@ -1284,16 +1345,16 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const ids = Array.from({ length: 200 }, (_, i) => 400 - i);
     c.fetchLiveCandidates.mockResolvedValue(candPage(ids, { truncated: true, sev: { 400: "critical" } }));
     mount("live");
-    const finds = await screen.findByRole("region", { name: "발견 후보" });
+    const finds = await screen.findByRole("region", { name: "발견한 취약점" });
     expect(await within(finds).findByText("최근 200건만 표시 · 전체 수 미상 · 최근 순")).toBeInTheDocument();
     expect(
-      within(finds).getByText(/후보가 많아 최근 200건만 받았고, 위 집계도 받은 200건 기준입니다/),
+      within(finds).getByText(/취약점이 많아 최근 200건만 받았고, 위 집계도 받은 200건 기준입니다/),
     ).toBeInTheDocument();
     expect((document.getElementById("lFinds") as HTMLElement).children).toHaveLength(200);
     // 상태 카드 숫자 칸도 받은 수 + '+' (받은 수를 전체로 쓰지 않는다)
-    const stat = within(document.getElementById("lMeta") as HTMLElement).getByText("발견 후보")
+    const stat = within(document.getElementById("lMeta") as HTMLElement).getByText("발견한 취약점")
       .parentElement as HTMLElement;
-    expect(stat).toHaveTextContent(/^발견 후보200\+최근 200건만 받음$/);
+    expect(stat).toHaveTextContent(/^발견한 취약점200\+최근 200건만 받음$/);
   });
 
   it("점검 진행 발견 후보: 409 candidate_run_not_active 는 오류로 보이지 않고 폴링을 멈춘다", async () => {
@@ -1305,7 +1366,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    const finds = screen.getByRole("region", { name: "발견 후보" });
+    const finds = screen.getByRole("region", { name: "발견한 취약점" });
     c.fetchLiveCandidates.mockRejectedValue(new ApiError(409, "candidate_run_not_active"));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(cands.LIVE_CANDIDATES_POLL_MS);
@@ -1313,7 +1374,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const calls = c.fetchLiveCandidates.mock.calls.length;
     expect(within(finds).queryByRole("alert")).toBeNull();
     expect(within(finds).getByRole("status")).toHaveTextContent(
-      "점검 실행이 닫혀(시작 확인 전 · 마감 · 결과 불명) 후보를 더 읽지 않습니다. 아래는 마지막으로 읽은 목록입니다. 끝난 점검의 결과와 판정은 보고서에서 봅니다.",
+      "점검 실행이 닫혀(시작 확인 전 · 마감 · 결과 불명) 취약점을 더 읽지 않습니다. 아래는 마지막으로 읽은 목록입니다. 끝난 점검의 결과와 판정은 보고서에서 봅니다.",
     );
     expect(within(finds).getByText("1건 · 마지막으로 읽은 목록")).toBeInTheDocument();
     expect(within(finds).queryByRole("button", { name: "다시 읽기" })).toBeNull();
@@ -1327,8 +1388,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({ ...running, started: false, state: "stopping", phase: "closure" });
     mount("live");
-    const finds = await screen.findByRole("region", { name: "발견 후보" });
-    expect(within(finds).getByText("점검 시작이 확인되면 후보를 읽습니다.")).toBeInTheDocument();
+    const finds = await screen.findByRole("region", { name: "발견한 취약점" });
+    expect(within(finds).getByText("점검 시작이 확인되면 취약점을 읽습니다.")).toBeInTheDocument();
     expect(c.fetchLiveCandidates).not.toHaveBeenCalled();
   });
 
@@ -1339,9 +1400,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
       cands.parseLiveCandidates({ task_id: "42", items: [], returned: 0, candidate_total: 3, truncated: false }, "42"),
     );
     mount("live");
-    const finds = await screen.findByRole("region", { name: "발견 후보" });
+    const finds = await screen.findByRole("region", { name: "발견한 취약점" });
     expect(await within(finds).findByRole("alert")).toHaveTextContent(
-      "발견 후보를 읽지 못했습니다 (HTTP 422). 서버 응답 형식이 계약과 달라 후보를 표시하지 않습니다.",
+      "발견한 취약점을 읽지 못했습니다 (HTTP 422). 서버 응답 형식이 계약과 달라 취약점을 표시하지 않습니다.",
     );
     expect(document.getElementById("lFinds")).toBeNull();
   });
@@ -1354,14 +1415,14 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    const finds = screen.getByRole("region", { name: "발견 후보" });
+    const finds = screen.getByRole("region", { name: "발견한 취약점" });
     expect(within(finds).getByText("0건 · 최근 순")).toBeInTheDocument();
     c.fetchLiveCandidates.mockRejectedValue(new ApiError(503, "candidate_read_unavailable"));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(cands.LIVE_CANDIDATES_POLL_MS);
     });
     expect(within(finds).getByRole("alert")).toHaveTextContent(
-      "발견 후보를 다시 읽지 못해 갱신이 멈췄습니다 (HTTP 503). 후보 저장 근거를 지금 읽을 수 없습니다. 아래는 마지막으로 읽은 목록이라 최신이 아닐 수 있습니다.",
+      "발견한 취약점을 다시 읽지 못해 갱신이 멈췄습니다 (HTTP 503). 취약점 저장 근거를 지금 읽을 수 없습니다. 아래는 마지막으로 읽은 목록이라 최신이 아닐 수 있습니다.",
     );
     expect(within(finds).getByText("0건 · 마지막으로 읽은 목록")).toBeInTheDocument();
     const calls = c.fetchLiveCandidates.mock.calls.length;
@@ -1443,9 +1504,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
     mount("live");
-    const finds = await screen.findByRole("region", { name: "발견 후보" });
+    const finds = await screen.findByRole("region", { name: "발견한 취약점" });
     expect(
-      await within(finds).findByText("아직 나온 후보가 없습니다. 후보가 없다고 안전하다는 뜻은 아닙니다."),
+      await within(finds).findByText("아직 나온 취약점이 없습니다. 없다고 안전하다는 뜻은 아닙니다."),
     ).toBeInTheDocument();
   });
 
@@ -1727,12 +1788,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const rows = [...(document.getElementById("lSaved") as HTMLElement).children] as HTMLElement[];
     expect(rows).toHaveLength(2);
     expect(rows[0].tagName).toBe("BUTTON");
-    expect(rows[0]).toHaveTextContent(/^위험도 미평가후보 1\/api\/items\/\{id\}idor검토 필요$/);
+    expect(rows[0]).toHaveTextContent(/^위험도 미평가다른 계정 책 조회 1\/api\/items\/\{id\}idor검토 필요$/);
     expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
     // 끝난 점검은 제품 서버가 점검 중 후보 조회를 닫으므로(409) 부르지 않는다. '점검이 끝나 진행 중 후보 목록을 …' 안내
     // 문장은 뺐다(사용자 11/23)
     expect(c.fetchLiveCandidates).not.toHaveBeenCalled();
-    expect(screen.queryByRole("region", { name: "발견 후보" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "발견한 취약점" })).toBeNull();
     expect(document.getElementById("lFindsEnded")).toBeNull();
     expect(document.body).not.toHaveTextContent("점검이 끝나 진행 중 후보 목록");
     // 제품 판정 경로가 없는 서버(404)는 기존 합계만 표시한다.
@@ -1744,7 +1805,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.click(rows[1]);
     expect(goTo).not.toHaveBeenCalledWith("report");
     const side = await screen.findByRole("complementary", { name: "취약점 상세" });
-    expect(within(side).getByRole("heading", { name: "후보 2" })).toBeInTheDocument();
+    expect(within(side).getByRole("heading", { name: "다른 계정 책 조회 2" })).toBeInTheDocument();
     // 끝난 점검은 이미 읽은 저장 결과를 쓴다(다시 부르지 않음)
     expect(a.fetchRemediation).toHaveBeenCalledTimes(1);
     fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로 돌아가기" }));
@@ -1938,7 +1999,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 시안 머리 버튼은 '발견 상세'(좁은 화면) 하나
     expect(within(header).queryByRole("button", { name: /새로고침/ })).toBeNull();
     // 발견 목록에 후보가 있다. 위험도 딱지가 맨 앞(심각도 없으면 '위험도 미평가'), 아래 줄은 엔드포인트 · 유형
-    const row = within(screen.getByRole("tabpanel", { name: "취약점 목록" })).getByRole("button", { name: /후보 1/ });
+    const row = within(screen.getByRole("tabpanel", { name: "취약점 목록" })).getByRole("button", {
+      name: /다른 계정 책 조회 1/,
+    });
     expect(row.firstElementChild).toHaveTextContent("위험도 미평가");
     // 위험도 미평가는 회색 딱지(사용자 11/23)
     expect(row.firstElementChild?.className).toMatch(/sev-none/);
@@ -2045,11 +2108,11 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const list = await screen.findByRole("tabpanel", { name: "취약점 목록" });
     // 줄에는 상세 보기를 두지 않는다 — 오른쪽 패널 머리 하나
     expect(within(list).queryByRole("button", { name: /상세 보기/ })).toBeNull();
-    fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
+    fireEvent.click(within(list).getByRole("button", { name: /다른 계정 책 조회 2/ }));
     const insp = screen.getByRole("complementary", { name: "취약점 상세" });
     fireEvent.click(within(insp).getByRole("button", { name: "상세 보기" }));
     const page = screen.getByRole("region", { name: "취약점 상세 페이지" });
-    expect(within(page).getByRole("heading", { level: 2, name: "후보 2" })).toHaveFocus();
+    expect(within(page).getByRole("heading", { level: 2, name: "다른 계정 책 조회 2" })).toHaveFocus();
     // ARTEX 발견 상세 짜임: 오른쪽 상태 카드(점검 대상 포함), 왼쪽 요약 → 증거 / PoC → 상세 보고서. 보안 조치 · AI 프롬프트는 뺐다(사용자 11/19)
     const side = within(page).getByRole("complementary", { name: "취약점 상태" });
     expect(side).toHaveTextContent(/IDcandidate-2/);
@@ -2070,7 +2133,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
     const back = screen.getByRole("tabpanel", { name: "취약점 목록" });
     // 돌아오면 연 발견이 골라져 있다
-    expect(within(back).getByRole("button", { name: /후보 2/ })).toHaveAttribute("aria-current", "true");
+    expect(within(back).getByRole("button", { name: /다른 계정 책 조회 2/ })).toHaveAttribute("aria-current", "true");
   });
 
   it("발견 상세 페이지에서 머리 단계 줄의 '보고서'를 눌러도 ← 처럼 발견 목록으로 돌아간다", async () => {
@@ -2079,7 +2142,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [candidate(1), candidate(2)] });
     mount("report");
     const list = await screen.findByRole("tabpanel", { name: "취약점 목록" });
-    fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
+    fireEvent.click(within(list).getByRole("button", { name: /다른 계정 책 조회 2/ }));
     fireEvent.click(
       within(screen.getByRole("complementary", { name: "취약점 상세" })).getByRole("button", { name: "상세 보기" }),
     );
@@ -2088,7 +2151,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.click(within(steps).getByRole("link", { name: /보고서/ }));
     expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
     const back = screen.getByRole("tabpanel", { name: "취약점 목록" });
-    expect(within(back).getByRole("button", { name: /후보 2/ })).toHaveAttribute("aria-current", "true");
+    expect(within(back).getByRole("button", { name: /다른 계정 책 조회 2/ })).toHaveAttribute("aria-current", "true");
   });
 
   it("단독 발견 상세(#finding)에서 '발견 목록으로'를 누르면 보고서는 같은 상세가 아니라 발견 목록을 연다 (#695 리뷰)", async () => {
@@ -2114,14 +2177,14 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     }
     render(<Both />);
     const list = await screen.findByRole("tabpanel", { name: "취약점 목록" });
-    fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
+    fireEvent.click(within(list).getByRole("button", { name: /다른 계정 책 조회 2/ }));
     fireEvent.click(
       within(screen.getByRole("complementary", { name: "취약점 상세" })).getByRole("button", { name: "상세 보기" }),
     );
     expect(screen.getByRole("region", { name: "취약점 상세 페이지" })).toBeInTheDocument();
     // 주소창에 #finding — 같은 발견이 단독 화면에 뜬다
     act(() => go("finding"));
-    expect(await screen.findByRole("heading", { level: 2, name: "후보 2" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 2, name: "다른 계정 책 조회 2" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "취약점 목록으로 돌아가기" }));
     // 보고서로 돌아오면 상세 페이지가 아니라 발견 목록
     expect(await screen.findByRole("tabpanel", { name: "취약점 목록" })).toBeInTheDocument();
@@ -2144,14 +2207,14 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     mount("report");
     const list = await screen.findByRole("tabpanel", { name: "취약점 목록" });
     // 발견 칸 보조 글은 0건 등급을 빼고 확정 · 검토 필요 · 위험도 미평가로 묶는다(사용자 11/18 '간단하게', 11/24 '예상' 뺌).
-    // 확정 0 이라 '확정 …'은 없고, 결과 불명(후보 4)의 높음은 예상으로 세지 않는다
+    // 확정 0 이라 '확정 …'은 없고, 결과 불명(다른 계정 책 조회 4)의 높음은 예상으로 세지 않는다
     const strip = screen.getByRole("region", { name: "판정 집계" });
     expect((within(strip).getByText("취약점").parentElement as HTMLElement).lastElementChild).toHaveTextContent(
       /^검토 필요 높음 1, 낮음 1 · 위험도 미평가 2$/,
     );
     const names = () =>
       [...(document.getElementById("rList") as HTMLElement).querySelectorAll("button")].map(
-        (b) => /후보 \d/.exec(b.textContent ?? "")?.[0],
+        (b) => /다른 계정 책 조회 \d/.exec(b.textContent ?? "")?.[0],
       );
     const sevs = within(list).getByRole("group", { name: "위험도로 거르기" });
     // 줄이 있는 등급만 수와 함께 (심각 · 중간은 없음, '등급 없음'은 거르기로 두지 않고 전체에서 본다).
@@ -2164,12 +2227,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(list).getByText("4 / 4건")).toBeInTheDocument();
     fireEvent.click(within(sevs).getByRole("button", { name: "높음 1개", pressed: false }));
     expect(within(sevs).getByRole("button", { name: "높음 1개", pressed: true })).toBeInTheDocument();
-    expect(names()).toEqual(["후보 2"]);
+    expect(names()).toEqual(["다른 계정 책 조회 2"]);
     expect(within(list).getByText("1 / 4건")).toBeInTheDocument();
     // 오른쪽 상세도 보이는 줄로 옮긴다
     expect(
       within(screen.getByRole("complementary", { name: "취약점 상세" })).getByRole("heading", { level: 2 }),
-    ).toHaveTextContent("후보 2");
+    ).toHaveTextContent("다른 계정 책 조회 2");
     // 고른 등급을 다시 누르면 전체
     fireEvent.click(within(sevs).getByRole("button", { name: "높음 1개", pressed: true }));
     expect(within(sevs).getByRole("button", { name: "높음 1개", pressed: false })).toBeInTheDocument();
@@ -2177,12 +2240,27 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const order = within(list).getByRole("combobox", { name: "정렬" });
     fireEvent.change(order, { target: { value: "new" } });
     // 시각을 못 읽는 줄은 시각 순에서 맨 뒤
-    expect(names()).toEqual(["후보 2", "후보 3", "후보 1", "후보 4"]);
+    expect(names()).toEqual([
+      "다른 계정 책 조회 2",
+      "다른 계정 책 조회 3",
+      "다른 계정 책 조회 1",
+      "다른 계정 책 조회 4",
+    ]);
     fireEvent.change(order, { target: { value: "old" } });
-    expect(names()).toEqual(["후보 1", "후보 3", "후보 2", "후보 4"]);
+    expect(names()).toEqual([
+      "다른 계정 책 조회 1",
+      "다른 계정 책 조회 3",
+      "다른 계정 책 조회 2",
+      "다른 계정 책 조회 4",
+    ]);
     fireEvent.change(order, { target: { value: "sev" } });
-    // 위험도 순: 높음 → 낮음 → 미평가(판정 순 유지: 검토 필요 후보 3 → 결과 불명 후보 4)
-    expect(names()).toEqual(["후보 2", "후보 1", "후보 3", "후보 4"]);
+    // 위험도 순: 높음 → 낮음 → 미평가(판정 순 유지: 검토 필요 다른 계정 책 조회 3 → 결과 불명 다른 계정 책 조회 4)
+    expect(names()).toEqual([
+      "다른 계정 책 조회 2",
+      "다른 계정 책 조회 1",
+      "다른 계정 책 조회 3",
+      "다른 계정 책 조회 4",
+    ]);
   });
 
   it("보고서 발견 목록: 재조회로 고른 발견의 위험도가 바뀌어 거르기에서 빠지면 오른쪽 상세 · '상세 보기'도 보이는 줄로 옮긴다 (#677 리뷰)", async () => {
@@ -2214,10 +2292,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     };
     const list = await screen.findByRole("tabpanel", { name: "취약점 목록" });
     const insp = () => screen.getByRole("complementary", { name: "취약점 상세" });
-    fireEvent.click(within(list).getByRole("button", { name: /후보 2/ }));
+    fireEvent.click(within(list).getByRole("button", { name: /다른 계정 책 조회 2/ }));
     fireEvent.click(within(list).getByRole("button", { name: "높음 1개", pressed: false }));
-    expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 2");
-    // 다시 들어와 저장 결과를 다시 읽는다: 이번엔 후보 2 가 낮음, 후보 3 이 높음
+    expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("다른 계정 책 조회 2");
+    // 다시 들어와 저장 결과를 다시 읽는다: 이번엔 다른 계정 책 조회 2 가 낮음, 다른 계정 책 조회 3 이 높음
     a.fetchRemediation.mockResolvedValue({
       task_id: 42,
       entries: [
@@ -2229,16 +2307,21 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     reenter();
     // 다시 들어오면 목록 요소가 새로 그려지므로 매번 찾는다
     const listNow = () => screen.getByRole("tabpanel", { name: "취약점 목록" });
-    await waitFor(() => expect(within(listNow()).getByRole("button", { name: /후보 3/ })).toBeInTheDocument());
-    expect(within(listNow()).queryByRole("button", { name: /후보 2/ })).toBeNull();
-    // '높음' 거르기는 그대로, 목록은 후보 3 하나 — 오른쪽 상세 · 줄 표시도 후보 3
+    await waitFor(() =>
+      expect(within(listNow()).getByRole("button", { name: /다른 계정 책 조회 3/ })).toBeInTheDocument(),
+    );
+    expect(within(listNow()).queryByRole("button", { name: /다른 계정 책 조회 2/ })).toBeNull();
+    // '높음' 거르기는 그대로, 목록은 다른 계정 책 조회 3 하나 — 오른쪽 상세 · 줄 표시도 다른 계정 책 조회 3
     expect(within(listNow()).getByRole("button", { name: "높음 1개", pressed: true })).toBeInTheDocument();
-    expect(within(listNow()).getByRole("button", { name: /후보 3/ })).toHaveAttribute("aria-current", "true");
-    expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("후보 3");
+    expect(within(listNow()).getByRole("button", { name: /다른 계정 책 조회 3/ })).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+    expect(within(insp()).getByRole("heading", { level: 2 })).toHaveTextContent("다른 계정 책 조회 3");
     fireEvent.click(within(insp()).getByRole("button", { name: "상세 보기" }));
     expect(
       within(screen.getByRole("region", { name: "취약점 상세 페이지" })).getByRole("heading", { level: 2 }),
-    ).toHaveTextContent("후보 3");
+    ).toHaveTextContent("다른 계정 책 조회 3");
   });
 
   it("보고서 탭: 참조형 이미지 `![글][이름]` 의 대체 글에 엔티티로 숨긴 비밀도 가린다 (#677 리뷰)", async () => {
@@ -2330,7 +2413,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     const items = within(doc)
       .getAllByRole("heading", { level: 2 })
       .map((x) => x.textContent);
-    expect(items).toEqual(["1. [위험도 미평가 · 검토 필요] 후보 1", "2. [위험도 미평가 · 검토 필요] 후보 2"]);
+    expect(items).toEqual([
+      "1. [위험도 미평가 · 검토 필요] 다른 계정 책 조회 1",
+      "2. [위험도 미평가 · 검토 필요] 다른 계정 책 조회 2",
+    ]);
     expect(doc.querySelectorAll("hr")).toHaveLength(1);
     expect(doc).not.toHaveTextContent("정상 대조 줄");
     // 오른쪽 상세와 같은 이름: 거부된 시도도 있으므로 송신·응답을 단정하지 않는다.
@@ -2460,17 +2546,17 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     });
     expect(md).toContain("## 1. [위험도 미평가 · 검토 필요] 줄 바꿈");
     // 제목 끝의 '#'는 Markdown 제목 닫기로 읽히지 않게 이스케이프한다(#709 리뷰)
-    const hashes = buildPocMarkdown([{ ...candidate(2), title: "후보 2 ###" }], {
+    const hashes = buildPocMarkdown([{ ...candidate(2), title: "다른 계정 책 조회 2 ###" }], {
       targetUrl: null,
       mode: null,
       model: null,
       excluded: null,
       crawl: null,
     });
-    expect(hashes).toContain("## 1. [위험도 미평가 · 검토 필요] 후보 2 \\#\\#\\#");
+    expect(hashes).toContain("## 1. [위험도 미평가 · 검토 필요] 다른 계정 책 조회 2 \\#\\#\\#");
     render(<Markdown text={hashes} />);
     expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(
-      /^1\. \[위험도 미평가 · 검토 필요\] 후보 2 ###$/,
+      /^1\. \[위험도 미평가 · 검토 필요\] 다른 계정 책 조회 2 ###$/,
     );
     expect(md).not.toContain("---"); // 구분선은 취약점 사이에만
     expect(md).toContain("- 탐색: 방문 3 · 발견한 API 2");
@@ -2650,8 +2736,11 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     const sec = await screen.findByRole("region", { name: "발견 · 검토 대상" });
     await waitFor(() => expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal"));
     const titles = () =>
-      Array.from(sec.querySelectorAll("[data-dsel^='fd-']"), (x) => x.textContent?.match(/(발견|후보) \d+/)?.[0]);
-    await waitFor(() => expect(titles()).toEqual(["발견 2", "발견 4", "후보 1", "후보 5"]));
+      Array.from(
+        sec.querySelectorAll("[data-dsel^='fd-']"),
+        (x) => x.textContent?.match(/(발견|다른 계정 책 조회) \d+/)?.[0],
+      );
+    await waitFor(() => expect(titles()).toEqual(["발견 2", "발견 4", "다른 계정 책 조회 1", "다른 계정 책 조회 5"]));
     // 건수 옆에 확정 수를 따로 (확정만 취약점 · 절대 규칙 5)
     expect(within(sec).getByText("4건 · 확정 2")).toBeInTheDocument();
     // 심각도를 안 준 발견은 '위험도 미평가', 날짜는 없다 (시안 v90)
@@ -2705,8 +2794,8 @@ describe("대시보드 · 인증 (URL 진단)", () => {
     // 보던 발견(발견 2)이 걸러지면 남은 첫 줄로 상세가 바뀐다
     expect(within(detail).getByText("발견 4")).toBeInTheDocument();
     fireEvent.click(within(chips).getByRole("button", { name: /전체/ }));
-    fireEvent.click(within(sec).getByRole("button", { name: /후보 5/ }));
-    expect(within(detail).getByText("후보 5")).toBeInTheDocument();
+    fireEvent.click(within(sec).getByRole("button", { name: /다른 계정 책 조회 5/ }));
+    expect(within(detail).getByText("다른 계정 책 조회 5")).toBeInTheDocument();
   });
 
   it("대시보드: 확정 0 · 미실행 · 결과 불명만 있으면 '취약점 n건'으로 보이지 않는다 (절대 규칙 5)", async () => {
@@ -2968,7 +3057,7 @@ describe("실행 결과 한 줄(urlOutcomeText)", () => {
         closing_reason: "budget_limited",
         intent_outcomes: counts({ incomplete: 1 }),
       },
-      "일부 완료 · 남은 작업 1 · 예산 상한에서 마감 · 찾은 후보는 보존",
+      "일부 완료 · 남은 작업 1 · 예산 상한에서 마감 · 찾은 취약점은 보존",
     ],
     [{ state: "cancelled", intent_outcomes: counts({ done: 1, stopped: 2 }) }, "중지됨 · 끝난 1 / 끊긴 2"],
     [
@@ -3046,9 +3135,8 @@ describe("외부 모델 시험 계정 동의", () => {
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     fireEvent.change(target, { target: { value: "https://target.example/app" } });
-    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    // 분석 모델 · 외부 전송 동의 칸은 1쪽(사용자 11/24). 범위 확인은 toStart() 로 2쪽에 가서
     await screen.findByText("등록됨");
-    tickStartConfirm();
     return target;
   }
   it("새 점검에 다시 들어오면 그사이 등록한 시험 계정을 다시 읽어 동의 칸을 보인다(F2와 같은 종류, 2026-11-22)", async () => {
@@ -3071,7 +3159,6 @@ describe("외부 모델 시험 계정 동의", () => {
       fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
         target: { value: "https://target.example/app" },
       });
-      fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
       await screen.findByText("등록됨");
       return r;
     })();
@@ -3089,15 +3176,19 @@ describe("외부 모델 시험 계정 동의", () => {
         <NewScanByMode />
       </ShellContext.Provider>,
     );
-    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
+    // 새 점검에 다시 들어오면 1쪽부터
     expect(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeInTheDocument();
   });
   it("기본 미선택·명시적 동의만 초안에 전송하고 저장소에는 남기지 않는다", async () => {
     await externalTarget();
     const checkbox = await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ });
     expect(checkbox).not.toBeChecked();
-    expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled();
+    // 외부 전송 동의도 오른쪽 요약 '약관 동의'에(사용자 11/24, 원래 분석 모델 칸)
+    expect(screen.getByRole("complementary", { name: "점검 요약" })).toContainElement(checkbox);
     expect(screen.getByText(/체크하지 않으면 시험 계정 없이 진행/)).toBeInTheDocument();
+    // 체크하지 않아도 범위 확인은 보낼 수 있다
+    tickStartConfirm();
+    expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled();
     fireEvent.click(checkbox);
     fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
     await waitFor(() => expect(u.createURLDraft).toHaveBeenCalledTimes(1));
@@ -3108,10 +3199,8 @@ describe("외부 모델 시험 계정 동의", () => {
   it("대상 변경 뒤 돌아와도 이전 동의가 살아나지 않는다", async () => {
     const target = await externalTarget();
     fireEvent.click(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ }));
-    fireEvent.click(screen.getAllByRole("button", { name: /이전/ })[0]);
     fireEvent.change(target, { target: { value: "https://second.example/app" } });
     fireEvent.change(target, { target: { value: "https://target.example/app" } });
-    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     expect(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).not.toBeChecked();
   });
   it("모델을 바꿨다가 돌아와도 동의는 초기화된다", async () => {
@@ -3124,7 +3213,10 @@ describe("외부 모델 시험 계정 동의", () => {
   it("계정 조회 실패는 동의를 만들지 않고 시험 계정 없이 진행할 수 있다", async () => {
     await externalTarget(true, true);
     expect(await screen.findByRole("alert")).toHaveTextContent("시험 계정 등록 상태를 확인하지 못했습니다");
+    // [계정 다시 조회] 버튼은 뺐다(사용자 11/24, 팀 공유)
+    expect(screen.queryByRole("button", { name: "계정 다시 조회" })).toBeNull();
     expect(screen.queryByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeNull();
+    tickStartConfirm();
     expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled();
     expect(u.createURLDraft).not.toHaveBeenCalled();
   });
@@ -3132,6 +3224,7 @@ describe("외부 모델 시험 계정 동의", () => {
     await externalTarget(true, false, false);
     expect(await screen.findByText(/외부 전송 동의 문장을 받지 못해 시험 계정 없이 진행/)).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeNull();
+    tickStartConfirm();
     expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled();
   });
   it("새 초안은 이전 회차 동의를 초기화한다", async () => {
@@ -3139,13 +3232,13 @@ describe("외부 모델 시험 계정 동의", () => {
     fireEvent.click(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ }));
     act(() => disconnectUrl());
     fireEvent.change(screen.getByLabelText(/점검할 사이트 주소/), { target: { value: "https://target.example/app" } });
-    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     expect(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).not.toBeChecked();
   });
   it("실제 시험 계정이 없으면 동의 칸을 만들지 않는다", async () => {
     await externalTarget(false);
-    await waitFor(() => expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled());
     expect(screen.queryByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeNull();
+    tickStartConfirm();
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled());
   });
 });
 
@@ -3165,7 +3258,6 @@ it("외부 모델에서 실제 시험 계정이 있어도 미선택이면 동의
   fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
     target: { value: "https://target.example/app" },
   });
-  fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
   const checkbox = await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ });
   expect(checkbox).not.toBeChecked();
   tickStartConfirm();
@@ -3203,7 +3295,6 @@ it("로컬 모델 회차도 대상에 시험 계정이 있으면 '시험 계정 
   fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
     target: { value: "https://target.example/app" },
   });
-  fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
   const sum = screen.getByRole("complementary", { name: "점검 요약" });
   await waitFor(() => expect(within(sum).getByText("로그인").nextElementSibling).toHaveTextContent("시험 계정 로그인"));
   // 로컬은 외부 전송 동의 체크 칸을 만들지 않는다(동의 없이 결속)
@@ -3225,7 +3316,7 @@ it("보고서 재조회가 실패하면 이전 성공 자료로 이번 오류를
   view.rerender(frame("report"));
   expect(await screen.findByRole("alert")).toHaveTextContent("보고서 조회 실패 (HTTP 503)");
   expect(screen.queryByRole("region", { name: "판정 집계" })).toBeNull();
-  expect(screen.queryByRole("button", { name: /후보 1/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: /다른 계정 책 조회 1/ })).toBeNull();
 });
 
 it("대시보드 보고서 재조회 오류도 이전 성공의 발견 목록으로 가리지 않는다", async () => {
@@ -3237,12 +3328,83 @@ it("대시보드 보고서 재조회 오류도 이전 성공의 발견 목록으
     </ShellContext.Provider>
   );
   const view = render(frame("dashboard"));
-  await screen.findByRole("button", { name: /후보 1/ });
+  await screen.findByRole("button", { name: /다른 계정 책 조회 1/ });
   view.rerender(frame("live"));
   a.fetchRemediation.mockRejectedValue(new ApiError(503, "unavailable"));
   view.rerender(frame("dashboard"));
   expect(await screen.findByRole("alert")).toHaveTextContent("보고서 조회 실패 (HTTP 503)");
-  expect(screen.queryByRole("button", { name: /후보 1/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: /다른 계정 책 조회 1/ })).toBeNull();
+});
+
+it("주소 옆 [URL 인증]: 등록 전엔 버튼, 누르면 주소 바로 밑에 소유 확인 등록 칸, 승인되면 '인증됨' (사용자 11/24)", async () => {
+  const approvedTarget = {
+    id: `target-${"b".repeat(32)}`,
+    origin: "https://target.example",
+    state: "approved",
+    requests: 3,
+    port: 443,
+    path_prefixes: ["/"],
+    methods: ["GET"],
+    addresses: ["10.200.1.10"],
+    tls_spki_sha256: "c".repeat(64),
+    expires_at: "2099-01-01T00:00:00Z",
+  };
+  let resolveReply: unknown = {};
+  vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
+    if (String(path).includes("targets/resolve")) return resolveReply as never;
+    return { configured: true } as never;
+  });
+  mount("new");
+  const urlInput = await screen.findByLabelText(/점검할 사이트 주소/);
+  // 주소 전에는 눌러도 갈 곳이 없어 꺼 둔다
+  expect(screen.getByRole("button", { name: "URL 인증" })).toBeDisabled();
+  fireEvent.change(urlInput, { target: { value: "https://target.example/app" } });
+  const auth = screen.getByRole("button", { name: "URL 인증" });
+  await waitFor(() => expect(auth).toBeEnabled());
+  // 주소와 같은 줄
+  expect(urlInput.parentElement).toContainElement(auth);
+  expect(screen.queryByRole("button", { name: "대상 등록하기" })).toBeNull();
+  expect(auth).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(auth);
+  const basis = await screen.findByRole("checkbox", { name: /점검 권한이 있고/ });
+  expect(auth).toHaveAttribute("aria-expanded", "true");
+  // 등록 칸은 점검 이름보다 위(주소 바로 밑)
+  const name = screen.getByLabelText(/점검 이름/);
+  expect(basis.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // 다시 누르면 닫히고, 또 누르면 열린다(접기 버튼 없음)
+  expect(screen.queryByRole("button", { name: "접기" })).toBeNull();
+  fireEvent.click(auth);
+  await waitFor(() => expect(screen.queryByRole("checkbox", { name: /점검 권한이 있고/ })).toBeNull());
+  expect(auth).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(auth);
+  expect(await screen.findByRole("checkbox", { name: /점검 권한이 있고/ })).toBeInTheDocument();
+  cleanup();
+  resolveReply = { target: approvedTarget };
+  mount("new");
+  fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
+    target: { value: "https://target.example/app" },
+  });
+  expect(await screen.findByText("인증됨")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "URL 인증" })).toBeNull();
+  expect(screen.getByRole("button", { name: "승인 철회" })).toBeInTheDocument();
+  // 서버가 답하지 않아도(형 서버 꺼짐 · 503) 눌러서 등록 칸을 열 수 있다 · 등록은 확인될 때까지 꺼짐
+  cleanup();
+  resolveReply = new ApiError(503, "mirror_offline_not_saved");
+  vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
+    if (String(path).includes("targets/resolve")) throw resolveReply;
+    return { configured: true } as never;
+  });
+  mount("new");
+  fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
+    target: { value: "https://target.example/app" },
+  });
+  const retry = await screen.findByRole("button", { name: "대상 승인 다시 조회" });
+  expect(retry).toBeInTheDocument();
+  const again = screen.getByRole("button", { name: "URL 인증" });
+  await waitFor(() => expect(again).toBeEnabled());
+  fireEvent.click(again);
+  expect(await screen.findByRole("checkbox", { name: /점검 권한이 있고/ })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "대상 등록" })).toBeDisabled();
 });
 
 describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () => {
@@ -3402,189 +3564,42 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
     });
     return { calls, sent };
   }
-  const pairBox = async () => within(await screen.findByRole("region", { name: "시험 계정" }));
 
-  it("시험 계정은 A(소유) · B(교차) 두 줄 — 이름은 정책 선언에서, 상태 · 로그인 줄을 보이고 정책 선언 상자는 선언만", async () => {
+  // #914 인계: 자격은 저장됐는데 대상 로그인 방식이 없으면(login_method_missing) 시작 전에 알리고, '이번에는 익명으로 점검'을
+  // 직접 골라야 넘어간다
+  it("로그인 방식이 없으면 안내하고 '이번에는 익명으로 점검'을 골라야 시작할 수 있다", async () => {
     serveQuick([
-      { label: "tester-a", classification: "test", credential_configured: true },
-      { label: "tester-b", classification: "test" },
-    ]);
-    saveHandle();
-    const { goTo } = mount("new");
-    // 시안의 로그인 계정 입력 칸 · 이름을 적어 추가하는 상자는 없다
-    expect(screen.queryByRole("radiogroup", { name: "로그인 여부" })).toBeNull();
-    expect(screen.queryByRole("region", { name: "시험 계정 추가" })).toBeNull();
-    const box = await pairBox();
-    const a = box.getByRole("group", { name: "계정 A" });
-    const b = box.getByRole("group", { name: "계정 B" });
-    await waitFor(() => expect(a).toHaveTextContent("계정 A자격 등록됨"));
-    // 별칭은 화면 글에 없고 마우스를 올렸을 때만
-    expect(a).not.toHaveTextContent("tester-a");
-    expect(within(a).getByText("계정 A")).toHaveAttribute("title", "별칭 tester-a");
-    expect(b).toHaveTextContent("계정 B자격 없음");
-    expect(within(a).getByLabelText("계정 A 비밀번호")).toHaveAttribute("placeholder", "비밀번호 (새로 넣으면 바꿈)");
-    // 둘 다 이미 시험 표시라 진술 동의 칸은 없다
-    expect(box.queryByRole("checkbox")).toBeNull();
-    const acct = screen.getByRole("region", { name: "계정 분류" });
-    expect(acct).toHaveTextContent("등록됨 · 로그인해서 점검");
-    const decl = screen.getByRole("region", { name: "정책 선언" });
-    expect(await within(decl).findByText("있음 · 소유자 전용 종류 1개")).toBeInTheDocument();
-    // 로그인 방식은 같은 상자 맨 위에 늘 있다(사용자 11/24: 시험 계정 말고 로그인 방식도). [자세히 관리]는 없다
-    expect(
-      within(box.getByRole("region", { name: "대상 로그인 방식" })).getByLabelText("로그인 경로 (POST)"),
-    ).toBeInTheDocument();
-    expect(within(acct).queryByRole("button", { name: "자세히 관리" })).toBeNull();
-    expect(goTo).not.toHaveBeenCalledWith("classify");
-    fireEvent.click(within(decl).getByRole("button", { name: "정책 선언" }));
-    expect(goTo).toHaveBeenCalledWith("declaration");
-    expect(useWb.getState().focusTarget?.id).toBe(TARGET_ID);
-  });
-
-  it("시험 계정 저장: 새 계정이면 동의 뒤 등록 → 시험 표시 → 자격을 채운 줄만 보내고 칸을 비운다", async () => {
-    const { calls, sent } = serveQuick([]);
-    saveHandle();
-    mount("new");
-    const box = await pairBox();
-    const save = box.getByRole("button", { name: "저장" });
-    fireEvent.change(box.getByLabelText("계정 A 아이디"), { target: { value: "typed-user-1" } });
-    fireEvent.change(box.getByLabelText("계정 A 비밀번호"), { target: { value: "typed-secret-12345" } });
-    expect(save).toBeDisabled(); // 진술 동의 전
-    fireEvent.click(await box.findByRole("checkbox", { name: STATEMENT }));
-    expect(save).toBeEnabled();
-    fireEvent.click(save);
-    // 자격 칸은 누르자마자 비운다
-    expect(box.getByLabelText("계정 A 아이디")).toHaveValue("");
-    expect(box.getByLabelText("계정 A 비밀번호")).toHaveValue("");
-    expect(await box.findByRole("status")).toHaveTextContent("저장함");
-    // B 는 비워 둬서 보내지 않는다
-    expect(calls).toEqual(["POST /accounts", "POST /accounts/tester-a/mark-test", "PUT /accounts/tester-a/credential"]);
-    expect(JSON.parse(sent[0])).toEqual({ label: "tester-a" });
-    expect(JSON.parse(sent[1])).toEqual({ statement_confirmed: true });
-    expect(sent.filter((x) => x.includes("typed-secret-12345"))).toHaveLength(1);
-    expect(sent[2]).toContain("typed-user-1");
-    await waitFor(() => expect(box.getByRole("group", { name: "계정 A" })).toHaveTextContent("자격 등록됨"));
-    const acct = screen.getByRole("region", { name: "계정 분류" });
-    await waitFor(() => expect(acct).toHaveTextContent("등록됨 · 로그인해서 점검"));
-    // 화면 어디에도 비밀번호가 남지 않는다
-    expect(document.body.innerHTML).not.toContain("typed-secret-12345");
-  });
-
-  it("시험 계정 저장: 이미 시험 표시된 계정이면 동의 없이 자격만 보낸다", async () => {
-    const { calls } = serveQuick([
-      { label: "tester-a", classification: "test" },
-      { label: "tester-b", classification: "test" },
+      { label: "tester-a", classification: "test", credential_configured: true, login_method_missing: true },
+      { label: "tester-b", classification: "test", credential_configured: true, login_method_missing: true },
     ]);
     saveHandle();
     mount("new");
-    const box = await pairBox();
-    fireEvent.change(box.getByLabelText("계정 B 아이디"), { target: { value: "u" } });
-    fireEvent.change(box.getByLabelText("계정 B 비밀번호"), { target: { value: "typed-secret-12345" } });
-    await waitFor(() => expect(box.getByRole("button", { name: "저장" })).toBeEnabled());
-    fireEvent.click(box.getByRole("button", { name: "저장" }));
-    await box.findByRole("status");
-    expect(calls).toEqual(["PUT /accounts/tester-b/credential"]);
-  });
-
-  it("시험 계정 저장: 진술을 못 받으면 새 계정은 막고 이유를 보인다", async () => {
-    serveQuick([], "");
-    saveHandle();
-    mount("new");
-    const box = await pairBox();
-    expect(await box.findByText("진술을 받지 못해 새 시험 계정은 저장할 수 없습니다")).toBeInTheDocument();
-    expect(box.getByRole("button", { name: "저장" })).toBeDisabled();
-  });
-
-  // 사용자 11/24: 표시 해제 · 시험 표시도 로그인 상자 줄에서
-  it("시험 계정 줄의 [표시 해제]는 unmark 를 보내고, 다시 [시험 표시]는 진술 동의 뒤에만 보낸다", async () => {
-    const { calls } = serveQuick([
-      { label: "tester-a", classification: "test", credential_configured: true },
-      { label: "tester-b", classification: "test", credential_configured: true },
-    ]);
-    saveHandle();
-    mount("new");
-    const box = await pairBox();
-    const a = () => box.getByRole("group", { name: "계정 A" });
-    await waitFor(() => expect(a()).toHaveTextContent("자격 등록됨"));
-    expect(box.queryByRole("checkbox")).toBeNull();
-    fireEvent.click(within(a()).getByRole("button", { name: "표시 해제" }));
-    await waitFor(() => expect(a()).toHaveTextContent("시험 표시 안 됨"));
-    expect(calls).toEqual(["POST /accounts/tester-a/unmark"]);
-    // 다시 표시하려면 진술 동의가 있어야 한다
-    const mark = within(a()).getByRole("button", { name: "시험 표시" });
-    expect(mark).toBeDisabled();
-    fireEvent.click(box.getByRole("checkbox", { name: STATEMENT }));
-    fireEvent.click(within(a()).getByRole("button", { name: "시험 표시" }));
-    await waitFor(() => expect(a()).toHaveTextContent("자격 등록됨"));
-    expect(calls).toEqual(["POST /accounts/tester-a/unmark", "POST /accounts/tester-a/mark-test"]);
-    // 로그인 줄도 다시 읽힌다
-    await waitFor(() =>
-      expect(screen.getByRole("region", { name: "계정 분류" })).toHaveTextContent("등록됨 · 로그인해서 점검"),
+    const note = await screen.findByRole("note", { name: "로그인 방식 없음" });
+    expect(note).toHaveTextContent(
+      "계정은 저장됐습니다. 이 대상의 로그인 방식이 설정되지 않아 인증 점검을 시작할 수 없습니다.",
     );
+    // MFA · 지원 안 함 같은 짐작은 하지 않는다
+    expect(note).not.toHaveTextContent(/MFA|지원하지 않/);
+    // 안내는 되돌린 로그인 칸 안에 있고(사용자 11/24 저녁: 계정 분류 · 정책 선언 칸 대신 전 로그인 칸), 이번 회차는 로그인하지 않는다
+    expect(screen.queryByRole("region", { name: "계정 분류" })).toBeNull();
+    const summary = screen.getByRole("complementary", { name: "점검 요약" });
+    expect(summary).not.toHaveTextContent("시험 계정 로그인");
+    // 범위 확인 뒤(초안 있음)라 시작 칸에서 막는다
+    expect(screen.getByText(/이번에는 익명으로 점검'을 고르면 시작할 수 있습니다/)).toBeInTheDocument();
+    const anon = within(note).getByRole("checkbox", { name: "이번에는 익명으로 점검" });
+    expect(anon).not.toBeChecked();
+    fireEvent.click(anon);
+    expect(anon).toBeChecked();
+    expect(screen.queryByText(/이번에는 익명으로 점검'을 고르면 시작할 수 있습니다/)).toBeNull();
   });
 
-  // 시험 계정 줄은 등록 여부가 아니라 이번 회차가 실제로 로그인하는지를 따른다(#874 이동찬 P2)
-  const accountSection = () => screen.findByRole("region", { name: "계정 분류" });
-  it("로컬 모델 · 시험 계정 등록됨이면 '로그인해서 점검'", async () => {
+  it("로컬 모델 · 시험 계정 등록됨이면 점검 요약 로그인 칸이 '시험 계정 로그인'", async () => {
     serve(active(declaration()), noWrites, [{ label: "tester", classification: "test" }]);
     saveHandle();
     mount("new");
-    const acct = await accountSection();
-    await waitFor(() => expect(acct).toHaveTextContent("등록됨 · 로그인해서 점검"));
+    const summary = await screen.findByRole("complementary", { name: "점검 요약" });
+    await waitFor(() => expect(summary).toHaveTextContent("시험 계정 로그인"));
   });
-  it("외부 모델 · 동의 안 함이면 등록돼 있어도 '로그인 없이 점검'으로 보인다", async () => {
-    u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
-    serve(active(declaration()), noWrites, [{ label: "tester", classification: "test" }]);
-    saveHandle();
-    mount("new");
-    const acct = await accountSection();
-    await waitFor(() => expect(acct).toHaveTextContent("등록됨 · 외부 전송 동의 전이라 로그인 없이 점검"));
-    expect(acct).not.toHaveTextContent("로그인해서 점검");
-  });
-  it("계정 조회가 실패하면 '확인하지 못함', 끝나지 않았으면 '확인 중'으로 두고 '없음'으로 단정하지 않는다", async () => {
-    serve(active(declaration()), noWrites, "fail");
-    saveHandle();
-    const view = mount("new");
-    const failed = await accountSection();
-    await waitFor(() => expect(failed).toHaveTextContent("확인하지 못함"));
-    await waitFor(() => expect(failed).toHaveTextContent("계정 정보를 읽지 못했습니다"));
-    expect(failed).not.toHaveTextContent("없음");
-    view.unmount();
-    serve("pending", noWrites, "pending");
-    mount("new");
-    const acct = await accountSection();
-    expect(acct).toHaveTextContent("확인 중");
-    expect(acct).not.toHaveTextContent("없음");
-    expect(screen.getByRole("region", { name: "정책 선언" })).toHaveTextContent("정책 선언확인 중");
-  });
-
-  // #874 이경준 P2: 저장됐지만 무효가 된 선언은 '없음'이 아니라 다시 선언해야 한다고 보인다
-  it("선언이 무효가 됐으면 상자에 '무효 · 다시 선언 필요'로 보이고 경고 표시", async () => {
-    serve(
-      {
-        state: "invalid",
-        invalid_reason: "target_reapproved",
-        target_revision: 3,
-        declared_by: "operator-1",
-        declared_at: "2026-11-18T00:00:00.000000Z",
-        declaration: declaration(),
-      },
-      noWrites,
-    );
-    saveHandle();
-    mount("new");
-    const box = await screen.findByRole("region", { name: "정책 선언" });
-    await waitFor(() => expect(box).toHaveTextContent("정책 선언무효 · 다시 선언 필요"));
-    expect(box).not.toHaveTextContent("없음");
-  });
-
-  it("정책 선언이 없으면 상자에 '없음'으로 보인다", async () => {
-    serve({ state: "none", declaration: null }, noWrites);
-    saveHandle();
-    mount("new");
-    const box = await screen.findByRole("region", { name: "정책 선언" });
-    expect(await within(box).findByText("없음 · 확정 단계 없이 점검")).toBeInTheDocument();
-  });
-
   it("선언이 없으면 지난 쓰기가 있어도 서버가 거절하지 않으므로 경고는 없고 리셋 확인 상자만 둔다", async () => {
     serve({ state: "none", declaration: null }, resetRequired);
     saveHandle();
@@ -3624,26 +3639,23 @@ describe("새 점검의 시작 확인 (제외 경로 검토 · 복사본/백업)
   };
   const confirmedInput = { ...draft.input, ...START_CONFIRMED };
   const send = () => screen.getAllByRole("button", { name: "승인 범위 확인" })[0];
-  /** 탐색 흐름이 있는 프로필로 2쪽까지 간다(제외 경로 칸이 보인다). */
+  /** 탐색 흐름이 있는 프로필로 주소까지 넣는다(1쪽 점검 설정에 제외 경로 칸이 보인다, 사용자 11/24). */
   async function page2() {
     u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], workflow: limits }] });
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
     fireEvent.change(target, { target: { value: "https://target.example/" } });
-    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     return target;
   }
+  /** [승인 범위 확인]이 켜졌는지 */
+  const sendEnabled = () => !(send() as HTMLButtonElement).disabled;
 
-  it("GET 으로 상태가 바뀌는 주소 안내와 예시를 보이고, 예시로 제외 경로 칸을 채우지 않는다", async () => {
+  it("GET 으로 상태가 바뀌는 주소 · 제외 경로 안내 문장은 두지 않고(사용자 11/24, 팀 공유), 제외 경로 칸은 비어 있다", async () => {
     await page2();
-    const notice = screen.getByText(
-      /GET으로 상태가 바뀌는 주소\(로그아웃, 삭제 링크, 구독 해지, 이메일 확인 링크 등\)는/,
-    );
-    expect(notice).toBeVisible();
-    expect(notice).toHaveTextContent("제외 경로에 넣으세요");
-    expect(notice).toHaveTextContent("예시:");
-    for (const path of STATE_CHANGING_GET_EXAMPLES) expect(notice).toHaveTextContent(path);
-    expect(notice).toHaveTextContent("자동으로 채워지지 않습니다");
+    // 안내 상자(예시 · 'GET 요청은 따로 막지 않습니다')만 뺐다. 약관 동의의 제외 경로 검토 진술 문장은 그대로
+    expect(screen.queryByText(/로그아웃, 삭제 링크, 구독 해지/)).toBeNull();
+    expect(screen.queryByText(/GET 요청은 따로 막지 않습니다/)).toBeNull();
+    expect(exclusionsBox()).toBeInTheDocument();
     expect(screen.getByLabelText(/^제외 경로/)).toHaveValue("");
     expect(exclusionsBox()).not.toBeChecked();
     expect(backupBox()).not.toBeChecked();
@@ -3651,14 +3663,14 @@ describe("새 점검의 시작 확인 (제외 경로 검토 · 복사본/백업)
 
   it("두 진술이 다 있어야 초안을 만들고, 입력에 두 진술이 true 로 실린다", async () => {
     await page2();
-    expect(send()).toBeDisabled();
+    expect(sendEnabled()).toBe(false);
     fireEvent.click(backupBox());
-    expect(send()).toBeDisabled();
+    expect(sendEnabled()).toBe(false);
     fireEvent.click(exclusionsBox());
-    expect(send()).toBeEnabled();
+    expect(sendEnabled()).toBe(true);
     // 하나를 풀면 다시 꺼진다
     fireEvent.click(backupBox());
-    expect(send()).toBeDisabled();
+    expect(sendEnabled()).toBe(false);
     fireEvent.click(backupBox());
     await act(async () => {
       fireEvent.click(send());
@@ -3676,26 +3688,24 @@ describe("새 점검의 시작 확인 (제외 경로 검토 · 복사본/백업)
   it("제외 경로 · 진단 모드 · 대상을 바꾸면 앞서 한 확인이 풀린다", async () => {
     const target = await page2();
     tickStartConfirm();
-    expect(send()).toBeEnabled();
+    expect(sendEnabled()).toBe(true);
     // 제외 경로를 고치면 그 목록을 보고 한 확인이 아니게 된다
     fireEvent.change(screen.getByLabelText(/^제외 경로/), { target: { value: "/logout" } });
     expect(exclusionsBox()).not.toBeChecked();
     expect(backupBox()).not.toBeChecked();
-    expect(send()).toBeDisabled();
+    expect(sendEnabled()).toBe(false);
     tickStartConfirm();
-    expect(send()).toBeEnabled();
+    expect(sendEnabled()).toBe(true);
     fireEvent.click(screen.getByRole("radio", { name: /^AI 자동/ }));
     expect(exclusionsBox()).not.toBeChecked();
     expect(backupBox()).not.toBeChecked();
     tickStartConfirm();
     // 대상을 바꿨다가 같은 주소로 돌아와도 이전 확인은 살아나지 않는다
-    fireEvent.click(screen.getAllByRole("button", { name: /이전/ })[0]);
     fireEvent.change(target, { target: { value: "https://second.example/" } });
     fireEvent.change(target, { target: { value: "https://target.example/" } });
-    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     expect(exclusionsBox()).not.toBeChecked();
     expect(backupBox()).not.toBeChecked();
-    expect(send()).toBeDisabled();
+    expect(sendEnabled()).toBe(false);
     expect(u.createURLDraft).not.toHaveBeenCalled();
   });
 
@@ -3704,7 +3714,6 @@ describe("새 점검의 시작 확인 (제외 경로 검토 · 복사본/백업)
     u.readURLStatus.mockResolvedValue({ ...ready, input: confirmedInput });
     mount("new");
     await screen.findByText("https://target.example · / · GET");
-    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     expect(exclusionsBox()).toBeChecked();
     expect(exclusionsBox()).toBeDisabled();
     expect(backupBox()).toBeChecked();
@@ -3716,7 +3725,6 @@ describe("새 점검의 시작 확인 (제외 경로 검토 · 복사본/백업)
     saveHandle();
     mount("new");
     await screen.findByText("https://target.example · / · GET");
-    fireEvent.click(screen.getAllByRole("button", { name: /다음/ })[0]);
     expect(exclusionsBox()).not.toBeChecked();
     expect(exclusionsBox()).toBeDisabled();
     expect(backupBox()).not.toBeChecked();
