@@ -47,6 +47,17 @@
   --sev-info-bg: #eceff2;
   --sev-none: #545d69;
   --sev-none-bg: #f1f3f5;
+  /* 대시보드 원형 게이지 색(사용자 11/24). dataviz 검증기로 밝은 화면 통과: 위험도 심각 · 높음 · 중간 · 낮음, 판정 확정 · 검토,
+     전송 허용 · 막음. 정보성 · 미평가 · 판단 불가 · 결과 불명은 뜻이 '없음'이라 회색 */
+  --ring-crit: #c8103f;
+  --ring-hi: #f06a8d;
+  --ring-mid: #c2570c;
+  --ring-lo: #3d7cc9;
+  --ring-gray: #8a94a0;
+  --ring-gray-2: #c3cad2;
+  --ring-allow: #1a8fae;
+  --ring-block: #c2570c;
+  --ring-track: #e9edf0;
   --ok: #11703f;
   --ok-bg: #e6f4ec;
   --warn: #935100;
@@ -102,6 +113,15 @@
     --sev-info-bg: #222a31;
     --sev-none: #9aa3ae;
     --sev-none-bg: #1b2126;
+    --ring-crit: #f0414f;
+    --ring-hi: #c25bb8;
+    --ring-mid: #cf6f1d;
+    --ring-lo: #5a8fd2;
+    --ring-gray: #7d8793;
+    --ring-gray-2: #48525c;
+    --ring-allow: #2496b4;
+    --ring-block: #cf6f1d;
+    --ring-track: #262e35;
     --ok: #5ecb8f;
     --ok-bg: #0f2a1c;
     --warn: #f2b654;
@@ -156,6 +176,15 @@
   --sev-info-bg: #222a31;
   --sev-none: #9aa3ae;
   --sev-none-bg: #1b2126;
+  --ring-crit: #f0414f;
+  --ring-hi: #c25bb8;
+  --ring-mid: #cf6f1d;
+  --ring-lo: #5a8fd2;
+  --ring-gray: #7d8793;
+  --ring-gray-2: #48525c;
+  --ring-allow: #2496b4;
+  --ring-block: #cf6f1d;
+  --ring-track: #262e35;
   --ok: #5ecb8f;
   --ok-bg: #0f2a1c;
   --warn: #f2b654;
@@ -5476,4 +5505,127 @@ button.smm:hover {
 .app .vb.solo,
 .app.insp-min .vb.solo {
   grid-template-columns: minmax(0, 1fr);
+}
+/* 대시보드 원형 게이지 줄(사용자 11/24): 카드 4개(넓으면 한 줄, 좁으면 2 · 1 줄). 카드 = 제목 · 원 + 범례 · 작은 글 */
+.drings {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+@media (max-width: 1280px) {
+  .drings {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .drings {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.dring {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.dring.warn {
+  border-color: var(--warn-line);
+}
+.dring h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.dring-b {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+.dring-ring {
+  position: relative;
+  flex: none;
+  width: 104px;
+  height: 104px;
+}
+.dring-ring svg {
+  display: block;
+}
+.dring-ring circle {
+  transition: stroke-dasharray 0.4s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dring-ring circle {
+    transition: none;
+  }
+}
+.dring-c {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.dring-c b {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.dring-c span {
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.dring-l {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+  font-size: 12.5px;
+}
+.dring-l li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.dring-l i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex: none;
+}
+.dring-l span {
+  color: var(--ink-2);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dring-l b {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.dring-n {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.dring-n .warn {
+  color: var(--warn);
+  font-weight: 600;
 }
