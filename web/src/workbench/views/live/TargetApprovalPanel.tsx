@@ -26,18 +26,22 @@ type Target = {
 };
 type Reply = { targets?: Target[]; target?: Target; reason?: string };
 /**
- * 대상 승인 유효 시간(승인 시각부터, 시간). 기본 4시간은 대상 승인 계약(product-target-approval-proposal.md)의 UI 기본값 그대로.
- * 고를 수 있는 값은 서버 상한 `diagnosisprep.MaxTargetApprovalHours`(720) 안에서만 둔다. 서버는 1…720 밖을
- * `readonly_scope_required`(엉뚱한 안내)로 거절하므로 화면에서 고정 선택지로만 보낸다. 승인 범위(어디로 · 무엇을)는 바꾸지 않는다.
+ * 주소 옆 인증 칸(새 점검 'URL 인증')이 쓰는 이 주소의 대상 승인 상태.
+ * invalid: 쓸 수 있는 http(s) 주소가 아님 · loading: 서버에 묻는 중 · uncertain: 확인 실패(다시 조회 필요) ·
+ * unsupported: 서버에 대상 승인 API 가 없음 · none: 등록 안 됨 · 그 밖은 서버 대상 상태 그대로
  */
-export const TARGET_APPROVAL_HOURS = [
-  { hours: 4, label: "4시간 (기본)" },
-  { hours: 24, label: "1일" },
-  { hours: 72, label: "3일" },
-  { hours: 168, label: "7일" },
-  { hours: 720, label: "30일" },
-] as const;
-const TARGET_APPROVAL_DEFAULT_HOURS = 4;
+export type TargetStatus = "invalid" | "loading" | "uncertain" | "unsupported" | "none" | Target["state"];
+/**
+ * 대상 승인 유효 시간(승인 시각부터, 시간). 등록 칸에서 고르지 않고(사용자 11/24) 대상 승인 계약(product-target-approval-proposal.md)의
+ * UI 기본값 4시간으로 보낸다. 서버 상한 `diagnosisprep.MaxTargetApprovalHours`(720) 안. 승인 범위(어디로 · 무엇을)는 바꾸지 않는다.
+ */
+export const TARGET_APPROVAL_HOURS = 4;
+/**
+ * 점검 근거(서버 readonly_basis): 계약상 운영자 진술이고 서버는 길이(20자 이상)만 본다. 글 칸 대신(사용자 11/24) 운영자가 이 문장에
+ * 체크해야만 진술로 보낸다 — 체크 없이 프로그램이 대신 채우지 않는다.
+ */
+export const TARGET_READONLY_STATEMENT =
+  "이 대상의 점검 권한이 있고, 승인 경로는 조회(GET · HEAD)해도 데이터가 바뀌지 않습니다";
 const reasons: Record<string, string> = {
   dns_ownership_required: "IP 주소 직접 등록은 지원하지 않습니다. DNS 소유 확인이 가능한 호스트를 사용하세요.",
   target_approval_expired: "TLS 확인 중 승인 시간이 지났습니다. 현재 승인 상태를 다시 조회하세요.",
@@ -62,6 +66,14 @@ function originOf(raw: string): string {
     return "";
   }
 }
+/** 등록할 승인 경로: 입력한 주소의 경로(없으면 /) */
+function pathOf(raw: string): string {
+  try {
+    return new URL(raw).pathname || "/";
+  } catch {
+    return "/";
+  }
+}
 function targetReply(value: Reply, origin: string): Target {
   const t = value.target;
   if (
@@ -81,6 +93,21 @@ function targetReply(value: Reply, origin: string): Target {
   return t;
 }
 
+/** 주소 옆 인증 칸에 알릴 상태. 서버 답을 받기 전에는 '등록 안 됨'으로 말하지 않는다 */
+function targetStatus(
+  origin: string,
+  unsupported: boolean,
+  uncertain: boolean,
+  resolved: boolean,
+  state: Target["state"] | undefined,
+): TargetStatus {
+  if (!origin) return "invalid";
+  if (unsupported) return "unsupported";
+  if (uncertain) return "uncertain";
+  if (!resolved) return "loading";
+  return state ?? "none";
+}
+
 // 대상 승인은 진단 초안과 독립적이다. 서버가 DNS 소유를 검증하며 URL·체크박스만으로 실행 권위가 생기지 않는다.
 export function TargetApprovalPanel({
   url,
@@ -89,6 +116,9 @@ export function TargetApprovalPanel({
   requestLimit,
   allowStateChanges = false,
   onTarget,
+  openSignal,
+  onStatus,
+  onOpenChange,
 }: {
   url: string;
   disabled: boolean;
@@ -98,22 +128,33 @@ export function TargetApprovalPanel({
   // 설치의 회차당 요청 상한(서버 프로필 workflow_request_limit, 모드와 상관없음). 없으면 등록하지 않는다.
   requestLimit?: number;
   allowStateChanges?: boolean;
+  /**
+   * 주소 옆 인증 칸에서 여는 모드(새 점검). 값이 있으면 상자 머리 딱지와 접힌 상자([대상 등록하기])를 두지 않고,
+   * 값이 바뀔 때마다 등록 칸을 펼친다. 상태 딱지는 부모가 주소 옆에 onStatus 로 그린다.
+   */
+  openSignal?: number;
+  onStatus?: (status: TargetStatus) => void;
+  /** 등록 칸이 펼쳐졌는지(주소 옆 [URL 인증]의 aria-expanded) */
+  onOpenChange?: (open: boolean) => void;
 }) {
+  const inline = openSignal !== undefined;
   const generation = useRef(0);
   const mutationLock = useRef(false);
   const [details, setDetails] = useState<Target | null>(null);
-  const [paths, setPaths] = useState("");
-  const [basis, setBasis] = useState("");
+  // 점검 근거 진술 체크(TARGET_READONLY_STATEMENT)
+  const [attested, setAttested] = useState(false);
   const [reversible, setReversible] = useState(false);
-  const [validHours, setValidHours] = useState<number>(TARGET_APPROVAL_DEFAULT_HOURS);
   const [busy, setBusy] = useState(false);
   const [unsupported, setUnsupported] = useState(false);
   const [uncertain, setUncertain] = useState(false);
   const [message, setMessage] = useState("");
   // 등록 칸은 [대상 등록하기]를 눌러야 펼친다 (시안 v91 소유 확인 상자 모양 그대로, 평소엔 한 줄 + 버튼)
   const [open, setOpen] = useState(false);
-  const firstField = useRef<HTMLTextAreaElement>(null);
+  // 이 주소로 서버에 한 번이라도 물어 답을 받았는지(받기 전엔 '등록 안 됨'으로 보이지 않게)
+  const [resolved, setResolved] = useState(false);
+  const firstField = useRef<HTMLInputElement>(null);
   const origin = originOf(url);
+  const approvePath = pathOf(url);
   const selected = details?.origin === origin ? details : null;
   const selectedId = selected?.id ?? null;
   const selectedState = selected?.state ?? null;
@@ -133,6 +174,7 @@ export function TargetApprovalPanel({
       if (!r || (!r.target && !Array.isArray(r.targets) && Object.keys(r).length !== 0))
         throw new Error("invalid_target_catalog");
       setDetails(r.target ? targetReply(r, origin) : null);
+      setResolved(true);
       setUncertain(false);
       setMessage("");
     } catch (e) {
@@ -146,6 +188,7 @@ export function TargetApprovalPanel({
   }, [url, origin]);
   useEffect(() => {
     setDetails(null);
+    setResolved(false);
     setBusy(false);
     mutationLock.current = false;
     setUncertain(false);
@@ -158,22 +201,39 @@ export function TargetApprovalPanel({
   }, [list]);
   useEffect(() => {
     setReversible(false);
-    setValidHours(TARGET_APPROVAL_DEFAULT_HOURS);
     setOpen(false);
-    if (origin) {
-      setPaths("");
-      setBasis("");
-    }
+    if (origin) setAttested(false);
   }, [origin]);
   useEffect(() => {
     if (open) firstField.current?.focus();
   }, [open]);
+  // 주소 옆 [URL 인증]: 누를 때마다 등록 칸을 열고 닫는다(접기 버튼 대신, 사용자 11/24). 열 때 승인 상태를 확인하지 못한 채면
+  // 한 번 더 묻는다 — 그동안 등록 칸은 열리되 등록 버튼은 꺼져 있다(off). 모르는 채 등록하면 같은 주소 대상이 겹친다
+  const handledSignal = useRef(0);
+  useEffect(() => {
+    if (!openSignal || openSignal === handledSignal.current) return;
+    handledSignal.current = openSignal;
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    firstField.current?.focus();
+    if (uncertain) void list();
+  }, [openSignal, open, uncertain, list]);
+  useEffect(() => {
+    onOpenChange?.(open);
+  }, [onOpenChange, open]);
+  const status = targetStatus(origin, unsupported, uncertain, resolved, selected?.state);
+  useEffect(() => {
+    onStatus?.(status);
+  }, [onStatus, status]);
   if (unsupported) return null;
   async function change(action: "register" | "approve" | "revoke") {
     if (disabled || busy || uncertain || mutationLock.current || !origin || (action !== "register" && !selected))
       return;
-    // 선택지 밖 값은 보내지 않는다(서버 상한 밖이면 다른 사유로 거절돼 원인을 알 수 없다)
-    if (action === "register" && !TARGET_APPROVAL_HOURS.some((c) => c.hours === validHours)) return;
+    // 점검 근거는 운영자가 체크한 진술만 보낸다
+    if (action === "register" && !attested) return;
     mutationLock.current = true;
     const version = ++generation.current;
     setBusy(true);
@@ -183,11 +243,8 @@ export function TargetApprovalPanel({
         action === "register"
           ? "/api/product/targets"
           : `/api/product/targets/${encodeURIComponent(selected?.id ?? "")}/${action}`;
-      let prefixes = paths
-        .split("\n")
-        .map((p) => p.trim())
-        .filter(Boolean);
-      if (!prefixes.length) prefixes = [new URL(url).pathname || "/"];
+      // 승인 경로는 입력한 주소의 경로(경로 칸은 뺐다, 사용자 11/24). 좁히려면 주소를 그 경로까지 넣는다
+      const prefixes = [approvePath];
       const body =
         action === "register"
           ? {
@@ -195,9 +252,9 @@ export function TargetApprovalPanel({
               path_prefixes: prefixes,
               methods: allowStateChanges && reversible ? ["GET", "HEAD", "POST", "PUT", "PATCH"] : ["GET", "HEAD"],
               ...(allowStateChanges && reversible ? { reversible_writes: true } : {}),
-              readonly_basis: basis.trim(),
+              readonly_basis: TARGET_READONLY_STATEMENT,
               requests: requestLimit,
-              valid_hours: validHours,
+              valid_hours: TARGET_APPROVAL_HOURS,
             }
           : {};
       const r = await apiFetch<Reply>(path, { method: "POST", redirect: "error", body: JSON.stringify(body) }, false);
@@ -259,7 +316,7 @@ export function TargetApprovalPanel({
     return (
       <div className={cx(s.tgt, s.field)} id="targetApproval">
         <div className={s.hostline}>
-          <span className={cx(s.pill, s.ok)}>승인된 대상</span>
+          {inline ? null : <span className={cx(s.pill, s.ok)}>승인된 대상</span>}
           <span className={s.help}>
             {`${(selected.path_prefixes ?? []).join(", ")} · ${(selected.methods ?? []).join("/")} · 회차당 요청 상한 ${selected.requests} · 만료 ${dateTimeOf(selected.expires_at) || selected.expires_at}`}
           </span>
@@ -284,20 +341,40 @@ export function TargetApprovalPanel({
     );
   }
 
+  // 주소 옆 인증 칸 모드에서 등록 전 · 접힘: 상자 없이 결과 글 · 다시 조회만(있을 때)
+  if (inline && !pending && !open)
+    return message || uncertain ? (
+      <div className={cx(s.tgt, s.field)} id="targetApproval">
+        {tail}
+      </div>
+    ) : null;
+
   // 미등록 · 소유 확인 대기: 시안 v91 의 '소유 확인 필요' 딱지 + 노란 TXT 상자
   return (
     <div className={s.tgt} id="targetApproval">
-      <div className={s.hostline}>
-        <span className={cx(s.pill, s.wait)}>소유 확인 필요</span>
-      </div>
+      {inline ? null : (
+        <div className={s.hostline}>
+          <span className={cx(s.pill, s.wait)}>소유 확인 필요</span>
+        </div>
+      )}
       <div className={s.verify}>
         <div className={s.vt}>
           <Icon name="alert" />
           <div>
-            <b className={s.mono}>{host}</b> 은(는) 아직 승인되지 않은 대상입니다.{" "}
-            {pending
-              ? "아래 TXT 레코드를 도메인 DNS에 추가한 뒤 확인을 누르세요."
-              : "대상을 등록하면 도메인 DNS에 추가할 TXT 레코드가 나옵니다."}
+            {/* 서버 답을 못 받았으면 '승인 안 됨'으로 단정하지 않는다(규칙 5) */}
+            {uncertain && !pending ? (
+              <>
+                <b className={s.mono}>{host}</b> 의 승인 상태를 확인하지 못했습니다. 다시 조회해 확인되면 등록할 수
+                있습니다.
+              </>
+            ) : (
+              <>
+                <b className={s.mono}>{host}</b> 은(는) 아직 승인되지 않은 대상입니다.{" "}
+                {pending
+                  ? "아래 TXT 레코드를 도메인 DNS에 추가한 뒤 확인을 누르세요."
+                  : "대상을 등록하면 도메인 DNS에 추가할 TXT 레코드가 나옵니다."}
+              </>
+            )}
           </div>
         </div>
         {pending ? (
@@ -328,66 +405,33 @@ export function TargetApprovalPanel({
         ) : null}
         {!pending && open ? (
           <div className={s["fsec-b"]} id="targetRegister">
-            <div className={s.two}>
-              <div className={s.field}>
-                {/* tipline: (?) 메모가 이 줄 바로 아래에 뜨는 기준(없으면 화면 칸 맨 아래로 가서 안 보였다) */}
-                <div className={cx(s["fsec-ht"], s.tipline)}>
-                  <label className={s.lbl} htmlFor="targetReadonlyPaths">
-                    점검할 경로 (조회만)
-                  </label>
-                  {/* 정확 일치(=/…)와 접두는 query 동작이 다르다(docs/contracts/exact-path-approval.md). 서버가 같은 규칙으로
-                      집행한다. 칸 밑에 늘 펼쳐 두던 설명은 (?) 메모로 옮겼다(사용자 11/18 '간략하게') */}
-                  <HelpTip label="경로 쓰는 법 보기">
-                    <span id="targetPathMatchNote">
-                      <code>/api/</code> 처럼 쓰면 접두 승인 · 그 아래 모든 경로와 query 를 허용합니다. <code>=/</code>{" "}
-                      처럼 앞에 <code>=</code> 를 붙이면 정확 일치 · 그 경로 하나만, query 가 붙은 요청(
-                      <code>/?x=1</code>, <code>/?</code> 포함)은 허용하지 않습니다.
-                    </span>
-                  </HelpTip>
-                </div>
-                <textarea
-                  ref={firstField}
-                  id="targetReadonlyPaths"
-                  className={s.inp}
-                  value={paths}
-                  onChange={(e) => setPaths(e.target.value)}
-                  disabled={off}
-                  placeholder="한 줄에 하나씩 · 비우면 입력한 주소의 경로 · 예) /api/"
-                />
-              </div>
-              <div className={s.field}>
-                {/* 서버 readonly_basis: 점검 권한과 경로를 열어도 데이터가 안 바뀌는 근거(운영자 진술, 20자 이상).
-                    '진단 권한 · 비변경 근거'가 무슨 말인지 알기 어려워 이름 · 예시를 쉬운 말로(사용자 11/18) */}
-                <label className={s.lbl} htmlFor="targetReadonlyBasis">
-                  점검 근거
-                </label>
-                <textarea
-                  id="targetReadonlyBasis"
-                  className={s.inp}
-                  value={basis}
-                  onChange={(e) => setBasis(e.target.value)}
-                  disabled={off}
-                  maxLength={1024}
-                  placeholder="20자 이상 · 예) 우리 회사 시험 서버이고, 위 경로는 조회만 해서 데이터가 바뀌지 않습니다"
-                />
-              </div>
-            </div>
-            {/* 오른쪽 패널 안전 장치(열면 지워지는 주소)처럼 할 일 한 줄과 핵심 고지만 보이고, 원래 고지 문장은 (?) 메모에 */}
-            <p className={cx(s.help, s.tipline)} id="targetHarmlessNote">
-              <b>상태를 바꿀 수 있는 경로는 넣지 마세요</b>{" "}
-              <HelpTip label="읽기 승인 설명 보기">
-                접두 승인(<code>/api/</code>)은 그 경로 아래 전체와 모든 query 를 포함합니다. 서버는 query 의 무해성을
-                검증하지 않으니, query 로 상태가 바뀔 수 있는 경로는 넣지 마세요. 정확 일치(<code>=/</code>)는 query
-                없는 그 경로 하나만 허용하므로, 진입점 하나만 열고 하위 경로는 막아야 할 때 씁니다. 승인할 때 후보 IP별
-                연결(https 대상은 TLS 확인)을 최대 32회 합니다.
-                <br />
-                <br />
-                점검 근거는 운영자가 직접 쓰는 확인입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS
-                TXT 소유를 확인합니다
-                {requestLimit ? ` · 회차당 요청 상한 ${requestLimit}` : ""} · 상태 변경 범위는 별도 동의한 설치에서만
-                등록할 수 있습니다
-              </HelpTip>
+            <p className={s.help} id="targetScopeLine">
+              승인 경로 <code>{approvePath}</code> 아래
             </p>
+            {/* 점검 근거: 운영자 진술 체크 한 줄 + 원래 고지 문장은 (?) 메모에(글 칸 · 경로 칸은 뺐다, 사용자 11/24) */}
+            <label className={cx(s.ckline, s.tipline)} id="targetHarmlessNote">
+              <input
+                ref={firstField}
+                id="targetAttest"
+                type="checkbox"
+                checked={attested}
+                disabled={off}
+                onChange={(e) => setAttested(e.target.checked)}
+              />
+              <span>
+                {TARGET_READONLY_STATEMENT}{" "}
+                <HelpTip label="읽기 승인 설명 보기">
+                  위 경로 아래 전체와 모든 query 를 조회 승인합니다. 서버는 query 의 무해성을 검증하지 않으니, 조회로
+                  상태가 바뀔 수 있는 경로가 있으면 주소를 그보다 좁게 넣으세요. 승인할 때 후보 IP별 연결(https 대상은
+                  TLS 확인)을 최대 32회 합니다.
+                  <br />
+                  <br />이 확인은 운영자 진술입니다 · 서버는 GET/HEAD 의 무해성을 검증하지 않습니다 · 등록 후 DNS TXT
+                  소유를 확인합니다 · 승인은 {TARGET_APPROVAL_HOURS}시간 동안 유효합니다
+                  {requestLimit ? ` · 회차당 요청 상한 ${requestLimit}` : ""} · 상태 변경 범위는 별도 동의한 설치에서만
+                  등록할 수 있습니다
+                </HelpTip>
+              </span>
+            </label>
             {origin.startsWith("http://") ? (
               <p className={cx(s.note, s.warn)} role="note">
                 {PLAIN_TARGET_WARNING}
@@ -411,32 +455,6 @@ export function TargetApprovalPanel({
                 </span>
               </label>
             ) : null}
-            <div className={s.field}>
-              <label className={s.lbl} htmlFor="targetValidHours">
-                승인 유효 시간
-              </label>
-              <select
-                id="targetValidHours"
-                className={s.inp}
-                value={validHours}
-                disabled={off}
-                onChange={(e) => setValidHours(Number(e.target.value))}
-              >
-                {TARGET_APPROVAL_HOURS.map((c) => (
-                  <option key={c.hours} value={c.hours}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
-              {/* 할 일 한 줄만 보이고 설치 기간 · 범위 불변 설명은 (?) 메모에(#802 윤재상 리뷰, 다른 칸과 같은 모양) */}
-              <p className={cx(s.help, s.tipline)} id="targetValidHoursNote">
-                승인 시각부터 이 시간이 지나면 새 점검을 못 합니다 · 시연 날까지 남게 고르세요{" "}
-                <HelpTip label="승인 유효 시간 설명 보기">
-                  TXT 확인으로 승인한 때부터 셉니다. 설치 유효 기간이 먼저 끝나면 그때 막힙니다. 유효 시간만 고르고 승인
-                  범위(주소 · 경로 · 메서드 · 요청 상한)는 바뀌지 않습니다.
-                </HelpTip>
-              </p>
-            </div>
             {/* 회차당 요청 상한 줄은 뺐다(사용자 11/18) — 상한을 못 받아 등록할 수 없을 때만 이유를 보인다 */}
             {requestLimit ? null : (
               <p className={s.help} id="targetRequestLimit">
@@ -447,14 +465,17 @@ export function TargetApprovalPanel({
               <button
                 className={cx(s.btn, s.pri, s.sm)}
                 type="button"
-                disabled={off || basis.trim().length < 20 || !requestLimit}
+                disabled={off || !attested || !requestLimit}
                 onClick={() => void change("register")}
               >
                 대상 등록
               </button>
-              <button className={cx(s.btn, s.sm)} type="button" disabled={busy} onClick={() => setOpen(false)}>
-                접기
-              </button>
+              {/* 주소 옆 인증 칸 모드는 [URL 인증]을 다시 눌러 닫는다 */}
+              {inline ? null : (
+                <button className={cx(s.btn, s.sm)} type="button" disabled={busy} onClick={() => setOpen(false)}>
+                  접기
+                </button>
+              )}
             </div>
           </div>
         ) : null}
