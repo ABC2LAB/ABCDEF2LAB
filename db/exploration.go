@@ -232,12 +232,19 @@ func (s *ExplorationStore) AddNode(kind string, payload map[string]any, priority
 	return s.addNode(kind, payload, priority, state, origin, anchors, 0)
 }
 
+// ErrFactAssetReference는 결속 작업이나 사실의 자산 참조를 확인하지 못했을 때 반환한다.
 var ErrFactAssetReference = errors.New("asset_reference_invalid: use an ID from list_assets or leave asset_ids empty")
 
-// AddTaskFact는 결속 작업에 연결된 자산만 진단 사실의 출처로 받는다.
+// ErrFactAssetLimit은 한 사실에 연결할 수 있는 자산 수를 넘었을 때 반환한다.
+var ErrFactAssetLimit = fmt.Errorf("asset_reference_limit: supply at most %d asset IDs per fact", MaxTaskAssetMutationCount)
+
+// AddTaskFact는 결속 작업에 연결됐거나 list_assets 범위에 속한 자산을 사실의 출처로 받는다.
 func (s *ExplorationStore) AddTaskFact(taskID int64, payload map[string]any, origin string, anchors []int64) (int64, error) {
-	if taskID <= 0 || len(anchors) > MaxTaskAssetMutationCount {
+	if taskID <= 0 {
 		return 0, ErrFactAssetReference
+	}
+	if len(anchors) > MaxTaskAssetMutationCount {
+		return 0, ErrFactAssetLimit
 	}
 	return s.addNode(KindFact, payload, 5, "confirmed", origin, anchors, taskID)
 }
@@ -257,16 +264,8 @@ func (s *ExplorationStore) addNode(kind string, payload map[string]any, priority
 		if !bound {
 			return 0, ErrFactAssetReference
 		}
-		for _, assetID := range anchors {
-			var checked int64
-			err := tx.QueryRow(`SELECT a.id FROM task_asset_links l JOIN assets a ON a.id=l.asset_id
-WHERE l.task_id=$1 AND l.asset_id=$2 FOR KEY SHARE OF a, l`, taskID, assetID).Scan(&checked)
-			if err == sql.ErrNoRows {
-				return 0, ErrFactAssetReference
-			}
-			if err != nil {
-				return 0, err
-			}
+		if err := checkFactAnchorAssets(tx, taskID, anchors); err != nil {
+			return 0, err
 		}
 	}
 	if kind == KindFinding {
@@ -274,8 +273,10 @@ WHERE l.task_id=$1 AND l.asset_id=$2 FOR KEY SHARE OF a, l`, taskID, assetID).Sc
 			return 0, err
 		}
 	}
-	if err := checkAnchorAssets(tx, anchors); err != nil {
-		return 0, err
+	if taskID == 0 {
+		if err := checkAnchorAssets(tx, anchors); err != nil {
+			return 0, err
+		}
 	}
 	var id int64
 	if err := tx.QueryRow(`

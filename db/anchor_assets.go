@@ -1,12 +1,43 @@
 package db
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"slices"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// checkFactAnchorAssets는 기존 작업 연결과 list_assets의 선언 범위를 같은 트랜잭션에서 확인한다.
+// 선택한 자산 행을 잠가 사실과 앵커 저장 사이에 자산이 지워지지 않게 한다.
+func checkFactAnchorAssets(tx *sql.Tx, taskID int64, ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	want := slices.Clone(ids)
+	slices.Sort(want)
+	want = slices.Compact(want)
+	var count int
+	err := tx.QueryRow(`WITH `+scopeTargetCTE+`,
+linked AS (
+  SELECT asset_id FROM task_asset_links WHERE task_id=$1 AND asset_id=ANY($2::bigint[]) FOR KEY SHARE
+),
+locked AS (
+  SELECT a.id FROM assets a
+  WHERE a.id=ANY($2::bigint[])
+    AND (a.id IN (SELECT id FROM target) OR a.id IN (SELECT asset_id FROM linked))
+  ORDER BY a.id FOR KEY SHARE OF a
+)
+SELECT count(*) FROM locked`, taskID, want).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count != len(want) {
+		return ErrFactAssetReference
+	}
+	return nil
+}
 
 // UnknownAssetsError는 모델이 준 자산 번호 가운데 자산 그래프에 없는 번호다. 탐색 노드(사실·의도·취약점)를 저장하기 전에
 // 걸러, DB 외래 키 위반으로 그 기록만 빠지는 대신 모델에 도구 오류로 돌려준다(절대 규칙 4: LLM 출력은 데이터이고 없는 것을

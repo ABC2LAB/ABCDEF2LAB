@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -1346,12 +1347,20 @@ func (t *ToolSet) recordOneFact(it factItem, defaultIntent int64) (int64, error)
 	var id int64
 	var err error
 	if t.scopedFactAnchors {
+		if len(it.AssetIDs) > db.MaxTaskAssetMutationCount {
+			return 0, db.ErrFactAssetLimit
+		}
 		if len(anchors) != len(it.AssetIDs) {
 			return 0, db.ErrFactAssetReference
 		}
 		id, err = t.ts.AddTaskFact(t.taskID, payload, t.worker, anchors)
-		if err != nil && err != db.ErrFactAssetReference {
-			log.Print("[diagnostic-fact] reason=fact_storage_unavailable")
+		if err != nil && !errors.Is(err, db.ErrFactAssetReference) && !errors.Is(err, db.ErrFactAssetLimit) {
+			var sqlErr interface{ SQLState() string }
+			if errors.As(err, &sqlErr) {
+				log.Printf("[diagnostic-fact] 사실 저장 실패 작업=%d SQLSTATE=%s", t.taskID, sqlErr.SQLState())
+			} else {
+				log.Printf("[diagnostic-fact] 사실 저장 실패 작업=%d 오류 유형=%T", t.taskID, err)
+			}
 			return 0, fmt.Errorf("fact_storage_unavailable")
 		}
 	} else {

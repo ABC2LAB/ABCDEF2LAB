@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -18,23 +19,48 @@ func TestE2FactAssetReferenceChecksTaskScope(t *testing.T) {
 	if err != nil {
 		t.Fatal("PostgreSQL test connection failed")
 	}
-	defer pg.Close()
+	t.Cleanup(func() { pg.Close() })
 	taskOf := func() *db.Task {
 		task, err := pg.CreateTask("synthetic fact asset scope", "test", nil, 0, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() {
+			if err := pg.DeleteTask(task.ID); err != nil {
+				t.Errorf("시험 작업 정리 실패: %v", err)
+			}
+		})
 		return task
 	}
-	a, b := taskOf(), taskOf()
-	assetOf := func(taskID int64) int64 {
+	a, b, source := taskOf(), taskOf(), taskOf()
+	if _, err := pg.Exec(`INSERT INTO task_relations(task_id, source_task_id) VALUES ($1,$2)`, a.ID, source.ID); err != nil {
+		t.Fatal(err)
+	}
+	assetOf := func(taskID int64, domain string) int64 {
 		var id int64
-		if err := pg.QueryRow(`INSERT INTO assets(type,task_ids) VALUES ('endpoint',ARRAY[$1::bigint]) RETURNING id`, taskID).Scan(&id); err != nil {
+		if err := pg.QueryRow(`INSERT INTO assets(type,task_ids,root_domain) VALUES ('endpoint',ARRAY[$1::bigint],$2) RETURNING id`, taskID, domain).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() {
+			if _, err := pg.Exec(`DELETE FROM assets WHERE id=$1`, id); err != nil {
+				t.Errorf("시험 자산 정리 실패: %v", err)
+			}
+		})
 		return id
 	}
-	valid, foreign := assetOf(a.ID), assetOf(b.ID)
+	ownDomain := fmt.Sprintf("current-%d.test", a.ID)
+	sourceDomain := fmt.Sprintf("source-%d.test", source.ID)
+	for task, domain := range map[int64]string{a.ID: ownDomain, source.ID: sourceDomain} {
+		if _, err := pg.Assets().AddAgentScope(task, "root_domain", domain, "합성 시험 범위", "agent"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	valid, foreign := assetOf(a.ID, ""), assetOf(b.ID, "")
+	previous, inherited := assetOf(b.ID, ownDomain), assetOf(source.ID, sourceDomain)
+	visible, err := pg.Assets().GetByIDsInScope(a.ID, []int64{previous, inherited, foreign})
+	if err != nil || len(visible) != 2 {
+		t.Fatalf("도구가 읽는 선언 범위 시험 자료: %v, %v", len(visible), err)
+	}
 	store := pg.Exploration(a.ExplorationID)
 	intent, err := store.AddIntent(map[string]any{"summary": "synthetic observation"}, 1, nil, "test")
 	if err != nil {
@@ -64,12 +90,16 @@ func TestE2FactAssetReferenceChecksTaskScope(t *testing.T) {
 	if id, err := write(wrong, fmt.Sprintf("[%d]", foreign)); id != 0 || err == nil || err.Error() != db.ErrFactAssetReference.Error() || !strings.Contains(err.Error(), "list_assets") {
 		t.Fatal("mismatched task and exploration were accepted")
 	}
-	id, err := write(worker, fmt.Sprintf("[%d]", valid))
+	tooMany := "[" + strings.Repeat(fmt.Sprintf("%d,", valid), db.MaxTaskAssetMutationCount) + fmt.Sprint(valid) + "]"
+	if id, err := write(worker, tooMany); id != 0 || !errors.Is(err, db.ErrFactAssetLimit) {
+		t.Fatalf("자산 수 상한 오류: id=%d err=%v", id, err)
+	}
+	id, err := write(worker, fmt.Sprintf("[%d,%d,%d]", valid, previous, inherited))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var count int
-	if err := pg.QueryRow(`SELECT count(*) FROM exploration_anchors WHERE node_id=$1 AND asset_id=$2`, id, valid).Scan(&count); err != nil || count != 1 {
+	if err := pg.QueryRow(`SELECT count(*) FROM exploration_anchors WHERE node_id=$1 AND asset_id IN ($2,$3,$4)`, id, valid, previous, inherited).Scan(&count); err != nil || count != 3 {
 		t.Fatal("valid association was not stored")
 	}
 }
