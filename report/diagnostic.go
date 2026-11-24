@@ -105,7 +105,7 @@ type DiagnosticEntry struct {
 	RemediationBundle                                         *remediation.Bundle
 	RemediationSource                                         *remediation.Input
 	Stale, Truncated                                          bool
-	// LanguageMixed는 모델이 쓴 설명·조치·근거에 한자·가나가 섞인 채 저장된 후보다(한 번 다시 쓰게 했지만 남음, 2026-11-24).
+	// LanguageMixed는 모델이 쓴 이름·설명·조치·근거에 한자·가나가 섞인 채 저장된 후보다(다시 쓰게 했지만 남음, 2026-11-24).
 	LanguageMixed bool
 }
 
@@ -571,7 +571,7 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 <dt>검증 방법</dt><dd>{{.Verification}}</dd><dt>심각도</dt><dd>{{.SeverityText}}</dd>{{if .SeverityRationale}}<dt>예상 심각도 근거 · 모델 제안</dt><dd>{{.SeverityRationale}}</dd>{{end}}<dt>처리/실행 상태</dt><dd>{{.Status}}</dd>
 <dt>회차 / intent</dt><dd>{{if .Run}}{{.Run}}{{else}}회차 미기록{{end}} / {{if .IntentID}}{{.IntentID}}{{else}}intent 미기록{{end}}</dd><dt>관찰 시각</dt><dd>{{if .ObservedAt.IsZero}}미기록{{else}}{{.ObservedAt}}{{end}}</dd>
 <dt>증거 버전 / digest</dt><dd>{{.EvidenceVersion}} / {{.Digest}}</dd></dl>
-{{if .LanguageMixed}}<p>다른 언어 섞임: 모델이 쓴 설명·조치·근거에 한자·가나가 섞여 있습니다. 한 번 한국어로 다시 쓰게 했지만 남았습니다.</p>{{end}}
+{{if .LanguageMixed}}<p>다른 언어 섞임: 모델이 쓴 이름·설명·조치·근거에 한자·가나가 섞여 있습니다. 섞인 부분을 짚어 한국어로 다시 쓰게 했지만 남았습니다.</p>{{end}}
 {{if .Stale}}<p>주의: 증거와 상세 보고서 버전이 달라 확정 집계에서 제외했습니다. 갱신이 필요합니다.</p>{{end}}
 {{if .Truncated}}<p>주의: 실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.</p>{{end}}
 <h4>① 판정과 영향</h4>

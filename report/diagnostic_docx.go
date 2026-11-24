@@ -214,7 +214,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 			w.paragraph("Normal", "증거 버전 불일치: 오래된 자료를 확정으로 집계하지 않습니다.")
 		}
 		if e.LanguageMixed {
-			w.paragraph("Normal", "다른 언어 섞임: 모델이 쓴 설명·조치·근거에 한자·가나가 섞여 있습니다. 한 번 한국어로 다시 쓰게 했지만 남았습니다.")
+			w.paragraph("Normal", "다른 언어 섞임: 모델이 쓴 이름·설명·조치·근거에 한자·가나가 섞여 있습니다. 섞인 부분을 짚어 한국어로 다시 쓰게 했지만 남았습니다.")
 		}
 		if e.Truncated {
 			w.paragraph("Normal", "주의: 실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.")
