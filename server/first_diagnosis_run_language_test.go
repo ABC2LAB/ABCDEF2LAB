@@ -44,10 +44,13 @@ func TestDiagnosisRunRecordsLanguageCountsOwnedPostgres(t *testing.T) {
 	got := stored(t, []string{
 		`{"run_ref":"synthetic-language-run","language_mixed":true,"language_rewrites":1}`,
 		`{"run_ref":"synthetic-language-run","language_rewrites":1}`,
+		`{"run_ref":"synthetic-language-run","language_rewrites":2}`,
+		`{"run_ref":"synthetic-language-run","language_mixed":true,"language_rewrites":2}`,
 		`{"run_ref":"synthetic-language-run"}`,
 		`{"run_ref":"other-run","language_mixed":true,"language_rewrites":1}`,
 	})
-	if got == nil || got.Rewrites != 2 || got.Mixed != 1 {
+	// 다시 쓰기는 후보별 횟수의 합(1+1+2+2), 섞임은 표시가 붙은 후보 수다.
+	if got == nil || got.Rewrites != 6 || got.Mixed != 2 {
 		t.Fatalf("언어 섞임 건수: %+v", got)
 	}
 	if got := stored(t, nil); got == nil || got.Rewrites != 0 || got.Mixed != 0 {

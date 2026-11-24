@@ -81,13 +81,18 @@ type diagnosticCandidateStore interface {
 func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTPExecution, state *e2HTTPToolState, onSaved ...func()) actool.CoreTool {
 	// 같은 워커 안의 중복 제출은 순차 처리하고 DB는 intent 잠금으로 중복을 제어한다.
 	var mu sync.Mutex
-	// languageAsked는 한국어 칸 언어 섞임으로 다시 쓰게 한 후보다(후보마다 한 번만, e2_diagnostic_candidate_lang.go). 후보는
-	// call_ref 하나로 가리지 않는다 — 같은 호출에서 유형·이름이 다른 후보를 따로 저장하므로 저장소의 같은 후보 기준
-	// (candidateLanguageKey)을 쓴다.
-	// languageHeld는 다시 쓰게 하면서 붙잡아 둔 첫 제출이다. 모델이 다시 내지 않고 끝나면 Worker 끝에서 '다른 언어 섞임'
-	// 표시를 붙여 저장한다(후보를 잃지 않는다, flushHeldCandidates).
-	languageAsked := map[string]bool{}
-	languageHeld := map[string]db.DiagnosticCandidate{}
+	// languagePending은 한국어 칸 언어 섞임으로 다시 쓰기를 기다리는 후보다(e2_diagnostic_candidate_lang.go). 같은 호출·
+	// 유형·증거 digest(candidateLanguagePendingKey)면 이름이 달라도 고친 판으로 본다 — 이름도 다시 쓰게 하므로 후보가 둘로
+	// 갈리지 않게 한다. 같은 호출이라도 유형·증거가 다른 후보는 따로 기다린다. held는 붙잡아 둔 마지막 제출이고, 모델이 다시
+	// 내지 않고 끝나면 Worker 끝에서 '다른 언어 섞임' 표시를 붙여 저장한다(후보를 잃지 않는다, flushHeldCandidates).
+	// languageDone은 다시 쓰게 한 뒤 저장한 후보(저장소 기준 candidateLanguageKey)의 다시 쓰기 횟수다. 같은 후보를 다시
+	// 내면 또 다시 쓰게 하지 않고 그 횟수로 저장한다.
+	type languageWait struct {
+		asks int
+		held db.DiagnosticCandidate
+	}
+	languagePending := map[string]*languageWait{}
+	languageDone := map[string]int{}
 	saved := func(ctx context.Context, c db.DiagnosticCandidate, event func(name, status, reason, ref string)) (int64, bool) {
 		id, err := store.RecordDiagnosticCandidate(ctx, c)
 		if err != nil {
@@ -107,14 +112,14 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 		state.candidateFlush = func(ctx context.Context) {
 			mu.Lock()
 			defer mu.Unlock()
-			refs := make([]string, 0, len(languageHeld))
-			for ref := range languageHeld {
+			refs := make([]string, 0, len(languagePending))
+			for ref := range languagePending {
 				refs = append(refs, ref)
 			}
 			sort.Strings(refs)
 			for _, ref := range refs {
-				c := languageHeld[ref]
-				delete(languageHeld, ref)
+				c := languagePending[ref].held
+				delete(languagePending, ref)
 				saved(ctx, c, func(name, status, reason, ref string) {
 					diagnosticAgentEvent(ctx, diagnosticlog.Event{Event: name, Stage: "candidate_storage", Status: status, ReasonCode: reason, TaskID: binding.TaskID, RunRef: binding.RunRef, IntentID: binding.IntentID, CallRef: ref, Tool: "submit_diagnostic_candidate"})
 				})
@@ -241,23 +246,29 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 				candidate.SuggestedSeverity, candidate.SeverityRationale, candidate.SeveritySource = severity, boundedSeverityRationale(redact(rationale)), db.WorkerEstimate
 			}
 			candidate = candidate.NormalizedSeverity()
-			// 한국어 칸 언어 섞임은 저장될 글(가린 뒤)로 본다. 처음이면 붙잡아 두고 다시 쓰게 하며, 다시 써도 섞이면 표시를
-			// 붙여 저장한다(회차·후보를 막지 않는다).
-			mixed := candidateLanguageMixed(candidate.Summary, candidate.Remediation, candidate.SeverityRationale)
-			key := candidateLanguageKey(candidate)
-			if languageAsked[key] {
-				candidate.LanguageMixed, candidate.LanguageRewrites = mixed, 1
+			// 한국어 칸 언어 섞임은 저장될 글(가린 뒤)로 본다. 섞이면 붙잡아 두고 섞인 칸·조각을 짚어 다시 쓰게 하며(최대
+			// db.MaxDiagnosticLanguageRewrites번), 그래도 섞이면 표시를 붙여 저장한다(회차·후보를 막지 않는다).
+			findings := candidateLanguageFindings(candidate)
+			mixed := len(findings) > 0
+			pendingKey, doneKey := candidateLanguagePendingKey(candidate), candidateLanguageKey(candidate)
+			asks, done := languageDone[doneKey]
+			if wait := languagePending[pendingKey]; wait != nil {
+				asks, done = wait.asks, false
+			}
+			if asks > 0 {
+				candidate.LanguageMixed, candidate.LanguageRewrites = mixed, asks
 			}
 			if candidate.Validate() != nil {
 				event("candidate_validated", "failed", "candidate_binding_invalid", "")
 				return actool.Errorf("diagnostic_candidate_binding_invalid"), nil
 			}
-			if mixed && !languageAsked[key] {
-				languageAsked[key] = true
-				candidate.LanguageMixed, candidate.LanguageRewrites = true, 1
-				languageHeld[key] = candidate
+			if mixed && !done && asks < db.MaxDiagnosticLanguageRewrites {
+				asks++
+				candidate.LanguageMixed, candidate.LanguageRewrites = true, asks
+				// 앞서 붙잡아 둔 제출은 버리고 이번 제출을 붙잡는다(끝까지 안 고쳐지면 가장 나중 판을 표시와 함께 저장).
+				languagePending[pendingKey] = &languageWait{asks: asks, held: candidate}
 				event("candidate_validated", "failed", "candidate_language_mixed", in.CallRef)
-				return actool.Errorf(candidateLanguageMixedError), nil
+				return actool.Errorf(candidateLanguageRewriteRequest(findings, asks)), nil
 			}
 			event("candidate_validated", "succeeded", "", in.CallRef)
 			id, ok := saved(ctx, candidate, event)
@@ -265,7 +276,11 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 				// 다시 쓴 제출을 저장하지 못하면 붙잡아 둔 첫 제출은 그대로 둔다(Worker 끝에 표시를 붙여 저장해 후보를 잃지 않는다).
 				return actool.Errorf("diagnostic_candidate_store_failed"), nil
 			}
-			delete(languageHeld, key)
+			// 고친 판(또는 표시를 붙인 판)을 저장했으니 붙잡아 둔 제출은 버린다(이름이 바뀌었어도 같은 후보).
+			delete(languagePending, pendingKey)
+			if asks > 0 {
+				languageDone[doneKey] = asks
+			}
 			return actool.Text("Unconfirmed candidate recorded: " + strconv.FormatInt(id, 10) + ". Manual review required; this is not an E3 verdict or confirmed finding."), nil
 		},
 	})
