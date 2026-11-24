@@ -6,7 +6,10 @@ import { activeURLRun, runApprovalLabels } from "@/lib/diagnosis/diagnosis-runs"
 import { urlPhaseLabels, urlReasonLabels } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
+import { fmtDur } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
+import { useRunInput } from "../../live/runInput";
+import { runDurationSec, runStartText } from "../../live/runTiming";
 import { selectUrlRun, useUrl } from "../../live/urlDiagnosis";
 import { urlStateText } from "../../live/urlMap";
 import { loadUrlRuns, useUrlRuns } from "../../live/urlRunList";
@@ -24,6 +27,16 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
   const active = activeURLRun(row);
   const approvalIssue = row.action_required && row.approval_status !== "not_revalidated";
   const showStatus = active || row.action_required;
+  const owner = useUrlRuns((st) => st.owner);
+  const info = useRunInput(row.id, owner);
+  const startText = runStartText(row);
+  const durSec = runDurationSec(row);
+  const meta = [
+    info?.host,
+    info?.mode,
+    startText ? `${startText.slice(5, 16)} 시작` : null,
+    durSec !== null ? `소요 ${fmtDur(durSec)}` : null,
+  ].filter((m): m is string => !!m);
   return (
     <button
       type="button"
@@ -58,6 +71,15 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
           ) : null}
           <span className={s["r-name"]}>{maskSecrets(row.display_name?.trim() || row.id)}</span>
         </span>
+        {/* 같은 이름 · 같은 대상 점검을 구분하는 줄(사용자 11/24): 주소 · 진단 모드 · 시작 시각 · 소요. 주소 · 모드는 그 점검
+            상태를 한 번 읽어 채우고, 시각은 서버가 확인한 값만(없으면 뺀다) */}
+        {meta.length ? (
+          <span className={s["r-s"]}>
+            {meta.map((m) => (
+              <span key={m}>{m}</span>
+            ))}
+          </span>
+        ) : null}
         {/* 사람이 할 일이 남은 줄은 종료 여부와 관계없이 승인 상태와 확인 필요를 보인다. */}
         {/* 이름을 붙인 점검도 서버 ID(prep-…)는 보이지 않는다 — 이름 칸을 둔 이유(사용자 11/23) */}
         {showStatus || row.reason_code ? (
@@ -111,23 +133,31 @@ export function RunListStatus({ empty }: { empty?: string }) {
   );
 }
 
-export function RunListControls() {
+/**
+ * 목록 조회 버튼 줄. refresh=false 면 [목록 새로 조회]를 두지 않는다 — 대시보드는 머리 [새로고침]이 목록까지 다시 읽어 같은
+ * 버튼이 둘이 됐다(사용자 11/24). 다음 쪽이 있으면 [더 불러오기]는 그대로
+ */
+export function RunListControls({ refresh = true }: { refresh?: boolean }) {
   const { page, owner, loading } = useUrlRuns();
   const cap = useUrl((st) => st.cap);
   if (cap.kind !== "v2") return null;
+  const more = !!page?.more && owner === cap.catalog.ownerContext;
+  if (!refresh && !more) return null;
   return (
     <div className={s.acts}>
-      <button
-        type="button"
-        className={cx(s.btn, s.sm)}
-        disabled={loading}
-        onClick={() => {
-          void loadUrlRuns(cap.catalog.ownerContext);
-        }}
-      >
-        <Icon name="refresh" />
-        목록 새로 조회
-      </button>
+      {refresh ? (
+        <button
+          type="button"
+          className={cx(s.btn, s.sm)}
+          disabled={loading}
+          onClick={() => {
+            void loadUrlRuns(cap.catalog.ownerContext);
+          }}
+        >
+          <Icon name="refresh" />
+          목록 새로 조회
+        </button>
+      ) : null}
       {page?.more && owner === cap.catalog.ownerContext ? (
         <button
           type="button"

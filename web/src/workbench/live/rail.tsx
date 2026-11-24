@@ -6,7 +6,7 @@
 import { Fragment, type ReactNode, useEffect, useState } from "react";
 
 import { activeURLRun, endedURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
-import { readURLStatus, urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
+import { urlPhaseLabels } from "@/lib/diagnosis/diagnosis-url";
 import { readRequestApprovalState } from "@/lib/diagnosis/request-approvals";
 
 import { cx } from "../lib/cx";
@@ -14,7 +14,9 @@ import { useShell, type View } from "../shell";
 import { Icon } from "../ui/icons";
 import s from "../workbench.module.css";
 import { useHiddenRunIDs } from "./hiddenRuns";
+import { clockOf } from "./map";
 import { maskSecrets } from "./mask";
+import { runModeText, useRunInput } from "./runInput";
 import { selectUrlRun, useUrl } from "./urlDiagnosis";
 import { scanViewFor, URL_ENDED_STATES, URL_PRESTART_STATES, urlHost, urlStateText } from "./urlMap";
 import { useUrlRuns } from "./urlRunList";
@@ -53,7 +55,15 @@ function useRowSub(): string {
   if (!verified) return urlStateText(job.state, false);
   if (flow && !URL_ENDED_STATES.includes(job.state))
     return `${flowStageText[flow.stage]}${flow.paused ? " · 일시정지" : ""}`;
-  if (URL_PRESTART_STATES.includes(job.state) || URL_ENDED_STATES.includes(job.state)) return urlStateText(job.state);
+  if (URL_ENDED_STATES.includes(job.state))
+    return [
+      urlStateText(job.state),
+      runModeText(job.input.workflow_mode),
+      job.started_at ? clockOf(job.started_at).slice(0, 5) : null,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  if (URL_PRESTART_STATES.includes(job.state)) return urlStateText(job.state);
   return `${urlStateText(job.state)} · ${urlPhaseLabels[job.phase]}`;
 }
 
@@ -108,48 +118,25 @@ const NO_RUNS: URLRunSummary[] = [];
 /** 레일 한 묶음에 줄을 몇 개까지 그리는가. 넘으면 마지막에 '전체 n건'(그 목록 화면으로) */
 const RAIL_MAX_ROWS = 6;
 
-/**
- * 서버 목록 줄에는 대상 주소가 없어(product-run-list 계약) 줄마다 그 점검 상태를 한 번 읽어 주소를 채운다. 주소는 점검마다
- * 바뀌지 않아 주체 · 점검별로 한 번만 읽는다. 못 읽으면 점검 이름 · 작업 번호로 대신한다(줄을 숨기지 않는다).
- */
-const hostCache = new Map<string, string>();
-function useRunHost(id: string, owner: string | null): string | null {
-  const key = `${owner ?? ""}:${id}`;
-  const [host, setHost] = useState<string | null>(() => hostCache.get(key) ?? null);
-  useEffect(() => {
-    const known = hostCache.get(key);
-    if (known !== undefined || !owner) {
-      setHost(known ?? null);
-      return;
-    }
-    let live = true;
-    readURLStatus(id, owner)
-      .then((j) => {
-        const h = urlHost(j.input.target_url);
-        hostCache.set(key, h);
-        if (live) setHost(h);
-      })
-      .catch(() => {
-        // 주소 대신 이름으로 보인다(상태는 목록 값 그대로). 다음에 다시 그릴 때 다시 읽는다
-      });
-    return () => {
-      live = false;
-    };
-  }, [id, owner, key]);
-  return host;
-}
-
-/** 서버 목록의 점검 한 줄: 주소(못 읽으면 이름) · 상태. 누르면 그 점검을 열고 그 목록 화면으로(이어 보는 줄과 같다) */
+/** 서버 목록의 점검 한 줄: 주소(못 읽으면 이름) · 상태 · 진단 모드 · 시작 시각. 누르면 그 점검을 열고 그 목록 화면으로(이어 보는 줄과 같다) */
 function ServerRunRow({ run, list }: { run: URLRunSummary; list: View }) {
   const { goTo } = useShell();
   const owner = useUrlRuns((st) => st.owner);
   const writeBusy = useUrl((st) => st.writeBusy);
-  const host = useRunHost(run.id, owner);
+  const info = useRunInput(run.id, owner);
   const name = run.display_name?.trim();
   let title = run.task_id ? `작업 ${run.task_id}` : "점검";
-  if (host) title = host;
+  if (info) title = info.host;
   else if (name) title = maskSecrets(name);
-  const sub = `${urlStateText(run.state)}${run.action_required ? " · 확인 필요" : ""}`;
+  // 같은 주소 점검을 구분하게 진단 모드 · 시작 시각을 붙인다(사용자 11/24)
+  const sub = [
+    urlStateText(run.state),
+    info?.mode,
+    run.started_at ? clockOf(run.started_at).slice(0, 5) : null,
+    run.action_required ? "확인 필요" : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
     <button
       className={s.rs}

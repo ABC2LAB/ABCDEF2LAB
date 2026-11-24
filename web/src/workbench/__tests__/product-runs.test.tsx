@@ -14,7 +14,7 @@ import { LiveRailTasks } from "../live/rail";
 import { useSource } from "../live/source";
 import { resetUrl, runUrlAction, UrlFeeds, urlGates, useUrl } from "../live/urlDiagnosis";
 import { urlHost, urlStateText } from "../live/urlMap";
-import { loadUrlRuns, useUrlRuns } from "../live/urlRunList";
+import { loadUrlRuns, refreshUrlRunsQuietly, useUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext, type View } from "../shell";
 import { DashboardByMode, FinishedByMode, LiveByMode, ReportByMode, RunningByMode } from "../views/live/byMode";
 import { Download } from "../views/live/UrlLiveLive";
@@ -60,6 +60,9 @@ const toRow = (job: URLDiagnosisJob): URLRunSummary => ({
   reason_code: job.reason_code,
   task_id: job.task_id,
   started: job.started,
+  // 서버가 확인한 시작 · 마감 시각은 있을 때만 싣는다(product-run-list 계약 선택 칸)
+  ...(job.started_at ? { started_at: job.started_at } : {}),
+  ...(job.finished_at ? { finished_at: job.finished_at } : {}),
   drain_complete: job.drain_complete,
   result_ready: job.result_ready,
   report_available: job.result_ready && !!job.task_id,
@@ -222,6 +225,67 @@ describe("서버 목록에서 새 세션으로 기존 Job 다시 연결", () => 
     expect(useUrl.getState().handle).toBeNull();
     expect(posts()).toEqual([]);
     expect(requests.some((r) => r.path === "/api/tasks")).toBe(false);
+  });
+  it("같은 이름 · 같은 대상의 끝난 점검도 줄마다 주소 · 진단 모드 · 시작 · 소요로 구분한다(사용자 11/24)", async () => {
+    const x: URLDiagnosisJob = {
+      ...b,
+      id: "job-x",
+      task_id: "51",
+      input: { ...b.input, display_name: "같은 이름", workflow_mode: "user_approval_v1" },
+      started_at: "2026-11-24T04:46:56Z",
+      finished_at: "2026-11-24T05:12:24Z",
+    };
+    const y: URLDiagnosisJob = {
+      ...x,
+      id: "job-y",
+      task_id: "52",
+      input: { ...x.input, workflow_mode: "ai_auto_v1" },
+      started_at: "2026-11-24T06:17:32Z",
+      finished_at: "2026-11-24T06:44:05Z",
+    };
+    jobs = structuredClone({ [x.id]: x, [y.id]: y });
+    render(<Harness initial="finished" />);
+    const rowX = await screen.findByRole("button", { name: /51\.\s*같은 이름/ });
+    const rowY = screen.getByRole("button", { name: /52\.\s*같은 이름/ });
+    // 주소 · 모드는 그 점검 상태를 한 번 읽어 채운다(목록 응답엔 없다)
+    await waitFor(() => expect(rowX).toHaveTextContent("사용자 승인"));
+    await waitFor(() => expect(rowY).toHaveTextContent("AI 자동"));
+    expect(rowX).toHaveTextContent(urlHost(b.input.target_url));
+    // 시각은 서버가 확인한 값만: 시작(MM-DD HH:MM) · 소요
+    expect(rowX).toHaveTextContent(/\d{2}-\d{2} \d{2}:\d{2} 시작/);
+    expect(rowX).toHaveTextContent("소요 25분");
+    expect(rowY).toHaveTextContent("소요 26분");
+    expect(requests.filter((r) => /\/drafts\/job-[xy]\/status$/.test(r.path)).length).toBeGreaterThanOrEqual(2);
+  });
+  it("대시보드엔 [새로고침] · [목록 새로 조회]가 없고 점검 목록은 바탕에서 깜빡임 없이 다시 읽는다(사용자 11/24)", async () => {
+    const { unmount } = render(<Harness initial="dashboard" />);
+    expect(await screen.findByRole("button", { name: /첫 번째 점검/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "새로고침" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "목록 새로 조회" })).toBeNull();
+    // 다른 브라우저가 새 점검을 시작하면 바탕 다시 읽기로 목록에 들어온다. 읽는 동안 보던 목록은 그대로
+    const d: URLDiagnosisJob = { ...a, id: "job-d", input: { ...a.input, display_name: "다른 곳에서 시작한 점검" } };
+    jobs[d.id] = structuredClone(d);
+    let during: number | null = null;
+    const done = new Promise<void>((resolve) => {
+      const stop = useUrlRuns.subscribe((st) => {
+        if (st.loading && during === null) during = st.page?.runs.length ?? 0;
+        if (!st.loading && during !== null) {
+          stop();
+          resolve();
+        }
+      });
+    });
+    act(() => refreshUrlRunsQuietly(owner));
+    await act(async () => {
+      await done;
+    });
+    expect(during).toBe(3);
+    expect(await screen.findByRole("button", { name: /다른 곳에서 시작한 점검/ })).toBeInTheDocument();
+    expect(useUrlRuns.getState().error).toBe("");
+    unmount();
+    // 끝난 점검 목록 화면엔 [목록 새로 조회]가 그대로 있다
+    render(<Harness initial="finished" />);
+    expect(await screen.findByRole("button", { name: "목록 새로 조회" })).toBeInTheDocument();
   });
   it("선택한 ID의 status를 검증하고 생성·시작 키 없이 task 활동·보고서를 연다", async () => {
     render(<Harness />);
