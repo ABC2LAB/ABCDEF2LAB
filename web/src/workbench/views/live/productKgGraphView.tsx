@@ -19,7 +19,8 @@ import {
   type ProductKgEdge,
   type ProductKgEdgeKind,
   type ProductKgGraph,
-  type ProductKgNode,
+  type ProductKgPrincipalNode,
+  type ProductKgResourceNode,
   productKgGraph,
 } from "../../live/productKgGraph";
 import { EVIDENCE_SEAL_TEXT } from "../../live/productVerdicts";
@@ -33,31 +34,33 @@ import {
   useProductAccessMap,
 } from "./productAccessMapView";
 
-// ---------- 배치 (viewBox 단위) ----------
-const PAD = 24;
-/** 자원 종류 한 줄 높이. 한 줄 안에 그 종류의 간선 글 두 줄(A · B)이 들어가고 다음 줄과 겹치지 않는다. */
-const ROW = 64;
+// ---------- 배치 (px, 축소 없이 그대로 그린다) ----------
+// #893 이동찬 P2(2차): 폭 926 그래프를 패널에 맞춰 줄이면 1280px 창(그래프 자리 약 604px)에서 11px 글이 약 7.6px이 됐다.
+// 그래서 (1) 간선 글을 자원 종류 상자 **안**에 A · B 두 줄로 넣어 전체 폭을 600 이하로 줄이고, (2) SVG 를 viewBox 크기 그대로
+// 그린다(width = PRODUCT_KG_WIDTH). 더 좁은 자리에서는 바깥 overflowX 로 가로 스크롤되고 글자는 줄지 않는다.
+const PAD = 16;
+const LEFT_X = 12;
+/** 계정 상자 */
+const NODE_W = 130;
+const NODE_H = 40;
+/** 계정 상자와 자원 종류 상자 사이(간선이 지나가는 자리). 간선 글은 여기 두지 않는다 — 다른 간선이 글 위를 지나간다. */
+const EDGE_SPAN = 118;
+/** 자원 종류 상자: 이름 · 선언 한 줄 + 간선 글 A · B 두 줄. 폭은 가장 긴 간선 글("B · " + 가장 긴 투영 오류 문구)이 들어가는 폭. */
+const RES_W = 328;
+const RES_H = 62;
+const RIGHT_X = LEFT_X + NODE_W + EDGE_SPAN;
+/** 자원 종류 한 줄 높이(상자 + 줄 사이). */
+const ROW = 74;
 /** 계정 두 상자가 붙지 않게 하는 최소 줄 수(계정은 전체 높이의 1/3 · 2/3 자리). */
 const MIN_ROWS = 3;
-const NODE_W = 180;
-const NODE_H = 40;
-const LEFT_X = 16;
-/** 계정 상자와 자원 종류 상자 사이(간선이 지나가는 자리) */
-const EDGE_SPAN = 240;
-const RIGHT_X = LEFT_X + NODE_W + EDGE_SPAN;
-/** 소유 · 교차 간선이 자원 종류 노드에 닿는 높이 차(노드 가운데에서 위 · 아래). 두 간선 끝이 갈라져 보이게 한다. */
-const END_SPLIT = 9;
-/**
- * 간선 글 자리(#893 이동찬 P2: 선 중간에 두면 종류 2개에서도 다른 글과 겹치고, 노드 왼쪽에 두면 다른 간선이 글 위를
- * 지나갔다). 글은 그 간선이 닿는 자원 종류 노드 **오른쪽**(간선이 지나가지 않는 자리)에 두고, 그 줄 안에서 A(위) · B(아래)
- * 두 줄로 쓴다. 기준선: 노드 가운데에서 OWNER_LABEL_DY · CROSS_LABEL_DY.
- */
-const LABEL_GAP = 10;
-const OWNER_LABEL_DY = -3;
-const CROSS_LABEL_DY = 13;
-/** 글 칸 너비: 가장 긴 간선 글("B · " + 가장 긴 투영 오류 문구)이 들어가는 폭 */
-const LABEL_COL_W = 300;
-const WIDTH = RIGHT_X + NODE_W + LABEL_GAP + LABEL_COL_W;
+/** 상자 안 글 자리(상자 위에서부터의 기준선). 소유 · 교차 간선은 자기 글 줄 높이에서 상자에 닿는다. */
+const INSET = 10;
+const NAME_BASE = 18;
+const OWNER_LABEL_BASE = 37;
+const CROSS_LABEL_BASE = 54;
+const OWNER_END = 33;
+const CROSS_END = 50;
+export const PRODUCT_KG_WIDTH = RIGHT_X + RES_W + LEFT_X;
 export const PRODUCT_KG_LABEL_FONT = 11;
 /** 노드 글 최대 글자 수(넘으면 줄이고 title 에 전체). 자원 종류 이름은 최대 64자다. */
 const NODE_TEXT_MAX = 22;
@@ -103,17 +106,22 @@ export interface ProductKgEdgeLayout {
 export interface ProductKgLayout {
   width: number;
   height: number;
-  /** 노드 상자의 왼쪽 위가 아니라 (왼쪽 x, 가운데 y) */
+  /** 계정 상자: (왼쪽 x, 가운데 y). 크기 nodeW × nodeH */
   nodes: Map<string, Point>;
+  /** 자원 종류 상자: (왼쪽 x, 위 y). 크기 resW × resH. 이름 기준선은 위 + nameBase */
+  boxes: Map<string, Point>;
   edges: ProductKgEdgeLayout[];
   nodeW: number;
   nodeH: number;
+  resW: number;
+  resH: number;
+  nameBase: number;
 }
 
 /** 간선 글: 어느 계정 간선인지 A · B 를 붙인다(같은 자리에 두 글이 있으므로). 상태 · 문구는 간선 글 그대로다. */
 export const productKgEdgeText = (edge: ProductKgEdge) => `${edge.cell.role === "owner" ? "A" : "B"} · ${edge.label}`;
 
-/** 그래프 배치(순수 함수 — 시험이 글 상자 겹침을 잰다). 왼쪽 계정 · 오른쪽 자원 종류(동결본 순서). */
+/** 그래프 배치(순수 함수 — 시험이 글 상자 겹침 · 폭을 잰다). 왼쪽 계정 · 오른쪽 자원 종류(동결본 순서). */
 export function productKgLayout(graph: ProductKgGraph): ProductKgLayout {
   const resources = graph.nodes.filter((n) => n.kind === "resource");
   const rows = Math.max(resources.length, MIN_ROWS);
@@ -122,27 +130,39 @@ export function productKgLayout(graph: ProductKgGraph): ProductKgLayout {
   // 계정은 위 · 아래 1/3 자리(owner 위, cross 아래), 자원 종류는 한 줄씩
   nodes.set("p:owner", { x: LEFT_X, y: PAD + (ROW * rows) / 3 });
   nodes.set("p:cross", { x: LEFT_X, y: PAD + (ROW * rows * 2) / 3 });
+  const boxes = new Map<string, Point>();
   resources.forEach((n, i) => {
-    nodes.set(n.id, { x: RIGHT_X, y: PAD + ROW * i + ROW / 2 });
+    boxes.set(n.id, { x: RIGHT_X, y: PAD + ROW * i + (ROW - RES_H) / 2 });
   });
   const edges: ProductKgEdgeLayout[] = [];
   for (const edge of graph.edges) {
     const from = nodes.get(edge.src);
-    const to = nodes.get(edge.dst);
-    if (!from || !to) continue;
+    const box = boxes.get(edge.dst);
+    if (!from || !box) continue;
     const owner = edge.cell.role === "owner";
     edges.push({
       edge,
       x1: from.x + NODE_W,
       y1: from.y,
-      x2: to.x,
-      y2: to.y + (owner ? -END_SPLIT : END_SPLIT),
-      lx: to.x + NODE_W + LABEL_GAP,
-      ly: to.y + (owner ? OWNER_LABEL_DY : CROSS_LABEL_DY),
+      x2: box.x,
+      y2: box.y + (owner ? OWNER_END : CROSS_END),
+      lx: box.x + INSET,
+      ly: box.y + (owner ? OWNER_LABEL_BASE : CROSS_LABEL_BASE),
       text: productKgEdgeText(edge),
     });
   }
-  return { width: WIDTH, height, nodes, edges, nodeW: NODE_W, nodeH: NODE_H };
+  return {
+    width: PRODUCT_KG_WIDTH,
+    height,
+    nodes,
+    boxes,
+    edges,
+    nodeW: NODE_W,
+    nodeH: NODE_H,
+    resW: RES_W,
+    resH: RES_H,
+    nameBase: NAME_BASE,
+  };
 }
 
 /** 보고서 그래프 탭 구획. 자산 그래프(kg-v1)와 따로 읽고 그린다 — 한쪽 실패가 다른 쪽을 가리지 않는다(§5.3). */
@@ -190,9 +210,10 @@ function Graph({ map }: { map: ProductAccessMap }) {
       <div style={{ overflowX: "auto", marginTop: 10 }}>
         {/* biome-ignore lint/a11y/useSemanticElements: SVG 그림이라 fieldset 을 둘 수 없다 — 간선(버튼)을 묶는 group 이다 */}
         <svg
-          viewBox={`0 0 ${WIDTH} ${height}`}
-          width="100%"
-          style={{ maxWidth: WIDTH, minWidth: 640, display: "block" }}
+          viewBox={`0 0 ${layout.width} ${height}`}
+          width={layout.width}
+          height={height}
+          style={{ display: "block", flex: "none" }}
           role="group"
           aria-label="계정 × 자원 종류 제품 소유 · 접근 그래프"
           data-testid="product-kg-graph"
@@ -213,6 +234,14 @@ function Graph({ map }: { map: ProductAccessMap }) {
               </marker>
             ))}
           </defs>
+          {/* 상자를 먼저 그린다 — 간선 글이 자원 종류 상자 안에 들어가므로 글이 상자 위에 와야 한다 */}
+          {graph.nodes.map((n) =>
+            n.kind === "principal" ? (
+              <Principal key={n.id} node={n} at={layout.nodes.get(n.id)} />
+            ) : (
+              <Resource key={n.id} node={n} at={layout.boxes.get(n.id)} />
+            ),
+          )}
           {layout.edges.map((l) => (
             <Edge
               key={l.edge.id}
@@ -223,9 +252,6 @@ function Graph({ map }: { map: ProductAccessMap }) {
               onKey={onKey(l.edge.id)}
             />
           ))}
-          {graph.nodes.map((n) => (
-            <Node key={n.id} node={n} at={layout.nodes.get(n.id)} />
-          ))}
         </svg>
       </div>
       <Legend uid={uid} />
@@ -234,36 +260,40 @@ function Graph({ map }: { map: ProductAccessMap }) {
   );
 }
 
-function nodeSubText(node: ProductKgNode): string {
-  if (node.kind === "principal") return node.role === "owner" ? "소유(A)" : "교차(B)";
-  return node.sharing === "shared" ? "공유 선언" : "소유자 전용 선언";
-}
+const boxStyle: CSSProperties = { fill: "var(--well)", stroke: "var(--rule-2)" };
+const nameStyle: CSSProperties = { fill: "var(--ink)", fontSize: 13, fontWeight: 600 };
+const subStyle: CSSProperties = { fill: "var(--ink-3)", fontSize: 11, fontWeight: 400 };
 
-function Node({ node, at }: { node: ProductKgNode; at: { x: number; y: number } | undefined }) {
+function Principal({ node, at }: { node: ProductKgPrincipalNode; at: Point | undefined }) {
   if (!at) return null;
-  const sub = nodeSubText(node);
-  const textStyle: CSSProperties = { fill: "var(--ink)", fontSize: 13, fontWeight: 600 };
+  const sub = node.role === "owner" ? "소유(A)" : "교차(B)";
   return (
     <g data-node={node.kind} data-node-id={node.id}>
       <title>{`${node.label} · ${sub}`}</title>
-      <rect
-        x={at.x}
-        y={at.y - NODE_H / 2}
-        width={NODE_W}
-        height={NODE_H}
-        rx={8}
-        style={{ fill: "var(--well)", stroke: "var(--rule-2)" }}
-      />
-      <text
-        x={at.x + NODE_W / 2}
-        y={at.y - 3}
-        textAnchor="middle"
-        style={{ ...textStyle, fontFamily: node.kind === "resource" ? "var(--mono, monospace)" : undefined }}
-      >
+      <rect x={at.x} y={at.y - NODE_H / 2} width={NODE_W} height={NODE_H} rx={8} style={boxStyle} />
+      <text x={at.x + NODE_W / 2} y={at.y - 3} textAnchor="middle" style={nameStyle}>
         {short(node.label)}
       </text>
-      <text x={at.x + NODE_W / 2} y={at.y + 13} textAnchor="middle" style={{ fill: "var(--ink-3)", fontSize: 11 }}>
+      <text x={at.x + NODE_W / 2} y={at.y + 13} textAnchor="middle" style={subStyle}>
         {sub}
+      </text>
+    </g>
+  );
+}
+
+/** 자원 종류 상자: 첫 줄은 이름 · 선언, 아래 두 줄은 그 종류에 닿는 간선 글(A · B — Edge 가 그린다). */
+function Resource({ node, at }: { node: ProductKgResourceNode; at: Point | undefined }) {
+  if (!at) return null;
+  const sub = node.sharing === "shared" ? "공유 선언" : "소유자 전용 선언";
+  return (
+    <g data-node={node.kind} data-node-id={node.id}>
+      <title>{`${node.label} · ${sub}`}</title>
+      <rect x={at.x} y={at.y} width={RES_W} height={RES_H} rx={8} style={boxStyle} />
+      <text x={at.x + INSET} y={at.y + NAME_BASE} style={{ ...nameStyle, fontFamily: "var(--mono, monospace)" }}>
+        {short(node.label)}
+        <tspan dx={8} style={{ ...subStyle, fontFamily: "inherit" }}>
+          {sub}
+        </tspan>
       </text>
     </g>
   );

@@ -222,36 +222,50 @@ function labelBox(text: string, lx: number, ly: number): Box {
 }
 const overlap = (a: Box, b: Box) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
 
-describe("배치 — 간선 글이 겹치지 않음(#893 이동찬 P2)", () => {
+/**
+ * 작업대 1280px 창에서 보고서 그래프 자리의 폭(#893 이동찬 P2 2차: 왼쪽 236 · 오른쪽 상세 384 · 본문 좌우 패딩 56을 뺀 약
+ * 604px). 그래프는 축소하지 않고 그대로 그리므로 이 폭 안에 들어가야 1280px 창에서 가로 스크롤 없이 11px 글이 11px로 보인다.
+ */
+const GRAPH_SLOT_AT_1280 = 604;
+
+describe("배치 — 간선 글이 겹치지 않고 글자가 줄지 않음(#893 이동찬 P2)", () => {
   for (const [name, map] of [
     ["VAmPI 모양(종류 2)", parse(vampiShape())],
     ["golden completed(종류 3)", parse(cases.completed)],
     ["상한(종류 16)", wideMap(16)],
   ] as const) {
-    it(`${name}: 글끼리 · 글과 노드 상자가 겹치지 않고, 글은 그 간선의 자원 종류 줄 안에 있다`, () => {
+    it(`${name}: 글끼리 · 글과 계정 상자가 겹치지 않고, 글은 그 간선의 자원 종류 상자 안(이름 줄 아래)에 있다`, () => {
       const layout = productKgLayout(productKgGraph(map));
+      expect(layout.width).toBeLessThanOrEqual(GRAPH_SLOT_AT_1280);
       const boxes = layout.edges.map((l) => labelBox(l.text, l.lx, l.ly));
       for (let i = 0; i < boxes.length; i++)
         for (let j = i + 1; j < boxes.length; j++)
           expect(overlap(boxes[i], boxes[j]), `${layout.edges[i].text} / ${layout.edges[j].text}`).toBe(false);
-      const nodeBoxes = [...layout.nodes.values()].map(
+      const principalBoxes = [...layout.nodes.values()].map(
         (p): Box => ({ x0: p.x, x1: p.x + layout.nodeW, y0: p.y - layout.nodeH / 2, y1: p.y + layout.nodeH / 2 }),
       );
       for (const [i, b] of boxes.entries())
-        for (const n of nodeBoxes) expect(overlap(b, n), layout.edges[i].text).toBe(false);
+        for (const n of principalBoxes) expect(overlap(b, n), layout.edges[i].text).toBe(false);
+      const resourceBoxes = [...layout.boxes.values()].map(
+        (p): Box => ({ x0: p.x, x1: p.x + layout.resW, y0: p.y, y1: p.y + layout.resH }),
+      );
+      for (let i = 0; i < resourceBoxes.length; i++)
+        for (let j = i + 1; j < resourceBoxes.length; j++)
+          expect(overlap(resourceBoxes[i], resourceBoxes[j])).toBe(false);
       for (const [i, l] of layout.edges.entries()) {
-        const row = layout.nodes.get(l.edge.dst);
-        expect(row, l.text).toBeDefined();
-        // 한 줄(ROW) 반쪽 안 — 다음 줄 글과 섞이지 않는다
-        expect(Math.abs(boxes[i].y0 - (row?.y ?? 0)) <= 32 && Math.abs(boxes[i].y1 - (row?.y ?? 0)) <= 32, l.text).toBe(
-          true,
-        );
-        expect(boxes[i].x1, l.text).toBeLessThanOrEqual(layout.width);
-        // 간선이 지나가는 자리(계정 상자 오른쪽 ~ 자원 종류 상자 왼쪽)에 글을 두지 않는다 — 다른 간선이 글 위를 지나가지 않게
-        expect(boxes[i].x0 >= (row?.x ?? 0) + layout.nodeW, l.text).toBe(true);
+        const box = layout.boxes.get(l.edge.dst);
+        if (!box) throw new Error(`상자 없음 ${l.edge.dst}`);
+        const b = boxes[i];
+        // 자기 자원 종류 상자 안 — 다른 간선이 지나가는 자리(상자 왼쪽)에 글을 두지 않는다
+        expect(b.x0 >= box.x && b.x1 <= box.x + layout.resW, `${l.text} 가로`).toBe(true);
+        expect(b.y0 >= box.y && b.y1 <= box.y + layout.resH, `${l.text} 세로`).toBe(true);
+        // 이름 · 선언 줄과 겹치지 않는다(이름 기준선 아래)
+        expect(b.y0 >= box.y + layout.nameBase, `${l.text} 이름 줄`).toBe(true);
+        // 간선은 자기 글 줄 높이에서 상자 왼쪽에 닿는다
+        expect(l.x2).toBe(box.x);
+        expect(Math.abs(l.y2 - (b.y0 + b.y1) / 2) <= PRODUCT_KG_LABEL_FONT, l.text).toBe(true);
         expect(l.text.startsWith(l.edge.cell.role === "owner" ? "A · " : "B · "), l.text).toBe(true);
       }
-      expect(layout.height).toBeGreaterThanOrEqual(Math.max(...[...layout.nodes.values()].map((p) => p.y)) + 32);
     });
   }
 });
@@ -262,6 +276,11 @@ describe("ProductKgGraphSection — 그리기", () => {
     serve(raw);
     render(<ProductKgGraphSection taskId={raw.task_id} active />);
     const svg = await screen.findByTestId("product-kg-graph");
+    // 축소하지 않는다: 그리는 크기 = 배치 크기(#893 이동찬 P2 2차 — 패널에 맞춰 줄이면 11px 글이 7.6px이 됐다)
+    const layout = productKgLayout(productKgGraph(parse(raw)));
+    expect(svg.getAttribute("width")).toBe(String(layout.width));
+    expect(svg.getAttribute("height")).toBe(String(layout.height));
+    expect(svg.getAttribute("viewBox")).toBe(`0 0 ${layout.width} ${layout.height}`);
     expect(svg.querySelectorAll("[data-node]")).toHaveLength(4);
     const edges = [...svg.querySelectorAll("[data-edge]")];
     expect(edges.map((e) => e.getAttribute("data-edge"))).toEqual(["owner", "judged", "owner", "shared"]);
