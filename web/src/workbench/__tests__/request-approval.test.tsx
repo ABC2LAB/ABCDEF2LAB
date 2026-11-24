@@ -3,12 +3,18 @@ import "@testing-library/jest-dom/vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-import { apiFetch } from "@/lib/diagnosis/api";
+import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 import { running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
 
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
-import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "../views/live/approvals";
+import {
+  ApprovalActions,
+  ApprovalFacts,
+  ApprovalRequestCode,
+  NOT_SENT_TEXT,
+  useRequestApprovals,
+} from "../views/live/approvals";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
   ...(await original<typeof import("@/lib/diagnosis/api")>()),
@@ -91,6 +97,8 @@ it.each(["allow", "deny"])("rechecks exact approval fingerprint before %s and ne
   expect(JSON.parse(String(calls[index][1]?.body))).toEqual({ decision, request_sha256: row.request_sha256 });
   expect(calls[index][2]).toBe(false);
 });
+const posts = () => vi.mocked(apiFetch).mock.calls.filter(([, i]) => i?.method === "POST");
+
 it.each(["run_ref", "attempt_id", "request_sha256"])("changed %s in fresh GET blocks decision", async (field) => {
   const button = await mount();
   vi.mocked(apiFetch).mockResolvedValueOnce({
@@ -98,8 +106,57 @@ it.each(["run_ref", "attempt_id", "request_sha256"])("changed %s in fresh GET bl
     [field]: field === "request_sha256" ? "b".repeat(64) : "foreign",
   });
   fireEvent.click(button);
-  await screen.findByText(/결정 결과 불명/);
-  expect(vi.mocked(apiFetch).mock.calls.filter(([, i]) => i?.method === "POST")).toHaveLength(0);
+  // 보내지 않았으니 결과 불명이 아니라 '바뀌어 보내지 않음'이다(11/24 발견 2)
+  expect((await screen.findByRole("status")).textContent).toBe(NOT_SENT_TEXT.changed);
+  expect(screen.queryByText(/결정 결과 불명/)).toBeNull();
+  expect(posts()).toHaveLength(0);
+});
+
+it.each([
+  ["expired", { state: "expired", live: false, can_decide: false }, "승인 기한이 지나 닫힌 요청입니다"],
+  ["cancelled", { state: "cancelled", live: false, can_decide: false }, "취소돼 닫힌 요청입니다"],
+  ["allowed", { state: "allowed", live: false, can_decide: false }, "이미 허용된 요청입니다"],
+  ["denied", { state: "denied", live: false, can_decide: false }, "이미 거부된 요청입니다"],
+  ["pending but closed run", { live: false, can_decide: false }, "더 이상 결정할 수 없는 요청입니다"],
+  ["pending, cannot decide", { can_decide: false }, "더 이상 결정할 수 없는 요청입니다"],
+] as const)("already closed request (%s): says so, sends nothing, no result-unknown lock (11/24 발견 2)", async (_, over, text) => {
+  const button = await mount();
+  vi.mocked(apiFetch).mockResolvedValueOnce({ ...row, ...over });
+  fireEvent.click(button);
+  const status = await screen.findByRole("status");
+  expect(status).toHaveTextContent(text);
+  expect(status).toHaveTextContent("결정을 보내지 않았습니다");
+  expect(status).not.toHaveTextContent("결정 결과를 확인하지 못했습니다");
+  expect(screen.queryByText(/결정 결과 불명/)).toBeNull();
+  expect(posts()).toHaveLength(0);
+});
+
+it("fresh GET failure: decision not sent, no result-unknown lock", async () => {
+  const button = await mount();
+  vi.mocked(apiFetch).mockRejectedValueOnce(new TypeError("owned read loss"));
+  fireEvent.click(button);
+  expect((await screen.findByRole("status")).textContent).toBe(NOT_SENT_TEXT.unread);
+  expect(screen.queryByText(/결정 결과 불명/)).toBeNull();
+  expect(posts()).toHaveLength(0);
+  await waitFor(() => expect(button).toBeEnabled());
+});
+
+it("409 on decision: server refused (not applied) — says so and reloads, no result-unknown lock", async () => {
+  const button = await mount();
+  vi.mocked(apiFetch)
+    .mockResolvedValueOnce(row)
+    .mockRejectedValueOnce(new ApiError(409, "이미 결정되었거나 만료·취소된 요청입니다"));
+  fireEvent.click(button);
+  expect((await screen.findByRole("status")).textContent).toBe(NOT_SENT_TEXT.conflict);
+  expect(screen.queryByText(/결정 결과 불명/)).toBeNull();
+  expect(posts()).toHaveLength(1);
+  // 목록을 다시 읽는다
+  await waitFor(() =>
+    expect(
+      vi.mocked(apiFetch).mock.calls.filter(([p]) => !String(p).endsWith(row.id) && !String(p).endsWith("/decision"))
+        .length,
+    ).toBeGreaterThan(1),
+  );
 });
 it.each([
   "terminal",
