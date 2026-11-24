@@ -39,7 +39,7 @@ import {
 
 import { getLiveAuthState, useLiveAuth } from "./auth";
 import { URL_ACTIVE_STATES, URL_PRESTART_STATES } from "./urlMap";
-import { loadUrlRuns, resetUrlRuns } from "./urlRunList";
+import { loadUrlRuns, RUN_LIST_POLL_MS, refreshUrlRunsQuietly, resetUrlRuns } from "./urlRunList";
 import { commandWorkflow, readWorkflow, type WorkflowSnapshot } from "./workflow";
 
 /** 진행 중 진단 상태를 다시 읽는 간격(ms). 팀 화면과 같다. */
@@ -633,6 +633,17 @@ export function UrlFeeds() {
       clearTimeout(timer);
     };
   }, [ready, job?.id, job?.task_id, job?.input.workflow_mode]);
+
+  // 점검 목록도 알아서 따라오게 RUN_LIST_POLL_MS 마다 첫 쪽을 다시 읽는다(탭이 보일 때만, 사용자 11/24: 대시보드
+  // [새로고침] 없앰). 지금 점검 상태 · 승인 요청 · 탐색 흐름은 위에서 따로 읽는다
+  const capOwner = useUrl((st) => (st.cap.kind === "v2" ? st.cap.catalog.ownerContext : null));
+  useEffect(() => {
+    if (!ready || !capOwner) return;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "hidden") refreshUrlRunsQuietly(capOwner);
+    }, RUN_LIST_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [ready, capOwner]);
 
   // 데모로 바꾸면 비운다(다음 live 진입 때 다시 확인)
   useEffect(
