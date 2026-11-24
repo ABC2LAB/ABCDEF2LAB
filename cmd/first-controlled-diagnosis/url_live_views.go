@@ -221,14 +221,20 @@ type e2FlowCounts struct {
 	Calls            int `json:"calls"`
 }
 
+type e2ModelWrites struct {
+	Responded2xx int `json:"responded_2xx"`
+	Unverified   int `json:"unverified"`
+}
+
 type e2FlowView struct {
-	Format       string       `json:"format"`
-	Journal      string       `json:"journal"`
-	LastIndex    uint64       `json:"last_index"`
-	More         bool         `json:"more"`
-	OmittedCalls int          `json:"omitted_calls"`
-	Counts       e2FlowCounts `json:"counts"`
-	Calls        []e2FlowCall `json:"calls"`
+	Format       string         `json:"format"`
+	Journal      string         `json:"journal"`
+	LastIndex    uint64         `json:"last_index"`
+	More         bool           `json:"more"`
+	OmittedCalls int            `json:"omitted_calls"`
+	Counts       e2FlowCounts   `json:"counts"`
+	ModelWrites  *e2ModelWrites `json:"model_writes,omitempty"`
+	Calls        []e2FlowCall   `json:"calls"`
 }
 
 // e2FlowEvents는 결속 디렉터리의 감사 기록을 실행 감사 키로 끝까지 검증하고 사건을 돌려준다. 키가 pin과 다르거나
@@ -432,7 +438,12 @@ func serveLiveData(w http.ResponseWriter, r *http.Request, runsDir, jobID, view 
 		case !ok:
 			out = e2FlowView{Format: e2FlowViewFormat, Journal: "invalid", Calls: []e2FlowCall{}}
 		default:
-			out = withAttemptPatterns(e2FlowOf(events, after), attemptPatterns(b))
+			flow := withAttemptPatterns(e2FlowOf(events, after), attemptPatterns(b))
+			if r.Header.Get(server.E2ModelWritesHeader) == "1" {
+				writes := summarizeE2ModelWrites(events)
+				flow.ModelWrites = &writes
+			}
+			out = flow
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")

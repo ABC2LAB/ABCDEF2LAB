@@ -85,6 +85,10 @@
 
 `GET /api/tasks/{id}/e2-flow` · `GET /api/tasks/{id}/e2-flow?after=<index>`
 
+제품 화면의 누계는 검증된 화면용 v2 저널 전체를 기준으로 한다. 호스트 v3 저널의 E③ 확정 단계 사건은 이 사본에서 제외되며, 저장된 `diagnosis-run`의 실행 누계에는 포함된다. 호출 목록의 페이지 제한은 화면 누계에 영향이 없다. 시도는 고유 시도 ID의 결과 사건을 세므로 호출 마감이나 제어 사건이 시도 수를 더하지 않는다.
+
+`X-Jindo-E2-Model-Writes: 1` 헤더를 보낸 클라이언트에는 검증된 응답에 `model_writes`를 추가한다. 운영자가 다음 점검 전 대상을 확인할 때 쓰는 읽기 전용 요약으로, 모델 단계 POST·PUT·PATCH·DELETE만 시도 ID로 센다. `responded_2xx`는 2xx 응답을 받은 수이며 객체 생성 여부는 알 수 없다. `unverified`는 송신했을 수 있으나 2xx 응답이 확인되지 않은 수다. 송신 전 거부, 송신하지 못한 연결 실패, 인증 준비·갱신, E③ 쓰기는 포함하지 않는다. 기존 E③ 리셋 기록이나 운영자 확인의 효력을 이 요약으로 바꾸지 않는다.
+
 그 task의 전송 통제 감사 기록(실행 결속 디렉터리의 저널, HMAC 체인 검증 뒤)을 호출(call) 단위로 묶은 투영이다. 저널 검증이 실패하면 사건을 하나도 보이지 않고 `journal: "invalid"`로 답한다(일부만 보이고 "정상"으로 보이게 하지 않는다).
 
 현재 [제품 조회](../../cmd/first-controlled-diagnosis/url_live_views.go)는 감사 키 pin과 읽은 저널의 HMAC 체인을 검증한다. `VerifyJournalEvents`에 신뢰 체크포인트를 전달하지 않아 끝 행이 삭제된 유효 접두부도 `journal: "verified"`로 표시될 수 있다.
