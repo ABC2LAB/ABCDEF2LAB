@@ -222,11 +222,14 @@ func (r *Runner) RunForIntent(ctx context.Context, intentID int64, command strin
 		r.intentGates[intentID] = intentGate
 	}
 	r.mu.Unlock()
-	// 명령 시간: CommandTimeout과 Worker가 준 예산(timeout_ms) 중 작은 쪽을, 운영자 승인을 기다리는 동안은 멈춰 쓴다
-	// (#898 발견 3). 대기열 시간은 지금처럼 예산에 든다. 회차 기한·E② call 기한은 그대로다.
+	// 명령 시간: CommandTimeout과 Worker가 준 예산(timeout_ms)의 남은 몫 중 작은 쪽을, 운영자 승인을 기다리는 동안만 멈춰
+	// 쓴다(#898 발견 3). 예산은 도구 시작부터 흘러 원격 왕복·Host 등록·대기열 시간이 빠진다(#910 이동찬 리뷰). 회차 기한·
+	// E② call 기한은 그대로다.
 	limit := r.cfg.CommandTimeout
-	if budget, ok := CommandBudget(ctx); ok && budget < limit {
-		limit = budget
+	if budget, start, ok := CommandBudget(ctx); ok {
+		if remaining := remainingCommandBudget(budget, start, time.Now()); remaining < limit {
+			limit = max(remaining, 0)
+		}
 	}
 	ctx, attachBudget, stopBudget := startCommandBudget(ctx, limit)
 	defer stopBudget()

@@ -554,6 +554,11 @@ func TestE2RemoteCarriesCommandBudget(t *testing.T) {
 	if limited.Trusted.Termination != e2runner.TerminationTimeout {
 		t.Fatalf("budget not applied on the host: class=%s termination=%q", limited.Trusted.Classification, limited.Trusted.Termination)
 	}
+	// 예산 시작 시각도 실린다: 3초 예산이 2.5초 전에 시작됐으면 Host가 새 3초를 주지 않는다(#910 이동찬 리뷰).
+	late, _ := run.RunForIntent(e2runner.WithCommandBudgetFrom(ctx, 3*time.Second, time.Now().Add(-2500*time.Millisecond)), 17, "sleep 1")
+	if late.Trusted.Termination != e2runner.TerminationTimeout {
+		t.Fatalf("budget start not carried to the host: class=%s termination=%q", late.Trusted.Classification, late.Trusted.Termination)
+	}
 	plain, err := run.RunForIntent(ctx, 17, "sleep 1")
 	if err != nil || plain.Trusted.Termination != "" || !plain.Trusted.ProcessBashExited {
 		t.Fatalf("command without budget: err=%v class=%s termination=%q", err, plain.Trusted.Classification, plain.Trusted.Termination)

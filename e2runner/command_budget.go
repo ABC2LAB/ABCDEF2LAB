@@ -11,17 +11,37 @@ const MaxCommandBudget = time.Hour
 
 type commandBudgetKey struct{}
 
-// WithCommandBudget은 명령 하나에 Worker가 준 시간 예산이다(진단 Bash 도구 입력 timeout_ms). 러너는 CommandTimeout과
-// 작은 쪽을 쓰고, 그 call에 운영자 승인을 기다리는 요청이 있는 동안에는 예산 시계를 멈춘다(#898 발견 3: 모델이 준 10~15초가
-// 승인 대기 중에 끝나 승인 요청 8건이 운영자 결정 전에 닫혔다). 회차 기한·E② call 기한(승인 만료)은 그대로 상한이다.
-func WithCommandBudget(ctx context.Context, d time.Duration) context.Context {
-	return context.WithValue(ctx, commandBudgetKey{}, d)
+type commandBudgetValue struct {
+	d     time.Duration
+	start time.Time
 }
 
-// CommandBudget은 WithCommandBudget으로 준 예산이다. 없거나 0 이하면 ok가 거짓이다.
-func CommandBudget(ctx context.Context) (time.Duration, bool) {
-	d, ok := ctx.Value(commandBudgetKey{}).(time.Duration)
-	return d, ok && d > 0
+// WithCommandBudget은 명령 하나에 Worker가 준 시간 예산이다(진단 Bash 도구 입력 timeout_ms). 예산은 지금(도구 시작)부터
+// 흐른다. 러너는 그동안 지난 시간(원격 왕복·Host 등록·대기열)을 빼고 CommandTimeout과 작은 쪽을 쓰며, 그 call에 운영자
+// 승인을 기다리는 요청이 있는 동안에만 시계를 멈춘다(#898 발견 3: 모델이 준 10~15초가 승인 대기 중에 끝나 승인 요청 8건이
+// 운영자 결정 전에 닫혔다). 회차 기한·E② call 기한(승인 만료)은 그대로 상한이다.
+func WithCommandBudget(ctx context.Context, d time.Duration) context.Context {
+	return WithCommandBudgetFrom(ctx, d, time.Now())
+}
+
+// WithCommandBudgetFrom은 예산이 start부터 흐르기 시작한 것으로 싣는다(원격 Host가 도구 시작 시각을 되살릴 때).
+func WithCommandBudgetFrom(ctx context.Context, d time.Duration, start time.Time) context.Context {
+	return context.WithValue(ctx, commandBudgetKey{}, commandBudgetValue{d: d, start: start})
+}
+
+// CommandBudget은 WithCommandBudget으로 준 예산과 흐르기 시작한 시각이다. 없거나 0 이하면 ok가 거짓이다.
+func CommandBudget(ctx context.Context) (time.Duration, time.Time, bool) {
+	v, ok := ctx.Value(commandBudgetKey{}).(commandBudgetValue)
+	return v.d, v.start, ok && v.d > 0 && !v.start.IsZero()
+}
+
+// remainingCommandBudget은 예산에서 시작 뒤 지난 시간을 뺀 값이다. 시작이 지금보다 뒤(시계 차이)면 지난 시간을 0으로 본다.
+func remainingCommandBudget(d time.Duration, start time.Time, now time.Time) time.Duration {
+	elapsed := now.Sub(start)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	return d - elapsed
 }
 
 // approvalWaiter는 운영자 승인을 기다리는 요청이 있는지 알려 주는 call이다(e2proxy.Call).

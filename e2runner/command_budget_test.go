@@ -33,16 +33,39 @@ func (w *fakeWaiter) set(waiting bool) {
 }
 
 func TestCommandBudgetValue(t *testing.T) {
-	if d, ok := CommandBudget(WithCommandBudget(context.Background(), 2*time.Second)); !ok || d != 2*time.Second {
-		t.Fatalf("budget roundtrip: %v %v", d, ok)
+	before := time.Now()
+	if d, start, ok := CommandBudget(WithCommandBudget(context.Background(), 2*time.Second)); !ok || d != 2*time.Second || start.Before(before) {
+		t.Fatalf("budget roundtrip: %v %v %v", d, start, ok)
+	}
+	from := time.Unix(1700000000, 0)
+	if _, start, ok := CommandBudget(WithCommandBudgetFrom(context.Background(), time.Second, from)); !ok || !start.Equal(from) {
+		t.Fatal("budget start not carried")
 	}
 	for _, d := range []time.Duration{0, -time.Second} {
-		if _, ok := CommandBudget(WithCommandBudget(context.Background(), d)); ok {
+		if _, _, ok := CommandBudget(WithCommandBudget(context.Background(), d)); ok {
 			t.Fatalf("non-positive budget accepted: %v", d)
 		}
 	}
-	if _, ok := CommandBudget(context.Background()); ok {
+	if _, _, ok := CommandBudget(WithCommandBudgetFrom(context.Background(), time.Second, time.Time{})); ok {
+		t.Fatal("budget without start accepted")
+	}
+	if _, _, ok := CommandBudget(context.Background()); ok {
 		t.Fatal("missing budget accepted")
+	}
+}
+
+// 예산은 도구 시작부터 흐른다: 러너에 닿기 전에 지난 시간(원격 왕복·Host 등록)은 빼고, 시작이 지금보다 뒤면 0으로 본다
+// (#910 이동찬 리뷰).
+func TestRemainingCommandBudget(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	if got := remainingCommandBudget(10*time.Second, now.Add(-8*time.Second), now); got != 2*time.Second {
+		t.Fatalf("elapsed not charged: %v", got)
+	}
+	if got := remainingCommandBudget(10*time.Second, now.Add(-12*time.Second), now); got != -2*time.Second {
+		t.Fatalf("overdue budget: %v", got)
+	}
+	if got := remainingCommandBudget(10*time.Second, now.Add(time.Second), now); got != 10*time.Second {
+		t.Fatalf("future start: %v", got)
 	}
 }
 

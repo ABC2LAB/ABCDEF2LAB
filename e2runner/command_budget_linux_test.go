@@ -61,4 +61,10 @@ func TestRunnerCommandBudgetPausesWhileApprovalPending(t *testing.T) {
 	if result.Trusted.Termination != TerminationTimeout || result.Trusted.Classification != "transient_failure" {
 		t.Fatalf("command budget not applied without approval wait: class=%s termination=%q", result.Trusted.Classification, result.Trusted.Termination)
 	}
+	// 러너에 닿기 전에 지난 시간(원격 왕복·Host 등록)은 예산에서 빠진다(#910 이동찬 리뷰): 3초 예산이 2.5초 전에 시작됐으면
+	// 승인 대기가 없는 1초짜리 명령도 시간 초과다. 시작 시각을 무시하면 새 3초를 받아 완료된다.
+	result, _ = fixture.runner.Run(WithCommandBudgetFrom(t.Context(), 3*time.Second, time.Now().Add(-2500*time.Millisecond)), "sleep 1")
+	if result.Trusted.Termination != TerminationTimeout || result.Trusted.Classification != "transient_failure" {
+		t.Fatalf("time before the runner not charged to the budget: class=%s termination=%q", result.Trusted.Classification, result.Trusted.Termination)
+	}
 }
