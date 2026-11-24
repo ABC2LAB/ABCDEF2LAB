@@ -36,6 +36,12 @@ func TestManagementBridgeRouteClosure(t *testing.T) {
 		allow        bool
 	}{
 		{"GET", "/api/tasks/42/request-approvals", true},
+		{"GET", "/api/tasks/42/saved-request-approvals", true},
+		{"GET", "/api/tasks/42/saved-request-approvals/approval-1", true},
+		{"GET", "/api/tasks/42/saved-request-approvals?run_ref=other", false},
+		{"GET", "/api/tasks/42/saved-request-approvals?", false},
+		{"GET", "/api/tasks/42/saved-request-approvals/a%2Fb", false},
+		{"POST", "/api/tasks/42/saved-request-approvals/approval-1", false},
 		{"GET", "/api/tasks/42/request-approvals/approval-1", true},
 		{"POST", "/api/tasks/42/request-approvals/approval-1/decision", true},
 		{"POST", "/api/tasks/42/request-approvals/stop", true},

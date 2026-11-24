@@ -1,13 +1,14 @@
 "use client";
 
-// 보고서 '자산 지식 그래프' 탭의 제품 소유 · 접근 그래프 (계약 docs/contracts/product-access-map.md §5, #877 G1~G3).
+// 접근통제 지도의 그래프 보기 — 제품 소유 · 접근 그래프 (계약 docs/contracts/product-access-map.md §5, #877 G1~G3).
+// 격자 보기와 같은 제품 지도 응답을 다르게 그린 것뿐이라 보고서 '자산 지식 그래프' 탭이 아니라 접근통제 지도 구획에 둔다(11/24).
 // 데이터는 제품 지도 응답 하나(getProductAccessMap)이고 그래프는 live/productKgGraph.ts 가 만든다. 왼쪽 계정 · 오른쪽 자원
 // 종류의 이분 배치 inline SVG 다. 간선은 "검사한 조합"이고, 실선 화살표는 확정 · 의심 판정(judged)에만 쓴다 — 판정 불가 ·
 // 판정 없음 · 공유 선언 · 소유 선언을 접근 성공처럼 그리지 않는다(절대 규칙 5, O1). 자산 그래프와 잇지 않는다(D06).
 // 오류 · 대기 · 합계 칩 · 다시 읽기는 지도와 같은 틀(ProductMapBody · ProductMapSummary)을 쓴다(§5.3).
 // ※ 운영자 전용: 보고서 내보내기 · 공유용 보고서 · 모델 입력에 넣지 않는다.
 
-import { type CSSProperties, type KeyboardEvent, useId, useState } from "react";
+import { type CSSProperties, type KeyboardEvent, type ReactNode, useId, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import { dateTimeOf } from "../../live/map";
@@ -26,13 +27,7 @@ import {
 import { EVIDENCE_SEAL_TEXT } from "../../live/productVerdicts";
 import { verdictReasonText } from "../../live/verdictReasons";
 import s from "../../workbench.module.css";
-import {
-  notInstalled,
-  ProductMapBody,
-  ProductMapFootnote,
-  ProductMapSummary,
-  useProductAccessMap,
-} from "./productAccessMapView";
+import { ProductMapFootnote, ProductMapSummary } from "./productAccessMapView";
 
 // ---------- 배치 (px, 축소 없이 그대로 그린다) ----------
 // #893 이동찬 P2(2차): 폭 926 그래프를 패널에 맞춰 줄이면 1280px 창(그래프 자리 약 604px)에서 11px 글이 약 7.6px이 됐다.
@@ -165,28 +160,14 @@ export function productKgLayout(graph: ProductKgGraph): ProductKgLayout {
   };
 }
 
-/** 보고서 그래프 탭 구획. 자산 그래프(kg-v1)와 따로 읽고 그린다 — 한쪽 실패가 다른 쪽을 가리지 않는다(§5.3). */
-export function ProductKgGraphSection({ taskId, active }: { taskId: string | null; active: boolean }) {
-  const poll = useProductAccessMap(taskId, active);
-  if (!taskId) return null;
-  if (poll.error && notInstalled(poll.error)) return null;
+/** 그래프 보기: 지도 위 공통 줄 + 이분 그래프 + 공통 고지. 접근통제 지도 구획(productAccessMapSection)이 격자 보기와 바꿔 쓴다. */
+export function ProductMapGraph({ map, reload }: { map: ProductAccessMap; reload: ReactNode }) {
   return (
-    <section className={s.isec} aria-label="제품 소유 · 접근 그래프">
-      <h2>제품 소유 · 접근 그래프 (정책 선언 기준 · 수평)</h2>
-      <p className={s.help}>
-        정책 선언의 소유 · 교차 시험 계정과 자원 종류, 교차 계정 판정입니다. 위 자산 그래프와 출처가 달라 서로 잇지
-        않습니다(경로가 비슷해도 대응 근거가 아닙니다). 계정 자격 · 표식 값은 없습니다.
-      </p>
-      <ProductMapBody poll={poll}>
-        {(map, reload) => (
-          <>
-            <ProductMapSummary map={map} reload={reload} />
-            <Graph map={map} />
-            <ProductMapFootnote />
-          </>
-        )}
-      </ProductMapBody>
-    </section>
+    <>
+      <ProductMapSummary map={map} reload={reload} />
+      <Graph map={map} />
+      <ProductMapFootnote />
+    </>
   );
 }
 

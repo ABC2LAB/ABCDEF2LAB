@@ -7,9 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/Autumn-27/artex/llmpolicy"
 	"strconv"
 	"time"
+
+	"github.com/Autumn-27/artex/llmpolicy"
 )
 
 const diagnosisModelUsageOrigin = "first_diagnosis_model_preparation_v1"
@@ -84,7 +85,9 @@ func saveDiagnosisPreparationModelUsage(ctx context.Context, pool *sql.DB, task 
 	}
 	return nil
 }
-func readDiagnosisPreparationUsage(ctx context.Context, pool *sql.DB, task int64) ([]diagnosisModelPreparation, error) {
+func readDiagnosisPreparationUsage(ctx context.Context, pool interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, task int64) ([]diagnosisModelPreparation, error) {
 	rows, err := pool.QueryContext(ctx, `SELECT n.payload FROM tasks t JOIN exploration_nodes n ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND t.deleted_at IS NULL AND n.kind='fact' AND n.state='confirmed' AND n.origin=$2 AND n.payload->>'task_id'=$3 ORDER BY n.id LIMIT 129`, task, diagnosisModelUsageOrigin, strconv.FormatInt(task, 10))
 	if err != nil {
 		return nil, ErrFirstDiagnosisOutcome

@@ -5,6 +5,7 @@ export const REASON_LABEL = {
   complete: "응답 받음",
   withheld: "응답 보류·잘림",
   policy_denied: "정책 밖(범위·메서드·위험 요청)",
+  workflow_paused: "진단 흐름 일시정지",
   unsupported: "지원 안 하는 요청",
   invalid: "잘못된 요청",
   budget_exhausted: "예산 소진",
@@ -230,6 +231,7 @@ export function parseE2Flow(v: unknown): E2Flow {
 }
 const BLOCKED = new Set<E2Reason>([
   "policy_denied",
+  "workflow_paused",
   "unsupported",
   "invalid",
   "budget_exhausted",

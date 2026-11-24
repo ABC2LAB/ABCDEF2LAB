@@ -575,6 +575,10 @@ func (c *Controller) Snapshot() (Snapshot, error) {
 	return compactProjection(Project(clone(c.record).Snapshot)), nil
 }
 func (c *Controller) Wait(ctx context.Context) error {
+	return c.wait(ctx, false)
+}
+
+func (c *Controller) wait(ctx context.Context, requestBoundary bool) error {
 	for {
 		c.mu.Lock()
 		bad := c.poisoned
@@ -596,6 +600,9 @@ func (c *Controller) Wait(ctx context.Context) error {
 		}
 		select {
 		case <-ctx.Done():
+			if requestBoundary {
+				return errors.Join(e2proxy.ErrWorkflowPaused, ctx.Err())
+			}
 			return ctx.Err()
 		case <-changed:
 		}
@@ -801,7 +808,7 @@ func (c *Controller) Before(ctx context.Context, v e2proxy.RequestView) error {
 		if c.binding.Current() != nil {
 			return ErrUnavailable
 		}
-	} else if err := c.Wait(ctx); err != nil {
+	} else if err := c.wait(ctx, true); err != nil {
 		return err
 	}
 	c.mu.Lock()

@@ -71,9 +71,9 @@ import { Markdown } from "../../ui/Markdown";
 import { InspHead, InspOpenButton, Isec, PaneToggle, useScrollTopOnChange, vulnClassParts } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalQueue, useRequestApprovals } from "./approvals";
+import { CoverageGraphSection } from "./coverageGraphView";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
 import { PriceCapsNotice } from "./PriceCapsNotice";
-import { ProductKgGraphSection } from "./productKgGraphView";
 import { ProductVerdictReport, productConfirmationSummary, useProductVerdicts } from "./productVerdictViews";
 import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
@@ -2030,10 +2030,14 @@ export function UrlReportLive() {
                 <ProductVerdictReport taskId={taskId} active={visible && tab === "list"} poll={verdicts} />
               </div>
               <div role="tabpanel" id="rp-graph" aria-label="자산 지식 그래프" hidden={tab !== "graph"}>
-                <ReportAssetGraph taskId={taskId} active={visible && tab === "graph"} />
-                {/* 제품 소유 · 접근 그래프(계약 product-access-map §5, #877 G2): 자산 그래프 아래 따로. 자산 그래프와 잇지 않고
-                    서로의 실패를 가리지 않는다. 제품 관리 중계가 아니면(404) 두지 않는다 */}
-                <ProductKgGraphSection taskId={taskId} active={visible && tab === "graph"} />
+                {/* 제품 소유 · 접근 그래프는 접근통제 지도와 같은 자료(product-access-map)라 여기 두지 않고 접근통제 지도 탭의
+                    [격자 | 그래프] 보기로 옮겼다(11/24 — 자산 지식 그래프와 혼동) */}
+                {/* 탐색이 관찰한 자산 · 엔드포인트 관계(coverage-graph)를 먼저, 포함 근거 · 출처(KG 조회 v1)는 그 아래 */}
+                <CoverageGraphSection taskId={taskId} active={visible && tab === "graph"} />
+                <section className={s.isec} aria-label="포함 근거 · 출처">
+                  <h2>포함 근거 · 출처 (KG 조회 v1)</h2>
+                  <ReportAssetGraph taskId={taskId} active={visible && tab === "graph"} />
+                </section>
               </div>
               <div
                 role="tabpanel"
@@ -2044,7 +2048,7 @@ export function UrlReportLive() {
               >
                 {/* 이 점검의 저장 지도(GET /api/tasks/{id}/access-map, #683). 탭이 보일 때만 읽고 409(평가 KG 지도 범위 없음 — KG
                     미등록 · 실행 전 · 세대 무효)·503 은 그 뜻대로 보인다 — 빈 격자 · 예시로 대신하지 않는다. 제품 회차는 이 경로가
-                    늘 409("현재 세대의 지도 조회 범위를 확인할 수 없습니다", #875 §3.4)라 패널이 제품 지도 격자를 따로 그린다.
+                    늘 409("현재 세대의 지도 조회 범위를 확인할 수 없습니다", #875 §3.4)라 패널이 제품 지도를 [격자 | 그래프]로 따로 그린다.
                     넓게 보려면 지도 화면으로 간다 */}
                 <AccessMapPanel active={visible && tab === "map"} />
                 <div>

@@ -133,7 +133,15 @@ func firstDiagnosisStoppedToolOutcome(result e2runner.TrustedResult, attempts []
 	var counts e2proxy.Counts
 	reasonSeen := len(attempts) == 0 && call.Reason == e2proxy.Complete
 	for _, attempt := range attempts {
-		if attempt.CallRef != call.CallRef || attempt.IntentID != call.IntentID || attempt.AttemptID == "" || !attempt.AuditComplete || !firstDiagnosisAttemptReason(attempt.Reason) {
+		reason := attempt.Reason
+		if reason == e2proxy.WorkflowPaused {
+			// 감사에는 일시정지 사유를 보존하고, 호출 결과에는 송신 전 정책 거부로 집계한다.
+			if !attempt.NotSent || attempt.Decision != "denied" {
+				return false, false
+			}
+			reason = e2proxy.PolicyDenied
+		}
+		if attempt.CallRef != call.CallRef || attempt.IntentID != call.IntentID || attempt.AttemptID == "" || !attempt.AuditComplete || !firstDiagnosisAttemptReason(reason) {
 			return false, false
 		}
 		attemptUnknown, ok := firstDiagnosisAttemptUnknown(attempt)
@@ -141,7 +149,7 @@ func firstDiagnosisStoppedToolOutcome(result e2runner.TrustedResult, attempts []
 			return false, false
 		}
 		unknown = unknown || attemptUnknown
-		reasonSeen = reasonSeen || attempt.Reason == call.Reason
+		reasonSeen = reasonSeen || reason == call.Reason
 		counts.Attempts++
 		switch attempt.Decision {
 		case "allowed":

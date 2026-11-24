@@ -1,6 +1,6 @@
 "use client";
 
-// 제품 접근통제 지도 격자 (계약 docs/contracts/product-access-map.md §3). 행 = 정책 선언 동결본의 자원 종류, 열 = 소유(A) ·
+// 제품 접근통제 지도의 격자 보기 · 공통 틀 (계약 docs/contracts/product-access-map.md §3). 행 = 정책 선언 동결본의 자원 종류, 열 = 소유(A) ·
 // 교차(B) 시험 계정. 평가 KG 격자와 출처가 달라 한 격자에 섞지 않고 따로 둔다. 칸 상태는 서버가 정한 그대로 그리고
 // 화면이 색을 추정하지 않는다. 소유 칸은 '선언이 정한 소유 계정'이지 A 조회 성공이 아니다(O1) — 중립색으로 둔다.
 // 확정 단계 결과가 아직 없으면(confirmation=null) 격자 대신 안내만 보인다(O2).
@@ -132,23 +132,6 @@ function failText(error: unknown): { text: string; warn: boolean } {
   return { text: text[status] ?? `제품 지도를 읽지 못했습니다 (HTTP ${status}).`, warn: true };
 }
 
-/** 접근통제 지도 화면의 제품 격자. 평가 지도가 409(KG 미등록)여도 읽는다. */
-export function ProductAccessMapGrid({ taskId, active }: { taskId: string | null; active: boolean }) {
-  const poll = useProductAccessMap(taskId, active);
-  if (!taskId) return null;
-  if (poll.error && notInstalled(poll.error)) return null;
-  return (
-    <section className={s.isec} aria-label="제품 접근통제 지도">
-      <h2>제품 접근통제 지도 (정책 선언 기준 · 수평)</h2>
-      <p className={s.help}>
-        정책 선언의 자원 종류 × 소유 · 교차 시험 계정입니다. 평가 KG 격자와 출처가 달라 따로 둡니다. 격자에는 판정
-        상태만 있고 계정 자격 · 표식 값은 없습니다.
-      </p>
-      <ProductMapBody poll={poll}>{(map, reload) => <Grid map={map} reload={reload} />}</ProductMapBody>
-    </section>
-  );
-}
-
 /**
  * 제품 지도 응답의 오류 · 불러오는 중 · 확정 단계 전 안내를 지도와 그래프가 같은 글로 보이게 하는 틀(계약 §3 · §5.3).
  * 그릴 수 있을 때만 children(map, reload)을 부른다.
@@ -248,7 +231,8 @@ export function ProductMapFootnote() {
   );
 }
 
-function Grid({ map, reload }: { map: ProductAccessMap; reload: ReactNode }) {
+/** 격자 보기: 행 = 자원 종류, 열 = 소유(A) · 교차(B). 접근통제 지도 구획(productAccessMapSection)이 그래프 보기와 바꿔 쓴다. */
+export function ProductMapGrid({ map, reload }: { map: ProductAccessMap; reload: ReactNode }) {
   return (
     <>
       <ProductMapSummary map={map} reload={reload} />
