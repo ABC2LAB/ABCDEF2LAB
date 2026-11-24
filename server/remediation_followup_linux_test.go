@@ -81,6 +81,8 @@ func TestRemediationFollowupProduct(t *testing.T) {
 		endpoint.jobs[job.TaskID] = &job
 		endpoint.target = diagnosisprep.ProductTarget{ID: scope.TargetRef, Origin: scope.Origin, State: "approved", Revision: 1, PathPrefixes: scope.PathPrefixes, Methods: []string{"GET", "HEAD"}, Requests: scope.Budget.Requests, ExpiresAt: scope.ExpiresAt}
 	}
+	// 임시 로그인 비밀번호가 같은 DB를 쓰는 다른 시험에 남지 않게 한다.
+	preserveRevisionWireAuth(t, s.m.pg)
 	hash, err := bcrypt.GenerateFromPassword([]byte("followup-fixture"), bcrypt.MinCost)
 	if err != nil || s.m.pg.SetSetting(authPassKey, string(hash)) != nil {
 		t.Fatal("인증 fixture")
