@@ -18,6 +18,7 @@ import {
   PRODUCT_KG_LEGEND_TEXT,
   type ProductKgEdge,
   type ProductKgEdgeKind,
+  type ProductKgGraph,
   type ProductKgNode,
   productKgGraph,
 } from "../../live/productKgGraph";
@@ -33,15 +34,31 @@ import {
 } from "./productAccessMapView";
 
 // ---------- 배치 (viewBox 단위) ----------
-const WIDTH = 640;
 const PAD = 24;
+/** 자원 종류 한 줄 높이. 한 줄 안에 그 종류의 간선 글 두 줄(A · B)이 들어가고 다음 줄과 겹치지 않는다. */
 const ROW = 64;
+/** 계정 두 상자가 붙지 않게 하는 최소 줄 수(계정은 전체 높이의 1/3 · 2/3 자리). */
+const MIN_ROWS = 3;
 const NODE_W = 180;
 const NODE_H = 40;
 const LEFT_X = 16;
-const RIGHT_X = WIDTH - 16 - NODE_W;
-/** 간선 글 자리: 간선을 따라 이 비율만큼 간 곳(자원 종류 쪽에 가깝게 — 두 간선 글이 겹치지 않게). */
-const LABEL_T = 0.62;
+/** 계정 상자와 자원 종류 상자 사이(간선이 지나가는 자리) */
+const EDGE_SPAN = 240;
+const RIGHT_X = LEFT_X + NODE_W + EDGE_SPAN;
+/** 소유 · 교차 간선이 자원 종류 노드에 닿는 높이 차(노드 가운데에서 위 · 아래). 두 간선 끝이 갈라져 보이게 한다. */
+const END_SPLIT = 9;
+/**
+ * 간선 글 자리(#893 이동찬 P2: 선 중간에 두면 종류 2개에서도 다른 글과 겹치고, 노드 왼쪽에 두면 다른 간선이 글 위를
+ * 지나갔다). 글은 그 간선이 닿는 자원 종류 노드 **오른쪽**(간선이 지나가지 않는 자리)에 두고, 그 줄 안에서 A(위) · B(아래)
+ * 두 줄로 쓴다. 기준선: 노드 가운데에서 OWNER_LABEL_DY · CROSS_LABEL_DY.
+ */
+const LABEL_GAP = 10;
+const OWNER_LABEL_DY = -3;
+const CROSS_LABEL_DY = 13;
+/** 글 칸 너비: 가장 긴 간선 글("B · " + 가장 긴 투영 오류 문구)이 들어가는 폭 */
+const LABEL_COL_W = 300;
+const WIDTH = RIGHT_X + NODE_W + LABEL_GAP + LABEL_COL_W;
+export const PRODUCT_KG_LABEL_FONT = 11;
 /** 노드 글 최대 글자 수(넘으면 줄이고 title 에 전체). 자원 종류 이름은 최대 64자다. */
 const NODE_TEXT_MAX = 22;
 
@@ -70,6 +87,63 @@ export function productKgStroke(kind: ProductKgEdgeKind, state: ProductMapState)
 }
 
 const short = (text: string) => (text.length > NODE_TEXT_MAX ? `${text.slice(0, NODE_TEXT_MAX - 1)}…` : text);
+
+type Point = { x: number; y: number };
+export interface ProductKgEdgeLayout {
+  edge: ProductKgEdge;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  /** 글 왼쪽 끝(text-anchor start) · 기준선 */
+  lx: number;
+  ly: number;
+  text: string;
+}
+export interface ProductKgLayout {
+  width: number;
+  height: number;
+  /** 노드 상자의 왼쪽 위가 아니라 (왼쪽 x, 가운데 y) */
+  nodes: Map<string, Point>;
+  edges: ProductKgEdgeLayout[];
+  nodeW: number;
+  nodeH: number;
+}
+
+/** 간선 글: 어느 계정 간선인지 A · B 를 붙인다(같은 자리에 두 글이 있으므로). 상태 · 문구는 간선 글 그대로다. */
+export const productKgEdgeText = (edge: ProductKgEdge) => `${edge.cell.role === "owner" ? "A" : "B"} · ${edge.label}`;
+
+/** 그래프 배치(순수 함수 — 시험이 글 상자 겹침을 잰다). 왼쪽 계정 · 오른쪽 자원 종류(동결본 순서). */
+export function productKgLayout(graph: ProductKgGraph): ProductKgLayout {
+  const resources = graph.nodes.filter((n) => n.kind === "resource");
+  const rows = Math.max(resources.length, MIN_ROWS);
+  const height = PAD * 2 + ROW * rows;
+  const nodes = new Map<string, Point>();
+  // 계정은 위 · 아래 1/3 자리(owner 위, cross 아래), 자원 종류는 한 줄씩
+  nodes.set("p:owner", { x: LEFT_X, y: PAD + (ROW * rows) / 3 });
+  nodes.set("p:cross", { x: LEFT_X, y: PAD + (ROW * rows * 2) / 3 });
+  resources.forEach((n, i) => {
+    nodes.set(n.id, { x: RIGHT_X, y: PAD + ROW * i + ROW / 2 });
+  });
+  const edges: ProductKgEdgeLayout[] = [];
+  for (const edge of graph.edges) {
+    const from = nodes.get(edge.src);
+    const to = nodes.get(edge.dst);
+    if (!from || !to) continue;
+    const owner = edge.cell.role === "owner";
+    edges.push({
+      edge,
+      x1: from.x + NODE_W,
+      y1: from.y,
+      x2: to.x,
+      y2: to.y + (owner ? -END_SPLIT : END_SPLIT),
+      lx: to.x + NODE_W + LABEL_GAP,
+      ly: to.y + (owner ? OWNER_LABEL_DY : CROSS_LABEL_DY),
+      text: productKgEdgeText(edge),
+    });
+  }
+  return { width: WIDTH, height, nodes, edges, nodeW: NODE_W, nodeH: NODE_H };
+}
 
 /** 보고서 그래프 탭 구획. 자산 그래프(kg-v1)와 따로 읽고 그린다 — 한쪽 실패가 다른 쪽을 가리지 않는다(§5.3). */
 export function ProductKgGraphSection({ taskId, active }: { taskId: string | null; active: boolean }) {
@@ -100,16 +174,8 @@ function Graph({ map }: { map: ProductAccessMap }) {
   const graph = productKgGraph(map);
   const [picked, setPicked] = useState<string | null>(null);
   const uid = useId().replace(/:/g, "");
-  const resources = graph.nodes.filter((n) => n.kind === "resource");
-  const rows = Math.max(resources.length, 2);
-  const height = PAD * 2 + ROW * rows;
-  const pos = new Map<string, { x: number; y: number }>();
-  // 계정은 위 · 아래 1/3 자리(owner 위, cross 아래), 자원 종류는 동결본 순서대로 한 줄씩
-  pos.set("p:owner", { x: LEFT_X, y: PAD + (ROW * rows) / 3 });
-  pos.set("p:cross", { x: LEFT_X, y: PAD + (ROW * rows * 2) / 3 });
-  resources.forEach((n, i) => {
-    pos.set(n.id, { x: RIGHT_X, y: PAD + ROW * i + ROW / 2 });
-  });
+  const layout = productKgLayout(graph);
+  const height = layout.height;
   const selected = graph.edges.find((e) => e.id === picked) ?? null;
   const pick = (id: string) => setPicked(id);
   const onKey = (id: string) => (ev: KeyboardEvent) => {
@@ -126,7 +192,7 @@ function Graph({ map }: { map: ProductAccessMap }) {
         <svg
           viewBox={`0 0 ${WIDTH} ${height}`}
           width="100%"
-          style={{ maxWidth: WIDTH, minWidth: 480, display: "block" }}
+          style={{ maxWidth: WIDTH, minWidth: 640, display: "block" }}
           role="group"
           aria-label="계정 × 자원 종류 제품 소유 · 접근 그래프"
           data-testid="product-kg-graph"
@@ -147,20 +213,18 @@ function Graph({ map }: { map: ProductAccessMap }) {
               </marker>
             ))}
           </defs>
-          {graph.edges.map((e) => (
+          {layout.edges.map((l) => (
             <Edge
-              key={e.id}
-              edge={e}
-              from={pos.get(e.src)}
-              to={pos.get(e.dst)}
-              marker={`${uid}-arrow-${e.cell.state}`}
-              selected={e.id === picked}
-              onPick={() => pick(e.id)}
-              onKey={onKey(e.id)}
+              key={l.edge.id}
+              at={l}
+              marker={`${uid}-arrow-${l.edge.cell.state}`}
+              selected={l.edge.id === picked}
+              onPick={() => pick(l.edge.id)}
+              onKey={onKey(l.edge.id)}
             />
           ))}
           {graph.nodes.map((n) => (
-            <Node key={n.id} node={n} at={pos.get(n.id)} />
+            <Node key={n.id} node={n} at={layout.nodes.get(n.id)} />
           ))}
         </svg>
       </div>
@@ -206,30 +270,20 @@ function Node({ node, at }: { node: ProductKgNode; at: { x: number; y: number } 
 }
 
 function Edge({
-  edge,
-  from,
-  to,
+  at,
   marker,
   selected,
   onPick,
   onKey,
 }: {
-  edge: ProductKgEdge;
-  from: { x: number; y: number } | undefined;
-  to: { x: number; y: number } | undefined;
+  at: ProductKgEdgeLayout;
   marker: string;
   selected: boolean;
   onPick: () => void;
   onKey: (ev: KeyboardEvent) => void;
 }) {
-  if (!from || !to) return null;
-  const x1 = from.x + NODE_W;
-  const y1 = from.y;
-  const x2 = to.x;
-  const y2 = to.y;
+  const { edge, x1, y1, x2, y2, lx, ly } = at;
   const st = productKgStroke(edge.kind, edge.cell.state);
-  const lx = x1 + (x2 - x1) * LABEL_T;
-  const ly = y1 + (y2 - y1) * LABEL_T + (edge.cell.role === "owner" ? -6 : 14);
   const who = edge.cell.role === "owner" ? "소유(A)" : "교차(B)";
   return (
     // biome-ignore lint/a11y/useSemanticElements: SVG 안이라 <button> 을 둘 수 없다 — role · tabIndex · 키 처리로 대신한다
@@ -263,15 +317,16 @@ function Edge({
       <text
         x={lx}
         y={ly}
-        textAnchor="middle"
+        textAnchor="start"
+        data-label=""
         style={{
-          fontSize: 11,
+          fontSize: PRODUCT_KG_LABEL_FONT,
           fontWeight: edge.kind === "judged" ? 700 : 400,
           fill: edge.kind === "judged" ? st.stroke : "var(--ink-3)",
           textDecoration: selected ? "underline" : undefined,
         }}
       >
-        {edge.label}
+        {at.text}
       </text>
     </g>
   );

@@ -20,7 +20,12 @@ import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 import { getKgQuery, parseKgQuery } from "@/lib/diagnosis/kg-query";
 import { kgCase } from "@/lib/diagnosis/kg-query-fixtures";
 
-import { PRODUCT_MAP_ERROR_TEXT, parseProductAccessMap } from "../live/productAccessMap";
+import {
+  PRODUCT_MAP_ERROR_TEXT,
+  type ProductAccessMap,
+  type ProductMapCell,
+  parseProductAccessMap,
+} from "../live/productAccessMap";
 import {
   PRODUCT_KG_EDGE_ORDER,
   PRODUCT_KG_LEGEND_HEAD,
@@ -28,7 +33,12 @@ import {
   productKgGraph,
 } from "../live/productKgGraph";
 import { ProductAccessMapGrid } from "../views/live/productAccessMapView";
-import { ProductKgGraphSection, productKgStroke } from "../views/live/productKgGraphView";
+import {
+  PRODUCT_KG_LABEL_FONT,
+  ProductKgGraphSection,
+  productKgLayout,
+  productKgStroke,
+} from "../views/live/productKgGraphView";
 import { ReportAssetGraph } from "../views/live/ReportAssetGraph";
 import golden from "./product-access-map.server-golden.json";
 
@@ -157,6 +167,93 @@ describe("선 모양(§5.2 표)", () => {
     }
     for (const k of ["no_verdict", "shared", "owner"] as const) expect(shape("undecidable")).not.toBe(shape(k));
   });
+});
+
+/**
+ * 자원 종류 n개 지도(배치 시험용, 파서를 거치지 않는다). 교차 칸은 다섯 갈래를 돌아가며 쓰고, 가장 긴 투영 오류 문구
+ * (na_evidence_mismatch · record_missing_after_attempt)를 넣어 글 너비가 가장 넓은 경우를 만든다.
+ */
+function wideMap(n: number): ProductAccessMap {
+  const resources = Array.from({ length: n }, (_, i) => ({
+    resourceType: `type-${String(i + 1).padStart(2, "0")}`,
+    sharing: (i % 5 === 4 ? "shared" : "owner_only") as "shared" | "owner_only",
+    confirmable: i % 5 !== 4,
+  }));
+  const verdict = (value: "confirmed" | "suspected" | "undecidable") => ({
+    verdictId: "1",
+    oracleValue: value,
+    checks: { policy: "yes" as const, identity: "yes" as const, data: "yes" as const },
+    oracleReasonCodes: [],
+    productReasonCodes: [],
+    candidateRefs: [],
+    observedAt: "2026-11-23T10:38:07.000000Z",
+    evidenceSeal: null,
+  });
+  const cells: ProductMapCell[] = [];
+  resources.forEach((r, i) => {
+    const base = { resourceType: r.resourceType, naBasis: null, verdict: null, projectionError: null };
+    cells.push({ ...base, principal: "tester-a", role: "owner", state: "owner_control", applicable: null });
+    const cross = { ...base, principal: "tester-b", role: "cross" as const, applicable: true };
+    const pick = i % 5;
+    if (pick === 0) cells.push({ ...cross, state: "confirmed", verdict: verdict("confirmed") });
+    else if (pick === 1) cells.push({ ...cross, state: "unknown", verdict: verdict("undecidable") });
+    else if (pick === 2) cells.push({ ...cross, state: "unknown", projectionError: "na_evidence_mismatch" });
+    else if (pick === 3) cells.push({ ...cross, state: "unknown", projectionError: "record_missing_after_attempt" });
+    else cells.push({ ...cross, state: "na", applicable: false, naBasis: "declared_shared" });
+  });
+  return {
+    taskId: "7",
+    policySource: { ref: "declaration-job", digest: "0".repeat(64) },
+    confirmation: { status: "completed", reason: null },
+    owner: "tester-a",
+    cross: "tester-b",
+    resources,
+    hiddenRecords: 0,
+    cells,
+  };
+}
+
+type Box = { x0: number; x1: number; y0: number; y1: number };
+/** 글 상자 어림(text-anchor start): 한글 등 비ASCII 는 글자 크기 1배, ASCII 는 0.6배 폭, 높이는 기준선 위 1배 · 아래 0.3배. */
+function labelBox(text: string, lx: number, ly: number): Box {
+  const f = PRODUCT_KG_LABEL_FONT;
+  const w = [...text].reduce((sum, ch) => sum + (ch.charCodeAt(0) < 128 ? 0.6 * f : f), 0);
+  return { x0: lx, x1: lx + w, y0: ly - f, y1: ly + 0.3 * f };
+}
+const overlap = (a: Box, b: Box) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+
+describe("배치 — 간선 글이 겹치지 않음(#893 이동찬 P2)", () => {
+  for (const [name, map] of [
+    ["VAmPI 모양(종류 2)", parse(vampiShape())],
+    ["golden completed(종류 3)", parse(cases.completed)],
+    ["상한(종류 16)", wideMap(16)],
+  ] as const) {
+    it(`${name}: 글끼리 · 글과 노드 상자가 겹치지 않고, 글은 그 간선의 자원 종류 줄 안에 있다`, () => {
+      const layout = productKgLayout(productKgGraph(map));
+      const boxes = layout.edges.map((l) => labelBox(l.text, l.lx, l.ly));
+      for (let i = 0; i < boxes.length; i++)
+        for (let j = i + 1; j < boxes.length; j++)
+          expect(overlap(boxes[i], boxes[j]), `${layout.edges[i].text} / ${layout.edges[j].text}`).toBe(false);
+      const nodeBoxes = [...layout.nodes.values()].map(
+        (p): Box => ({ x0: p.x, x1: p.x + layout.nodeW, y0: p.y - layout.nodeH / 2, y1: p.y + layout.nodeH / 2 }),
+      );
+      for (const [i, b] of boxes.entries())
+        for (const n of nodeBoxes) expect(overlap(b, n), layout.edges[i].text).toBe(false);
+      for (const [i, l] of layout.edges.entries()) {
+        const row = layout.nodes.get(l.edge.dst);
+        expect(row, l.text).toBeDefined();
+        // 한 줄(ROW) 반쪽 안 — 다음 줄 글과 섞이지 않는다
+        expect(Math.abs(boxes[i].y0 - (row?.y ?? 0)) <= 32 && Math.abs(boxes[i].y1 - (row?.y ?? 0)) <= 32, l.text).toBe(
+          true,
+        );
+        expect(boxes[i].x1, l.text).toBeLessThanOrEqual(layout.width);
+        // 간선이 지나가는 자리(계정 상자 오른쪽 ~ 자원 종류 상자 왼쪽)에 글을 두지 않는다 — 다른 간선이 글 위를 지나가지 않게
+        expect(boxes[i].x0 >= (row?.x ?? 0) + layout.nodeW, l.text).toBe(true);
+        expect(l.text.startsWith(l.edge.cell.role === "owner" ? "A · " : "B · "), l.text).toBe(true);
+      }
+      expect(layout.height).toBeGreaterThanOrEqual(Math.max(...[...layout.nodes.values()].map((p) => p.y)) + 32);
+    });
+  }
 });
 
 describe("ProductKgGraphSection — 그리기", () => {
