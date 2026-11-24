@@ -115,9 +115,10 @@ func ValidTargetLogin(l TargetLogin) bool {
 	return true
 }
 
-// ValidAccountCredential은 자격 값의 형식 검사다(길이·제어 문자). 값 자체는 검사 뒤에도 남기지 않는다.
+// ValidAccountCredential은 새 자격 값의 길이·제어 문자와 사용자명 앞뒤 공백을 검사한다.
 func ValidAccountCredential(c AccountCredential) bool {
-	return len(c.Username) >= 1 && len(c.Username) <= 256 && len(c.Password) >= 1 && len(c.Password) <= 512 &&
+	return len(c.Username) >= 1 && len(c.Username) <= 256 && strings.TrimSpace(c.Username) == c.Username &&
+		len(c.Password) >= 1 && len(c.Password) <= 512 &&
 		!strings.ContainsAny(c.Username, "\x00\r\n") && !strings.ContainsAny(c.Password, "\x00\r\n")
 }
 
