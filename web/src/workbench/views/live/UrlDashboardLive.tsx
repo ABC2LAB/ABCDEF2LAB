@@ -7,7 +7,7 @@
 // 아님, 절대 규칙 5). 결과가 저장되기 전에는 비워 두고 "없음"이라고 말하지 않는다(절대 규칙 5).
 // 결정 대기(요청 승인 · 경로 선택)는 시안처럼 요약 칸과 점검 상세에서 보이고, 승인 요청은 상세에서 연다.
 
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { activeURLRun, endedURLRun } from "@/lib/diagnosis/diagnosis-runs";
 import { diagnosticOutcome } from "@/lib/diagnosis/diagnostic-results";
@@ -22,9 +22,9 @@ import { useHiddenRunIDs } from "../../live/hiddenRuns";
 import { fmtTokens, sevKey } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { LoadingRow, NotYet } from "../../live/parts";
-import { refreshWorkflow, runUrlAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
+import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { URL_ENDED_STATES, urlHost, urlStateText } from "../../live/urlMap";
-import { loadUrlRuns, useUrlRuns } from "../../live/urlRunList";
+import { useUrlRuns } from "../../live/urlRunList";
 import { usePoll } from "../../live/usePoll";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
@@ -46,8 +46,6 @@ type Sel = { kind: "job" } | { kind: "approval"; id: string } | { kind: "finding
 export const DASH_MAX = 3;
 /** 발견 목록은 처음에 위험한 순으로 6개만, 나머지는 '모두 보기' (시안 v88). */
 export const FIND_MAX = 6;
-/** 새로고침 아이콘이 최소한 도는 시간(ms). 조회가 빨리 끝나도 눌렀다는 걸 알아보게 한다. */
-const REFRESH_MIN_MS = 600;
 
 /** 위험도 칸. 서버가 심각도를 안 줬거나 모르는 값이면 none(등급 없음). */
 type SevF = SevKey | "none";
@@ -205,8 +203,6 @@ export function UrlDashboardLive() {
   const [findAll, setFindAll] = useState(false);
   const shown = ff === "all" ? found : found.filter((e) => sevOf(e) === ff);
   const [picked, setSel] = useState<Sel | null>(null);
-  const [spin, setSpin] = useState(false);
-  const vmRef = useRef<HTMLDivElement>(null);
   // 고르기 전에는 가장 위험한 발견(시안 처음 선택), 없으면 승인 대기 요청(보내기 전에 사람이 정해야 함), 없으면 점검 정보
   const first = a.pending[0];
   let sel: Sel = { kind: "job" };
@@ -223,28 +219,6 @@ export function UrlDashboardLive() {
   const pick = (next: Sel) => {
     setSel(next);
     openInsp();
-  };
-  const refresh = () => {
-    if (spin) return;
-    setSpin(true);
-    const owner = useUrl.getState().cap;
-    const work: Promise<unknown>[] = [
-      owner.kind === "v2" ? loadUrlRuns(owner.catalog.ownerContext) : Promise.resolve(),
-      refreshWorkflow(),
-      new Promise((r) => setTimeout(r, REFRESH_MIN_MS)),
-    ];
-    if (g.canRefresh) work.push(runUrlAction("refresh"));
-    a.poll.reload();
-    rem.reload();
-    void Promise.allSettled(work).then(() => {
-      setSpin(false);
-      // 새로 읽었음을 본문이 한 번 옅게 깜빡여 알린다 (시안 dflash, 움직임 줄이기 설정이면 CSS 가 끈다)
-      const vm = vmRef.current;
-      if (!vm) return;
-      vm.classList.remove(s.dflash);
-      void vm.offsetWidth;
-      vm.classList.add(s.dflash);
-    });
   };
   // 위험도 칩: 바꾸면 처음 6개부터. 보던 발견이 빠지면 남은 첫 줄을 고른다
   const pickSev = (k: SevF | "all") => {
@@ -382,21 +356,15 @@ export function UrlDashboardLive() {
       <UrlHead
         title="대시보드"
         crumb="대시보드"
-        acts={
-          <>
-            <button className={cx(s.btn, spin && s.spin)} type="button" id="dRefresh" onClick={refresh} disabled={spin}>
-              <Icon name="refresh" />
-              새로고침
-            </button>
-            <InspOpenButton>상세</InspOpenButton>
-          </>
-        }
+        // [새로고침]은 뺐다(사용자 11/24) — 점검 목록 · 지금 점검 상태 · 승인 요청 · 탐색 흐름이 알아서 다시 읽힌다(UrlFeeds)
+        acts={<InspOpenButton>상세</InspOpenButton>}
       />
       <div className={s.vb}>
-        <div className={s.vm} ref={vmRef}>
+        <div className={s.vm}>
           <RunListStatus />
           <SelectedRunStatus />
-          <RunListControls />
+          {/* 머리 [새로고침]이 목록까지 다시 읽어 [목록 새로 조회]는 두지 않는다(사용자 11/24) */}
+          <RunListControls refresh={false} />
           <DashStrip
             found={found}
             ready={!!remFor}
