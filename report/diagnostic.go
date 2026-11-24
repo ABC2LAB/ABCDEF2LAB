@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/dlp"
@@ -25,6 +26,9 @@ const MaxDiagnosticReportBytes = 16 << 20
 const MaxDiagnosticCaptureBytes = 4 << 20
 const MaxDiagnosticExportBytes = MaxDiagnosticReportBytes + MaxDiagnosticCaptureBytes
 const MaxDiagnosticModelRecords = 64
+
+// MaxWorkflowApprovals는 보고서에 싣는 저장 승인 이력의 상한이다.
+const MaxWorkflowApprovals = 100
 
 // DiagnosticReport는 선택한 task의 저장 결과만 표현한다. 판정과 처리 상태는 별개다.
 type WorkflowApproval struct{ Method, Path, State, ExecutionState, Attempt string }
@@ -49,6 +53,7 @@ type DiagnosticReport struct {
 	ModelRecordsOmitted     int64
 	Workflow                *diagnosisflow.Snapshot
 	WorkflowApprovals       []WorkflowApproval
+	WorkflowApprovalTotal   int64
 	// Run은 저장된 실행 종료 기록이다(없으면 nil). RunText는 PrepareDiagnostic이 채우는 요약 한 줄이다.
 	Run                                               *DiagnosticRun
 	RunText                                           string
@@ -95,6 +100,14 @@ var diagnosticID = regexp.MustCompile(`^(candidate|finding|verdict)-[1-9][0-9]*$
 
 func DiagnosticText(s string) string { return dlp.DiagnosticText(s) }
 
+// WorkflowApprovalSummary는 승인 이력 일부만 실었을 때 저장된 전체 건수와 표시 건수를 알린다.
+func (r DiagnosticReport) WorkflowApprovalSummary() string {
+	if r.WorkflowApprovalTotal <= int64(len(r.WorkflowApprovals)) {
+		return ""
+	}
+	return fmt.Sprintf("승인 이력 %d건 중 앞 %d건을 표시합니다.", r.WorkflowApprovalTotal, len(r.WorkflowApprovals))
+}
+
 // 템플릿 자동 이스케이프만 사용하며 링크·스크립트·외부 리소스를 만들지 않는다.
 func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 	if in.TaskID <= 0 || in.GeneratedAt.IsZero() || len(in.Entries)+len(in.ProductConfirmed) > MaxFindings {
@@ -102,7 +115,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 	}
 	in.ExposedCredentialValues = 0
 	if in.Workflow != nil {
-		if in.Workflow.Format != diagnosisflow.Version || in.Workflow.TaskID != strconv.FormatInt(in.TaskID, 10) || len(in.Workflow.Endpoints) > diagnosisflow.MaxWorkflowEndpoints || len(in.WorkflowApprovals) > 100 {
+		if in.Workflow.Format != diagnosisflow.Version || in.Workflow.TaskID != strconv.FormatInt(in.TaskID, 10) || len(in.Workflow.Endpoints) > diagnosisflow.MaxWorkflowEndpoints {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		raw, _ := json.Marshal(in.Workflow)
@@ -124,6 +137,12 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			flow.CurrentPath = ""
 		}
 		in.Workflow = &flow
+	}
+	approvalRows := int64(len(in.WorkflowApprovals))
+	if approvalRows > MaxWorkflowApprovals || in.WorkflowApprovalTotal < 0 ||
+		in.WorkflowApprovalTotal != 0 && in.WorkflowApprovalTotal < approvalRows ||
+		in.WorkflowApprovalTotal > approvalRows && approvalRows != MaxWorkflowApprovals {
+		return DiagnosticReport{}, ErrExportBlocked
 	}
 	in.WorkflowApprovals = append([]WorkflowApproval(nil), in.WorkflowApprovals...)
 	for i := range in.WorkflowApprovals {
@@ -518,7 +537,7 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 실행 허용 범위·계정 준비·대상·기간은 각 실행 기록에서 확인해야 합니다. 기록되지 않은 관찰, 캡처, 원인이나 검증 성공을 생성하지 않습니다.
 새 대상 요청·로그인·재현·외부 리소스 조회 없이 저장 자료만 사용했습니다.</p>
 <h2>2장. 진단 방법 및 수행 현황</h2><p>아래 내용은 실제 저장한 실행·탐색 기록입니다. 목록에 없는 검사나 환경·모델은 수행·확인한 것으로 추정하지 않습니다.</p>{{with .Workflow}}<h3>실제 탐색·선택 기록</h3><p>모드 {{.Mode}} · 저장 단계 {{.Stage}} · 마지막 저장 {{.UpdatedAt}}. 이 기록은 재실행 권한 또는 현재 실행 중임의 증거가 아닙니다.</p><p>발견 {{.Counts.Found}} · 응답 관찰 {{.Counts.Visited}} · 요청 쓰기 {{.Counts.Sent}} · 전송 시도 {{.Counts.Attempted}} · 차단 {{.Counts.Blocked}} · 불명 {{.Counts.Unknown}}</p><table><thead><tr><th>메서드</th><th>경로</th><th>실제 방문</th><th>선택</th><th>응답</th><th>증거 call</th></tr></thead><tbody>{{range .Endpoints}}<tr><td>{{.Method}}</td><td>{{.Path}}</td><td>{{.Visited}}</td><td>{{.Selected}}</td><td>{{.Status}}</td><td>{{.CallRef}}</td></tr>{{end}}</tbody></table><p>제한된 정적 탐색입니다. 미방문·미선택 항목을 검사 완료로 표시하지 않습니다. 엔드포인트 선택과 개별 송신 승인은 별개입니다.</p>{{end}}
-{{if .WorkflowApprovals}}<h3>저장된 요청 승인 이력</h3><table><thead><tr><th>메서드</th><th>경로</th><th>결정</th><th>전송 결과</th><th>attempt</th></tr></thead><tbody>{{range .WorkflowApprovals}}<tr><td>{{.Method}}</td><td>{{if $.Shared}}[공유용 경로 비공개]{{else}}{{.Path}}{{end}}</td><td>{{.State}}</td><td>{{.ExecutionState}}</td><td>{{.Attempt}}</td></tr>{{end}}</tbody></table>{{end}}
+{{if .WorkflowApprovals}}<h3>저장된 요청 승인 이력</h3>{{with .WorkflowApprovalSummary}}<p>{{.}}</p>{{end}}<table><thead><tr><th>메서드</th><th>경로</th><th>결정</th><th>전송 결과</th><th>attempt</th></tr></thead><tbody>{{range .WorkflowApprovals}}<tr><td>{{.Method}}</td><td>{{if $.Shared}}[공유용 경로 비공개]{{else}}{{.Path}}{{end}}</td><td>{{.State}}</td><td>{{.ExecutionState}}</td><td>{{.Attempt}}</td></tr>{{end}}</tbody></table>{{end}}
 <h2>3장. 진단 결과 요약</h2><h3>관리자 요약</h3><p>실행 결과: {{.RunText}}. 실행 결과는 취약점이 없다는 뜻이 아닙니다.</p>{{if .SourceFailures}}<p>근거 불러오기 실패: {{.SourceFailures}}건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.</p>{{end}}{{if .ExposedCredentialValues}}<p>대상이 노출한 자격 값: 노출됨 {{.ExposedCredentialValues}}건. 보고서에서는 값을 가렸습니다.</p>{{end}}
 <table><thead><tr><th>확정</th><th>검토 필요</th><th>미실행</th><th>오류·결과 불명</th><th>비취약 판정</th></tr></thead>
 <tbody><tr><td>{{.Confirmed}}</td><td>{{.Review}}</td><td>{{.NotExecuted}}</td><td>{{.Unknown}}</td><td>{{.Negative}}</td></tr></tbody></table>

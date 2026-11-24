@@ -128,6 +128,9 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		w.paragraph("Normal", "구조화된 탐색·Planner/Worker 수행 기록 미확보. 미검사 범위를 수행 완료로 표시하지 않습니다.")
 	}
 	if len(in.WorkflowApprovals) > 0 {
+		if summary := in.WorkflowApprovalSummary(); summary != "" {
+			w.paragraph("Normal", summary)
+		}
 		rows := [][]string{{"메서드·경로", "승인 결정", "실행 상태"}}
 		for _, a := range in.WorkflowApprovals {
 			path := a.Path

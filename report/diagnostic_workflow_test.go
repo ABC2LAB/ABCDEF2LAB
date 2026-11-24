@@ -79,3 +79,38 @@ func TestWorkflowReportEndpointLimits(t *testing.T) {
 		t.Fatalf("above installation limit: %v", err)
 	}
 }
+
+func TestWorkflowReportShowsTruncatedApprovalHistory(t *testing.T) {
+	in := diagnosticFixture()
+	for i := 1; i <= MaxWorkflowApprovals; i++ {
+		in.WorkflowApprovals = append(in.WorkflowApprovals, WorkflowApproval{
+			Method: "POST", Path: fmt.Sprintf("/historical-approval-%03d", i), State: "denied", ExecutionState: "not_sent",
+		})
+	}
+	const summary = "승인 이력 101건 중 앞 100건을 표시합니다."
+	for _, total := range []int64{MaxWorkflowApprovals, MaxWorkflowApprovals + 1} {
+		for _, shared := range []bool{false, true} {
+			in.Shared, in.WorkflowApprovalTotal = shared, total
+			html, err := DiagnosticHTML(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			docx, err := DiagnosticDOCX(in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for format, output := range map[string][]byte{"HTML": html, "DOCX": readWord(t, docx)["word/document.xml"]} {
+				mark := "/historical-approval-"
+				if shared {
+					mark = "[공유용 경로 비공개]"
+					if strings.Contains(string(output), "/historical-approval-") {
+						t.Fatalf("%s shared report exposed approval paths", format)
+					}
+				}
+				if strings.Count(string(output), mark) != MaxWorkflowApprovals || strings.Contains(string(output), summary) != (total > MaxWorkflowApprovals) {
+					t.Fatalf("%s shared=%t total=%d: wrong approval rows or truncation summary", format, shared, total)
+				}
+			}
+		}
+	}
+}

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/report"
 )
 
@@ -386,5 +387,49 @@ func TestDiagnosticReportE3DigestsAndConfirmationGuardsIndependently(t *testing.
 				t.Fatal("corrupt E3 digest accepted")
 			}
 		})
+	}
+}
+
+func TestDiagnosticWorkflowApprovalCountIsScoped(t *testing.T) {
+	s, _, _ := trafficEvidenceServer(t)
+	ctx := t.Context()
+	tx, err := s.m.pg.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for _, query := range []string{
+		`CREATE TEMP TABLE diagnosis_workflows (job_id text, task_id bigint, owner_ref text, record jsonb)`,
+		`CREATE TEMP TABLE request_approvals (id bigint, task_id bigint, owner_ref text, record jsonb)`,
+	} {
+		if _, err := tx.ExecContext(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flow := diagnosisflow.Record{Owner: "ARTEX", Snapshot: diagnosisflow.Snapshot{Format: diagnosisflow.Version, TaskID: "7", RunRef: "owned"}}
+	raw, err := json.Marshal(flow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO diagnosis_workflows VALUES ('test',7,'ARTEX',$1::jsonb)`, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO request_approvals
+SELECT n, 7, 'ARTEX', jsonb_build_object('run_ref', 'owned', 'attempt_id', n::text)
+FROM generate_series(1, $1::int) AS n
+UNION ALL
+SELECT id, task, owner, jsonb_build_object('run_ref', run, 'attempt_id', 'foreign')
+FROM (VALUES (-1, 8, 'ARTEX', 'owned'), (-2, 7, 'OTHER', 'owned'), (-3, 7, 'ARTEX', 'other')) AS x(id, task, owner, run)`, report.MaxWorkflowApprovals+1); err != nil {
+		t.Fatal(err)
+	}
+	var out report.DiagnosticReport
+	if err := readWorkflowReport(ctx, tx, 7, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.WorkflowApprovalTotal != report.MaxWorkflowApprovals+1 || len(out.WorkflowApprovals) != report.MaxWorkflowApprovals {
+		t.Fatalf("approval total=%d rows=%d", out.WorkflowApprovalTotal, len(out.WorkflowApprovals))
+	}
+	if out.WorkflowApprovals[0].Attempt != "1" || out.WorkflowApprovals[len(out.WorkflowApprovals)-1].Attempt != strconv.Itoa(report.MaxWorkflowApprovals) {
+		t.Fatal("wrong approval scope or order")
 	}
 }
