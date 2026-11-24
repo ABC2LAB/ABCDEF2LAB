@@ -442,8 +442,7 @@ func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir
 	return sessions[label], result
 }
 
-// e2HTTPAccountUsernames는 결속 시험 계정의 사용자명이다(같은 pin 검사로 읽음). 표시용 경로 패턴에서 같은 조각을 가리는
-// 데만 쓰고 메모리에만 둔다. 읽지 못한 계정은 빠진다(그 계정은 인증 준비도 보내지 않는다).
+// e2HTTPAccountUsernames는 결속된 시험 계정명을 표시용 틀 가림에만 사용한다.
 func e2HTTPAccountUsernames(dir string, auth E2HTTPFileAuth) map[string]bool {
 	out := map[string]bool{}
 	for _, account := range auth.Accounts {

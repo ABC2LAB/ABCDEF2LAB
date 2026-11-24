@@ -67,6 +67,61 @@ func TestDiagnosticReportInternalSharedAndEscaping(t *testing.T) {
 		t.Fatal("shared counts changed")
 	}
 }
+
+func TestDiagnosticReportMasksProseCredentials(t *testing.T) {
+	in := diagnosticFixture()
+	in.Entries[0].Summary = "The default password is `synthetic-pass-83z`. The response confirmed that the configuration was exposed."
+	in.Entries[0].Evidence = "Session token `synthetic-token-83z`\n인증 쿠키는 `synthetic-cookie-83z`"
+	in.Entries[0].Report = "비밀번호 노출\n| 계정 | Password |\n| --- | --- |\n| admin | synthetic-pass-83z |\n| tester | synthetic-pass-84z |"
+	in.Entries[0].Evidence += "\nfixture1/synthetic-one, fixture2/synthetic-two 평문으로 노출됨"
+	for _, shared := range []bool{false, true} {
+		in.Shared = shared
+		out, err := DiagnosticHTML(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(out), "synthetic-") {
+			t.Fatalf("credential exposed (shared=%t)", shared)
+		}
+		if !shared && !strings.Contains(string(out), "자격정보 2건 노출됨") {
+			t.Fatal("credential table count missing")
+		}
+		if !shared && !strings.Contains(string(out), "configuration was exposed") {
+			t.Fatal("lost the non-secret finding context")
+		}
+		if !shared && !strings.Contains(string(out), "자격정보 2건") {
+			t.Fatal("lost the evidence count")
+		}
+	}
+}
+
+func TestDiagnosticReportSummarizesNewCredentialRedactions(t *testing.T) {
+	in := diagnosticFixture()
+	in.Entries[0].Summary = "비밀번호 alpha/synthetic-one, beta(synthetic-two) 노출"
+	in.Entries[0].Evidence = "- **Password**: `synthetic-three`"
+	in.Entries[0].Report = "비밀번호 노출\n| 계정 | Password |\n| --- | --- |\n| tester | synthetic-four |"
+	in.Entries[1].Summary = "비밀번호 변경 요청은 HTTP/1.1 200, 토큰은 application/json 본문"
+	in.Entries[1].Evidence = "이미 가린 값 password=[REDACTED], 주소 user@owned.test"
+	for _, shared := range []bool{false, true} {
+		in.Shared = shared
+		prepared, err := PrepareDiagnostic(in)
+		if err != nil || prepared.ExposedCredentialValues != 4 {
+			t.Fatalf("shared=%v 노출 건수=%d 오류=%v", shared, prepared.ExposedCredentialValues, err)
+		}
+		body, err := DiagnosticHTML(in)
+		if err != nil || !strings.Contains(string(body), "대상이 노출한 자격 값: 노출됨 4건") || strings.Contains(string(body), "synthetic-") {
+			t.Fatalf("shared=%v HTML 요약 또는 가림 오류: %v", shared, err)
+		}
+		doc, err := DiagnosticDOCX(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		word := wordDocumentText(t, readWord(t, doc)["word/document.xml"])
+		if !strings.Contains(word, "대상이 노출한 자격 값: 노출됨 4건") || strings.Contains(word, "synthetic-") {
+			t.Fatalf("shared=%v DOCX 요약 또는 가림 오류", shared)
+		}
+	}
+}
 func TestDiagnosticReportRejectsUnverifiedConfirmationAndBounds(t *testing.T) {
 	for _, modify := range []func(*DiagnosticReport){
 		func(in *DiagnosticReport) { in.Entries[3].Outcome = "confirmed" },

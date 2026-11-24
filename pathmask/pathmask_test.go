@@ -95,3 +95,21 @@ func TestReadableWithSensitiveSegments(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestDisplayWithApprovedTemplate(t *testing.T) {
+	sensitive := func(segment string) bool { return segment == "plainuser" }
+	for _, tc := range []struct{ path, template, want string }{
+		{"/api/orders/42", "/api/orders", "/api/orders/{id}"},
+		{"/users/plainuser/items/title", "/users/plainuser/items/{title}", "/users/{id}/items/{title}"},
+		{"/users/plainuser/items/title", "/users/{username}/items/{title}", "/users/{username}/items/{title}"},
+		{"/api/secret/items", "/api/orders", "/{id}/{id}/{id}"},
+		{"/api/secret/items", "", "/{id}/{id}/{id}"},
+	} {
+		if got := DisplayWithTemplate(tc.path, tc.template, sensitive); got != tc.want {
+			t.Errorf("%q with %q: %q want %q", tc.path, tc.template, got, tc.want)
+		}
+	}
+	if !ValidDisplayPattern("/api/{username}/items/{title}") || ValidDisplayPattern("/api/name?token=value") {
+		t.Fatal("표시 틀 검증 오류")
+	}
+}

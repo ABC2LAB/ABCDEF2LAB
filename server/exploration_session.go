@@ -52,6 +52,8 @@ type ExplorationSessionOptions struct {
 	// APIRecon은 원본 스크립트를 일반 Skill로 여는 경로라 아직 지원하지 않는다. non-nil이면 I/O 전에 거부한다.
 	APIRecon actool.CoreTool
 	Redact   func([]byte) []byte
+	// RedactRecord는 저장 기록에만 Redact 뒤에 더 거는 가림이다(agent.ExplorationRunOptions.RedactRecord). nil이면 Redact만 쓴다.
+	RedactRecord func([]byte) []byte
 	// Finalize는 모델/도구와 브라우저 폐쇄 뒤 보호 저장소의 기존 관찰만 배출한다. 새 송신·모델 호출·원문 로그를 만들지 않으며 문맥 상한을 지킨다.
 	Finalize func(context.Context, exploration.Binding) error
 	// Observe는 각 경계 도구 결과 뒤 private 관찰만 저장하고 다음 모델 호출 전에 돌아온다.
@@ -307,6 +309,7 @@ func (s *ExplorationSession) Run(ctx context.Context, w *agent.Worker, o agent.E
 	}
 	o.DirectBash = s.options.DirectBash
 	o.Redact = s.options.Redact
+	o.RedactRecord = s.options.RedactRecord
 	o.Check = s.Check
 	defer func() {
 		reason := exploration.Completed

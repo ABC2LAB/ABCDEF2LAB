@@ -614,13 +614,16 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			}
 			recorder = e2HTTPJournalObserver{next: recorder, observe: input.RequestApprovals.observe}
 		}
-		// 표시용 패턴은 이 실행의 보호·가림 값(비밀번호·세션)이 든 조각과 결속 시험 계정 사용자명과 같은 조각을 가린다
-		// (S09·절대 규칙 2). 실행을 만들기 전에 관찰 훅을 넘기므로 실행 참조는 만든 뒤 채우고, 그 전에는 줄을 쓰지 않는다.
+		// 승인 틀의 이름 조각도 실행 자격값이나 시험 계정명과 같으면 가린다.
 		var patternExecution atomic.Pointer[e2proxy.Execution]
 		var patternUsernames atomic.Pointer[map[string]bool]
 		observer := input.AttemptPathObserver
 		if productPatterns {
-			observer = productAttemptPatterns(policy.StateDir, func() func(string) bool {
+			templates := make(map[string]string, len(policy.Rules))
+			for _, rule := range policy.Rules {
+				templates[rule.Ref] = rule.PathPrefix
+			}
+			observer = productAttemptPatterns(policy.StateDir, templates, func() func(string) bool {
 				e := patternExecution.Load()
 				if e == nil {
 					return nil

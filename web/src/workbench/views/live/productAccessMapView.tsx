@@ -103,7 +103,7 @@ export function useProductAccessMap(taskId: string | null, active: boolean): Pol
 }
 
 /** 404 = 제품 관리 중계가 아니라 이 경로가 없다(소스 서버 등) → 구획을 두지 않는다. */
-function notInstalled(error: unknown): boolean {
+export function notInstalled(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404;
 }
 
@@ -144,12 +144,22 @@ export function ProductAccessMapGrid({ taskId, active }: { taskId: string | null
         정책 선언의 자원 종류 × 소유 · 교차 시험 계정입니다. 평가 KG 격자와 출처가 달라 따로 둡니다. 격자에는 판정
         상태만 있고 계정 자격 · 표식 값은 없습니다.
       </p>
-      <Body poll={poll} />
+      <ProductMapBody poll={poll}>{(map, reload) => <Grid map={map} reload={reload} />}</ProductMapBody>
     </section>
   );
 }
 
-function Body({ poll }: { poll: Poll<ProductAccessMap> }) {
+/**
+ * 제품 지도 응답의 오류 · 불러오는 중 · 확정 단계 전 안내를 지도와 그래프가 같은 글로 보이게 하는 틀(계약 §3 · §5.3).
+ * 그릴 수 있을 때만 children(map, reload)을 부른다.
+ */
+export function ProductMapBody({
+  poll,
+  children,
+}: {
+  poll: Poll<ProductAccessMap>;
+  children: (map: ProductAccessMap, reload: ReactNode) => ReactNode;
+}) {
   if (poll.error) {
     const { text, warn } = failText(poll.error);
     return (
@@ -185,10 +195,11 @@ function Body({ poll }: { poll: Poll<ProductAccessMap> }) {
         {reload}
       </div>
     );
-  return <Grid map={map} reload={reload} />;
+  return <>{children(map, reload)}</>;
 }
 
-function Grid({ map, reload }: { map: ProductAccessMap; reload: ReactNode }) {
+/** 격자 · 그래프 위 공통 줄: 출처 딱지 · 확정 단계 상태, 합계 칩(교차 칸만), 다시 읽기, 숨긴 기록 경고. */
+export function ProductMapSummary({ map, reload }: { map: ProductAccessMap; reload: ReactNode }) {
   const tallies = map.cells.map(productMapTally);
   const counts = PRODUCT_MAP_TALLY_ORDER.map((t) => [t, tallies.filter((x) => x === t).length] as const).filter(
     ([, n]) => n > 0,
@@ -223,6 +234,24 @@ function Grid({ map, reload }: { map: ProductAccessMap; reload: ReactNode }) {
           <span>{`판정 기록 무결성 확인 실패 ${map.hiddenRecords}건 · 값과 자원 종류를 숨겨 칸에 두지 않습니다`}</span>
         </p>
       ) : null}
+    </>
+  );
+}
+
+/** 격자 · 그래프 아래 공통 고지(절대 규칙 5). */
+export function ProductMapFootnote() {
+  return (
+    <p className={s.help}>
+      ‘판정 불가’ · ‘관측 근거 없음’은 취약점이 없다는 뜻이 아닙니다. 확정도 검토 대상 후보이며 자동 확정 발견이
+      아닙니다.
+    </p>
+  );
+}
+
+function Grid({ map, reload }: { map: ProductAccessMap; reload: ReactNode }) {
+  return (
+    <>
+      <ProductMapSummary map={map} reload={reload} />
       <div style={wrapStyle}>
         <table style={tableStyle} aria-label="자원 종류 × 소유 · 교차 계정 제품 접근통제 격자">
           <thead>
@@ -260,10 +289,7 @@ function Grid({ map, reload }: { map: ProductAccessMap; reload: ReactNode }) {
           </tbody>
         </table>
       </div>
-      <p className={s.help}>
-        ‘판정 불가’ · ‘관측 근거 없음’은 취약점이 없다는 뜻이 아닙니다. 확정도 검토 대상 후보이며 자동 확정 발견이
-        아닙니다.
-      </p>
+      <ProductMapFootnote />
     </>
   );
 }

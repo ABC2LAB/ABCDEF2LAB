@@ -321,7 +321,10 @@ export function fetchFindings(): Promise<LiveFinding[]> {
   return call(async () => arr(await apiFetch<RawFinding[] | null>("/api/exploration/findings")).map(normFinding));
 }
 
-/** GET /api/exploration/findings?task= — 한 점검의 발견(최신순 최대 200, 이어받은 원본 점검 것 포함). 없는 task 는 []. */
+/**
+ * GET /api/exploration/findings?task= — 한 점검의 발견(최신순 최대 200, 이어받은 원본 점검 것 포함). 소스 서버는 없는 task 면 [].
+ * 제품 관리 중계는 이 경로를 넘기지 않아 404다(11/23 VAmPI 실측 #875 §3.4) — 화면은 '제공되지 않음'으로 접는다(isUnsupported).
+ */
 export function fetchTaskFindings(taskId: string): Promise<LiveFinding[]> {
   return call(async () =>
     arr(await apiFetch<RawFinding[] | null>(`/api/exploration/findings?task=${enc(taskId)}`)).map(normFinding),
