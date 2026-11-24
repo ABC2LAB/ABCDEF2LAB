@@ -11,14 +11,8 @@ vi.mock("@/lib/diagnosis/api", async (original) => ({
   ...(await original<typeof import("@/lib/diagnosis/api")>()),
   apiFetch: vi.fn(),
 }));
-vi.mock("@/lib/diagnosis/kg-query", async (importOriginal) => {
-  const real = await importOriginal<typeof import("@/lib/diagnosis/kg-query")>();
-  return { ...real, getKgQuery: vi.fn() };
-});
 
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
-import { getKgQuery, parseKgQuery } from "@/lib/diagnosis/kg-query";
-import { kgCase } from "@/lib/diagnosis/kg-query-fixtures";
 
 import {
   PRODUCT_MAP_ERROR_TEXT,
@@ -32,14 +26,8 @@ import {
   type ProductKgEdgeKind,
   productKgGraph,
 } from "../live/productKgGraph";
-import { ProductAccessMapGrid } from "../views/live/productAccessMapView";
-import {
-  PRODUCT_KG_LABEL_FONT,
-  ProductKgGraphSection,
-  productKgLayout,
-  productKgStroke,
-} from "../views/live/productKgGraphView";
-import { ReportAssetGraph } from "../views/live/ReportAssetGraph";
+import { ProductAccessMapSection } from "../views/live/productAccessMapSection";
+import { PRODUCT_KG_LABEL_FONT, productKgLayout, productKgStroke } from "../views/live/productKgGraphView";
 import golden from "./product-access-map.server-golden.json";
 
 type Json = Record<string, unknown>;
@@ -270,11 +258,11 @@ describe("배치 — 간선 글이 겹치지 않고 글자가 줄지 않음(#893
   }
 });
 
-describe("ProductKgGraphSection — 그리기", () => {
+describe("ProductAccessMapSection — 그래프 보기", () => {
   it("VAmPI 수용 모양: 노드 4 · 간선 4(소유 2 · 확정 1 · 공유 선언 1), 화살표는 확정 1뿐", async () => {
     const raw = vampiShape();
     serve(raw);
-    render(<ProductKgGraphSection taskId={raw.task_id} active />);
+    render(<ProductAccessMapSection taskId={raw.task_id} active defaultView="graph" />);
     const svg = await screen.findByTestId("product-kg-graph");
     // 축소하지 않는다: 그리는 크기 = 배치 크기(#893 이동찬 P2 2차 — 패널에 맞춰 줄이면 11px 글이 7.6px이 됐다)
     const layout = productKgLayout(productKgGraph(parse(raw)));
@@ -302,7 +290,7 @@ describe("ProductKgGraphSection — 그리기", () => {
   it("그린 선의 모양이 갈래마다 다르다(점선 · 불투명도 · 화살표), 범례에 다섯 갈래와 첫 줄", async () => {
     // golden 두 개로 다섯 갈래를 모두 그린다
     serve(cases.completed);
-    const a = render(<ProductKgGraphSection taskId={cases.completed.task_id} active />);
+    const a = render(<ProductAccessMapSection taskId={cases.completed.task_id} active defaultView="graph" />);
     await screen.findByTestId("product-kg-graph");
     const seen = new Map<string, string>();
     const collect = () => {
@@ -329,7 +317,7 @@ describe("ProductKgGraphSection — 그리기", () => {
     );
     a.unmount();
     serve(cases.interrupted_suspected);
-    render(<ProductKgGraphSection taskId={cases.interrupted_suspected.task_id} active />);
+    render(<ProductAccessMapSection taskId={cases.interrupted_suspected.task_id} active defaultView="graph" />);
     await screen.findByTestId("product-kg-graph");
     collect();
     expect([...seen.keys()].sort()).toEqual([...PRODUCT_KG_EDGE_ORDER].sort());
@@ -340,7 +328,7 @@ describe("ProductKgGraphSection — 그리기", () => {
 
   it("간선을 고르면 그 칸의 판정 번호 · 사유 · 봉인 미확인을, 소유 간선은 '조회 결과 아님'을 보인다", async () => {
     serve(cases.completed);
-    render(<ProductKgGraphSection taskId={cases.completed.task_id} active />);
+    render(<ProductAccessMapSection taskId={cases.completed.task_id} active defaultView="graph" />);
     const svg = await screen.findByTestId("product-kg-graph");
     const detail = () => screen.getByTestId("product-kg-edge-detail");
     expect(detail()).toHaveTextContent("간선을 고르면");
@@ -357,59 +345,56 @@ describe("ProductKgGraphSection — 그리기", () => {
 
   it("오류 · 대기는 지도와 같은 글: 409 사유 안내 · 404 구획 없음 · 확정 단계 전 안내", async () => {
     serve(new ApiError(409, "product_access_map_no_declaration"));
-    const a = render(<ProductKgGraphSection taskId="2" active />);
+    const a = render(<ProductAccessMapSection taskId="2" active defaultView="graph" />);
     const note = await screen.findByRole("note");
     a.unmount();
     serve(new ApiError(409, "product_access_map_no_declaration"));
-    const m = render(<ProductAccessMapGrid taskId="2" active />);
+    const m = render(<ProductAccessMapSection taskId="2" active />);
     expect((await screen.findByRole("note")).textContent).toBe(note.textContent);
     m.unmount();
     serve(new ApiError(404, "not found"));
-    const b = render(<ProductKgGraphSection taskId="2" active />);
+    const b = render(<ProductAccessMapSection taskId="2" active defaultView="graph" />);
     await vi.waitFor(() => expect(apiFetch).toHaveBeenCalled());
     await vi.waitFor(() => expect(b.container).toBeEmptyDOMElement());
     b.unmount();
     serve(cases.pending);
-    render(<ProductKgGraphSection taskId={cases.pending.task_id} active />);
+    render(<ProductAccessMapSection taskId={cases.pending.task_id} active defaultView="graph" />);
     expect(await screen.findByTestId("product-map-pending")).toHaveTextContent("확정 단계가 끝나면");
     expect(screen.queryByTestId("product-kg-graph")).toBeNull();
   });
 
   it("탭이 안 보이거나 작업이 없으면 부르지 않는다", () => {
     serve(cases.completed);
-    render(<ProductKgGraphSection taskId="2" active={false} />);
-    render(<ProductKgGraphSection taskId={null} active />);
+    render(<ProductAccessMapSection taskId="2" active={false} defaultView="graph" />);
+    render(<ProductAccessMapSection taskId={null} active defaultView="graph" />);
     expect(apiFetch).not.toHaveBeenCalled();
   });
 });
 
-describe("보고서 그래프 탭 — 자산 그래프와 서로 가리지 않음(§5.3)", () => {
-  const Tab = ({ taskId }: { taskId: string }) => (
-    <>
-      <ReportAssetGraph taskId={taskId} active />
-      <ProductKgGraphSection taskId={taskId} active />
-    </>
-  );
-
-  it("자산 그래프(kg-v1) 실패 · 제품 그래프 성공: 둘 다 제 상태대로", async () => {
-    const raw = clone(cases.completed);
-    raw.task_id = "41";
-    serve(raw);
-    vi.mocked(getKgQuery).mockResolvedValue({ state: "error", failure: "failed", retryable: true });
-    render(<Tab taskId="41" />);
-    expect(await screen.findByTestId("product-kg-graph")).toBeInTheDocument();
-    expect(await screen.findByText(/그래프 조회 실패/)).toBeInTheDocument();
+describe("접근통제 지도 구획 — 같은 응답을 격자 · 그래프로(11/24)", () => {
+  it("기본은 격자, [그래프]를 누르면 다시 읽지 않고 같은 응답을 그래프로 그린다", async () => {
+    serve(cases.completed);
+    render(<ProductAccessMapSection taskId={cases.completed.task_id} active />);
+    const group = screen.getByRole("group", { name: "제품 접근통제 지도 보기" });
+    expect(within(group).getByRole("button", { name: "격자" })).toHaveAttribute("aria-pressed", "true");
+    expect(await screen.findByRole("table")).toBeInTheDocument();
+    expect(screen.queryByTestId("product-kg-graph")).toBeNull();
+    fireEvent.click(within(group).getByRole("button", { name: "그래프" }));
+    expect(within(group).getByRole("button", { name: "그래프" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("product-kg-graph")).toBeInTheDocument();
+    expect(screen.queryByRole("table")).toBeNull();
+    fireEvent.click(within(group).getByRole("button", { name: "격자" }));
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(apiFetch).toHaveBeenCalledTimes(1);
   });
 
-  it("자산 그래프 성공 · 제품 그래프 503: 자산 그래프는 그대로, 제품 쪽만 경고", async () => {
-    const graph = parseKgQuery(kgCase());
-    if (!graph) throw new Error("fixture rejected");
-    vi.mocked(getKgQuery).mockResolvedValue({ state: "ready", graph });
+  it("보기를 바꿔도 오류 · 대기 안내는 같은 글이다", async () => {
     serve(new ApiError(503, "product_access_map_unavailable"));
-    render(<Tab taskId="41" />);
-    expect(await screen.findByRole("button", { name: /엔드포인트 #101/ })).toBeInTheDocument();
+    render(<ProductAccessMapSection taskId="2" active />);
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("제품 지도 서비스가 응답하지 않거나");
+    const text = alert.textContent;
+    fireEvent.click(screen.getByRole("button", { name: "그래프" }));
+    expect(screen.getByRole("alert").textContent).toBe(text);
     expect(screen.queryByTestId("product-kg-graph")).toBeNull();
   });
 });
