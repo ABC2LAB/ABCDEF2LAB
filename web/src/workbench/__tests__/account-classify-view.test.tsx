@@ -77,7 +77,7 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
     render(withRoute("classify", goTo));
     expect(await screen.findByLabelText("계정 목록")).toBeInTheDocument();
     expect(screen.getByLabelText("분류할 대상")).toHaveValue("t1");
-    fireEvent.click(screen.getByRole("button", { name: "새 점검으로" }));
+    fireEvent.click(screen.getByRole("button", { name: "새 점검으로 돌아가기" }));
     expect(goTo).toHaveBeenCalledWith("new");
     useWb.setState({ focusTarget: null });
   });

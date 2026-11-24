@@ -70,7 +70,16 @@ import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
 import { TaskActivity } from "./TaskActivity";
 import { AccessMapPanel } from "./UrlAccessMapLive";
-import { reasonText, UrlFacts, UrlHead, UrlNotices, UrlPill, UrlRefreshButton, useUrlHost } from "./urlParts";
+import {
+  BackButton,
+  reasonText,
+  UrlFacts,
+  UrlHead,
+  UrlNotices,
+  UrlPill,
+  UrlRefreshButton,
+  useUrlHost,
+} from "./urlParts";
 import { VerdictDetailCard } from "./VerdictDetailCard";
 import { crawlPct, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
@@ -283,9 +292,7 @@ function LiveCandidateDetail({
   return (
     <>
       <div className={s["vi-back"]}>
-        <button className={cx(s.btn, s.sm)} type="button" onClick={onBack}>
-          진행 요약으로
-        </button>
+        <BackButton to="진행 요약" onClick={onBack} />
       </div>
       {stale}
       {body}
@@ -1388,15 +1395,7 @@ export function FindingPage({
     <section className={s.fpage} aria-label="취약점 상세 페이지">
       {/* ARTEX 발견 상세 머리: ← · 제목 · 위험도 · 판정 딱지를 한 줄로 (유형 · 대상 · ID 는 오른쪽 상태 카드) */}
       <div className={s["fpage-h"]}>
-        <button
-          className={cx(s["icon-btn"], s["fpage-back"])}
-          type="button"
-          onClick={onBack}
-          aria-label="취약점 목록으로"
-          title="취약점 목록으로"
-        >
-          <Icon name="arrow" />
-        </button>
+        <BackButton to="취약점 목록" onClick={onBack} />
         <h2 ref={head} tabIndex={-1}>
           {maskSecrets(e.title) || e.entry_id}
         </h2>

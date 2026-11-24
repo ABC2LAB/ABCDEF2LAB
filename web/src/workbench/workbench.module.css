@@ -1790,8 +1790,8 @@ a.ph:hover {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-/* 뒤로: 오른쪽 화살표를 돌려 쓴다 */
-.fpage-back .ic {
+/* 뒤로 가기(BackButton): 오른쪽 화살표를 돌려 왼쪽으로 쓴다 */
+.back-btn .ic {
   transform: rotate(180deg);
 }
 /* 페이지 카드 안 상세 보고서 머리(제목 · 복사)와 본문 사이 */

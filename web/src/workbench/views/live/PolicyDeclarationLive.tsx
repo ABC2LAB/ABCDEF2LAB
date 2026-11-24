@@ -48,7 +48,7 @@ import { useShell } from "../../shell";
 import { useWb } from "../../store";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
-import { UrlHead } from "./urlParts";
+import { BackButton, UrlHead } from "./urlParts";
 
 /** 한 번 읽은 선언. key = 그 요청을 시작한 대상 + 진입 세대 + 다시 읽기 횟수 — 지금 요청의 결과만 그린다. */
 type Read = { key: string; load: DeclarationLoad | "failed" };
@@ -616,15 +616,7 @@ export function PolicyDeclarationLive() {
 
   return (
     <>
-      <UrlHead
-        title="정책 선언"
-        crumb="정책 선언"
-        acts={
-          <button className={cx(s.btn, s.sm)} type="button" onClick={() => goTo("new")}>
-            새 점검으로
-          </button>
-        }
-      />
+      <UrlHead title="정책 선언" crumb="정책 선언" acts={<BackButton to="새 점검" onClick={() => goTo("new")} />} />
       <div className={s.vb}>
         <div className={s.vm}>
           <div className={s.note} role="note">

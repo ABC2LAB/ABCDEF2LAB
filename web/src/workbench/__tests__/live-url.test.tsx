@@ -1206,7 +1206,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 아직 저장되지 않은 후보는 그렇게 적는다('없음'으로 단정하지 않음)
     fireEvent.click(within(finds).getByRole("button", { name: /후보 #2/ }));
     expect(await within(side).findByText(/이 후보의 상세가 아직 저장되지 않았습니다/)).toBeInTheDocument();
-    fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로" }));
+    fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로 돌아가기" }));
     expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
     expect(screen.queryByRole("complementary", { name: "취약점 상세" })).toBeNull();
   });
@@ -1742,7 +1742,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(within(side).getByRole("heading", { name: "후보 2" })).toBeInTheDocument();
     // 끝난 점검은 이미 읽은 저장 결과를 쓴다(다시 부르지 않음)
     expect(a.fetchRemediation).toHaveBeenCalledTimes(1);
-    fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로" }));
+    fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로 돌아가기" }));
     expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
   });
 
@@ -2061,7 +2061,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 페이지를 연 동안 목록 · 오른쪽 발견 상세 패널은 두지 않는다
     expect(screen.queryByRole("tabpanel", { name: "취약점 목록" })).toBeNull();
     expect(screen.queryByRole("complementary", { name: "취약점 상세" })).toBeNull();
-    fireEvent.click(within(page).getByRole("button", { name: "취약점 목록으로" }));
+    fireEvent.click(within(page).getByRole("button", { name: "취약점 목록으로 돌아가기" }));
     expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
     const back = screen.getByRole("tabpanel", { name: "취약점 목록" });
     // 돌아오면 연 발견이 골라져 있다
@@ -2117,7 +2117,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 주소창에 #finding — 같은 발견이 단독 화면에 뜬다
     act(() => go("finding"));
     expect(await screen.findByRole("heading", { level: 2, name: "후보 2" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "취약점 목록으로" }));
+    fireEvent.click(screen.getByRole("button", { name: "취약점 목록으로 돌아가기" }));
     // 보고서로 돌아오면 상세 페이지가 아니라 발견 목록
     expect(await screen.findByRole("tabpanel", { name: "취약점 목록" })).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "취약점 상세 페이지" })).toBeNull();
