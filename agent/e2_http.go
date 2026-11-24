@@ -38,7 +38,7 @@ const (
 	// 진단 Planner 한 번(Plan)의 턴·시간 기본값이다(C26). 설치 입력 runtime_limits(C32)가 없으면 이 값이다.
 	// 시간은 모델 호출 하나의 시간 상한(승인 manifest timeout_seconds, 공식 값 170초)과 맞춘다(2026-11-22 사용자 결정).
 	// 계획 한 번이 호출 하나보다 먼저 끊기면 느린 시간대의 긴 응답을 받지 못한다. 평가 러너의 제공자 멈춤 기준(180초)보다는
-	// 짧게 둔다. 준비 단계 전체 상한(2분, first_diagnosis_supervisor.go)은 그대로라 준비 단계의 계획은 그쪽이 먼저 자른다.
+	// 짧게 둔다. 준비 단계의 계획은 준비 단계 전체 상한(400초, server FirstDiagnosisPreparationTimeout) 안에서도 잘린다.
 	E2HTTPPlannerDefaultTurns    = 16
 	E2HTTPPlannerDefaultDuration = 170 * time.Second
 )
@@ -86,7 +86,10 @@ var (
 type E2HTTPScope interface {
 	SnapshotForIntent(intentID int64) e2proxy.ExecutionView
 	HasIntent(intentID int64) bool
+	// RedactOutput은 모델에 가는 글의 가림이다. model_visible_v1 실행은 대상이 비춘 비밀번호를 가리지 않는다.
 	RedactOutput(data []byte) []byte
+	// RedactRecord는 저장 기록(활동·후보 근거·그래프 기록)의 가림이다. 비밀번호를 정책과 상관없이 늘 가린다.
+	RedactRecord(data []byte) []byte
 }
 
 // E2HTTPRunner는 Worker가 명령을 맡기는 경계다.
@@ -540,7 +543,8 @@ type e2HTTPGraphTool struct {
 }
 
 func (t *e2HTTPGraphTool) Call(ctx context.Context, input json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
-	sanitized := json.RawMessage(t.execution.RedactOutput(input))
+	// 그래프 도구 입력은 탐색 그래프에 저장되므로 저장 기록 가림을 쓴다(모델이 받은 비밀번호도 남기지 않음).
+	sanitized := json.RawMessage(t.execution.RedactRecord(input))
 	if t.Name() == "record_fact" {
 		var payload struct {
 			IntentID int64 `json:"intent_id"`
@@ -767,9 +771,9 @@ func emitE2HTTPPromptActivity(emit func(db.Activity), reportStage func(string), 
 func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.Node, emit func(db.Activity), opts agentcore.Options, input string, execution E2HTTPScope, state *e2HTTPToolState, toolset *ToolSet) (harness.TerminalReason, WriteCounts, error) {
 	session := agentcore.NewSession(opts)
 	defer session.Close()
-	// 요약은 가린 글에서 자른다(captureRunSessionWith). 아래 emit의 가림은 그 밖의 칸을 위한 두 번째 층이다.
-	redactText := func(text string) string { return string(execution.RedactOutput([]byte(text))) }
-	_, reason, runErr := captureRunSessionWith(ctx, session, input, redactText, func(activity db.Activity) {
+	// 요약은 가린 글에서 자른다(captureRunSessionWith). 아래 emit의 가림은 그 밖의 칸을 위한 두 번째 층이다. 활동은 저장
+	// 기록이라 모델이 받은 비밀번호(model_visible_v1)까지 가린다(RedactRecord).
+	_, reason, runErr := captureRunSessionWith(ctx, session, input, e2HTTPRecordText(execution), func(activity db.Activity) {
 		if emit == nil {
 			return
 		}
@@ -781,11 +785,7 @@ func (w *Worker) runE2HTTPSession(ctx context.Context, name string, intent *db.N
 			activity.Detail = ErrE2HTTPWorker.Error()
 			activity.Metadata = nil
 		} else {
-			activity.Summary = string(execution.RedactOutput([]byte(activity.Summary)))
-			activity.Detail = string(execution.RedactOutput([]byte(activity.Detail)))
-			if len(activity.Metadata) > 0 {
-				activity.Metadata = execution.RedactOutput(activity.Metadata)
-			}
+			activity = e2HTTPRecordActivity(execution, activity)
 		}
 		emit(activity)
 	})
@@ -1165,4 +1165,19 @@ func e2HTTPSessionLines(sessions map[string]http.Header) string {
 		}
 	}
 	return b.String()
+}
+
+// e2HTTPRecordText는 활동 기록에 넣을 글의 가림이다. 저장 기록이라 RedactRecord를 쓴다(model_visible_v1 비밀번호 포함).
+func e2HTTPRecordText(execution E2HTTPScope) func(string) string {
+	return func(text string) string { return string(execution.RedactRecord([]byte(text))) }
+}
+
+// e2HTTPRecordActivity는 저장 직전 활동의 요약·상세·메타데이터를 저장 기록 가림으로 한 번 더 가린다.
+func e2HTTPRecordActivity(execution E2HTTPScope, activity db.Activity) db.Activity {
+	activity.Summary = string(execution.RedactRecord([]byte(activity.Summary)))
+	activity.Detail = string(execution.RedactRecord([]byte(activity.Detail)))
+	if len(activity.Metadata) > 0 {
+		activity.Metadata = execution.RedactRecord(activity.Metadata)
+	}
+	return activity
 }

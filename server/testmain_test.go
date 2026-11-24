@@ -1,7 +1,9 @@
 package server
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"testing"
 
@@ -17,6 +19,9 @@ func TestMain(m *testing.M) {
 	// synthetic prompts inside the test process's loopback fixtures, including
 	// restored task runtimes that unexpectedly try the provider's default URL.
 	installTestHTTPBoundary()
+	// v4 점검의 단가 재조회는 실제 OpenRouter 공개 목록을 읽는다. 시험 프로세스는 밖으로 나가지 않게 기본을 '읽지 못함'으로
+	// 둔다(설치 상한으로 진행). 재조회를 보는 시험은 이 값을 직접 바꾼다.
+	firstDiagnosisOpenRouterEndpoints = func(context.Context, string) ([]byte, error) { return nil, errors.New("test: no network") }
 	// server.New starts the realtime notifier's background delivery loop
 	// (notifyTick) unless this env var is set. The notify integration tests
 	// drive stepRealtime/stepDigest directly (see newNotifyFixture) and only

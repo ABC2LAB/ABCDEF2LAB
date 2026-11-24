@@ -27,6 +27,7 @@ func TestE2HTTPFactoryRecordsProductAttemptPatterns(t *testing.T) {
 		t.Fatal("fixture is not a product policy")
 	}
 	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/allowed"
 	raw, err := json.Marshal(policy)
 	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0600) != nil {
 		t.Fatal("합성 정책 준비 실패")
@@ -97,10 +98,13 @@ func TestE2HTTPFactoryAttemptPatternsMaskSessionAndUsername(t *testing.T) {
 	defer target.Close()
 	cfg, _, policy := e2HostPolicyFixture(t)
 	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/allowed"
 	policy.Rules = append(policy.Rules, E2HTTPFileRule{Ref: "auth-login", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/login", PathScopeRef: "auth-login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep})
 	policy.HeaderMode = e2proxy.HeaderTestAccountPassthrough
 	policy.Limits.MaxAttempts, policy.Limits.MaxCalls, policy.MaxRequests = 64, 64, 64
 	auth := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: authCredentialPin(t, cfg.AuthorityRoot, "tester-a.json", username, "seeded-pass-88ff")})
+	// model_visible_v1: 모델 출력 가림은 비밀번호를 두지만, 화면 경로 표시는 저장 기록이라 비밀번호 조각도 가린다(#886 이동찬 리뷰).
+	auth.PasswordResponse = e2proxy.PasswordResponseModelVisible
 	policy.Auth = &auth
 	raw, err := json.Marshal(policy)
 	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0600) != nil {
@@ -135,6 +139,10 @@ func TestE2HTTPFactoryAttemptPatternsMaskSessionAndUsername(t *testing.T) {
 		}
 		response.Body.Close()
 	}
+	// 모델이 비밀번호를 경로에 넣으면 E②가 보내지 않지만(거부), 거부 시도의 표시 경로에도 비밀번호가 남으면 안 된다.
+	if response, _, err := call.Do(ctx, mustRequest(t, "GET", target.URL+"/allowed/seeded-pass-88ff")); err == nil || response != nil {
+		t.Fatal("비밀번호가 든 모델 요청을 보냄")
+	}
 	closeCtx, done := context.WithTimeout(context.Background(), time.Second)
 	defer done()
 	_, _ = call.Close(closeCtx)
@@ -142,8 +150,20 @@ func TestE2HTTPFactoryAttemptPatternsMaskSessionAndUsername(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if strings.Contains(string(data), "seeded-pass-88ff") || !strings.Contains(string(data), `"/allowed/{id}"`) {
+		t.Fatalf("display patterns kept a password: %q", data)
+	}
 	if strings.Contains(string(data), session) || strings.Contains(string(data), username) ||
-		!strings.Contains(string(data), `"/allowed/{id}/items"`) || !strings.Contains(string(data), `"/allowed/users/{id}"`) {
+		strings.Count(string(data), `"/allowed/{id}/{id}"`) != 2 {
 		t.Fatalf("display patterns kept a session or account value: %q", data)
 	}
+}
+
+func mustRequest(t *testing.T, method, url string) *http.Request {
+	t.Helper()
+	request, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return request
 }

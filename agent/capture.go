@@ -46,13 +46,18 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 // captureRunSessionWith는 활동 기록에 넣을 글(모델 글·도구 입력·도구 결과·최종 답)을 redact로 먼저 가리고, 가린 글에서
 // 요약(첫 줄 앞부분)을 자른다. 요약을 먼저 자르고 나중에 가리면 잘린 보호 값(예: 시험 계정 세션 토큰 앞부분)이 정확한 값
 // 가림에 걸리지 않고 남는다(2026-11-14 Qwen3.6 소유 Juice Shop 점검 회차: 명령 첫 줄 TOKEN="…"이 200자에서 잘려 활동
-// 요약 4줄에 토큰 머리와 내용 일부가 남음). 감사 추적(auditTrace)과 반환하는 최종 답은 원문 그대로다.
+// 요약 4줄에 토큰 머리와 내용 일부가 남음). 반환하는 최종 답은 원문 그대로다. 감사 추적(auditTrace)·승인 대기 기록의 글(도구 입력·결과·사용자 글)은 가린 글이고,
+// 승인 훅과의 대조 키인 입력 digest만 원문으로 계산한다.
 func captureRunSessionWith(ctx context.Context, s *agentcore.Session, input string, redact func(string) string, emit func(db.Activity)) (string, harness.TerminalReason, error) {
 	shown := func(text string) string {
 		if redact == nil {
 			return text
 		}
 		return redact(text)
+	}
+	// 감사 추적·승인 대기 기록도 저장 기록이다. 가림이 있는 세션은 그 가림을 감사 문맥에 단다(도구 입력 digest는 원문, #886).
+	if redact != nil {
+		ctx = intercept.WithRecordRedaction(ctx, redact)
 	}
 	ctx, auditTrace := intercept.WithTrace(ctx, input, approvalHistory(s.Messages()))
 	defer auditTrace.Finish()
@@ -126,10 +131,10 @@ func captureRunSessionWith(ctx context.Context, s *agentcore.Session, input stri
 				continue
 			}
 			flush()
-			out := blocksText(ev.ToolResult.Content)
+			out := shown(blocksText(ev.ToolResult.Content))
 			lastTool.done(ev.ToolResult.ToolUseID)
+			// 감사 추적도 저장 기록이다. 가림이 있는 세션(E② 진단)은 가린 글을 남긴다(모델이 받은 비밀번호를 기록에 남기지 않음).
 			auditTrace.Complete(ev.ToolResult.ToolUseID, out, ev.ToolResult.IsError)
-			out = shown(out)
 			rec(db.Activity{Kind: "tool_result", Tool: toolNames[ev.ToolResult.ToolUseID], ToolUseID: ev.ToolResult.ToolUseID,
 				IsError: ev.ToolResult.IsError, Summary: firstLine(out, 200), Detail: out})
 		case harness.KindText:

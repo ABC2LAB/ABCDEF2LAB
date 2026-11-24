@@ -300,7 +300,7 @@ func validE2HTTPPasswordResponseField(raw []byte) bool {
 		}
 	}
 	for name, value := range auth {
-		if strings.EqualFold(name, "password_response") && (name != "password_response" || !bytes.Equal(value, []byte(`"mask_spans_v1"`))) {
+		if strings.EqualFold(name, "password_response") && (name != "password_response" || !bytes.Equal(value, []byte(`"mask_spans_v1"`)) && !bytes.Equal(value, []byte(`"model_visible_v1"`))) {
 			return false
 		}
 	}

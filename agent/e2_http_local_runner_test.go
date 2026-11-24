@@ -13,3 +13,6 @@ func (r localRunnerForTest) HasIntent(id int64) bool { return r.Runner.Execution
 func (r localRunnerForTest) RedactOutput(data []byte) []byte {
 	return r.Runner.Execution().RedactOutput(data)
 }
+func (r localRunnerForTest) RedactRecord(data []byte) []byte {
+	return r.Runner.Execution().RedactRecord(data)
+}

@@ -915,7 +915,9 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     u.readURLStatus.mockResolvedValue(externalReady);
     u.commandURLDiagnosis.mockResolvedValue({ ...preparing, scope: externalReady.scope });
     mount("new");
-    const consent = await screen.findByRole("checkbox", { name: /대상 응답·도구 출력의 외부 전송/ });
+    // 11/23 결정: 시험 계정이 없어도 외부 모델 회차는 대상 정보의 외부 전송과 사용자 책임을 시작 확인에서 고지한다.
+    const consent = await screen.findByRole("checkbox", { name: /외부 전송된 정보에 대한 책임은 사용자에게 있습니다/ });
+    expect(consent).toHaveAccessibleName(/대상이 돌려준 비밀번호·개인정보 등 포함/);
     // 서버가 돌려준 범위의 제공자는 요약 패널에 (분석 모델 칸의 제공자 고르기와 별개)
     const sum = screen.getByRole("complementary", { name: "점검 요약" });
     expect(within(sum).getByText(new RegExp(externalModel.provider.replace("/", "\\/")))).toBeInTheDocument();
@@ -1730,13 +1732,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(rows[0].tagName).toBe("BUTTON");
     expect(rows[0]).toHaveTextContent(/^위험도 미평가후보 1\/api\/items\/\{id\}idor검토 필요$/);
     expect(a.fetchRemediation).toHaveBeenCalledWith("42", "internal");
-    // 끝난 점검은 제품 서버가 점검 중 후보 조회를 닫으므로(409) 부르지 않고, 보고서 · 판정 목록으로 안내한다
+    // 끝난 점검은 제품 서버가 점검 중 후보 조회를 닫으므로(409) 부르지 않는다. '점검이 끝나 진행 중 후보 목록을 …' 안내
+    // 문장은 뺐다(사용자 11/23)
     expect(c.fetchLiveCandidates).not.toHaveBeenCalled();
     expect(screen.queryByRole("region", { name: "발견 후보" })).toBeNull();
-    const ended = document.getElementById("lFindsEnded") as HTMLElement;
-    expect(ended).toHaveTextContent(
-      "점검이 끝나 진행 중 후보 목록을 더 읽지 않습니다. 결과와 확정 단계 판정 목록은 위 [보고서 보기]에서 봅니다.",
-    );
+    expect(document.getElementById("lFindsEnded")).toBeNull();
+    expect(document.body).not.toHaveTextContent("점검이 끝나 진행 중 후보 목록");
     // 상태 카드 숫자 칸: 발견 2 · 판정 확정 0
     expect(within(document.getElementById("lMeta") as HTMLElement).getByText("발견").parentElement).toHaveTextContent(
       /^발견2판정 확정 0$/,
@@ -1749,8 +1750,6 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(a.fetchRemediation).toHaveBeenCalledTimes(1);
     fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로" }));
     expect(await screen.findByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
-    // 안내 줄에는 버튼을 또 두지 않는다(상태 카드의 [보고서 보기] 하나)
-    expect(within(ended).queryByRole("button")).toBeNull();
   });
 
   it("중지 요청은 같은 진단에 한 번 (expected revision 은 팀 lib 이 넣는다)", async () => {
@@ -1910,6 +1909,8 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     // 발견 목록에 후보가 있다. 위험도 딱지가 맨 앞(심각도 없으면 '위험도 미평가'), 아래 줄은 엔드포인트 · 유형
     const row = within(screen.getByRole("tabpanel", { name: "취약점 목록" })).getByRole("button", { name: /후보 1/ });
     expect(row.firstElementChild).toHaveTextContent("위험도 미평가");
+    // 위험도 미평가는 회색 딱지(사용자 11/23)
+    expect(row.firstElementChild?.className).toMatch(/sev-none/);
     expect(row).toHaveTextContent("GET /api/items/{id}idor");
     expect(within(row).getByText("{id}").tagName).toBe("I");
     // 상세 머리: 유형 · 주소, 엔드포인트 (시안 findingHtml)
