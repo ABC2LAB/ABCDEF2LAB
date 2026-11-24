@@ -133,7 +133,8 @@ function ServerRunRow({ run, list }: { run: URLRunSummary; list: View }) {
     urlStateText(run.state),
     info?.mode,
     run.started_at ? clockOf(run.started_at).slice(0, 5) : null,
-    run.action_required ? "확인 필요" : null,
+    // 끝난 점검엔 '확인 필요'를 붙이지 않는다(승인 만료 뒤 서버가 끝난 점검까지 켠다, 사용자 11/24)
+    run.action_required && !endedURLRun(run) ? "확인 필요" : null,
   ]
     .filter(Boolean)
     .join(" · ");

@@ -21,6 +21,7 @@ import * as api from "../live/api";
 import { useHiddenRuns } from "../live/hiddenRuns";
 import { LiveRailTasks } from "../live/rail";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
+import { urlStateText } from "../live/urlMap";
 import { useUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext, type View } from "../shell";
 import { RunRow } from "../views/live/runRows";
@@ -156,12 +157,35 @@ function records(finished = false) {
     </ShellContext.Provider>,
   );
 }
+// 끝난 점검은 승인 상태 · '확인 필요'를 붙이지 않는다(사용자 11/24: 대상 승인 시간이 지나면 서버가 끝난 점검까지 만료 ·
+// 확인 필요로 내려 '점검 완료 · 승인 만료'로 보였다 — 결과는 그대로 유효)
+it.each(["completed", "cancelled", "failed"] as const)("끝난(%s) 점검은 승인이 만료돼도 상태만 보인다", (state) => {
+  const row: URLRunSummary = {
+    ...projection(completed),
+    state,
+    approval_status: "expired",
+    action_required: true,
+  };
+  render(
+    <ShellContext.Provider value={shell("finished")}>
+      <RunRow row={row} />
+    </ShellContext.Provider>,
+  );
+  const item = screen.getByRole("button", { name: /job-1/ });
+  expect(item).toHaveTextContent(urlStateText(state));
+  // 점검 완료 딱지는 초록(ok), 중지 · 실패는 회색
+  const pill = within(item).getByText(urlStateText(state));
+  if (state === "completed") expect(pill.className).toMatch(/\bok\b|_ok_/);
+  else expect(pill.className).not.toMatch(/\bok\b|_ok_|wait/);
+  expect(item).not.toHaveTextContent("승인 만료");
+  expect(item).not.toHaveTextContent("확인 필요");
+});
 it.each([
-  ["completed", "expired", "점검 완료", "승인 만료"],
+  ["running", "expired", "엔진 실행 중", "승인 만료"],
   ["awaiting_approval", "not_revalidated", "승인 대기", "확인 필요"],
 ] as const)("%s 회차에 할 일이 있으면 목록에서 확인 신호를 보인다", (state, approval_status, pill, detail) => {
   const row: URLRunSummary = {
-    ...projection(state === "completed" ? completed : running),
+    ...projection(running),
     state,
     approval_status,
     action_required: true,

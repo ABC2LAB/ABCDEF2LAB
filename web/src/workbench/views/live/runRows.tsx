@@ -2,7 +2,7 @@
 
 import { ApiError } from "@/lib/diagnosis/api";
 import type { URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
-import { activeURLRun, runApprovalLabels } from "@/lib/diagnosis/diagnosis-runs";
+import { activeURLRun, endedURLRun, runApprovalLabels } from "@/lib/diagnosis/diagnosis-runs";
 import { urlPhaseLabels, urlReasonLabels } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
@@ -25,8 +25,12 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
   const writeBusy = useUrl((st) => st.writeBusy);
   const { openInsp } = useShell();
   const active = activeURLRun(row);
-  const approvalIssue = row.action_required && row.approval_status !== "not_revalidated";
-  const showStatus = active || row.action_required;
+  // 끝난 점검(완료 · 중지 · 실패)에는 승인 상태 · '확인 필요'를 붙이지 않는다(사용자 11/24: 대상 승인 시간이 지나면 서버가
+  // 끝난 점검까지 승인 만료 · 확인 필요로 내려 '점검 완료 · 승인 만료'로 보였다). 결과 · 보고서는 그대로 유효하고, 만료는
+  // 새 점검을 하려면 대상을 다시 승인하라는 뜻이라 새 점검 화면이 알린다. 진행 중 · 시작 전 · 결과 불명은 그대로 보인다
+  const ended = endedURLRun(row);
+  const approvalIssue = !ended && row.action_required && row.approval_status !== "not_revalidated";
+  const showStatus = active || (!ended && row.action_required);
   const owner = useUrlRuns((st) => st.owner);
   const info = useRunInput(row.id, owner);
   const startText = runStartText(row);
@@ -86,7 +90,7 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
           <span className={s["r-s"]}>
             {active ? <span>{urlPhaseLabels[row.phase]}</span> : null}
             {active || approvalIssue ? <span>{runApprovalLabels[row.approval_status]}</span> : null}
-            {row.action_required ? <span>확인 필요</span> : null}
+            {row.action_required && !ended ? <span>확인 필요</span> : null}
             {row.reason_code ? (
               <span>
                 {Object.hasOwn(urlReasonLabels, row.reason_code) ? urlReasonLabels[row.reason_code] : "서버 사유 있음"}
@@ -96,7 +100,10 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
         ) : null}
       </span>
       <span className={s["r-side"]}>
-        <span className={cx(s.pill, (row.state === "unknown" || approvalIssue) && s.wait)}>
+        {/* 점검 완료는 초록(사용자 11/24, 게이지 '점검 완료'와 같은 색). 결과 불명 · 승인 문제는 노랑 */}
+        <span
+          className={cx(s.pill, row.state === "unknown" || approvalIssue ? s.wait : row.state === "completed" && s.ok)}
+        >
           {row.state === "unknown"
             ? "상태 확인 필요 · 결과 불명"
             : `${urlStateText(row.state)}${approvalIssue ? ` · ${runApprovalLabels[row.approval_status]}` : ""}`}
