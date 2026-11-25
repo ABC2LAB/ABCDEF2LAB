@@ -3436,9 +3436,10 @@ it("주소 옆 [URL 인증]: 등록 전엔 버튼, 누르면 주소 바로 밑�
   fireEvent.click(auth);
   const basis = await screen.findByRole("checkbox", { name: /점검 권한이 있고/ });
   expect(auth).toHaveAttribute("aria-expanded", "true");
-  // 등록 칸은 점검 이름보다 위(주소 바로 밑)
+  // 점검 이름은 사이트 주소보다 위(사용자 11/25), 등록 칸은 주소 바로 밑
   const name = screen.getByLabelText(/점검 이름/);
-  expect(basis.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(name.compareDocumentPosition(urlInput) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(urlInput.compareDocumentPosition(basis) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   // 다시 누르면 닫히고, 또 누르면 열린다(접기 버튼 없음)
   expect(screen.queryByRole("button", { name: "접기" })).toBeNull();
   fireEvent.click(auth);

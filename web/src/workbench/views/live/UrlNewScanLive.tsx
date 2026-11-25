@@ -765,6 +765,24 @@ export function UrlNewScanLive() {
                     <h2>대상</h2>
                   </div>
                   <div className={s["fsec-b"]}>
+                    {/* 점검 이름(선택): 사이트 주소보다 위(사용자 11/25). 점검 목록 · 오른쪽 패널에 이 이름으로 보인다(사용자 11/18). 서버는 160바이트 · 제어 문자 없는
+                      글만 받는다 — 한글 기준 50자로 막고 제어 문자는 지운다 */}
+                    <div className={s.field}>
+                      <label className={s.lbl} htmlFor="luName">
+                        점검 이름 (선택)
+                      </label>
+                      <input
+                        className={cx(s.inp, s["w-url"])}
+                        id="luName"
+                        type="text"
+                        value={nv}
+                        disabled={g.inputLocked}
+                        autoComplete="off"
+                        maxLength={50}
+                        placeholder="예: 쇼핑몰 주문 API 점검"
+                        onChange={(e) => setName(withoutControlChars(e.target.value))}
+                      />
+                    </div>
                     <div className={s.field}>
                       <label className={cx(s.lbl, s.must)} htmlFor="luUrl">
                         점검할 사이트 주소
@@ -816,24 +834,6 @@ export function UrlNewScanLive() {
                         onState={setResetState}
                       />
                     ) : null}
-                    {/* 점검 이름(선택): 점검 목록 · 오른쪽 패널에 이 이름으로 보인다(사용자 11/18). 서버는 160바이트 · 제어 문자 없는
-                      글만 받는다 — 한글 기준 50자로 막고 제어 문자는 지운다 */}
-                    <div className={s.field}>
-                      <label className={s.lbl} htmlFor="luName">
-                        점검 이름 (선택)
-                      </label>
-                      <input
-                        className={cx(s.inp, s["w-url"])}
-                        id="luName"
-                        type="text"
-                        value={nv}
-                        disabled={g.inputLocked}
-                        autoComplete="off"
-                        maxLength={50}
-                        placeholder="예: 쇼핑몰 주문 API 점검"
-                        onChange={(e) => setName(withoutControlChars(e.target.value))}
-                      />
-                    </div>
                     {/* 멈춘 작업 해제(C04): 결과 불명 작업이 설치 전체의 새 점검 시작을 막을 때만 보인다 */}
                     <StuckReleaseBox />
                     {/* '기존 점검 다시 열기'(진행 · 끝난 점검 목록 링크)는 두지 않는다(사용자 11/18) — 대시보드의 진행 중 · 보존된 끝난 점검 목록('전체 보기')으로 간다 */}
