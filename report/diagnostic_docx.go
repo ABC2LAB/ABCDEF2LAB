@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/remediation"
 )
 
@@ -25,7 +26,7 @@ type diagnosticWord struct {
 
 func wordText(value string) string {
 	var out bytes.Buffer
-	_ = xml.EscapeText(&out, []byte(value))
+	_ = xml.EscapeText(&out, []byte(strings.ReplaceAll(value, dlp.Redacted, diagnosticExportMask)))
 	return out.String()
 }
 func (w *diagnosticWord) paragraph(style, text string) {
@@ -83,7 +84,7 @@ func (w *diagnosticWord) chapter(title string) { w.paragraph("Heading1", title) 
 
 // DiagnosticDOCX는 HTML과 동일한 검증·집계·DLP 투영을 사용한다. 대상·변환 API를 호출하지 않는다.
 func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
-	in, err := PrepareDiagnostic(input)
+	in, err := prepareDiagnosticExport(input)
 	if err != nil {
 		return nil, err
 	}
@@ -91,6 +92,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 	w.paragraph("Title", "웹 취약점 진단 결과보고서")
 	w.table([][]string{{"문서 정보", "값"}, {"작업", fmt.Sprintf("#%d", in.TaskID)}, {"형식", "diagnostic-report/v2"}, {"생성 시각", in.GeneratedAt.UTC().Format(time.RFC3339)}, {"공개 범위", map[bool]string{true: "공유용 마스킹 사본", false: "인증된 관리자 내부 상세"}[in.Shared]}})
 	w.paragraph("Normal", "이 보고서는 저장된 실행·증거·판정·조치 자료만 사용합니다. 보고서 생성은 새로운 진단이나 고객 코드 수정을 실행하지 않습니다.")
+	w.paragraph("Normal", "***는 가림 표시이며 …는 본문 생략을 뜻합니다.")
 	w.chapter("목차")
 	for _, t := range []string{"1장. 취약점 진단 개요", "2장. 진단 방법 및 수행 현황", "3장. 진단 결과 요약", "4장. 취약점별 상세 결과", "5장. 증적 부록"} {
 		w.paragraph("Normal", t)

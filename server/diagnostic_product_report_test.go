@@ -76,7 +76,7 @@ func TestDiagnosticReportCountsOnlyVerifiedProductConfirmations(t *testing.T) {
 					if (tc.unreadable > 0 || tc.noSource > 0) && strings.Contains(body, "확인 실패") {
 						t.Fatal("읽지 못한 판정이 무결성 확인 실패로 표시됐다")
 					}
-					if tc.confirmed > 0 && shared && (!strings.Contains(body, "자원 종류 [REDACTED]") || strings.Contains(body, "자원 종류 document")) {
+					if tc.confirmed > 0 && shared && (!strings.Contains(body, "자원 종류 ***") || strings.Contains(body, "자원 종류 document")) {
 						t.Fatal("공유 보고서에 자원 종류 원문이 남았다")
 					}
 				}
