@@ -86,6 +86,15 @@ func TestSelectedFixtureCompletesOnlyObservedFreshGoal(t *testing.T) {
 	}
 }
 
+func TestSelectedFixtureUsesOwnedSyntheticTargetWithoutJuiceShop(t *testing.T) {
+	h := selectedModel("https://synthetic.test:9443")
+	messages := []any{map[string]any{"role": "user", "content": "Inspect the approved HTTPS target https://synthetic.test:9443"}}
+	name, _ := selectedFixtureResponse(t, h, []string{"set_goals"}, messages)
+	if name != "set_goals" {
+		t.Fatal("owned standalone target was not recognized")
+	}
+}
+
 func TestSelectedFixtureAnalysisAndFinalAreInsufficient(t *testing.T) {
 	h := selectedModel("https://juice.test:9443")
 	for _, version := range []string{"selected/analysis-v1", "selected/final-v1"} {

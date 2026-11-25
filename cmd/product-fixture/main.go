@@ -53,10 +53,14 @@ func main() {
 		must(servePidsTarget())
 		return
 	}
-	u, e := url.Parse(*upstream)
-	must(e)
-	readyAddress, e := upstreamDialAddress(u)
-	must(e)
+	var u *url.URL
+	readyAddress := ""
+	if *mode != "selected-target-nosniff" {
+		u, e = url.Parse(*upstream)
+		must(e)
+		readyAddress, e = upstreamDialAddress(u)
+		must(e)
+	}
 	stats := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ready := true
 		if *mode == "target" || *mode == "workflow-target" {
@@ -85,9 +89,12 @@ func main() {
 		must(http.ListenAndServe(":8080", mux))
 		return
 	}
-	proxy := httputil.NewSingleHostReverseProxy(u)
-	proxy.Transport = &http.Transport{Proxy: nil}
-	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, e error) { http.Error(w, "owned_target_unavailable", 503) }
+	var proxy *httputil.ReverseProxy
+	if u != nil {
+		proxy = httputil.NewSingleHostReverseProxy(u)
+		proxy.Transport = &http.Transport{Proxy: nil}
+		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, e error) { http.Error(w, "owned_target_unavailable", 503) }
+	}
 	go func() {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
@@ -114,6 +121,10 @@ func main() {
 				io.WriteString(w, `<html><body><h1>Owned acceptance navigation fixture</h1><a href="/rest/products/search">Actual Juice Shop products</a><a href="/rest/admin/application-version">Actual Juice Shop version</a><a href="/excluded">Excluded fixture path</a><form method="post" action="/api/Users"></form></body></html>`)
 				return
 			}
+		}
+		if proxy == nil {
+			http.NotFound(w, r)
+			return
 		}
 		proxy.ServeHTTP(w, r)
 	})}
@@ -232,8 +243,8 @@ func modelWithSelection(target string, selected bool) http.Handler {
 func modelWithSelectionMode(target string, selected, nosniff, stored bool) http.Handler {
 	var mu sync.Mutex
 	turns := map[string]*fixtureTurns{}
-	originPattern := regexp.MustCompile(`https://(?:juice-a|juice-b|juice)\.test:9443`)
-	exactGoal := regexp.MustCompile(`Inspect the approved (?:read-only )?HTTPS target (https://(?:juice-a|juice-b|juice)\.test:9443)`)
+	originPattern := regexp.MustCompile(`https://(?:juice-a|juice-b|juice|synthetic)\.test:9443`)
+	exactGoal := regexp.MustCompile(`Inspect the approved (?:read-only )?HTTPS target (https://(?:juice-a|juice-b|juice|synthetic)\.test:9443)`)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
