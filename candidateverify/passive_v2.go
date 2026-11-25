@@ -185,14 +185,23 @@ func v2Observation(t e2runner.TrustedResult, claim string) (e2proxy.HTTPObservat
 			return obs, obs.HTMLSecurity, true
 		}
 	case "server_version_banner":
-		if len(obs.Technologies) != 1 || obs.Technologies[0].Header != "Server" || obs.Technologies[0].Name == "" {
-			return e2proxy.HTTPObservation{}, "", false
+		var server *e2proxy.HTTPTechnology
+		for i := range obs.Technologies {
+			technology := &obs.Technologies[i]
+			if technology.Header != "Server" {
+				continue
+			}
+			if server != nil || technology.Name == "" {
+				return e2proxy.HTTPObservation{}, "", false
+			}
+			server = technology
 		}
-		t := obs.Technologies[0]
-		if t.Version == "" {
-			return obs, "versionless/" + t.Name, true
+		if server != nil {
+			if server.Version == "" {
+				return obs, "versionless/" + server.Name, true
+			}
+			return obs, "banner/" + server.Name + "/" + server.Version, true
 		}
-		return obs, "banner/" + t.Name + "/" + t.Version, true
 	}
 	return e2proxy.HTTPObservation{}, "", false
 }

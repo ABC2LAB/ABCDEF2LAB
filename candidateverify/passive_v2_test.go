@@ -179,7 +179,10 @@ func TestPassiveV2ServerBannerReusesSameSourceRules(t *testing.T) {
 				version = tc.second
 			}
 			calls[i].Call.Observations[0].HTMLSecurity = ""
-			calls[i].Call.Observations[0].Technologies = []e2proxy.HTTPTechnology{{Name: "Example", Version: version, Header: "Server"}}
+			calls[i].Call.Observations[0].Technologies = []e2proxy.HTTPTechnology{
+				{Name: "Framework", Version: "1", Header: "X-Powered-By"},
+				{Name: "Example", Version: version, Header: "Server"},
+			}
 		}
 		var envelope map[string]any
 		if err := json.Unmarshal([]byte(c.Evidence), &envelope); err != nil {
@@ -197,6 +200,30 @@ func TestPassiveV2ServerBannerReusesSameSourceRules(t *testing.T) {
 		if (got.Status == Confirmed || got.Status == Negative) && !ValidateStoredV2(c, got) {
 			t.Fatalf("stored banner not validated: %+v", got)
 		}
+	}
+}
+
+func TestServerBannerRequiresOneNamedServerRecord(t *testing.T) {
+	_, calls := v2Fixture(t, "nosniff_missing", "")
+	server := e2proxy.HTTPTechnology{Name: "Example", Version: "2.8", Header: "Server"}
+	other := e2proxy.HTTPTechnology{Name: "Framework", Header: "X-Powered-By"}
+	for _, tc := range []struct {
+		name    string
+		headers []e2proxy.HTTPTechnology
+		want    bool
+	}{
+		{"server only", []e2proxy.HTTPTechnology{server}, true},
+		{"server first", []e2proxy.HTTPTechnology{server, other}, true},
+		{"other only", []e2proxy.HTTPTechnology{other}, false},
+		{"duplicate server", []e2proxy.HTTPTechnology{server, other, server}, false},
+		{"unnamed server", []e2proxy.HTTPTechnology{other, {Header: "Server"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls[0].Call.Observations[0].Technologies = tc.headers
+			if _, _, ok := v2Observation(calls[0], "server_version_banner"); ok != tc.want {
+				t.Fatalf("eligible = %v, want %v", ok, tc.want)
+			}
+		})
 	}
 }
 
