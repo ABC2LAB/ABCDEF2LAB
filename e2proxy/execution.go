@@ -1495,6 +1495,10 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		var allowed bool
 		var approvalErr error
 		// 승인을 기다리는 동안은 러너가 명령 시간 예산을 쓰지 않는다(#898 발견 3). call 기한·회차 기한은 그대로다.
+		// 프록시 요청 상한도 멈추고 승인 대기가 끝나면 처음부터 다시 잰다(request_clock.go, 사용자 결정 2026-11-25).
+		// 승인 대기 자체는 승인 기한(approvalExpires)과 call 문맥까지만이다.
+		clock := requestClockFrom(ctx)
+		clock.pause()
 		c.approvals.add(1)
 		if gate, ok := e.cfg.RequestApproval.(RequestApprovalOutcomeGate); ok {
 			var outcome RequestApprovalOutcome
@@ -1507,6 +1511,7 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 			allowed, approvalErr = e.cfg.RequestApproval.AwaitRequestApproval(approvalCtx, proposal)
 		}
 		c.approvals.add(-1)
+		clock.restart()
 		canceled := approvalCtx.Err() != nil || ctx.Err() != nil
 		stopApproval()
 		cancelApproval()

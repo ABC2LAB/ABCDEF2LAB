@@ -265,9 +265,12 @@ func publicCoverageGraph(g *db.CoverageGraphData) coverageGraphPublic {
 		if n.Kind == "company" {
 			n.Label = "회사 #" + strconv.FormatInt(n.CompanyID, 10)
 		}
+		if n.Kind == "endpoint" {
+			n.PathDetailState = PathDetailUnavailable
+		}
 		if u, err := url.Parse(n.URL); err == nil && (u.Scheme == "http" || u.Scheme == "https") && reportPublicHost(u.Hostname()) {
 			if n.Kind == "endpoint" {
-				n.DisplayPath = coverageGraphDisplayPath(u.EscapedPath())
+				n.DisplayPath, n.PathDetailState = coverageGraphDisplayPath(u.EscapedPath())
 			}
 			n.URL = (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
 			n.Label = n.URL
