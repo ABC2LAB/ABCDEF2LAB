@@ -1949,21 +1949,26 @@ export function UrlReportLive() {
   const usage = job?.model_usage;
   const startText = runStartText(job);
   const durationSec = runDurationSec(job);
-  const meta = [
-    <span key="start">시작 {startText ? <b>{startText}</b> : <NotYet why={runStartMissingWhy(job)} />}</span>,
-    <span key="dur">
-      소요 {durationSec !== null ? <b>{fmtDur(durationSec)}</b> : <NotYet why={runDurationMissingWhy(job)} />}
-    </span>,
-    profile ? (
-      <span key="model">
-        모델 <b>{`${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}`}</b>
+  // 두 줄(사용자 11/25): 위 시작 · 소요, 아래 모델 · 토큰
+  const meta = (
+    <>
+      <span className={s["vh-meta-ln"]}>
+        <span>시작 {startText ? <b>{startText}</b> : <NotYet why={runStartMissingWhy(job)} />}</span>
+        <span>
+          소요 {durationSec !== null ? <b>{fmtDur(durationSec)}</b> : <NotYet why={runDurationMissingWhy(job)} />}
+        </span>
       </span>
-    ) : null,
-    // 머리 줄은 토큰(입 · 출)에서 끝낸다(사용자 11/19 — 길어서 '모델 사용량' → '토큰', 요청 수는 두지 않음)
-    <span key="use" title={usage ? tokenExact(usage) : undefined}>
-      토큰 {usage ? <TokenChips u={usage} /> : <b>—</b>}
-    </span>,
-  ].filter(Boolean);
+      <span className={s["vh-meta-ln"]}>
+        {profile ? (
+          <span>
+            모델 <b>{`${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}`}</b>
+          </span>
+        ) : null}
+        {/* 머리 줄은 토큰(입 · 출)에서 끝낸다(사용자 11/19 — 길어서 '모델 사용량' → '토큰', 요청 수는 두지 않음) */}
+        <span title={usage ? tokenExact(usage) : undefined}>토큰 {usage ? <TokenChips u={usage} /> : <b>—</b>}</span>
+      </span>
+    </>
+  );
 
   return (
     <>
