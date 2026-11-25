@@ -51,8 +51,11 @@ var (
 	ErrConfig = errors.New("e2proxy: invalid trusted configuration")
 	ErrDenied = errors.New("e2proxy: request refused")
 	ErrClosed = errors.New("e2proxy: admission closed")
-	ErrAudit  = errors.New("e2proxy: audit unavailable")
-	ErrDrain  = errors.New("e2proxy: drain incomplete")
+	// ErrModelStageClosed는 모델 단계 마감(CloseModelStage)으로 call 문맥이 끝났다는 취소 원인이다(context.Cause). 승인
+	// 대기가 이 까닭으로 닫혔는지를 승인 이력이 가린다(closed_reason model_stage_closed).
+	ErrModelStageClosed = errors.New("e2proxy: model stage closed")
+	ErrAudit            = errors.New("e2proxy: audit unavailable")
+	ErrDrain            = errors.New("e2proxy: drain incomplete")
 	// ErrWithheld는 대상이 답했지만 E2가 응답 표현을 주지 않은 요청이다(사유 withheld).
 	ErrWithheld = errors.New("e2proxy: response withheld")
 	// ErrAuthSession은 인증 준비 응답을 받았지만 설정한 세션 위치에서 세션을 찾지 못했다는 뜻이다(로그인 실패 포함).
