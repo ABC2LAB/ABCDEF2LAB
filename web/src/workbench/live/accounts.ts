@@ -376,6 +376,31 @@ export async function setTargetLogin(targetId: string, login: TargetLogin): Prom
 
 // Go의 strings.TrimSpace가 사용하는 Unicode White_Space 문자 집합이다.
 const USERNAME_WHITESPACE = /[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/;
+/** 아이디 칸에서 지울 공백(서버 TrimSpace 와 같은 문자 집합, 전부). */
+const USERNAME_WHITESPACE_ALL = new RegExp(USERNAME_WHITESPACE.source, "g");
+
+/**
+ * 아이디 칸에 공백을 넣지 못하게 한다(사용자 11/25 — 11/24 B 계정 아이디 끝 공백으로 로그인이 실패했다). 타이핑 · 붙여넣기 ·
+ * 끌어 놓기 모두 input 이벤트에서 지우고 커서 자리를 지킨다. 한글 조합 중에는 건드리지 않고 조합이 끝나면 지운다.
+ * 비밀번호 · 쿠키 칸은 공백이 정상 값일 수 있어 쓰지 않는다. 칸 값을 상태에 두지 않는 비제어 입력에 그대로 쓴다.
+ */
+export function stripUsernameWhitespace(el: HTMLInputElement): void {
+  const value = el.value;
+  if (!USERNAME_WHITESPACE.test(value)) return;
+  const caret = el.selectionStart ?? value.length;
+  const before = value.slice(0, caret).replace(USERNAME_WHITESPACE_ALL, "");
+  el.value = before + value.slice(caret).replace(USERNAME_WHITESPACE_ALL, "");
+  el.setSelectionRange?.(before.length, before.length);
+}
+
+/** 아이디 칸에 붙이는 이벤트 묶음(공백 막기). */
+export const NO_SPACE_USERNAME = {
+  onInput: (e: { currentTarget: HTMLInputElement; nativeEvent: Event }) => {
+    if ((e.nativeEvent as InputEvent).isComposing) return;
+    stripUsernameWhitespace(e.currentTarget);
+  },
+  onCompositionEnd: (e: { currentTarget: HTMLInputElement }) => stripUsernameWhitespace(e.currentTarget),
+} as const;
 
 /** 진단 준비 서비스와 같은 자격 형식 검사를 적용한다. */
 export function validAccountCredential(username: string, password: string): boolean {
