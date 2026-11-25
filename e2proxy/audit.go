@@ -136,6 +136,9 @@ func CreateScreenJournal(directory, name string, key []byte) (*Journal, error) {
 	return j, nil
 }
 
+// ScreenCopy는 이 저널이 화면 사본(CreateScreenJournal)인지 알려 준다.
+func (j *Journal) ScreenCopy() bool { return j != nil && j.screen }
+
 // CreateJournalV3는 실행 범위와 서버가 발급한 비민감 키 참조가 헤더에 결속된 일반 E② 저널을 만든다.
 // Checkpoint는 로컬 Sync 지점이다. 외부 정본 게시와 현재성 검증은 별도 권한 경계의 책임이다.
 func CreateJournalV3(directory, name string, key []byte, scope transmit.Scope, keyRef string) (*Journal, error) {
@@ -540,13 +543,13 @@ func validJournalRecordEvent(event Event, version string) bool {
 }
 
 // validJournalRecordEventFor는 저널 종류에 맞춘 행 검사다. 화면 사본(screen)의 v2 행만 확정 단계 투영을 더 받는다.
-// 투영은 E3Audit·메서드·명령 참조·자른 응답 표시가 없고 Worker intent에 귀속되지 않아야 하며, 나머지는 일반 프로그램
-// 호출 행과 같은 규칙(식별자·결정·송신 단계 칸의 정합)으로 본다.
+// 투영은 메서드·명령 참조·자른 응답 표시가 없어야 하고, 나머지는 일반 프로그램 호출 행과 같은 v2 규칙으로 본다. E3Audit이
+// 있거나 Worker intent에 귀속된 행은 그 v2 규칙(E3Audit 거부·호출 귀속 검사)이 거부한다.
 func validJournalRecordEventFor(event Event, version string, screen bool) bool {
 	if !screen || version == JournalVersionV3 || !event.Program.isE3() {
 		return validJournalRecordEvent(event, version)
 	}
-	if event.E3Audit != nil || event.Method != "" || event.CommandRef != "" || event.ResponseTruncated || event.IntentID != 0 {
+	if event.Method != "" || event.CommandRef != "" || event.ResponseTruncated {
 		return false
 	}
 	// 일반 v2 귀속 검사는 지원되는 프로그램 호출과 같은 형태만 허용한다(v3 검사와 같은 방식). 원본 Program은 행과 MAC에 남는다.
