@@ -5,7 +5,7 @@
 // 서버가 주지 않는 시안 칸(로그인 필요 여부 · 경로 기능 설명 · 요청 횟수 · 시작 전 점검 · 새 경로 처리 규칙 · 기록 한 줄 설명)은
 // 자리를 두지 않고 뺀다. 탐색 막대는 서버 진행률이 아니라 페이지 상한 대비 방문 수다.
 
-import { Fragment, type ReactElement, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { Fragment, type ReactElement, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import { clockOf } from "../../live/map";
@@ -290,7 +290,7 @@ export function eventText(kind: string): string {
 }
 /**
  * 경로 기록 줄의 결과 칸: 응답 코드가 있으면 코드, 실패 기록이면 '실패' 딱지(시안의 요청 안 함 딱지 자리), 그 밖은 —.
- * 무슨 기록인지는 줄 아래 설명(.ln)에 적는다.
+ * 무슨 기록인지는 옆 '기록' 칸에 적는다.
  */
 function EventResult({ event }: { event: FlowEvent }) {
   if (event.status) return <Sc status={event.status} />;
@@ -659,6 +659,12 @@ export function logRawOf(events: readonly FlowEvent[], i: number, endpoint: Work
   if (later || !endpoint || endpoint.status !== ev.status) return "stale";
   return "latest";
 }
+
+/**
+ * 탐색 기록에 남기는 경로 없는 줄: 처음(점검 시작)과 끝(점검 완료 · 중지됨 · 실행 실패)만(사용자 11/25). 탐색 시작 · 심화 점검
+ * 시작/끝 · 범위 확인 대기 같은 중간 줄은 숨긴다. 중지 · 실패도 끝 줄로 남겨 끝난 까닭을 감추지 않는다(규칙 5)
+ */
+const LOG_SYSTEM_KINDS: ReadonlySet<string> = new Set(["created", "completed", "stopped", "failed"]);
 
 /** 탐색 기록 줄을 가리키는 키. 서버 기록에 id 가 없어 시각 · 종류 · 메서드 · 경로로 가리킨다. */
 const logKeyOf = (ev: FlowEvent) => `${ev.at}:${ev.kind}:${ev.method}:${ev.path}`;
@@ -1034,6 +1040,11 @@ export function WorkflowCrawlLive() {
   const logEndpoint = logEvent
     ? endpoints.find((e) => e.method === logEvent.method && e.path === logEvent.path)
     : undefined;
+  // 탐색 기록 줄의 출처 칸: 메서드 · 경로가 같은 발견한 API
+  const endpointOf = useMemo(
+    () => new Map((flow?.endpoints ?? []).map((e) => [`${e.method} ${e.path}`, e])),
+    [flow?.endpoints],
+  );
   const pickLog = (key: string) => {
     setLogKey(key);
     openInsp();
@@ -1168,16 +1179,24 @@ export function WorkflowCrawlLive() {
                   <h2 id="cLogH">탐색 기록</h2>
                 </div>
                 <div className={s.log} id="cLog">
+                  {/* 탐색 기록 칸(사용자 11/25): 같은 경로의 서버 출처를 줄마다, 결과는 맨 끝. 데이터 변경(조회 · 변경 가능)은
+                      범위 확인 화면 딱지와 같은 분류라, 본문 칸(body_keys)은 거의 비어 있어 뺐다.
+                      응답 · 요청 원문 칸은 서버가 한 줄('HTTP status 200' ·
+                      'GET /path HTTP/1.1')만 저장해 결과 · 메서드 · 경로와 같아 뺐고, 근거는 서버 값이 없어, 찾은 곳은 실제
+                      데이터에서 모두 시작 페이지('/')라 뺐다(오른쪽 패널엔 남김) */}
                   <div className={s.lh}>
                     <span>시각</span>
                     <span>메서드</span>
                     <span>경로</span>
+                    <span>기록</span>
+                    <span>출처</span>
                     <span>결과</span>
                   </div>
                   {flow.events.length ? (
                     flow.events.map((event) => {
                       if (event.method) {
                         const key = logKeyOf(event);
+                        const endpoint = endpointOf.get(`${event.method} ${event.path ?? ""}`);
                         const on = logKey === key;
                         // 누르면 그 기록이 오른쪽 패널에 (줄 아래로 펼치지 않는다)
                         return (
@@ -1191,13 +1210,16 @@ export function WorkflowCrawlLive() {
                             <span className={s.t}>{hms(event.at)}</span>
                             <span className={cx(s.m, s[event.method])}>{event.method}</span>
                             <span className={s.p}>{event.path ? <Pth p={event.path} /> : "—"}</span>
+                            <span className={s.lk}>{eventText(event.kind)}</span>
+                            {/* 같은 경로의 서버 출처(오른쪽 패널과 같은 값). 발견한 API 에 없는 경로면 — */}
+                            <span className={cx(s.lk, s.mono)}>{endpoint?.source ?? NONE}</span>
                             <span>
                               <EventResult event={event} />
                             </span>
-                            <span className={s.ln}>{eventText(event.kind)}</span>
                           </button>
                         );
                       }
+                      if (!LOG_SYSTEM_KINDS.has(event.kind)) return null;
                       return (
                         <div className={cx(s.lr, s.sys)} key={`${event.at}:${event.kind}`}>
                           <span className={s.t}>{hms(event.at)}</span>

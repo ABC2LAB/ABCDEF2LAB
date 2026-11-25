@@ -1189,18 +1189,49 @@ describe("시안 짜임 (자산 탐색 · 범위 확인 기록 · 묶음)", () =
     expect(screen.getByText("{id}").tagName).toBe("I");
   });
 
-  it("자산 탐색: 결과 칸은 응답 코드 · 실패 딱지 · —, 줄 아래에 기록 글, 범례 · 숫자 칸은 시안 글", () => {
+  it("자산 탐색: 기록 · 출처 칸, 맨 끝 결과 칸, 경로 없는 줄은 처음 · 끝만(사용자 11/25), 범례 · 숫자 칸은 시안 글", () => {
     useUrl.setState({
       handle,
       job,
       verified: true,
       flow: {
         ...flow,
+        // 서버가 원문 · 본문 키를 줘도 표엔 칸이 없다(아래 d · e 줄)
+        endpoints: flow.endpoints.map((e) => {
+          if (e.id === "write")
+            return {
+              ...e,
+              from: "/app.js",
+              source: "api_recon_static",
+              discovery_confidence: "inferred",
+              body_keys: ["username", "email", "password=secret-value"],
+            };
+          if (e.id === "read")
+            return {
+              ...e,
+              status: 200,
+              request: "GET /api/products/1 HTTP/1.1\nHost: shop.test\nCookie: session=[REDACTED]",
+              response: "HTTP/1.1 200 OK\nConnection: keep-alive\n\n{}",
+            };
+          return e;
+        }),
         events: [
+          { at: "2026-11-11T00:59:59Z", kind: "created" },
           { at: "2026-11-11T01:00:00Z", kind: "crawl_started" },
           { at: "2026-11-11T01:00:01Z", kind: "visit_started", method: "GET", path: "/a" },
           { at: "2026-11-11T01:00:02Z", kind: "page_failed", method: "GET", path: "/b" },
           { at: "2026-11-11T01:00:03Z", kind: "exploration_observed", method: "GET", path: "/c", status: 403 },
+          {
+            at: "2026-11-11T01:00:04Z",
+            kind: "exploration_observed",
+            method: "GET",
+            path: "/api/products/1",
+            status: 200,
+          },
+          { at: "2026-11-11T01:00:05Z", kind: "exploration_observed", method: "PUT", path: "/api/users/2" },
+          { at: "2026-11-11T01:00:06Z", kind: "deep_worker_started" },
+          { at: "2026-11-11T01:00:07Z", kind: "deep_worker_finished" },
+          { at: "2026-11-11T01:00:08Z", kind: "completed" },
         ],
       },
       flowVerified: true,
@@ -1211,11 +1242,25 @@ describe("시안 짜임 (자산 탐색 · 범위 확인 기록 · 묶음)", () =
       </ShellContext.Provider>,
     );
     const log = document.getElementById("cLog") as HTMLElement;
-    expect(within(log).getByText("탐색 시작")).toBeInTheDocument();
-    const [a, b, c] = within(log).getAllByRole("button");
-    expect(a).toHaveTextContent(/\/a—방문 시작$/);
-    expect(b).toHaveTextContent(/\/b실패관찰 실패$/);
-    expect(c).toHaveTextContent(/\/c403관찰함$/);
+    // 경로 없는 줄은 처음(점검 시작)과 끝(점검 완료)만 — 탐색 시작 · 심화 점검 시작/끝은 숨긴다
+    expect(within(log).getByText("점검 시작")).toBeInTheDocument();
+    expect(within(log).getByText("점검 완료")).toBeInTheDocument();
+    expect(within(log).queryByText("탐색 시작")).toBeNull();
+    expect(within(log).queryByText(/심화 점검/)).toBeNull();
+    // 같은 경로의 서버 값(출처 칸)을 줄마다, 결과는 맨 끝(사용자 11/25). 요청 · 응답 원문 · 근거 · 찾은 곳 ·
+    // 데이터 변경 칸은 없다(서버 원문이 한 줄뿐 · 값 없음 · 모두 '/' · 범위 확인 딱지와 같은 분류)
+    expect(log.firstElementChild).toHaveTextContent(/^시각메서드경로기록출처결과$/);
+    const [a, b, c, d, e] = within(log).getAllByRole("button");
+    // 출처는 메서드 · 경로가 같은 발견한 API 의 값(없으면 —), 결과는 맨 끝
+    expect(a).toHaveTextContent(/^\S+GET\/a방문 시작——$/);
+    expect(b).toHaveTextContent(/\/b관찰 실패—실패$/);
+    expect(c).toHaveTextContent(/\/c관찰함—403$/);
+    // 발견한 API 에 있는 경로: 출처, 원문 칸은 없다
+    expect(d).toHaveTextContent(/\/api\/products\/1관찰함html_link200$/);
+    expect(d).not.toHaveTextContent(/HTTP\/1\.1|Cookie/);
+    // 추정한 경로에도 딱지는 없고, 본문 칸도 없다(사용자 11/25)
+    expect(e).toHaveTextContent(/\/api\/users\/2관찰함api_recon_static—$/);
+    expect(e).not.toHaveTextContent(/secret-value/);
     // 숫자 칸 상자 (이름 · 수 · 설명): 발견한 API 설명은 종류별 합이 발견 수와 맞는다(읽기 1 + 쓰기 1 + 범위 밖 1 = 3)
     expect(document.getElementById("cFound")?.parentElement).toHaveTextContent(
       /^발견한 API3조회 1 · 데이터 변경 1 · 제외 1$/,
