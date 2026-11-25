@@ -168,7 +168,16 @@ func selectedNosniffVerdict(candidateID int64, messages []fixtureMessage) any {
 			_ = json.Unmarshal([]byte(text), &input)
 		}
 	}
-	if input.CandidateID != candidateID || input.Original == nil || len(input.Followup) != 1 {
+	if input.CandidateID != candidateID {
+		result["reason"] = "synthetic_candidate_mismatch"
+		return result
+	}
+	if input.Original == nil {
+		result["reason"] = "synthetic_original_unavailable"
+		return result
+	}
+	if len(input.Followup) != 1 {
+		result["reason"] = "synthetic_followup_unavailable"
 		return result
 	}
 	a, b := input.Original.Source, input.Followup[0].Source
@@ -179,8 +188,16 @@ func selectedNosniffVerdict(candidateID int64, messages []fixtureMessage) any {
 			s.Observation.ExactFunction && s.Observation.StatusCode == http.StatusOK &&
 			s.Observation.HTMLSecurity == "nosniff_missing"
 	}
-	if !good(*input.Original) || !good(input.Followup[0]) || a.CallRef == b.CallRef ||
-		a.Observation.AttemptRef == b.Observation.AttemptRef || a.Digest == b.Digest {
+	if !good(*input.Original) {
+		result["reason"] = "synthetic_original_not_comparable_html"
+		return result
+	}
+	if !good(input.Followup[0]) {
+		result["reason"] = "synthetic_followup_not_comparable_html"
+		return result
+	}
+	if a.CallRef == b.CallRef || a.Observation.AttemptRef == b.Observation.AttemptRef || a.Digest == b.Digest {
+		result["reason"] = "synthetic_sources_not_independent"
 		return result
 	}
 	result["verdict"] = "confirmed"
