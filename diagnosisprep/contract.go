@@ -176,8 +176,13 @@ type Job struct {
 	IntentOutcomes *diagnosis.IntentOutcomes `json:"intent_outcomes,omitempty"`
 	// 진단 로그(운영 기록) 일부가 남지 않았다는 경고다(C10). 감사·결과에는 영향이 없다. completed에만 있다.
 	DiagnosticLogIncomplete bool `json:"diagnostic_log_incomplete,omitempty"`
-	// 시험 계정별 인증 준비 결과다(계약 §3.4, C14). completed·cancelled·failed, 계정을 결속한 실행만. 자격·세션 값은 없다.
+	// 시험 계정별 인증 상태다(계약 §3.4, C14). 계정을 결속한 실행만, 인증 준비가 끝난 뒤의 running·stopping과
+	// completed·cancelled·failed에 싣는다. 실행 중에는 확정 단계와 같은 기준(최초 인증 결과 + 지금 세션 결속)으로 바뀐다.
+	// 라벨과 고정 상태 코드만 있고 자격·세션 값은 없다.
 	AccountAuth map[string]string `json:"account_auth,omitempty"`
+	// AccountAuthAt은 계정별로 account_auth 값이 마지막으로 바뀐 시각(UTC)이다. 키는 account_auth와 같다. 준비 서비스가
+	// 갱신을 받을 때 값이 바뀐 계정만 새 시각을 찍는다.
+	AccountAuthAt map[string]time.Time `json:"account_auth_updated_at,omitempty"`
 }
 
 // Principal은 API가 기존 Bearer 인증으로 확인한 주체다. 브라우저 body에서는 받지 않는다.
@@ -257,7 +262,7 @@ type Update struct {
 	Result *diagnosis.RunResult
 	// DiagnosticLogIncomplete는 completed 실행의 진단 로그 경고다(reason_code와 따로).
 	DiagnosticLogIncomplete bool
-	// AccountAuth는 시험 계정별 인증 준비 결과다(completed·cancelled·failed에만 싣는다).
+	// AccountAuth는 시험 계정별 인증 상태다(running·stopping·completed·cancelled·failed에 싣는다, 인증 준비 전이면 nil).
 	AccountAuth map[string]string
 }
 
