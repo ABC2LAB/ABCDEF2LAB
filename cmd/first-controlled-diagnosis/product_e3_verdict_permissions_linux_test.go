@@ -155,17 +155,33 @@ func TestProductRuntimeE3VerdictInsertOnly(t *testing.T) {
 	}
 	// The worker serializes its append-only events on the immutable request.
 	// PostgreSQL requires UPDATE on one column even for a read-only row lock.
-	var lockID, otherUpdate bool
+	var lockID, otherUpdate, apiLockID, apiOtherUpdate bool
 	if err := installer.QueryRowContext(t.Context(), `SELECT
 has_column_privilege('product_runtime','diagnostic_candidate_verification_requests','id','UPDATE'),
-has_column_privilege('product_runtime','diagnostic_candidate_verification_requests','requester','UPDATE')`).Scan(&lockID, &otherUpdate); err != nil || !lockID || otherUpdate {
-		t.Fatalf("selected request lock grant invalid: id=%v requester=%v err=%v", lockID, otherUpdate, err)
+has_column_privilege('product_runtime','diagnostic_candidate_verification_requests','requester','UPDATE'),
+has_column_privilege('product_api','diagnostic_candidate_verification_requests','id','UPDATE'),
+has_column_privilege('product_api','diagnostic_candidate_verification_requests','requester','UPDATE')`).Scan(&lockID, &otherUpdate, &apiLockID, &apiOtherUpdate); err != nil || !lockID || otherUpdate || !apiLockID || apiOtherUpdate {
+		t.Fatalf("selected request lock grant invalid: runtime=%v/%v api=%v/%v err=%v", lockID, otherUpdate, apiLockID, apiOtherUpdate, err)
 	}
 	rows, err := runtime.QueryContext(t.Context(), `SELECT id FROM diagnostic_candidate_verification_requests WHERE false FOR UPDATE`)
 	if err != nil {
 		t.Fatal("selected request row lock unavailable", err)
 	}
 	rows.Close()
+	apiURL := *u
+	apiQuery := apiURL.Query()
+	apiQuery.Set("user", "product_api")
+	apiURL.RawQuery, apiURL.User = apiQuery.Encode(), nil
+	apiPool, err := sql.Open("pgx", apiURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer apiPool.Close()
+	apiRows, err := apiPool.QueryContext(t.Context(), `SELECT id FROM diagnostic_candidate_verification_requests WHERE false FOR UPDATE`)
+	if err != nil {
+		t.Fatal("selected request API row lock unavailable", err)
+	}
+	apiRows.Close()
 	taskID := task.ID
 	v := db.ProductVerdict{TaskID: taskID,
 		Binding: db.ProductBinding{JobRef: "job-store", RunRef: "run-store", E2PolicyRef: "e2-policy-store", GenerationRef: "generation-store",

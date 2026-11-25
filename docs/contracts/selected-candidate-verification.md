@@ -12,9 +12,9 @@
 - 정상 완료한 `passive/v2` 회차의 적격 E② 호출은 종료 기록과 같은 트랜잭션에서 `diagnostic_candidate_observations_v2`에 최대 2048건의 비민감 projection으로 저장한다. 종료 기록에 projection의 건수와 묶음 digest를 함께 봉인한다. 원문 URL·응답 본문·쿠키·자격값은 저장하지 않는다. 서비스 재시작 뒤에도 `GET`/`POST`가 이 자료를 읽고 원본 후보 및 최초 자동 판정과 대조한다. 손상·누락되거나 자동 판정과 달라지면 503으로 막는다.
 - `stored/v1`은 저장된 관찰만 다시 검증하고 요청/사건 이력을 추가한다. 이력에는 호출·시도 참조와 관찰 digest만 복사한다. 대상 HTTP 및 모델 호출은 0건이다. 저장된 같은 원래 회차를 다시 읽었다는 이유로 부족한 자동 판정을 확정으로 승격하지 않는다. 부족은 `completed/insufficient`로 남긴다.
 - 동일 소유자·후보·멱등키의 재요청은 같은 이력을 돌려준다. 다른 키라도 동일 후보/digest/출처/판정의 재검토는 중복 기록하지 않는다. task 행 잠금으로 동시 요청을 직렬화한다. 최신 이력부터 최대 100건씩 반환하며 `truncated=true`이면 `next_before`를 다음 GET의 `before`로 사용한다.
-- `diagnostic_candidate_verification_requests`와 `diagnostic_candidate_verification_events`는 원본 후보 및 최초 자동 판정·종료 기록을 수정하지 않는 추가 기록이다. 요청 INSERT trigger가 task·candidate·intent edge·run·digest·version 결속을 확인한다. `product_api`만 두 표의 SELECT/INSERT 및 ID sequence USAGE, 후보 결속을 위한 `exploration_edges` 네 열의 SELECT를 얻으며 UPDATE/DELETE/TRUNCATE는 받지 않는다. 기존 설치에는 스키마 마이그레이션과 설치 역할 GRANT 적용이 필요하다.
+- `diagnostic_candidate_verification_requests`와 `diagnostic_candidate_verification_events`는 원본 후보 및 최초 자동 판정·종료 기록을 수정하지 않는 추가 기록이다. 요청 INSERT trigger가 task·candidate·intent edge·run·digest·version 결속을 확인한다. `product_api`는 두 표의 SELECT/INSERT 및 ID sequence USAGE, 후보 결속을 위한 `exploration_edges` 네 열의 SELECT를 얻는다. 요청 행 잠금에 필요한 `UPDATE(id)` 외에 UPDATE/DELETE/TRUNCATE는 받지 않는다. 실제 UPDATE는 저장 트리거가 거부한다. 기존 설치에는 스키마 마이그레이션과 설치 역할 GRANT 적용이 필요하다.
 - `diagnostic_candidate_observations_v2`는 `product_runtime`에 SELECT·INSERT, `product_api`에 SELECT만 부여한다. 보호 실행 역할은 선택 검증을 위해 저장 관찰을 읽으며 두 역할 모두 이를 수정·삭제하지 못한다. 기존 설치에는 이 표와 역할 GRANT도 필요하다.
-- 선택 검증 요청 행은 사건 추가를 직렬화하는 잠금 대상이다. PostgreSQL의 `FOR UPDATE`에 필요한 `UPDATE(id)` 권한만 `product_runtime`에 부여하고, 실제 UPDATE는 저장 트리거가 거부한다. 요청 원본은 보존한다.
+- 선택 검증 요청 행은 사건 추가를 직렬화하는 잠금 대상이다. PostgreSQL의 `FOR UPDATE`에 필요한 `UPDATE(id)` 권한만 `product_api`와 `product_runtime`에 부여하고, 실제 UPDATE는 저장 트리거가 거부한다. 요청 원본은 보존한다.
 
 ## 응답과 상태
 

@@ -79,6 +79,7 @@ func (b *urlPreparationRuntime) scheduleCandidateLLMExecution(ctx context.Contex
 }
 
 func (b *urlPreparationRuntime) executeCandidateLLMVerification(ctx context.Context, requestID int64, digest string) (resultErr error) {
+	phase := "context"
 	pool, err := b.candidateDatabase(ctx)
 	if err != nil {
 		return errPreparation
@@ -88,6 +89,7 @@ func (b *urlPreparationRuntime) executeCandidateLLMVerification(ctx context.Cont
 		if resultErr == nil {
 			return
 		}
+		log.Printf("[candidate-llm-execution] request %d failed at %s", requestID, phase)
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(b.ctx), 10*time.Second)
 		defer cancel()
 		state, reason := "failed", "candidate_execution_unavailable"
@@ -237,11 +239,13 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 		runtimePool.Close()
 		return errPreparation
 	}
+	phase = "authority_issue"
 	launch, err := b.issueSelectedCandidate(l, jobID, prepared)
 	if err != nil {
 		runtimePool.Close()
 		return errPreparation
 	}
+	phase = "authority_validation"
 	rawPolicy, _, err := urlReadPin(launch.HTTP.PolicyFile, 256<<10, false)
 	var issued server.E2HTTPFilePolicy
 	if err != nil || e2config.StrictJSON(rawPolicy, &issued) != nil || len(issued.Rules) != len(plan.Actions) ||
@@ -261,6 +265,7 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 		}
 	}
 	clear(rawPolicy)
+	phase = "manager"
 	manager, err := server.NewFirstDiagnosisManager(hard, launch.DataDir, runtimePool)
 	if err != nil {
 		runtimePool.Close()
@@ -286,6 +291,7 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 		}
 		return nil
 	}
+	phase = "supervisor"
 	guard, err := server.NewCandidateLLMExecutionSupervisor(hard, runtimePool, requestID, prepared.TaskID, digest, checkCurrent)
 	if err != nil {
 		return errPreparation
@@ -295,12 +301,14 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 		LocalLLMManifestPath: launch.LocalLLMManifestPath, ModelExecutionMode: launch.ModelExecutionMode, OpenRouterManifestPath: launch.OpenRouterManifestPath,
 		Supervisor: guard, Hooks: server.FirstDiagnosisHTTPHooks{HostSocket: launch.E2HostSocket, CheckAuthority: func() error { return checkCurrent(hard, plan) }},
 		CleanupTimeout: time.Duration(launch.ShutdownTimeoutSeconds) * time.Second}
+	phase = "e2_execution"
 	observations, err := server.ExecuteSelectedCandidateActions(hard, manager, options, prepared.TaskID, runRef, plan)
 	if err != nil {
 		return errPreparation
 	}
 	finish, stop := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer stop()
+	phase = "evidence_commit"
 	if err := server.CompleteCandidateLLMEvidence(finish, pool, requestID, prepared.TaskID, digest, runRef, observations); err != nil {
 		return errPreparation
 	}

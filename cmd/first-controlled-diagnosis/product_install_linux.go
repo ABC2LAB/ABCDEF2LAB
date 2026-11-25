@@ -767,6 +767,9 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow 
 			return errPreparation
 		}
 	}
+	if exec("GRANT UPDATE(id) ON diagnostic_candidate_verification_requests TO product_api") != nil {
+		return errPreparation
+	}
 	for _, table := range []string{"diagnostic_candidate_verification_plans", "diagnostic_candidate_verification_decisions"} {
 		if exec("GRANT SELECT, INSERT ON "+table+" TO product_api") != nil ||
 			exec("GRANT SELECT ON "+table+" TO product_runtime") != nil {
