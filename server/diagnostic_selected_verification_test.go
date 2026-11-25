@@ -127,3 +127,25 @@ func TestSelectedVerificationKeepsCandidateWithoutAutomaticVerdictPostgres(t *te
 		t.Fatalf("new selection after cancellation status=%d", next.Code)
 	}
 }
+
+func TestSelectedVerificationPublishesZeroCandidateReportPostgres(t *testing.T) {
+	s, finding, request := trafficEvidenceServer(t)
+	stored, err := s.m.pg.GetFinding(finding.FindingID)
+	if err != nil || stored.TaskID == nil {
+		t.Fatal(err)
+	}
+	taskID := *stored.TaskID
+	if err := saveDiagnosisSelectedVerificationPolicy(t.Context(), s.m.pg.DB, taskID, passiveRunRef); err != nil {
+		t.Fatal(err)
+	}
+	state := requestApprovalRunState{RunRef: passiveRunRef, Phase: "closed", Outcome: "completed", DrainComplete: true}
+	if err := saveDiagnosisRunRecordGoal(t.Context(), s.m.pg.DB, taskID, state, nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"&audience=internal", "&audience=shared", "&audience=internal&format=docx"} {
+		response := request("GET", fmt.Sprintf("/api/report/diagnostic?task=%d%s", taskID, suffix), "")
+		if response.Code != 200 {
+			t.Fatalf("zero-candidate report %s: status=%d", suffix, response.Code)
+		}
+	}
+}
