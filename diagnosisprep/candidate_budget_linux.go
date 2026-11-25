@@ -4,10 +4,7 @@ package diagnosisprep
 
 import (
 	"context"
-	"errors"
 )
-
-var ErrCandidateBudget = errors.New("candidate installation budget unavailable")
 
 // CandidateBudgetRecord is a conservative, immutable reservation. One
 // selected request consumes one complete installed run allotment, including
