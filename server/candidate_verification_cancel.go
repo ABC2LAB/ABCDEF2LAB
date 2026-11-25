@@ -41,7 +41,7 @@ func candidateVerificationCancelHTTP(w http.ResponseWriter, r *http.Request, poo
 		PlanDigest string `json:"plan_digest"`
 	}
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1024))
-	if err != nil || strictJSON(raw, &input) != nil || !candidateVerificationDigest.MatchString(input.PlanDigest) {
+	if err != nil || strictJSON(raw, &input) != nil || input.PlanDigest != "" && !candidateVerificationDigest.MatchString(input.PlanDigest) {
 		candidateVerificationError(w, 400, "invalid_verification_request")
 		return
 	}
@@ -60,20 +60,51 @@ func candidateVerificationCancelHTTP(w http.ResponseWriter, r *http.Request, poo
 		return
 	}
 	defer tx.Rollback()
-	var requester, digest, state string
+	var requester, method, digest, state string
 	var step int
-	err = tx.QueryRowContext(ctx, `SELECT q.requester,p.plan_digest,e.step,e.process_state
+	err = tx.QueryRowContext(ctx, `SELECT q.requester,q.method,COALESCE(p.plan_digest,''),e.step,e.process_state
 FROM diagnostic_candidate_verification_requests q
-JOIN diagnostic_candidate_verification_plans p ON p.request_id=q.id
+LEFT JOIN diagnostic_candidate_verification_plans p ON p.request_id=q.id
 JOIN LATERAL (SELECT step,process_state FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON true
-WHERE q.id=$1 AND q.task_id=$2 AND q.candidate_id=$3 AND q.method='active/v1' FOR UPDATE OF q`, requestID, route.task, route.candidate).
-		Scan(&requester, &digest, &step, &state)
+WHERE q.id=$1 AND q.task_id=$2 AND q.candidate_id=$3 AND q.method IN ('active/v1','llm/v1') FOR UPDATE OF q`, requestID, route.task, route.candidate).
+		Scan(&requester, &method, &digest, &step, &state)
 	if errors.Is(err, sql.ErrNoRows) {
 		candidateVerificationError(w, 404, "verification_not_found")
 		return
 	}
 	if err != nil || requester != owner {
 		candidateVerificationError(w, 403, "verification_scope_denied")
+		return
+	}
+	if method == "llm/v1" {
+		if input.PlanDigest != "" {
+			candidateVerificationError(w, 409, "verification_plan_changed")
+			return
+		}
+		if state != "requested" && state != "cancelled" {
+			candidateVerificationError(w, 409, "verification_cancel_unavailable")
+			return
+		}
+		if state == "requested" && step == 1 {
+			emptySources := []byte("[]")
+			sum := sha256.Sum256(emptySources)
+			_, err = tx.ExecContext(ctx, `INSERT INTO diagnostic_candidate_verification_events(request_id,step,process_state,reason,sources,sources_digest,rule_version)
+VALUES($1,2,'cancelled','user_cancelled',$2,$3,'selected/llm-v1')`, requestID, emptySources, hex.EncodeToString(sum[:]))
+			if err != nil {
+				candidateVerificationError(w, 503, "verification_storage_unavailable")
+				return
+			}
+			state = "cancelled"
+		}
+		if tx.Commit() != nil {
+			candidateVerificationError(w, 503, "verification_storage_unavailable")
+			return
+		}
+		writeJSON(w, 200, map[string]string{"request_id": strconv.FormatInt(requestID, 10), "process_state": state})
+		return
+	}
+	if !candidateVerificationDigest.MatchString(input.PlanDigest) {
+		candidateVerificationError(w, 400, "invalid_verification_request")
 		return
 	}
 	if digest != input.PlanDigest {

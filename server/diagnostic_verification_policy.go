@@ -10,6 +10,7 @@ import (
 
 const diagnosisVerificationPolicyOrigin = "diagnosis_verification_policy_v2"
 const diagnosisVerificationV2 = "passive/v2"
+const diagnosisVerificationSelected = "selected/llm-v1"
 
 type diagnosisVerificationPolicy struct {
 	Version string `json:"version"`
@@ -20,7 +21,16 @@ type diagnosisVerificationPolicy struct {
 // The durable marker is written before any model-stage candidate can be saved.
 // Task row locking serializes duplicate starts without changing old reports.
 func saveDiagnosisVerificationPolicy(ctx context.Context, pool *sql.DB, taskID int64, runRef string) error {
-	if ctx == nil || pool == nil || taskID <= 0 || runRef == "" || len(runRef) > 256 {
+	return saveDiagnosisVerificationPolicyVersion(ctx, pool, taskID, runRef, diagnosisVerificationV2)
+}
+
+func saveDiagnosisSelectedVerificationPolicy(ctx context.Context, pool *sql.DB, taskID int64, runRef string) error {
+	return saveDiagnosisVerificationPolicyVersion(ctx, pool, taskID, runRef, diagnosisVerificationSelected)
+}
+
+func saveDiagnosisVerificationPolicyVersion(ctx context.Context, pool *sql.DB, taskID int64, runRef, version string) error {
+	if ctx == nil || pool == nil || taskID <= 0 || runRef == "" || len(runRef) > 256 ||
+		(version != diagnosisVerificationV2 && version != diagnosisVerificationSelected) {
 		return ErrFirstDiagnosisOutcome
 	}
 	tx, err := pool.BeginTx(ctx, nil)
@@ -36,7 +46,7 @@ func saveDiagnosisVerificationPolicy(ctx context.Context, pool *sql.DB, taskID i
 	err = tx.QueryRowContext(ctx, `SELECT payload FROM exploration_nodes WHERE exploration_id=$1 AND kind='fact' AND state='confirmed' AND origin=$2 AND payload->>'task_id'=$3 ORDER BY id DESC LIMIT 1`, exp, diagnosisVerificationPolicyOrigin, strconv.FormatInt(taskID, 10)).Scan(&raw)
 	if err == nil {
 		var old diagnosisVerificationPolicy
-		if json.Unmarshal(raw, &old) != nil || old.Version != diagnosisVerificationV2 || old.TaskID != taskID || old.RunRef != runRef {
+		if json.Unmarshal(raw, &old) != nil || old.Version != version || old.TaskID != taskID || old.RunRef != runRef {
 			return ErrFirstDiagnosisOutcome
 		}
 		return tx.Commit()
@@ -44,7 +54,7 @@ func saveDiagnosisVerificationPolicy(ctx context.Context, pool *sql.DB, taskID i
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	payload, _ := json.Marshal(diagnosisVerificationPolicy{Version: diagnosisVerificationV2, TaskID: taskID, RunRef: runRef})
+	payload, _ := json.Marshal(diagnosisVerificationPolicy{Version: version, TaskID: taskID, RunRef: runRef})
 	if _, err := tx.ExecContext(ctx, `INSERT INTO exploration_nodes(exploration_id,kind,state,origin,payload) VALUES($1,'fact','confirmed',$2,$3::jsonb)`, exp, diagnosisVerificationPolicyOrigin, string(payload)); err != nil {
 		return err
 	}
@@ -64,7 +74,8 @@ func readDiagnosisVerificationPolicy(ctx context.Context, tx *sql.Tx, taskID int
 		return nil, err
 	}
 	var policy diagnosisVerificationPolicy
-	if kind != "fact" || state != "confirmed" || json.Unmarshal(raw, &policy) != nil || policy.Version != diagnosisVerificationV2 || policy.TaskID != taskID || policy.RunRef == "" {
+	if kind != "fact" || state != "confirmed" || json.Unmarshal(raw, &policy) != nil ||
+		(policy.Version != diagnosisVerificationV2 && policy.Version != diagnosisVerificationSelected) || policy.TaskID != taskID || policy.RunRef == "" {
 		return nil, ErrFirstDiagnosisOutcome
 	}
 	return &policy, nil

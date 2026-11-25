@@ -1,5 +1,7 @@
 # 후보별 별도 E② 실행: 구현 계약과 검증 조건
 
+이 문서의 `active/v1` 고정 GET 계획은 이전 회차의 계약이다. 새 비 IDOR 회차의 요구사항은 [선택 LLM 검증 계약](selected-candidate-llm-verification.md)을 따른다.
+
 **상태: 백엔드 구현, 합성 E② 종단 수용시험 대기.** [후보별 API](selected-candidate-verification.md)는 계획과 별도 결정을 기록한다. 승인 요청 자체는 송신 권한이 아니며 보호 실행기가 현재 결속을 재검사하고 새 권한을 발급한다. #925의 같은 회차 `passive/v2` 검증은 그대로 유지한다.
 
 ## 분리 이유와 실행 단위

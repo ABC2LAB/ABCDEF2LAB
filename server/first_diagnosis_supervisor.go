@@ -653,7 +653,7 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 	}
 	if snapshotRef == "" {
 		state := server.requestApprovals.runState(number)
-		if err := saveDiagnosisVerificationPolicy(run, s.m.pg.DB, number, state.RunRef); err != nil {
+		if err := saveDiagnosisSelectedVerificationPolicy(run, s.m.pg.DB, number, state.RunRef); err != nil {
 			return firstDiagnosisFailure(err)
 		}
 		server.requestApprovals.runStarted(number)

@@ -192,10 +192,7 @@ func candidateVerificationHTTP(w http.ResponseWriter, r *http.Request, pool *sql
 			candidateVerificationError(w, 400, "invalid_verification_request")
 			return
 		}
-		if input.Method == "" {
-			input.Method = "stored/v1"
-		}
-		if input.Method != "stored/v1" && input.Method != "active/v1" {
+		if input.Method != "" && input.Method != "stored/v1" && input.Method != "active/v1" && input.Method != "llm/v1" {
 			candidateVerificationError(w, 400, "invalid_verification_method")
 			return
 		}
@@ -244,7 +241,8 @@ func candidateVerificationHTTP(w http.ResponseWriter, r *http.Request, pool *sql
 		candidateVerificationError(w, 503, "verification_run_invalid")
 		return
 	}
-	if run == nil || run.State != report.DiagnosticRunCompleted || run.VerificationVersion != diagnosisVerificationV2 || run.RunRef != candidate.RunRef {
+	if run == nil || run.State != report.DiagnosticRunCompleted ||
+		(run.VerificationVersion != diagnosisVerificationV2 && run.VerificationVersion != diagnosisVerificationSelected) || run.RunRef != candidate.RunRef {
 		candidateVerificationError(w, 409, "diagnosis_not_completed")
 		return
 	}
@@ -280,7 +278,7 @@ func candidateVerificationHTTP(w http.ResponseWriter, r *http.Request, pool *sql
 			page.StoredEvidence.Count = len(observations)
 			page.StoredEvidence.State = "stored"
 		}
-		if !automatic.StoredReviewUnavailable && candidateverify.SupportedV2(candidate) {
+		if run.VerificationVersion == diagnosisVerificationV2 && !automatic.StoredReviewUnavailable && candidateverify.SupportedV2(candidate) {
 			review := candidateverify.AssessStoredV2(candidate, observations)
 			page.StoredEvidence.State, page.StoredEvidence.Verdict, page.StoredEvidence.Reason = "checked", review.Status, review.Reason
 			// The same closed run cannot gain a new confirmation by rereading its
@@ -294,41 +292,72 @@ func candidateVerificationHTTP(w http.ResponseWriter, r *http.Request, pool *sql
 		}
 	}
 	if r.Method == http.MethodPost {
-		if input.EvidenceDigest != candidate.EvidenceDigest {
-			candidateVerificationError(w, 409, "candidate_evidence_changed")
-			return
-		}
-		var createErr error
-		if input.Method == "active/v1" {
-			if response.Job.Scope == nil {
-				candidateVerificationError(w, 409, "verification_scope_denied")
-				return
-			}
-			targetRequest := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "candidate-verification-target", Command: diagnosisprep.ProductControl, Principal: owner,
-				Product: &diagnosisprep.ProductRequest{Operation: "target", TargetID: response.Job.Scope.TargetRef}}
-			targetResponse, targetErr := endpoint.Call(ctx, targetRequest)
-			if targetErr != nil || diagnosisprep.ValidateResponse(targetRequest, targetResponse) != nil || targetResponse.Error != "" || targetResponse.Product == nil || targetResponse.Product.Target == nil || targetResponse.Product.Reason != "" {
-				candidateVerificationError(w, 503, "verification_target_unavailable")
-				return
-			}
-			plan, digest, planErr := makeCandidateActivePlan(time.Now().UTC(), candidate, *automatic, response.Job.Input, *response.Job.Scope, *targetResponse.Product.Target)
-			if planErr != nil {
-				candidateVerificationError(w, 409, "candidate_active_plan_unavailable")
-				return
-			}
-			createErr = createCandidateActiveVerification(ctx, tx, route, candidate, owner, input.RequestID, *automatic, plan, digest)
-		} else {
-			createErr = createCandidateVerification(ctx, tx, route, candidate, owner, input.RequestID, *automatic)
-		}
-		if err := createErr; err != nil {
-			if errors.Is(err, errCandidateVerificationPending) {
-				candidateVerificationError(w, 409, "verification_already_pending")
-			} else if errors.Is(err, errCandidateVerificationConflict) {
-				candidateVerificationError(w, 409, "verification_request_conflict")
+		if input.Method == "" {
+			if run.VerificationVersion == diagnosisVerificationSelected {
+				input.Method = "llm/v1"
 			} else {
-				candidateVerificationError(w, 503, "verification_storage_unavailable")
+				input.Method = "stored/v1"
 			}
+		}
+		if run.VerificationVersion == diagnosisVerificationSelected && input.Method != "llm/v1" ||
+			run.VerificationVersion == diagnosisVerificationV2 && input.Method == "llm/v1" {
+			candidateVerificationError(w, 409, "selected_verification_method_required")
 			return
+		}
+		if run.VerificationVersion == diagnosisVerificationSelected {
+			// A request records selection only. It grants no target or model
+			// execution authority and cannot call the archived type-specific rules.
+			if input.EvidenceDigest != candidate.EvidenceDigest {
+				candidateVerificationError(w, 409, "candidate_evidence_changed")
+				return
+			}
+			if err := createCandidateLLMVerification(ctx, tx, route, candidate, owner, input.RequestID); err != nil {
+				if errors.Is(err, errCandidateVerificationPending) {
+					candidateVerificationError(w, 409, "verification_already_pending")
+				} else if errors.Is(err, errCandidateVerificationConflict) {
+					candidateVerificationError(w, 409, "verification_request_conflict")
+				} else {
+					candidateVerificationError(w, 503, "verification_storage_unavailable")
+				}
+				return
+			}
+		} else {
+			if input.EvidenceDigest != candidate.EvidenceDigest {
+				candidateVerificationError(w, 409, "candidate_evidence_changed")
+				return
+			}
+			var createErr error
+			if input.Method == "active/v1" {
+				if response.Job.Scope == nil {
+					candidateVerificationError(w, 409, "verification_scope_denied")
+					return
+				}
+				targetRequest := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "candidate-verification-target", Command: diagnosisprep.ProductControl, Principal: owner,
+					Product: &diagnosisprep.ProductRequest{Operation: "target", TargetID: response.Job.Scope.TargetRef}}
+				targetResponse, targetErr := endpoint.Call(ctx, targetRequest)
+				if targetErr != nil || diagnosisprep.ValidateResponse(targetRequest, targetResponse) != nil || targetResponse.Error != "" || targetResponse.Product == nil || targetResponse.Product.Target == nil || targetResponse.Product.Reason != "" {
+					candidateVerificationError(w, 503, "verification_target_unavailable")
+					return
+				}
+				plan, digest, planErr := makeCandidateActivePlan(time.Now().UTC(), candidate, *automatic, response.Job.Input, *response.Job.Scope, *targetResponse.Product.Target)
+				if planErr != nil {
+					candidateVerificationError(w, 409, "candidate_active_plan_unavailable")
+					return
+				}
+				createErr = createCandidateActiveVerification(ctx, tx, route, candidate, owner, input.RequestID, *automatic, plan, digest)
+			} else {
+				createErr = createCandidateVerification(ctx, tx, route, candidate, owner, input.RequestID, *automatic)
+			}
+			if err := createErr; err != nil {
+				if errors.Is(err, errCandidateVerificationPending) {
+					candidateVerificationError(w, 409, "verification_already_pending")
+				} else if errors.Is(err, errCandidateVerificationConflict) {
+					candidateVerificationError(w, 409, "verification_request_conflict")
+				} else {
+					candidateVerificationError(w, 503, "verification_storage_unavailable")
+				}
+				return
+			}
 		}
 	}
 	page.Verifications, page.Truncated, err = listCandidateVerifications(ctx, tx, route, candidate, *automatic)
@@ -362,6 +391,37 @@ func candidateVerificationHTTP(w http.ResponseWriter, r *http.Request, pool *sql
 
 var errCandidateVerificationPending = errors.New("candidate_verification_pending")
 var errCandidateVerificationConflict = errors.New("candidate_verification_conflict")
+
+func createCandidateLLMVerification(ctx context.Context, tx *sql.Tx, route candidateVerificationRoute, candidate db.DiagnosticCandidate, owner, requestKey string) error {
+	var existingMethod string
+	err := tx.QueryRowContext(ctx, `SELECT method FROM diagnostic_candidate_verification_requests WHERE task_id=$1 AND candidate_id=$2 AND requester=$3 AND request_key=$4`, route.task, route.candidate, owner, requestKey).Scan(&existingMethod)
+	if err == nil {
+		if existingMethod != "llm/v1" {
+			return errCandidateVerificationConflict
+		}
+		return nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var pending int64
+	err = tx.QueryRowContext(ctx, `SELECT q.id FROM diagnostic_candidate_verification_requests q JOIN LATERAL (SELECT process_state FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON true WHERE q.task_id=$1 AND q.candidate_id=$2 AND e.process_state IN ('requested','checking_stored_evidence','awaiting_approval','approved','running') LIMIT 1`, route.task, route.candidate).Scan(&pending)
+	if err == nil {
+		return errCandidateVerificationPending
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	var id int64
+	err = tx.QueryRowContext(ctx, `INSERT INTO diagnostic_candidate_verification_requests(task_id,candidate_id,original_run_ref,original_evidence_version,original_evidence_digest,requester,request_key,method) VALUES($1,$2,$3,$4,$5,$6,$7,'llm/v1') RETURNING id`, route.task, route.candidate, candidate.RunRef, candidate.EvidenceVersion, candidate.EvidenceDigest, owner, requestKey).Scan(&id)
+	if err != nil {
+		return err
+	}
+	emptySources := []byte("[]")
+	sum := sha256.Sum256(emptySources)
+	_, err = tx.ExecContext(ctx, `INSERT INTO diagnostic_candidate_verification_events(request_id,step,process_state,reason,sources,sources_digest,rule_version) VALUES($1,1,'requested','selected_by_user',$2,$3,'selected/llm-v1')`, id, emptySources, hex.EncodeToString(sum[:]))
+	return err
+}
 
 func createCandidateActiveVerification(ctx context.Context, tx *sql.Tx, route candidateVerificationRoute, candidate db.DiagnosticCandidate, owner, requestKey string, automatic report.CandidateAssessment, plan candidateActivePlan, digest string) error {
 	if automatic.Status != candidateverify.Insufficient || plan.TaskID != route.task || plan.CandidateID != route.candidate || plan.EvidenceDigest != candidate.EvidenceDigest || plan.OriginalRunRef != candidate.RunRef {
@@ -551,6 +611,18 @@ func validateCandidateVerificationAttempt(row candidateVerificationAttempt, step
 	}
 	if row.Method == "active/v1" {
 		return validateCandidateActiveAttempt(row, step, binding, candidate)
+	}
+	if row.Method == "llm/v1" {
+		if row.Plan != nil || row.PlanDigest != "" || binding.Decision.Valid || binding.DecisionDigest.Valid || binding.FollowupTask.Valid || binding.RunRef.Valid ||
+			(step != 1 && step != 2) ||
+			(step == 1 && (row.Latest.State != "requested" || row.Latest.Reason != "selected_by_user")) ||
+			(step == 2 && (row.Latest.State != "cancelled" || row.Latest.Reason != "user_cancelled")) ||
+			row.Latest.Verdict != nil ||
+			row.Latest.RuleVersion != diagnosisVerificationSelected || row.Latest.ExecutionRef != "" || row.Latest.ApprovalRef != "" ||
+			string(row.Latest.Sources) != "[]" {
+			return db.ErrDiagnosticCandidate
+		}
+		return nil
 	}
 	if row.Method != "stored/v1" || step != 1 || row.Plan != nil || row.PlanDigest != "" || binding.Decision.Valid || binding.FollowupTask.Valid ||
 		row.Latest.RuleVersion != "passive/v2" || row.Latest.ExecutionRef != "" || row.Latest.ApprovalRef != "" {

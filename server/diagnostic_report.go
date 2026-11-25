@@ -81,12 +81,12 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 	}
 	// v2의 정상 완료 보고서는 원본 후보와 검증 결과를 함께 싣는다. 조회 전에
 	// 종료 기록·정책·후보 근거를 검증했으며 원본 스냅샷은 변경하지 않는다.
-	if data.Run != nil && (data.Run.VerificationVersion == "passive/v1" || data.Run.VerificationVersion == diagnosisVerificationV2) {
-		if data.Run.VerificationVersion == diagnosisVerificationV2 && data.Run.State == report.DiagnosticRunRunning {
+	if data.Run != nil && (data.Run.VerificationVersion == "passive/v1" || data.Run.VerificationVersion == diagnosisVerificationV2 || data.Run.VerificationVersion == diagnosisVerificationSelected) {
+		if (data.Run.VerificationVersion == diagnosisVerificationV2 || data.Run.VerificationVersion == diagnosisVerificationSelected) && data.Run.State == report.DiagnosticRunRunning {
 			writeErr(w, http.StatusConflict, "점검 진행 중이며 최종 보고서는 아직 없습니다. 내부 검토 기록을 확인하세요.")
 			return
 		}
-		if data.Run.VerificationVersion != diagnosisVerificationV2 || data.Run.State != report.DiagnosticRunCompleted {
+		if (data.Run.VerificationVersion != diagnosisVerificationV2 && data.Run.VerificationVersion != diagnosisVerificationSelected) || data.Run.State != report.DiagnosticRunCompleted {
 			// 기존 v1 및 정상 완료가 아닌 v2 회차의 출력 의미는 유지한다.
 			if !projectConfirmedReport(&data) {
 				if data.Run.State == report.DiagnosticRunRunning {
@@ -225,7 +225,7 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 		return out, err
 	}
 	assessments := make(map[int64]report.CandidateAssessment)
-	if out.Run != nil && (out.Run.VerificationVersion == "passive/v1" || out.Run.VerificationVersion == diagnosisVerificationV2) {
+	if out.Run != nil && (out.Run.VerificationVersion == "passive/v1" || out.Run.VerificationVersion == diagnosisVerificationV2 || out.Run.VerificationVersion == diagnosisVerificationSelected) {
 		for _, a := range out.Run.CandidateAssessments {
 			if a.CandidateID <= 0 || assessments[a.CandidateID].CandidateID != 0 {
 				return out, errDiagnosticReportScope
@@ -259,7 +259,7 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 			severity = c.SuggestedSeverity
 		}
 		entry := report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", LanguageMixed: c.LanguageMixed, Run: c.RunRef, IntentID: c.IntentID, Title: c.Name, VulnClass: c.VulnClass, Severity: severity, SeveritySource: c.SeveritySource, SeverityRationale: c.SeverityRationale, Status: c.Classification, Verification: c.Verification, Outcome: outcome, Summary: c.Summary, Remediation: c.Remediation, Evidence: c.Evidence, EvidenceVersion: c.EvidenceVersion, Digest: c.EvidenceDigest, ObservedAt: c.ObservedAt, Truncated: c.OutputTruncated}
-		if out.Run != nil && (out.Run.VerificationVersion == "passive/v1" || out.Run.VerificationVersion == diagnosisVerificationV2) && out.Run.State != report.DiagnosticRunRunning && c.RunRef == out.Run.RunRef {
+		if out.Run != nil && (out.Run.VerificationVersion == "passive/v1" || out.Run.VerificationVersion == diagnosisVerificationV2 || out.Run.VerificationVersion == diagnosisVerificationSelected) && out.Run.State != report.DiagnosticRunRunning && c.RunRef == out.Run.RunRef {
 			a, found := assessments[c.ID]
 			if !found || a.EvidenceDigest != c.EvidenceDigest {
 				return out, errDiagnosticReportScope
@@ -270,6 +270,8 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 				if !candidateverify.ValidateStoredV2(c, check) {
 					return out, errDiagnosticReportScope
 				}
+			} else if out.Run.VerificationVersion == diagnosisVerificationSelected {
+				check = candidateverify.Result{Status: a.Status, Reason: a.Reason, Attempts: a.AttemptRefs, Sources: a.Sources}
 			}
 			if check.Status != a.Status || check.Reason != a.Reason || !equalStringSlices(check.Attempts, a.AttemptRefs) {
 				return out, errDiagnosticReportScope
@@ -312,7 +314,7 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 		}
 		out.Entries = append(out.Entries, entry)
 	}
-	if out.Run != nil && out.Run.VerificationVersion == diagnosisVerificationV2 && out.Run.State == report.DiagnosticRunCompleted {
+	if out.Run != nil && (out.Run.VerificationVersion == diagnosisVerificationV2 || out.Run.VerificationVersion == diagnosisVerificationSelected) && out.Run.State == report.DiagnosticRunCompleted {
 		if err := attachLatestCandidateVerifications(ctx, tx, taskID, candidates, assessments, &out); err != nil {
 			return out, err
 		}

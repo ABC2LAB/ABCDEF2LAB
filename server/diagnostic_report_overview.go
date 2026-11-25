@@ -58,7 +58,7 @@ func readDiagnosticRun(ctx context.Context, tx *sql.Tx, task int64) (*report.Dia
 	if policy != nil && (policy.RunRef != record.Run.RunRef || record.Verification == nil || record.Verification.Version != policy.Version) {
 		return nil, ErrFirstDiagnosisOutcome
 	}
-	if record.Verification != nil && (record.Verification.Version == "passive/v1" || record.Verification.Version == diagnosisVerificationV2) {
+	if record.Verification != nil && (record.Verification.Version == "passive/v1" || record.Verification.Version == diagnosisVerificationV2 || record.Verification.Version == diagnosisVerificationSelected) {
 		if record.Verification.ObservationsStored && (record.Verification.ObservationsCount <= 0 || record.Verification.ObservationsCount > candidateverify.MaxStoredObservationsV2 || !candidateVerificationDigest.MatchString(record.Verification.ObservationsDigest)) ||
 			!record.Verification.ObservationsStored && (record.Verification.ObservationsCount != 0 || record.Verification.ObservationsDigest != "") {
 			return nil, ErrFirstDiagnosisOutcome
@@ -73,6 +73,11 @@ func readDiagnosticRun(ctx context.Context, tx *sql.Tx, task int64) (*report.Dia
 				return nil, ErrFirstDiagnosisOutcome
 			}
 			if record.Verification.Version == diagnosisVerificationV2 && !candidateverify.ValidSourcesV2(row.Result) {
+				return nil, ErrFirstDiagnosisOutcome
+			}
+			if record.Verification.Version == diagnosisVerificationSelected &&
+				(row.Result.Status != candidateverify.Insufficient || len(row.Result.Sources) != 0 || len(row.Result.Attempts) != 0 ||
+					(row.Result.Reason != "selected_verification_required" && row.Result.Reason != "run_not_completed" && row.Result.Reason != "source_unavailable") || row.StoredReviewUnavailable) {
 				return nil, ErrFirstDiagnosisOutcome
 			}
 			run.CandidateAssessments = append(run.CandidateAssessments, report.CandidateAssessment{StoredReviewUnavailable: row.StoredReviewUnavailable, CandidateID: row.CandidateID, EvidenceDigest: row.EvidenceDigest, Status: row.Result.Status, Reason: row.Result.Reason, AttemptRefs: append([]string(nil), row.Result.Attempts...), Sources: append([]candidateverify.SourceV2(nil), row.Result.Sources...)})

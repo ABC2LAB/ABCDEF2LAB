@@ -1,5 +1,7 @@
 # 저장 후보의 수동적 독립 관찰 검증
 
+이 문서의 `passive/v1`·`passive/v2` 유형별 판정은 이전 회차의 읽기 호환 계약이다. 새 진단의 비 IDOR 후보는 [선택 검증 계약](selected-candidate-llm-verification.md)의 `selected/llm-v1`을 따른다.
+
 ## 범위와 버전
 
 `passive/v1`은 후보 제출 시 모델이 고른 `related_call_refs`를 후보 증거에 포함하고 종료 시 그 사본을 대조한다. 후보 저장 이후 확보된 관찰을 찾지 못하고, 진행 중 회차는 종료 기록이 없어 확정 항목 출력 정책을 식별하지 못한다. 기존 v1 기록의 의미와 출력은 유지한다.

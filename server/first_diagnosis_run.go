@@ -219,12 +219,16 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 	candidates, candidateReadErr := db.ListDiagnosticCandidatesQuery(ctx, tx, exploration, task, state.RunRef, db.MaxDiagnosticCandidates+1)
 	version := "passive/v1"
 	if policy != nil {
-		version = diagnosisVerificationV2
+		version = policy.Version
 	}
 	verification := &diagnosisVerificationRecord{Version: version, Candidates: make([]diagnosisCandidateAssessment, 0, len(candidates))}
 	var durableObservations []candidateverify.StoredObservationV2
 	if candidateReadErr == nil && policy != nil && state.Outcome == "completed" && len(trusted) != 0 && trusted[0] != nil {
-		durableObservations, err = candidateverify.ProjectTrustedV2(task, state.RunRef, trusted[0])
+		if version == diagnosisVerificationSelected {
+			durableObservations, err = candidateverify.ProjectTrustedSelected(task, state.RunRef, trusted[0])
+		} else {
+			durableObservations, err = candidateverify.ProjectTrustedV2(task, state.RunRef, trusted[0])
+		}
 		if err != nil {
 			return ErrFirstDiagnosisOutcome
 		}
@@ -246,6 +250,14 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 		var result candidateverify.Result
 		if policy == nil {
 			result = candidateverify.Assess(candidate)
+		} else if version == diagnosisVerificationSelected {
+			result = candidateverify.Result{Status: candidateverify.Insufficient, Reason: "selected_verification_required"}
+			if state.Outcome != "completed" || state.ClosureFailed {
+				result.Reason = "run_not_completed"
+			} else if len(trusted) == 0 || trusted[0] == nil {
+				verification.SourceUnavailable = true
+				result.Reason = "source_unavailable"
+			}
 		} else {
 			if !candidateverify.SupportedV2(candidate) {
 				result = candidateverify.Result{Status: candidateverify.Unsupported, Reason: "type_not_supported"}
@@ -259,7 +271,7 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 			}
 		}
 		row := diagnosisCandidateAssessment{CandidateID: candidate.ID, EvidenceDigest: candidate.EvidenceDigest, Result: result}
-		if verification.ObservationsStored && candidateverify.SupportedV2(candidate) {
+		if version == diagnosisVerificationV2 && verification.ObservationsStored && candidateverify.SupportedV2(candidate) {
 			stored := candidateverify.AssessStoredV2(candidate, durableObservations)
 			if stored.Status != result.Status || stored.Reason != result.Reason || !reflect.DeepEqual(stored.Attempts, result.Attempts) || !reflect.DeepEqual(stored.Sources, result.Sources) {
 				// Keep the immutable automatic assessment. Other candidates may still
