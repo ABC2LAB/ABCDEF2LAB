@@ -47,6 +47,7 @@ func TestCandidateVerificationStoredOnlyProductAPIPostgres(t *testing.T) {
 		{"stored-confirmed", "html_nosniff_missing", "nosniff_missing", "nosniff_missing", "completed", "confirmed"},
 		{"stored-negative", "html_nosniff_missing", "nosniff_present", "nosniff_present", "completed", "negative"},
 		{"needs-new-evidence", "html_nosniff_missing", "nosniff_missing", "", "completed", "insufficient"},
+		{"duplicate-attempt", "html_nosniff_missing", "nosniff_missing", "nosniff_missing", "completed", "insufficient"},
 		{"unsupported", "", "nosniff_missing", "", "completed", "unsupported"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -78,6 +79,9 @@ func TestCandidateVerificationStoredOnlyProductAPIPostgres(t *testing.T) {
 				other.Call = e2proxy.CloneCallResult(primary.Call)
 				other.Call.CallRef = "candidate-history-second-call"
 				other.Call.Observations[0].AttemptRef = "candidate-history-second-attempt"
+				if tc.name == "duplicate-attempt" {
+					other.Call.Observations[0].AttemptRef = primary.Call.Observations[0].AttemptRef
+				}
 				other.Call.Observations[0].Sequence = 2
 				other.Call.Observations[0].HTMLSecurity = tc.second
 				calls = append(calls, other)
@@ -110,6 +114,19 @@ func TestCandidateVerificationStoredOnlyProductAPIPostgres(t *testing.T) {
 			}
 			if tc.verdict == "" && page.Verifications[0].Latest.Verdict != nil || tc.verdict != "" && (page.Verifications[0].Latest.Verdict == nil || *page.Verifications[0].Latest.Verdict != tc.verdict) {
 				t.Fatalf("unexpected verdict %+v", page.Verifications[0].Latest)
+			}
+			if tc.name == "duplicate-attempt" {
+				if page.StoredEvidence.State != "not_stored" || page.StoredEvidence.Count != 0 {
+					t.Fatalf("duplicate attempt became stored independent evidence: %+v", page.StoredEvidence)
+				}
+			} else if tc.claim != "" {
+				wantCount := 1
+				if tc.second != "" {
+					wantCount = 2
+				}
+				if page.StoredEvidence.State != "checked" || page.StoredEvidence.Count != wantCount || page.StoredEvidence.Verdict != tc.verdict {
+					t.Fatalf("durable stored observations not rechecked: %+v", page.StoredEvidence)
+				}
 			}
 			if page.Verifications[0].OriginalDigest != rows[0].EvidenceDigest || page.Verifications[0].Latest.SourcesDigest == "" {
 				t.Fatal("original binding or source digest missing")
@@ -155,6 +172,22 @@ func TestCandidateVerificationStoredOnlyProductAPIPostgres(t *testing.T) {
 			if persisted.Code != 200 || !strings.Contains(persisted.Body.String(), page.Verifications[0].ID) {
 				t.Fatalf("restart history %d", persisted.Code)
 			}
+			if tc.claim != "" && tc.name != "duplicate-attempt" {
+				var observationID int64
+				var originalDigest string
+				if err := s.m.pg.QueryRowContext(t.Context(), `SELECT id,source_digest FROM diagnostic_candidate_observations_v2 WHERE task_id=$1 ORDER BY id LIMIT 1`, taskID).Scan(&observationID, &originalDigest); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.m.pg.ExecContext(t.Context(), `UPDATE diagnostic_candidate_observations_v2 SET source_digest=$2 WHERE id=$1`, observationID, strings.Repeat("0", 64)); err != nil {
+					t.Fatal(err)
+				}
+				if corrupt := invoke(fresh, "GET", path, ""); corrupt.Code != 503 {
+					t.Fatalf("tampered durable observation accepted: %d", corrupt.Code)
+				}
+				if _, err := s.m.pg.ExecContext(t.Context(), `UPDATE diagnostic_candidate_observations_v2 SET source_digest=$2 WHERE id=$1`, observationID, originalDigest); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if owner.calls.Load() == 0 {
 				t.Fatal("owner receipt was never checked")
 			}
@@ -198,6 +231,14 @@ WHERE q.task_id=$1 AND q.candidate_id=$2 AND q.request_key LIKE 'synthetic-page-
 				}
 				if bad := reportRequest("GET", reportPath, ""); bad.Code != 503 {
 					t.Fatalf("tampered latest verdict reached report: %d", bad.Code)
+				}
+			}
+			if tc.claim == "" {
+				if _, err := s.m.pg.ExecContext(t.Context(), `DELETE FROM diagnostic_candidate_observations_v2 WHERE task_id=$1`, taskID); err != nil {
+					t.Fatal(err)
+				}
+				if missing := invoke(fresh, "GET", path, ""); missing.Code != 503 {
+					t.Fatalf("deleted durable observation accepted: %d", missing.Code)
 				}
 			}
 		})

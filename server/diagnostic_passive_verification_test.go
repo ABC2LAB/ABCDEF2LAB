@@ -37,7 +37,7 @@ func storePassiveCandidate(t *testing.T, s *Server, taskID int64, claim, first, 
 	}
 	call := func(ref string, observation e2proxy.HTTPObservation) map[string]any {
 		return map[string]any{"trusted": map[string]any{"classification": "completed", "final": true, "output_truncated": false,
-			"execution": map[string]any{"scope": map[string]string{"TaskRef": fmt.Sprint(taskID), "RunRef": passiveRunRef}, "intent_id": intent},
+			"execution": map[string]any{"scope": map[string]string{"TaskRef": fmt.Sprint(taskID), "RunRef": passiveRunRef}, "intent_id": intent, "policy_revision": "synthetic-policy", "header_mode": "preserve"},
 			"call":      map[string]any{"call_ref": ref, "intent_id": intent, "final": true, "audit_complete": true, "observations": []e2proxy.HTTPObservation{observation}},
 		}}
 	}
@@ -65,7 +65,7 @@ func storePassiveCandidate(t *testing.T, s *Server, taskID int64, claim, first, 
 		t.Fatal(err)
 	}
 	id, err := task.Store.RecordDiagnosticCandidateWithFence(t.Context(), c, func() (db.DiagnosticCandidateSaveFence, error) {
-		return db.DiagnosticCandidateSaveFence{AttemptHighWater: 1, TaskRef: fmt.Sprint(taskID), RunRef: passiveRunRef, ScopeDigest: db.DiagnosticEvidenceDigest(string(scope))}, nil
+		return db.DiagnosticCandidateSaveFence{AttemptHighWater: 1, TaskRef: fmt.Sprint(taskID), RunRef: passiveRunRef, ScopeDigest: db.DiagnosticEvidenceDigest(string(scope)), PolicyRevision: "synthetic-policy"}, nil
 	})
 	if err != nil {
 		t.Fatal(err)

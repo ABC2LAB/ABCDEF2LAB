@@ -1,15 +1,17 @@
 # 후보별 선택 검증: 저장 관찰 경로 (초안)
 
-이 문서의 **구현됨** 표시는 `stored/v1` 재검토에만 적용한다. 후보별 새 HTTP 송신, 승인·거부·취소, 별도 E② 실행과 현재 대상의 재판정은 아직 구현되지 않았다. 프런트엔드는 이 API가 승인 계획이나 실행 권한을 제공한다고 해석하지 않는다. #925의 `passive/v2` 자동 검증과 E③ IDOR 판정, #918 이행점검의 의미는 그대로 유지한다.
+이 문서의 **구현됨** 표시는 종료된 원래 회차의 비민감 E② 관찰 영속 저장과 `stored/v1` 재검토에만 적용한다. 후보별 새 HTTP 송신, 승인·거부·취소, 별도 E② 실행과 현재 대상의 재판정은 아직 구현되지 않았다. 프런트엔드는 이 API가 승인 계획이나 실행 권한을 제공한다고 해석하지 않는다. #925의 `passive/v2` 자동 검증과 E③ IDOR 판정, #918 이행점검의 의미는 그대로 유지한다.
 
 ## 구현된 경계
 
 - 제품 관리 호스트에서만 `GET`, `POST /api/product/tasks/{task_id}/candidates/{candidate_id}/verifications`를 받는다. 보고서 전용 호스트에는 쓰기 권한이 없다. ID는 양의 정규 int64 십진수이며, 경로 인코딩을 받지 않는다. `GET`은 선택적 `?before={verification_id}` 커서만 허용한다. 응답은 `Cache-Control: no-store`다.
 - 기존 Bearer 인증과 보호된 preparation 서비스의 `AuthorizeTask` 소유 Job receipt를 요청 전·후에 확인한다. 종료된 **정상 완료 passive/v2** 작업의 원본 후보만 선택할 수 있다. 후보 원본 digest·작업/회차 결속, 종료 기록의 자동 판정을 재검증한다. 확정·부정 판정에 필요한 저장 뒤 시도 표식도 검증한다.
 - `POST` 본문은 `{"request_id":"synthetic-request-001","evidence_digest":"<64 lowercase hex>"}`다. `Content-Type: application/json`이며 알 수 없는 필드·중복 JSON 키·4 KiB 초과 본문은 거부한다. `request_id`는 호출자가 정한 8~128자 영숫자·점·밑줄·하이픈의 멱등키다. `evidence_digest`는 조회한 원본 후보의 digest다. 다른 digest는 409다.
-- 이 경로는 자동 판정에 이미 영속 저장된 **비민감 출처 projection**만 다시 검증하고 요청/사건 이력을 추가한다. 이력에는 호출·시도 참조와 관찰 digest만 복사하고 응답 헤더·경로·본문을 중복 저장하지 않는다. 대상 HTTP 및 모델 호출은 0건이다. 현재 종료 기록에는 자동 판정에 사용하지 않은 다른 E② 관찰을 모두 보존하지 않는다. 따라서 부족한 자동 판정을 같은 저장 자료만으로 확정으로 승격하지 않는다. 부족은 `completed/insufficient`로 남긴다. `awaiting_approval`은 실제 승인 계획이 없으므로 이 단계에서 반환하지 않는다.
+- 정상 완료한 `passive/v2` 회차의 적격 E② 호출은 종료 기록과 같은 트랜잭션에서 `diagnostic_candidate_observations_v2`에 최대 2048건의 비민감 projection으로 저장한다. 종료 기록에 projection의 건수와 묶음 digest를 함께 봉인한다. 원문 URL·응답 본문·쿠키·자격값은 저장하지 않는다. 서비스 재시작 뒤에도 `GET`/`POST`가 이 자료를 읽고 원본 후보 및 최초 자동 판정과 대조한다. 손상·누락되거나 자동 판정과 달라지면 503으로 막는다.
+- 이 경로는 저장된 관찰만 다시 검증하고 요청/사건 이력을 추가한다. 이력에는 호출·시도 참조와 관찰 digest만 복사한다. 대상 HTTP 및 모델 호출은 0건이다. 저장된 같은 원래 회차를 다시 읽었다는 이유로 부족한 자동 판정을 확정으로 승격하지 않는다. 부족은 `completed/insufficient`로 남긴다. `awaiting_approval`은 실제 승인 계획이 없으므로 이 단계에서 반환하지 않는다.
 - 동일 소유자·후보·멱등키의 재요청은 같은 이력을 돌려준다. 다른 키라도 동일 후보/digest/출처/판정의 재검토는 중복 기록하지 않는다. task 행 잠금으로 동시 요청을 직렬화한다. 최신 이력부터 최대 100건씩 반환하며 `truncated=true`이면 `next_before`를 다음 GET의 `before`로 사용한다.
 - `diagnostic_candidate_verification_requests`와 `diagnostic_candidate_verification_events`는 원본 후보 및 최초 자동 판정·종료 기록을 수정하지 않는 추가 기록이다. 요청 INSERT trigger가 task·candidate·intent edge·run·digest·version 결속을 확인한다. `product_api`만 두 표의 SELECT/INSERT 및 ID sequence USAGE, 후보 결속을 위한 `exploration_edges` 네 열의 SELECT를 얻으며 UPDATE/DELETE/TRUNCATE는 받지 않는다. 기존 설치에는 스키마 마이그레이션과 설치 역할 GRANT 적용이 필요하다.
+- `diagnostic_candidate_observations_v2`는 `product_runtime`에 INSERT만, `product_api`에 SELECT만 부여한다. 실행 역할은 저장 관찰을 다시 읽지 않고 관리 API는 관찰을 변경하지 못한다. 기존 설치에는 이 표와 역할 GRANT도 필요하다.
 
 ## 응답과 상태
 
@@ -19,13 +21,15 @@
 | --- | --- |
 | `task_id`, `candidate_id`, `evidence_digest` | 선택한 원본 작업·후보·원본 증거의 결속 |
 | `automatic.status`, `automatic.reason` | 최초 진단 종료 시 저장한 `passive/v2` 자동 판정. 이후 요청으로 변경하지 않음 |
+| `stored_evidence.state` | `not_stored`: 과거 회차라 영속 관찰 없음, `stored`: 적격 관찰 저장됨(미지원 유형 포함), `checked`: 저장 관찰을 원본과 재평가함 |
+| `stored_evidence.observation_count`, `verdict`, `reason` | 영속 관찰 수와 재평가 결과. `verdict`·`reason`은 `checked`에서만 제공. 새 대상 검증 결과가 아님 |
 | `verifications[]` | 최근 요청부터 내림차순. 각 `id`는 이력 ID, `request_id`는 멱등키, `requested_at`은 DB 시각 |
 | `verifications[].method` | 현재는 `stored/v1`만 가능 |
 | `original_evidence_version`, `original_evidence_digest`, `original_run_ref` | 요청 당시 원본 결속. 현재 원본과 다르면 조회·보고서 실패 |
 | `latest.process_state` | 현재 구현은 `completed`만 저장. `checking_stored_evidence`, `awaiting_approval`, `running`, `failed`, `cancelled`, `expired`는 미래 실행용 예약 상태이며 지금 반환하지 않음 |
 | `latest.verdict` | `confirmed`, `negative`, `insufficient`, `unsupported`. `completed`에서 반드시 있다. 처리 실패나 미승인 상태를 판정으로 치환하지 않음 |
 | `latest.reason`, `rule_version` | 고정 사유 코드, 현재 `passive/v2` |
-| `latest.sources`, `sources_digest` | 기존 종료 기록에 결속된 `call_ref`, `attempt_ref`, `observation_digest`의 배열과 그 JSON 바이트 SHA-256. 원본 관찰은 종료 기록에만 있으며 같은 대상 응답의 사본은 추가 독립 근거가 아님 |
+| `latest.sources`, `sources_digest` | 기존 종료 기록에 결속된 `call_ref`, `attempt_ref`, `observation_digest`의 배열과 그 JSON 바이트 SHA-256. 비민감 관찰 projection은 별도 영속 표에 있으며 같은 대상 응답의 사본은 추가 독립 근거가 아님 |
 | `latest.execution_ref`, `approval_ref` | 현재 경로에서는 생략. 저장 관찰 재검토는 새 E② 실행·승인을 만들지 않음 |
 | `truncated`, `next_before` | 뒤 페이지가 있으면 true와 다음 커서. 마지막 페이지에는 `next_before` 생략 |
 

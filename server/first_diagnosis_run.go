@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -44,6 +45,9 @@ type diagnosisRunRecord struct {
 type diagnosisVerificationRecord struct {
 	Version             string                         `json:"version"`
 	SourceUnavailable   bool                           `json:"source_unavailable,omitempty"`
+	ObservationsStored  bool                           `json:"observations_stored,omitempty"`
+	ObservationsCount   int                            `json:"observations_count,omitempty"`
+	ObservationsDigest  string                         `json:"observations_digest,omitempty"`
 	NonIDORConfirmed    int                            `json:"non_idor_confirmed"`
 	NonIDORNegative     int                            `json:"non_idor_negative"`
 	VerificationPending int                            `json:"verification_pending"`
@@ -217,6 +221,21 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 		version = diagnosisVerificationV2
 	}
 	verification := &diagnosisVerificationRecord{Version: version, Candidates: make([]diagnosisCandidateAssessment, 0, len(candidates))}
+	var durableObservations []candidateverify.StoredObservationV2
+	if policy != nil && state.Outcome == "completed" && len(trusted) != 0 && trusted[0] != nil {
+		durableObservations, err = candidateverify.ProjectTrustedV2(task, state.RunRef, trusted[0])
+		if err != nil {
+			return ErrFirstDiagnosisOutcome
+		}
+		verification.ObservationsStored = len(durableObservations) != 0
+		if verification.ObservationsStored {
+			verification.ObservationsCount = len(durableObservations)
+			verification.ObservationsDigest, err = candidateObservationsDigest(durableObservations)
+			if err != nil {
+				return ErrFirstDiagnosisOutcome
+			}
+		}
+	}
 	if err != nil || len(candidates) > db.MaxDiagnosticCandidates {
 		// 후보 근거 손상 때문에 정본 종료 기록을 잃지 않는다.
 		verification.SourceUnavailable = true
@@ -236,6 +255,18 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 				result = candidateverify.Result{Status: candidateverify.Insufficient, Reason: "source_unavailable"}
 			} else {
 				result = candidateverify.AssessV2(candidate, trusted[0])
+			}
+		}
+		if verification.ObservationsStored && candidateverify.SupportedV2(candidate) {
+			stored := candidateverify.AssessStoredV2(candidate, durableObservations)
+			if stored.Status != result.Status || stored.Reason != result.Reason || !reflect.DeepEqual(stored.Attempts, result.Attempts) || !reflect.DeepEqual(stored.Sources, result.Sources) {
+				// A partial projection must never change or hide the immutable
+				// automatic result. This run remains available without durable
+				// selected-review evidence.
+				verification.ObservationsStored = false
+				verification.ObservationsCount = 0
+				verification.ObservationsDigest = ""
+				durableObservations = nil
 			}
 		}
 		verification.Candidates = append(verification.Candidates, diagnosisCandidateAssessment{CandidateID: candidate.ID, EvidenceDigest: candidate.EvidenceDigest, Result: result})
@@ -287,6 +318,11 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO exploration_nodes(exploration_id,kind,state,origin,payload) VALUES($1,'fact','confirmed',$2,$3::jsonb)`, exploration, diagnosisRunOrigin, string(payload)); err != nil {
 		return ErrFirstDiagnosisOutcome
+	}
+	if verification.ObservationsStored {
+		if err := storeCandidateObservations(ctx, tx, task, state.RunRef, durableObservations); err != nil {
+			return ErrFirstDiagnosisOutcome
+		}
 	}
 	if tx.Commit() != nil {
 		return ErrFirstDiagnosisOutcome

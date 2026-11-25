@@ -55,8 +55,15 @@ func readDiagnosticRun(ctx context.Context, tx *sql.Tx, task int64) (*report.Dia
 		return nil, ErrFirstDiagnosisOutcome
 	}
 	if record.Verification != nil && (record.Verification.Version == "passive/v1" || record.Verification.Version == diagnosisVerificationV2) {
+		if record.Verification.ObservationsStored && (record.Verification.ObservationsCount <= 0 || record.Verification.ObservationsCount > candidateverify.MaxStoredObservationsV2 || !candidateVerificationDigest.MatchString(record.Verification.ObservationsDigest)) ||
+			!record.Verification.ObservationsStored && (record.Verification.ObservationsCount != 0 || record.Verification.ObservationsDigest != "") {
+			return nil, ErrFirstDiagnosisOutcome
+		}
 		run.VerificationVersion = record.Verification.Version
 		run.VerificationSourceUnavailable = record.Verification.SourceUnavailable
+		run.VerificationObservationsStored = record.Verification.ObservationsStored
+		run.VerificationObservationsCount = record.Verification.ObservationsCount
+		run.VerificationObservationsDigest = record.Verification.ObservationsDigest
 		for _, row := range record.Verification.Candidates {
 			if record.Verification.Version == diagnosisVerificationV2 && !candidateverify.ValidSourcesV2(row.Result) {
 				return nil, ErrFirstDiagnosisOutcome

@@ -125,9 +125,17 @@ type candidateVerificationPage struct {
 	CandidateID    string                         `json:"candidate_id"`
 	EvidenceDigest string                         `json:"evidence_digest"`
 	Automatic      candidateVerificationAutomatic `json:"automatic"`
+	StoredEvidence candidateVerificationStored    `json:"stored_evidence"`
 	Verifications  []candidateVerificationAttempt `json:"verifications"`
 	Truncated      bool                           `json:"truncated"`
 	NextBefore     string                         `json:"next_before,omitempty"`
+}
+
+type candidateVerificationStored struct {
+	State   string `json:"state"`
+	Count   int    `json:"observation_count"`
+	Verdict string `json:"verdict,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 func candidateVerificationError(w http.ResponseWriter, status int, code string) {
@@ -246,6 +254,35 @@ func candidateVerificationHTTP(w http.ResponseWriter, r *http.Request, pool *sql
 	}
 	page := candidateVerificationPage{TaskID: strconv.FormatInt(route.task, 10), CandidateID: strconv.FormatInt(candidate.ID, 10), EvidenceDigest: candidate.EvidenceDigest,
 		Automatic: candidateVerificationAutomatic{Status: automatic.Status, Reason: automatic.Reason}}
+	page.StoredEvidence.State = "not_stored"
+	if run.VerificationObservationsStored {
+		observations, readErr := readCandidateObservations(ctx, tx, route.task, run.RunRef)
+		if readErr != nil || len(observations) != run.VerificationObservationsCount {
+			candidateVerificationError(w, 503, "verification_evidence_invalid")
+			return
+		}
+		digest, digestErr := candidateObservationsDigest(observations)
+		if digestErr != nil || digest != run.VerificationObservationsDigest {
+			candidateVerificationError(w, 503, "verification_evidence_invalid")
+			return
+		}
+		page.StoredEvidence.Count = len(observations)
+		if len(observations) != 0 {
+			page.StoredEvidence.State = "stored"
+		}
+		if len(observations) != 0 && candidateverify.SupportedV2(candidate) {
+			review := candidateverify.AssessStoredV2(candidate, observations)
+			page.StoredEvidence.State, page.StoredEvidence.Verdict, page.StoredEvidence.Reason = "checked", review.Status, review.Reason
+			// The same closed run cannot gain a new confirmation by rereading its
+			// unchanged observations. A disagreement means storage/provenance is
+			// incomplete or corrupt; keep the automatic record untouched.
+			if review.Status != automatic.Status || review.Reason != automatic.Reason ||
+				!reflect.DeepEqual(review.Attempts, automatic.AttemptRefs) || !reflect.DeepEqual(review.Sources, automatic.Sources) {
+				candidateVerificationError(w, 503, "verification_evidence_invalid")
+				return
+			}
+		}
+	}
 	if r.Method == http.MethodPost {
 		if input.EvidenceDigest != candidate.EvidenceDigest {
 			candidateVerificationError(w, 409, "candidate_evidence_changed")

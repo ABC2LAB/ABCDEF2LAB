@@ -25,9 +25,12 @@ type DiagnosticRun struct {
 	RunRef string
 	Result *diagnosis.RunResult
 	// VerificationVersion은 수동적 독립 관찰 검증 이전의 저장 보고서에는 없다.
-	VerificationVersion           string
-	VerificationSourceUnavailable bool
-	CandidateAssessments          []CandidateAssessment
+	VerificationVersion            string
+	VerificationSourceUnavailable  bool
+	VerificationObservationsStored bool
+	VerificationObservationsCount  int
+	VerificationObservationsDigest string
+	CandidateAssessments           []CandidateAssessment
 }
 
 type CandidateAssessment struct {

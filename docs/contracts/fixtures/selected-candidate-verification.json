@@ -7,6 +7,7 @@
       "candidate_id": "903",
       "evidence_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "automatic": { "status": "confirmed", "reason": "html_nosniff_missing_twice" },
+      "stored_evidence": { "state": "checked", "observation_count": 2, "verdict": "confirmed", "reason": "html_nosniff_missing_twice" },
       "verifications": [],
       "truncated": false
     },
@@ -15,6 +16,7 @@
       "candidate_id": "904",
       "evidence_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "automatic": { "status": "negative", "reason": "html_nosniff_present_twice" },
+      "stored_evidence": { "state": "checked", "observation_count": 2, "verdict": "negative", "reason": "html_nosniff_present_twice" },
       "verifications": [],
       "truncated": false
     },
@@ -23,6 +25,7 @@
       "candidate_id": "905",
       "evidence_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
       "automatic": { "status": "unsupported", "reason": "type_not_supported" },
+      "stored_evidence": { "state": "stored", "observation_count": 1 },
       "verifications": [],
       "truncated": false
     },
@@ -31,6 +34,7 @@
       "candidate_id": "902",
       "evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "automatic": { "status": "insufficient", "reason": "independent_observation_missing" },
+      "stored_evidence": { "state": "checked", "observation_count": 1, "verdict": "insufficient", "reason": "independent_observation_missing" },
       "verifications": [],
       "truncated": false
     },
@@ -39,6 +43,7 @@
       "candidate_id": "902",
       "evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "automatic": { "status": "insufficient", "reason": "independent_observation_missing" },
+      "stored_evidence": { "state": "checked", "observation_count": 1, "verdict": "insufficient", "reason": "independent_observation_missing" },
       "verifications": [
         {
           "id": "1201",

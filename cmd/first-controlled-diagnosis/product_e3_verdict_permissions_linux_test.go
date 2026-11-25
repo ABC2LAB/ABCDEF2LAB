@@ -115,6 +115,17 @@ func TestProductRuntimeE3VerdictInsertOnly(t *testing.T) {
 			t.Fatalf("%s must be append-only for product_api and unavailable to runtime", table)
 		}
 	}
+	{
+		const table = "diagnostic_candidate_observations_v2"
+		var apiSelect, apiInsert, apiUpdate, apiDelete, runtimeSelect, runtimeInsert, runtimeUpdate, runtimeDelete bool
+		if err := installer.QueryRowContext(t.Context(), `SELECT has_table_privilege('product_api',$1,'SELECT'),has_table_privilege('product_api',$1,'INSERT'),has_table_privilege('product_api',$1,'UPDATE'),has_table_privilege('product_api',$1,'DELETE'),has_table_privilege('product_runtime',$1,'SELECT'),has_table_privilege('product_runtime',$1,'INSERT'),has_table_privilege('product_runtime',$1,'UPDATE'),has_table_privilege('product_runtime',$1,'DELETE')`, table).
+			Scan(&apiSelect, &apiInsert, &apiUpdate, &apiDelete, &runtimeSelect, &runtimeInsert, &runtimeUpdate, &runtimeDelete); err != nil {
+			t.Fatal(err)
+		}
+		if !apiSelect || apiInsert || apiUpdate || apiDelete || runtimeSelect || !runtimeInsert || runtimeUpdate || runtimeDelete {
+			t.Fatalf("%s grants violate writer/read-only split", table)
+		}
+	}
 	for _, col := range []string{"exploration_id", "src_id", "rel", "dst_id"} {
 		var readable bool
 		if err := installer.QueryRowContext(t.Context(), `SELECT has_column_privilege('product_api','exploration_edges',$1,'SELECT')`, col).Scan(&readable); err != nil || !readable {

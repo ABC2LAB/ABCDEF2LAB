@@ -767,6 +767,10 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow 
 			return errPreparation
 		}
 	}
+	if exec("GRANT INSERT ON diagnostic_candidate_observations_v2 TO product_runtime") != nil ||
+		exec("GRANT SELECT ON diagnostic_candidate_observations_v2 TO product_api") != nil {
+		return errPreparation
+	}
 	// 원본 후보가 같은 탐색 intent에서 나온 사실만 확인한다. 그래프 전체
 	// 변경 권한은 제품 API에 주지 않는다.
 	if exec("GRANT SELECT(exploration_id,src_id,rel,dst_id) ON exploration_edges TO product_api") != nil {
