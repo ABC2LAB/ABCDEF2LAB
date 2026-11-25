@@ -813,3 +813,39 @@ func TestAccountAuthWhileRunningTracksChangeTimes(t *testing.T) {
 		t.Fatalf("결과 불명에 계정 인증 상태가 남음 %+v", final)
 	}
 }
+
+// 이 칸 이전 판이 남긴 끝난 영수증(account_auth만, account_auth_updated_at 없음)이 있는 설치도 재시작하면 그대로 읽고, 새 칸을
+// 지어내지 않는다(#936 이동찬 P1).
+func TestLegacyTerminalAccountAuthReceiptSurvivesRestart(t *testing.T) {
+	for _, state := range []State{Completed, Cancelled, Failed} {
+		t.Run(string(state), func(t *testing.T) {
+			service, backend, root := newFixture(t)
+			job := create(t, service, "legacy-account-auth")
+			service.mu.Lock()
+			record := cloneReceipt(service.jobs[job.ID])
+			record.StartKey = "legacy-start"
+			record.Job.Revision++
+			record.Job.State, record.Job.Phase = state, Report
+			record.Job.TaskID, record.Job.PreparationStarted, record.Job.Started = "42", true, true
+			record.Job.AuthorityState = AuthorityConsumed
+			record.Job.DrainComplete, record.Job.ResultReady = true, true
+			record.Job.AccountAuth = map[string]string{"tester-a": "authenticated", "tester-b": "session_not_found"}
+			record.Job.AccountAuthAt = nil
+			err := service.save(record)
+			service.mu.Unlock()
+			if err != nil {
+				t.Fatal("이전 형식 영수증 저장 실패:", err)
+			}
+			crash(t, service)
+			restored, err := New(t.Context(), root, backend)
+			if err != nil {
+				t.Fatal("이전 형식 영수증으로 재시작하지 못함:", err)
+			}
+			defer restored.Shutdown(t.Context())
+			got := status(t, restored, job.ID)
+			if got.AccountAuth["tester-b"] != "session_not_found" || got.AccountAuthAt != nil || backend.calls.Load() != 0 {
+				t.Fatalf("이전 형식 영수증 %+v %+v", got.AccountAuth, got.AccountAuthAt)
+			}
+		})
+	}
+}

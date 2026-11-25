@@ -213,7 +213,12 @@ func TestJobRunResultFields(t *testing.T) {
 			j.State, j.Phase, j.DrainComplete, j.ResultReady = Running, ExecutionPhase, false, false
 			j.AccountAuth, j.AccountAuthAt = map[string]string{"tester-a": "authenticated"}, authAt("tester-a")
 		}, true},
-		{"account_auth_without_times", func(j *Job) { j.AccountAuth = map[string]string{"tester-a": "authenticated"} }, false},
+		// 이 칸 이전 영수증(끝난 상태에 account_auth만)은 그대로 읽는다(#936 이동찬 P1). 실행 중 값은 시각이 늘 함께다.
+		{"legacy_terminal_account_auth_without_times", func(j *Job) { j.AccountAuth = map[string]string{"tester-a": "authenticated"} }, true},
+		{"running_account_auth_without_times", func(j *Job) {
+			j.State, j.Phase, j.DrainComplete, j.ResultReady = Running, ExecutionPhase, false, false
+			j.AccountAuth = map[string]string{"tester-a": "authenticated"}
+		}, false},
 		{"account_auth_times_without_auth", func(j *Job) { j.AccountAuthAt = authAt("tester-a") }, false},
 		{"account_auth_times_other_label", func(j *Job) {
 			j.AccountAuth, j.AccountAuthAt = map[string]string{"tester-a": "authenticated"}, authAt("tester-b")
