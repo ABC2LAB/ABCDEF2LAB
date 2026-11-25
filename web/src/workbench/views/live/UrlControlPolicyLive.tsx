@@ -30,11 +30,11 @@ import {
 import { cx } from "../../lib/cx";
 import { useUrl } from "../../live/urlDiagnosis";
 import { urlAccountAuthRows } from "../../live/urlMap";
-import { useShell } from "../../shell";
+import { useShell, type View } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { Kv } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { UrlHead } from "./urlParts";
+import { BackButton, UrlHead } from "./urlParts";
 
 // ── 인라인 스타일(뼈대). 색은 실재 workbench 토큰만(접근통제 지도·커버리지·발견 상세·전송 통제 흐름과 같은 팔레트).
 const chipBase: CSSProperties = {
@@ -156,7 +156,14 @@ export function UrlControlPolicyLive() {
   );
   const accountAuth = useUrl((st) => st.job?.account_auth);
   // 숨겨 마운트된 화면이라 들어올 때마다 같은 task 의 정책을 다시 확인한다
-  const visible = useShell().route === "controlpolicy";
+  const { route, goTo } = useShell();
+  const visible = route === "controlpolicy";
+  // 뒤로 가기(사용자 11/25): 들어오기 직전 화면으로. 들어오는 곳은 새 점검 '정책 전체 보기'와 전송 통제 흐름 둘이고,
+  // 주소로 바로 열었거나 다른 화면에서 왔으면 새 점검으로 간다
+  const [backTo, setBackTo] = useState<View>("new");
+  useEffect(() => {
+    if (route !== "controlpolicy") setBackTo(route === "e2flow" ? "e2flow" : "new");
+  }, [route]);
   // 어느 task·결속의 결과인지 같이 들고, 지금 조회와 다른 결과는 보이지 않는다.
   const [result, setResult] = useState<{ task: string | null; binding: string; load: PolicyLoad | "failed" } | null>(
     null,
@@ -219,8 +226,13 @@ export function UrlControlPolicyLive() {
 
   return (
     <>
-      <UrlHead title="전송 통제 정책" crumb="전송 통제 정책" />
-      <div className={s.vb}>
+      <UrlHead
+        title="전송 통제 정책"
+        crumb="전송 통제 정책"
+        acts={<BackButton to={backTo === "e2flow" ? "전송 통제 흐름" : "새 점검"} onClick={() => goTo(backTo)} />}
+      />
+      {/* 오른쪽 상세 패널이 없는 화면이라 빈 패널 칸을 두지 않고 가운데를 다 쓴다(solo) */}
+      <div className={cx(s.vb, s.solo)}>
         <div className={s.vm}>
           <div className={s.note} role="note">
             <Icon name="info" />
@@ -271,147 +283,156 @@ export function UrlControlPolicyLive() {
             </div>
           ) : null}
 
-          {policy && sum ? (
-            <section className={s.isec} aria-label="정책 요약">
-              <h2>정책 요약</h2>
-              <div style={chipRow}>
-                <span style={neutralChip}>
-                  규칙 <b>{sum.rules}</b>
-                </span>
-                <span style={neutralChip}>
-                  origin <b>{sum.origins}</b>
-                </span>
-                <span style={sum.writeRules > 0 ? writeChip : neutralChip}>
-                  쓰기 규칙 <b>{sum.writeRules}</b>
-                </span>
-                <span
-                  style={
-                    expired
-                      ? { ...chipBase, background: "var(--crit-bg)", color: "var(--crit)", borderColor: "var(--crit)" }
-                      : { ...chipBase, background: "var(--ok-bg)", color: "var(--ok)", borderColor: "var(--ok)" }
-                  }
-                >
-                  {expired ? "유효기간 밖(만료·미발효)" : "유효기간 내"}
-                </span>
-              </div>
-              <p className={s.help}>
-                ‘승인됨’은 전송 경계가 허용하는 범위일 뿐, 실제로 그만큼 보냈다는 뜻이 아닙니다 — 실제 전송·차단은 전송
-                통제 흐름에서 봅니다.
-              </p>
-            </section>
-          ) : null}
-
+          {/* 새 점검처럼 두 단(사용자 11/25: 스크롤 내리지 않고 한눈에): 왼쪽 요약 · 승인 · 감사 · 상한(얼마나), 오른쪽 범위(어디로 · 무엇을).
+              가운데 칸이 좁으면 한 줄로 이어진다 */}
           {policy ? (
-            <section className={s.isec} aria-label="정책 메타">
-              <h2>정책 · 승인 · 감사</h2>
-              <div style={chipRow}>
-                <span style={monoChip}>정책 {policy.policyRef}</span>
-                <span style={monoChip}>개정 {policy.policyRevision}</span>
-                <span style={neutralChip}>승인 방식: {APPROVAL_LABEL[policy.approvalMode]}</span>
-                <span style={neutralChip}>자격 헤더(정책 설정): {HEADER_MODE_LABEL[policy.headerMode]}</span>
-                {policy.fingerprint ? (
-                  <span style={monoChip} title={policy.fingerprint}>
-                    지문 {policy.fingerprint.slice(0, 12)}…
-                  </span>
+            <div className={s.polgrid}>
+              <div className={s.polcol}>
+                {sum ? (
+                  <section className={s.isec} aria-label="정책 요약">
+                    <h2>정책 요약</h2>
+                    <div style={chipRow}>
+                      <span style={neutralChip}>
+                        규칙 <b>{sum.rules}</b>
+                      </span>
+                      <span style={neutralChip}>
+                        origin <b>{sum.origins}</b>
+                      </span>
+                      <span style={sum.writeRules > 0 ? writeChip : neutralChip}>
+                        쓰기 규칙 <b>{sum.writeRules}</b>
+                      </span>
+                      <span
+                        style={
+                          expired
+                            ? {
+                                ...chipBase,
+                                background: "var(--crit-bg)",
+                                color: "var(--crit)",
+                                borderColor: "var(--crit)",
+                              }
+                            : { ...chipBase, background: "var(--ok-bg)", color: "var(--ok)", borderColor: "var(--ok)" }
+                        }
+                      >
+                        {expired ? "유효기간 밖(만료·미발효)" : "유효기간 내"}
+                      </span>
+                    </div>
+                    <p className={s.help}>
+                      ‘승인됨’은 전송 경계가 허용하는 범위일 뿐, 실제로 그만큼 보냈다는 뜻이 아닙니다 — 실제 전송·차단은
+                      전송 통제 흐름에서 봅니다.
+                    </p>
+                  </section>
                 ) : null}
-              </div>
-              <p className={s.help}>
-                결속 시험 계정:{" "}
-                {policy.accounts.length ? (
-                  <span className={s.mono}>{policy.accounts.join(" · ")}</span>
-                ) : (
-                  "없음(자격 없이 전송)"
-                )}
-              </p>
-              <p className={s.help}>
-                유효기간 {fmtTime(policy.validFrom)} ~ {fmtTime(policy.validUntil)}
-              </p>
-              {expired ? (
-                <div className={cx(s.note, s.warn)} role="note">
-                  <Icon name="alert" />
-                  <span>지금은 정책 유효기간 밖입니다(만료·미발효). 이 정책으로는 새 전송을 신뢰할 수 없습니다.</span>
-                </div>
-              ) : null}
-              {accountAuth ? (
-                <>
-                  <h3>이 점검의 시험 계정 인증 결과</h3>
-                  <Kv rows={authRows} />
-                  {policy.headerMode === "test_account_passthrough" && noneAuthenticated ? (
+                <section className={s.isec} aria-label="정책 메타">
+                  <h2>정책 · 승인 · 감사</h2>
+                  <div style={chipRow}>
+                    <span style={monoChip}>정책 {policy.policyRef}</span>
+                    <span style={monoChip}>개정 {policy.policyRevision}</span>
+                    <span style={neutralChip}>승인 방식: {APPROVAL_LABEL[policy.approvalMode]}</span>
+                    <span style={neutralChip}>자격 헤더(정책 설정): {HEADER_MODE_LABEL[policy.headerMode]}</span>
+                    {policy.fingerprint ? (
+                      <span style={monoChip} title={policy.fingerprint}>
+                        지문 {policy.fingerprint.slice(0, 12)}…
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className={s.help}>
+                    결속 시험 계정:{" "}
+                    {policy.accounts.length ? (
+                      <span className={s.mono}>{policy.accounts.join(" · ")}</span>
+                    ) : (
+                      "없음(자격 없이 전송)"
+                    )}
+                  </p>
+                  <p className={s.help}>
+                    유효기간 {fmtTime(policy.validFrom)} ~ {fmtTime(policy.validUntil)}
+                  </p>
+                  {expired ? (
                     <div className={cx(s.note, s.warn)} role="note">
                       <Icon name="alert" />
                       <span>
-                        정책 설정은 ‘시험 계정 자격 사용’이지만 이 점검에서 인증된 시험 계정이 없습니다. 서버는 시험
-                        계정 자격 없이 진행했습니다.
+                        지금은 정책 유효기간 밖입니다(만료·미발효). 이 정책으로는 새 전송을 신뢰할 수 없습니다.
                       </span>
                     </div>
                   ) : null}
-                </>
-              ) : null}
-              {!accountAuth && policy.headerMode === "test_account_passthrough" ? (
-                <p className={s.help}>
-                  자격 헤더는 정책 설정입니다. 실제 계정 인증 결과는 점검이 끝나면 여기 함께 보입니다.
-                </p>
-              ) : null}
-              {policy.auditBound ? (
-                <p className={s.help}>감사 키 결속됨(키 값은 표시하지 않습니다).</p>
-              ) : (
-                <div className={cx(s.note, s.warn)} role="note">
-                  <Icon name="alert" />
-                  <span>감사 키가 결속되지 않았습니다. 감사 없는 전송은 통제 밖으로 봅니다.</span>
-                </div>
-              )}
-            </section>
-          ) : null}
-
-          {policy ? (
-            <section className={s.isec} aria-label="어디로·무엇을">
-              <h2>승인된 전송 범위 (어디로 · 무엇을)</h2>
-              {missingMethods.length ? (
-                <div className={cx(s.note, s.warn)} role="note">
-                  <Icon name="alert" />
-                  <span>
-                    승인 메서드가 비어 있는 규칙 {missingMethods.length}개 — 빈 값은 ‘전부 허용’이 아니라 차단입니다.
-                  </span>
-                </div>
-              ) : null}
-              {policy.rules.length ? (
-                policy.rules.map((r) => <RuleBlock key={r.ref} rule={r} />)
-              ) : (
-                <p className={s.empty}>승인된 전송 규칙이 없습니다.</p>
-              )}
-            </section>
-          ) : null}
-
-          {policy ? (
-            <section className={s.isec} aria-label="얼마나">
-              <h2>전송 상한 (얼마나)</h2>
-              <div style={chipRow}>
-                <span style={neutralChip}>
-                  최대 요청 <b>{policy.limits.maxRequests}</b>
-                </span>
-                <span style={neutralChip}>
-                  최대 시도 <b>{policy.limits.maxAttempts}</b>
-                </span>
-                <span style={neutralChip}>
-                  최대 동시 <b>{policy.limits.maxConcurrent}</b>
-                </span>
-                <span style={neutralChip}>
-                  요청 본문 <b>{policy.limits.maxBodyBytes}</b> B
-                </span>
-                <span style={neutralChip}>
-                  응답 본문 <b>{policy.limits.maxResponseBodyBytes}</b> B
-                </span>
-                <span style={neutralChip}>
-                  요청 시간 <b>{policy.limits.requestTimeoutMs}</b> ms
-                </span>
-                <span
-                  style={neutralChip}
-                  title="E③ 확정 단계에 따로 떼어 둔 대상 요청 수·시간입니다. 모델 단계는 이 몫을 뺀 범위에서 돕니다."
-                >
-                  확정 단계 몫 <b>{e3ConfirmationShareText(policy.limits.e3Confirmation)}</b>
-                </span>
+                  {accountAuth ? (
+                    <>
+                      <h3>이 점검의 시험 계정 인증 결과</h3>
+                      <Kv rows={authRows} />
+                      {policy.headerMode === "test_account_passthrough" && noneAuthenticated ? (
+                        <div className={cx(s.note, s.warn)} role="note">
+                          <Icon name="alert" />
+                          <span>
+                            정책 설정은 ‘시험 계정 자격 사용’이지만 이 점검에서 인증된 시험 계정이 없습니다. 서버는 시험
+                            계정 자격 없이 진행했습니다.
+                          </span>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : null}
+                  {!accountAuth && policy.headerMode === "test_account_passthrough" ? (
+                    <p className={s.help}>
+                      자격 헤더는 정책 설정입니다. 실제 계정 인증 결과는 점검이 끝나면 여기 함께 보입니다.
+                    </p>
+                  ) : null}
+                  {policy.auditBound ? (
+                    <p className={s.help}>감사 키 결속됨(키 값은 표시하지 않습니다).</p>
+                  ) : (
+                    <div className={cx(s.note, s.warn)} role="note">
+                      <Icon name="alert" />
+                      <span>감사 키가 결속되지 않았습니다. 감사 없는 전송은 통제 밖으로 봅니다.</span>
+                    </div>
+                  )}
+                </section>
+                <section className={s.isec} aria-label="얼마나">
+                  <h2>전송 상한 (얼마나)</h2>
+                  <div style={chipRow}>
+                    <span style={neutralChip}>
+                      최대 요청 <b>{policy.limits.maxRequests}</b>
+                    </span>
+                    <span style={neutralChip}>
+                      최대 시도 <b>{policy.limits.maxAttempts}</b>
+                    </span>
+                    <span style={neutralChip}>
+                      최대 동시 <b>{policy.limits.maxConcurrent}</b>
+                    </span>
+                    <span style={neutralChip}>
+                      요청 본문 <b>{policy.limits.maxBodyBytes}</b> B
+                    </span>
+                    <span style={neutralChip}>
+                      응답 본문 <b>{policy.limits.maxResponseBodyBytes}</b> B
+                    </span>
+                    <span style={neutralChip}>
+                      요청 시간 <b>{policy.limits.requestTimeoutMs}</b> ms
+                    </span>
+                    <span
+                      style={neutralChip}
+                      title="E③ 확정 단계에 따로 떼어 둔 대상 요청 수·시간입니다. 모델 단계는 이 몫을 뺀 범위에서 돕니다."
+                    >
+                      확정 단계 몫 <b>{e3ConfirmationShareText(policy.limits.e3Confirmation)}</b>
+                    </span>
+                  </div>
+                </section>
               </div>
-            </section>
+              <div className={s.polcol}>
+                <section className={s.isec} aria-label="어디로·무엇을">
+                  <h2>승인된 전송 범위 (어디로 · 무엇을)</h2>
+                  {missingMethods.length ? (
+                    <div className={cx(s.note, s.warn)} role="note">
+                      <Icon name="alert" />
+                      <span>
+                        승인 메서드가 비어 있는 규칙 {missingMethods.length}개 — 빈 값은 ‘전부 허용’이 아니라
+                        차단입니다.
+                      </span>
+                    </div>
+                  ) : null}
+                  {policy.rules.length ? (
+                    policy.rules.map((r) => <RuleBlock key={r.ref} rule={r} />)
+                  ) : (
+                    <p className={s.empty}>승인된 전송 규칙이 없습니다.</p>
+                  )}
+                </section>
+              </div>
+            </div>
           ) : null}
         </div>
       </div>

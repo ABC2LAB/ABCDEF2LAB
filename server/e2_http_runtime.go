@@ -258,36 +258,26 @@ func (r *E2HTTPRuntime) AccountAuth() map[string]string {
 	return diagnosis.CloneAccountAuth(r.accountAuth)
 }
 
-// AccountAuthForE3는 최초 인증 결과를 덮어쓰지 않고, E③ 직전에 같은 회차에 현재 결속된 세션이 있는지 다시 본다.
-// 갱신 성공으로 새 세션을 얻은 계정도 허용하되 토큰의 현재 유효성·신원은 이후 E③ 재로그인과 신원 요청이 검증한다.
-func (r *E2HTTPRuntime) AccountAuthForE3() map[string]string {
-	auth := r.AccountAuth()
+// currentAccountAuth는 최초 인증 결과에 지금 회차의 세션 결속을 덮은 값이다(갱신 성공으로 새 세션을 얻은 계정은
+// authenticated, 최초에 authenticated였지만 지금 세션이 없는 계정은 session_not_found). current는 지금 lease를 볼 수
+// 있었는지다. 볼 수 없으면 최초 결과 사본을 그대로 돌려준다(덮지 않음).
+func (r *E2HTTPRuntime) currentAccountAuth() (auth map[string]string, current bool) {
+	auth = r.AccountAuth()
 	if r == nil || len(auth) == 0 {
-		return auth
-	}
-	unavailable := func() map[string]string {
-		for label, initial := range auth {
-			if initial == E2HTTPAuthAuthenticated {
-				auth[label] = E2HTTPAuthSessionNotFound
-			}
-		}
-		return auth
+		return auth, false
 	}
 	r.mu.Lock()
 	task := r.task
 	r.mu.Unlock()
 	if task == nil {
-		return unavailable()
+		return auth, false
 	}
 	task.mu.Lock()
 	lease := task.lease
 	usable := !task.closed && !task.blocked && task.validLease
 	task.mu.Unlock()
-	if !usable {
-		return unavailable()
-	}
-	if lease == nil || lease.sessionStore == nil {
-		return unavailable()
+	if !usable || lease == nil || lease.sessionStore == nil {
+		return auth, false
 	}
 	for label, initial := range auth {
 		if _, ok := lease.sessionStore.AccountBindingRef(r.options.Expected.RunRef, label); ok {
@@ -296,7 +286,33 @@ func (r *E2HTTPRuntime) AccountAuthForE3() map[string]string {
 			auth[label] = E2HTTPAuthSessionNotFound
 		}
 	}
+	return auth, true
+}
+
+// AccountAuthForE3는 최초 인증 결과를 덮어쓰지 않고, E③ 직전에 같은 회차에 현재 결속된 세션이 있는지 다시 본다.
+// 갱신 성공으로 새 세션을 얻은 계정도 허용하되 토큰의 현재 유효성·신원은 이후 E③ 재로그인과 신원 요청이 검증한다.
+// 지금 lease를 볼 수 없으면 세션을 쓸 수 없는 것으로 본다(authenticated → session_not_found).
+func (r *E2HTTPRuntime) AccountAuthForE3() map[string]string {
+	auth, current := r.currentAccountAuth()
+	if !current {
+		for label, initial := range auth {
+			if initial == E2HTTPAuthAuthenticated {
+				auth[label] = E2HTTPAuthSessionNotFound
+			}
+		}
+	}
 	return auth
+}
+
+// AccountAuthNow는 실행 중 상태 응답(diagnosisprep.Job account_auth)에 싣는 계정별 인증 상태다. 확정 단계와 같은 기준
+// (최초 인증 결과 + 지금 세션 결속)이다. 인증 준비 전이거나(계정 결속 없음 포함) 지금 lease를 볼 수 없으면 ok가 거짓이고,
+// 호출자는 앞에 실은 값을 유지한다(모르는 순간을 session_not_found로 바꾸지 않는다). 자격·세션 값은 없다.
+func (r *E2HTTPRuntime) AccountAuthNow() (map[string]string, bool) {
+	auth, current := r.currentAccountAuth()
+	if !current {
+		return nil, false
+	}
+	return auth, true
 }
 
 type e2HTTPRuntimeTask struct {

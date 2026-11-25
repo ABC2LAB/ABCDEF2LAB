@@ -2629,6 +2629,49 @@ describe("레일 (URL 진단)", () => {
 });
 
 describe("대시보드 · 인증 (URL 진단)", () => {
+  it("점검 정보 '보낸 요청'은 대상에 나간 요청 총계(e2-flow target_requests), 마우스 올리면 내역(사용자 11/25)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    const prev = vi.mocked(teamApi.apiFetch).getMockImplementation();
+    vi.mocked(teamApi.apiFetch).mockImplementation(async (path, ...rest) => {
+      if (String(path).startsWith(`/api/tasks/${running.task_id}/e2-flow`))
+        return {
+          format: "abc2lab.e2-flow-view/v1",
+          journal: "verified",
+          last_index: 0,
+          more: false,
+          omitted_calls: 0,
+          counts: {
+            attempts: 56,
+            allowed: 56,
+            denied: 0,
+            unsupported: 0,
+            forward_attempted: 56,
+            responses: 56,
+            unknown: 0,
+            transient: 0,
+            withheld: 0,
+            calls: 0,
+          },
+          calls: [],
+          target_requests: {
+            model: 50,
+            login: 6,
+            confirmation: 0,
+            unclassified: 0,
+            exploration: 0,
+            exploration_state: "none",
+            total: 56,
+          },
+        } as never;
+      if (prev) return prev(path, ...rest);
+      throw new ApiError(404, "not found");
+    });
+    mount("dashboard");
+    const sent = await screen.findByTitle("모델 50 · 로그인 6");
+    expect(sent).toHaveTextContent(/^56건/);
+  });
+
   it("대시보드: 이어 보는 진단은 진행 중인 점검에 한 줄, 상세에서 알맞은 화면으로 간다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
@@ -2718,6 +2761,73 @@ describe("대시보드 · 인증 (URL 진단)", () => {
       expect(within(detail).getByText(k).nextElementSibling).toHaveTextContent("연결 전");
     expect(within(detail).getByText("결정 대기").nextElementSibling).toHaveTextContent("없음");
     expect(within(detail).queryByText("소요")).toBeNull();
+  });
+
+  // #917 리뷰 P2: 서버는 결정(허용 · 거부 · 미지원)과 사유(결과 불명 · 송신 실패)를 따로 센다 — 보내다 결과를 모르게 된 시도는
+  // 허용이면서 결과 불명이라, 허용을 그대로 쓰면 조각 합이 시도 수를 넘어 원이 겹친다
+  const e2View = (journal: "verified" | "invalid", counts: Partial<Record<string, number>>) => ({
+    format: "abc2lab.e2-flow-view/v1",
+    journal,
+    last_index: 0,
+    more: false,
+    omitted_calls: 0,
+    counts: {
+      attempts: 0,
+      allowed: 0,
+      denied: 0,
+      unsupported: 0,
+      forward_attempted: 0,
+      responses: 0,
+      unknown: 0,
+      transient: 0,
+      withheld: 0,
+      calls: 0,
+      ...counts,
+    },
+    calls: [],
+  });
+  const mountE2Ring = async (view: ReturnType<typeof e2View>) => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    vi.mocked(teamApi.apiFetch).mockImplementation(
+      async (path) => (String(path) === "/api/tasks/42/e2-flow" ? view : {}) as never,
+    );
+    mount("dashboard");
+    const rings = await screen.findByRole("region", { name: "분포" });
+    return within(rings).getByRole("region", { name: "전송 통제" });
+  };
+  it("대시보드 전송 통제 원: 허용이면서 결과 불명인 시도를 두 번 세지 않는다(조각 합 = 진단 요청)", async () => {
+    // 시도 5 = 허용 4 + 거부 1, 허용 4 중 1은 결과 불명 · 1은 송신 실패 → 허용(응답까지) 2 · 막음 1 · 결과 불명 · 실패 2
+    const ring = await mountE2Ring(
+      e2View("verified", {
+        attempts: 5,
+        allowed: 4,
+        denied: 1,
+        forward_attempted: 4,
+        responses: 2,
+        unknown: 1,
+        transient: 1,
+        calls: 5,
+      }),
+    );
+    await waitFor(() =>
+      expect(within(ring).getByRole("img")).toHaveAccessibleName("진단 요청 5 · 허용 2 · 막음 1 · 결과 불명 · 실패 2"),
+    );
+    const legend = [...ring.querySelectorAll("li")].map((li) => li.textContent);
+    expect(legend).toEqual(["허용2", "막음1", "결과 불명 · 실패2"]);
+  });
+  it("대시보드 전송 통제 원: 전송 기록 검증 실패(journal invalid)는 0건으로 그리지 않는다", async () => {
+    // 검증 실패면 서버가 수를 전부 0으로 보낸다 — '진단 요청 0 · 허용 0'은 아무것도 안 보낸 것처럼 읽힌다(절대 규칙 5)
+    const ring = await mountE2Ring(e2View("invalid", {}));
+    await waitFor(() => expect(within(ring).getByRole("img")).toHaveAccessibleName("전송 기록 검증 실패"));
+    expect(ring).toHaveTextContent("전송 기록 검증 실패");
+    expect(ring).not.toHaveTextContent("E② 가 받은 진단 요청");
+    expect(ring.querySelectorAll("li")).toHaveLength(0);
+  });
+  it("대시보드 전송 통제 원: 막음 + 결과 불명 · 실패가 진단 요청보다 많은 기록은 나누어 그리지 않는다", async () => {
+    const ring = await mountE2Ring(e2View("verified", { attempts: 1, allowed: 1, unknown: 1, transient: 1, calls: 1 }));
+    await waitFor(() => expect(ring).toHaveTextContent("전송 기록의 수가 맞지 않아 나누어 보이지 않습니다"));
+    expect(ring.querySelectorAll("li")).toHaveLength(0);
   });
 
   it("대시보드: 저장된 결과에서 정상 대조를 빼고 위험도 순으로 보이며, 위험도 칩으로 거른다", async () => {
@@ -3369,9 +3479,10 @@ it("주소 옆 [URL 인증]: 등록 전엔 버튼, 누르면 주소 바로 밑�
   fireEvent.click(auth);
   const basis = await screen.findByRole("checkbox", { name: /점검 권한이 있고/ });
   expect(auth).toHaveAttribute("aria-expanded", "true");
-  // 등록 칸은 점검 이름보다 위(주소 바로 밑)
+  // 점검 이름은 사이트 주소보다 위(사용자 11/25), 등록 칸은 주소 바로 밑
   const name = screen.getByLabelText(/점검 이름/);
-  expect(basis.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(name.compareDocumentPosition(urlInput) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(urlInput.compareDocumentPosition(basis) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   // 다시 누르면 닫히고, 또 누르면 열린다(접기 버튼 없음)
   expect(screen.queryByRole("button", { name: "접기" })).toBeNull();
   fireEvent.click(auth);
@@ -3895,4 +4006,116 @@ describe("flowPauseOf — 흐름 일시정지 상태", () => {
     expect(flowPauseOf(true, null, false, false)).toBe("none");
     expect(flowPauseOf(false, { paused: true }, true, false)).toBe("none");
   });
+});
+
+describe("진행 화면 계정 경고(최민준 요청 11/25 — #936 account_auth · #914 login_method_missing)", () => {
+  const now = new Date().toISOString();
+  const withAuth = (auth: url.URLAccountAuth | undefined, at?: Record<string, string>) => ({
+    ...running,
+    ...(auth
+      ? {
+          account_auth: auth,
+          account_auth_updated_at: at ?? Object.fromEntries(Object.keys(auth).map((k) => [k, now])),
+        }
+      : {}),
+  });
+  const origin = new URL(running.input.target_url).origin;
+  function serveAccounts(loginMissing: boolean) {
+    vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
+      const p = String(path);
+      if (p.startsWith("/api/product/targets/resolve"))
+        return { target: { id: "t1", origin, state: "approved" } } as never;
+      if (p === "/api/product/targets/t1/accounts")
+        return {
+          accounts: [
+            {
+              label: "rh_tester_a",
+              classification: "test",
+              credential_configured: true,
+              ...(loginMissing ? { login_method_missing: true } : {}),
+            },
+          ],
+        } as never;
+      throw new ApiError(404, "not found");
+    });
+  }
+
+  it("모두 authenticated → 경고 없음", async () => {
+    saveHandle();
+    serveAccounts(false);
+    u.readURLStatus.mockResolvedValue(withAuth({ rh_tester_a: "authenticated", rh_tester_b: "authenticated" }));
+    mount("live");
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
+    expect(screen.queryByTestId("account-auth-warning")).toBeNull();
+    expect(screen.queryByTestId("login-method-warning")).toBeNull();
+  });
+
+  it("한 계정 session_not_found → 그 계정만 경고(라벨 · 한국어 결과 · 바뀐 시각) + 결과 한 줄, 값은 없음", async () => {
+    saveHandle();
+    serveAccounts(false);
+    u.readURLStatus.mockResolvedValue(withAuth({ rh_tester_a: "authenticated", rh_tester_b: "session_not_found" }));
+    mount("live");
+    const box = await screen.findByTestId("account-auth-warning");
+    const rows = within(box).getAllByRole("listitem");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toMatch(/^B\(rh_tester_b\) — 세션을 받지 못함 \(\d{2}:\d{2}\)$/);
+    expect(box).toHaveTextContent("인증 안 된 계정은 세션이 없어 그 계정으로는 요청하지 못합니다");
+    expect(box).not.toHaveTextContent("익명으로 나갑니다");
+    expect(box).toHaveTextContent("test_accounts_unavailable");
+    expect(box).not.toHaveTextContent("rh_tester_a");
+  });
+
+  it("login_method_missing: true → 로그인 방식 경고 + 계정 분류(그 대상 미리 고름)로 가는 버튼", async () => {
+    saveHandle();
+    serveAccounts(true);
+    u.readURLStatus.mockResolvedValue(running);
+    const { goTo } = mount("live");
+    const box = await screen.findByTestId("login-method-warning");
+    expect(box).toHaveTextContent("로그인 방식이 없어 시험 계정으로 로그인하지 않고 점검합니다");
+    fireEvent.click(within(box).getByRole("button", { name: "로그인 방식 등록" }));
+    expect(goTo).toHaveBeenCalledWith("classify");
+    expect(useWb.getState().focusTarget?.id).toBe("t1");
+  });
+
+  it("이미 로그인을 시도한 점검(account_auth 있음)은 로그인 방식 경고를 띄우지 않는다(#941 최민준 P3)", async () => {
+    saveHandle();
+    serveAccounts(true);
+    u.readURLStatus.mockResolvedValue(withAuth({ rh_tester_a: "authenticated", rh_tester_b: "not_sent" }));
+    mount("live");
+    expect(await screen.findByTestId("account-auth-warning")).toBeInTheDocument();
+    expect(screen.queryByTestId("login-method-warning")).toBeNull();
+    expect(
+      vi.mocked(teamApi.apiFetch).mock.calls.some(([p]) => String(p).startsWith("/api/product/targets/resolve")),
+    ).toBe(false);
+  });
+
+  it("account_auth 칸 없음 → 아무것도 안 띄움", async () => {
+    saveHandle();
+    serveAccounts(false);
+    u.readURLStatus.mockResolvedValue(running);
+    mount("live");
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
+    expect(screen.queryByTestId("account-auth-warning")).toBeNull();
+  });
+
+  it("다시 로그인으로 값이 바뀌면 갱신된다(경고 생김 → 다른 결과 → 사라짐)", async () => {
+    saveHandle();
+    serveAccounts(false);
+    u.readURLStatus.mockResolvedValue(withAuth({ rh_tester_a: "authenticated", rh_tester_b: "authenticated" }));
+    mount("live");
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
+    expect(screen.queryByTestId("account-auth-warning")).toBeNull();
+    u.readURLStatus.mockResolvedValue({
+      ...withAuth({ rh_tester_a: "authenticated", rh_tester_b: "login_failed" }),
+      revision: running.revision + 1,
+    });
+    const box = await screen.findByTestId("account-auth-warning", {}, { timeout: 5000 });
+    expect(box).toHaveTextContent("B(rh_tester_b) — 로그인 거절");
+    expect(box).not.toHaveTextContent("로그인 실패");
+    u.readURLStatus.mockResolvedValue({
+      ...withAuth({ rh_tester_a: "authenticated", rh_tester_b: "authenticated" }),
+      revision: running.revision + 2,
+    });
+    await waitFor(() => expect(screen.queryByTestId("account-auth-warning")).toBeNull(), { timeout: 5000 });
+  }, 15000);
 });

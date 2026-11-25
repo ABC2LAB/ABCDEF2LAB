@@ -196,10 +196,36 @@ func TestJobRunResultFields(t *testing.T) {
 		{"log_warning_with_reason", func(j *Job) { j.DiagnosticLogIncomplete, j.ReasonCode = true, "budget_limited" }, true},
 		{"log_warning_on_failed", func(j *Job) { j.State, j.DiagnosticLogIncomplete = Failed, true }, false},
 		// 시험 계정별 인증 결과(§3.4): completed·cancelled·failed만, 라벨·결과 값 규칙.
-		{"account_auth_on_completed", func(j *Job) { j.AccountAuth = map[string]string{"tester-a": "authenticated"} }, true},
-		{"account_auth_on_failed", func(j *Job) { j.State, j.AccountAuth = Failed, map[string]string{"tester-a": "login_failed"} }, true},
-		{"account_auth_on_cancelled", func(j *Job) { j.State, j.AccountAuth = Cancelled, map[string]string{"tester-a": "not_sent"} }, true},
-		{"account_auth_on_unknown", func(j *Job) { j.State, j.AccountAuth = Unknown, map[string]string{"tester-a": "authenticated"} }, false},
+		{"account_auth_on_completed", func(j *Job) {
+			j.AccountAuth, j.AccountAuthAt = map[string]string{"tester-a": "authenticated"}, authAt("tester-a")
+		}, true},
+		{"account_auth_on_failed", func(j *Job) {
+			j.State, j.AccountAuth, j.AccountAuthAt = Failed, map[string]string{"tester-a": "login_failed"}, authAt("tester-a")
+		}, true},
+		{"account_auth_on_cancelled", func(j *Job) {
+			j.State, j.AccountAuth, j.AccountAuthAt = Cancelled, map[string]string{"tester-a": "not_sent"}, authAt("tester-a")
+		}, true},
+		{"account_auth_on_unknown", func(j *Job) {
+			j.State, j.AccountAuth, j.AccountAuthAt = Unknown, map[string]string{"tester-a": "authenticated"}, authAt("tester-a")
+		}, false},
+		// 2026-11-25: 인증 준비 뒤의 실행 중(running·stopping)에도 싣는다. 변경 시각은 같은 라벨로 늘 함께다.
+		{"account_auth_on_running", func(j *Job) {
+			j.State, j.Phase, j.DrainComplete, j.ResultReady = Running, ExecutionPhase, false, false
+			j.AccountAuth, j.AccountAuthAt = map[string]string{"tester-a": "authenticated"}, authAt("tester-a")
+		}, true},
+		// 이 칸 이전 영수증(끝난 상태에 account_auth만)은 그대로 읽는다(#936 이동찬 P1). 실행 중 값은 시각이 늘 함께다.
+		{"legacy_terminal_account_auth_without_times", func(j *Job) { j.AccountAuth = map[string]string{"tester-a": "authenticated"} }, true},
+		{"running_account_auth_without_times", func(j *Job) {
+			j.State, j.Phase, j.DrainComplete, j.ResultReady = Running, ExecutionPhase, false, false
+			j.AccountAuth = map[string]string{"tester-a": "authenticated"}
+		}, false},
+		{"account_auth_times_without_auth", func(j *Job) { j.AccountAuthAt = authAt("tester-a") }, false},
+		{"account_auth_times_other_label", func(j *Job) {
+			j.AccountAuth, j.AccountAuthAt = map[string]string{"tester-a": "authenticated"}, authAt("tester-b")
+		}, false},
+		{"account_auth_zero_time", func(j *Job) {
+			j.AccountAuth, j.AccountAuthAt = map[string]string{"tester-a": "authenticated"}, map[string]time.Time{"tester-a": {}}
+		}, false},
 		{"account_auth_bad_result", func(j *Job) { j.AccountAuth = map[string]string{"tester-a": "session=abc"} }, false},
 		{"account_auth_bad_label", func(j *Job) { j.AccountAuth = map[string]string{"Tester@x": "authenticated"} }, false},
 		{"account_auth_empty", func(j *Job) { j.AccountAuth = map[string]string{} }, false},
@@ -261,4 +287,12 @@ func TestCanonicalInputExcludedPathsMatchE2Rules(t *testing.T) {
 	if _, err := CanonicalInput(thirtyTwo); err != nil {
 		t.Fatal("32 exclusions rejected:", err)
 	}
+}
+
+func authAt(labels ...string) map[string]time.Time {
+	out := map[string]time.Time{}
+	for _, label := range labels {
+		out[label] = time.Date(2026, 11, 25, 3, 0, 0, 0, time.UTC)
+	}
+	return out
 }

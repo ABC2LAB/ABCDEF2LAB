@@ -218,22 +218,29 @@ function DashRingRow({
   ];
   // ③ 탐색
   const visitPct = explore && explore.found > 0 ? Math.round((explore.visited / explore.found) * 100) : null;
-  // ④ 전송 통제
+  // ④ 전송 통제: 서버는 결정(허용 · 거부 · 미지원)과 사유(결과 불명 · 송신 실패)를 따로 센다 — 보내다 결과를 모르게 된 시도는
+  // 허용이면서 결과 불명이다(server/first_diagnosis_attempts.go). 조각이 겹치지 않게 허용은 '시도 − 막음 − 결과 불명 · 실패'
+  // (응답까지 받은 허용)로 나눠 합이 시도 수와 같게 한다(#917 리뷰 P2). 막음 + 결과 불명 · 실패가 시도보다 많으면 수가 맞지
+  // 않는 기록이라 원을 그리지 않는다
   const blocked = e2 ? e2.denied + e2.unsupported : 0;
   const unsure = e2 ? e2.unknown + e2.transient : 0;
-  const e2Segs: RingSeg[] = e2
-    ? [
-        { key: "allowed", label: "허용", value: e2.allowed, color: "var(--ring-allow)" },
-        { key: "blocked", label: "막음", value: blocked, color: "var(--ring-block)" },
-        { key: "unsure", label: "결과 불명 · 실패", value: unsure, color: "var(--ring-gray)" },
-      ]
-    : [];
+  const e2Mismatch = !!e2 && blocked + unsure > e2.attempts;
+  const allowedOk = e2 && !e2Mismatch ? e2.attempts - blocked - unsure : 0;
+  const e2Segs: RingSeg[] =
+    e2 && !e2Mismatch
+      ? [
+          { key: "allowed", label: "허용", value: allowedOk, color: "var(--ring-allow)" },
+          { key: "blocked", label: "막음", value: blocked, color: "var(--ring-block)" },
+          { key: "unsure", label: "결과 불명 · 실패", value: unsure, color: "var(--ring-gray)" },
+        ]
+      : [];
   const waiting = [approvals ? `승인 대기 ${approvals}` : null, selecting ? "경로 선택 대기" : null].filter(Boolean);
   const dash = "—";
   let sevNote = "결과가 저장되면 셉니다";
   if (ready && total) sevNote = "확정된 취약점의 위험도";
   else if (ready) sevNote = "저장된 결과에 검토 대상이 없습니다(취약점이 없다는 뜻은 아닙니다)";
-  const e2Text = e2 ? "E② 가 받은 진단 요청(탐색 요청은 제외)" : e2Note;
+  let e2Text = e2 ? "E② 가 받은 진단 요청(탐색 요청은 제외)" : e2Note;
+  if (e2Mismatch) e2Text = "전송 기록의 수가 맞지 않아 나누어 보이지 않습니다";
   return (
     <section className={s.drings} aria-label="분포">
       <RingCard
@@ -297,13 +304,13 @@ function DashRingRow({
         ring={
           <Ring
             segs={e2Segs}
-            total={e2?.attempts ?? 0}
+            total={e2 && !e2Mismatch ? e2.attempts : 0}
             center={e2 ? e2.attempts : dash}
             caption="진단 요청"
             label={
-              e2
-                ? `진단 요청 ${e2.attempts} · 허용 ${e2.allowed} · 막음 ${blocked} · 결과 불명 · 실패 ${unsure}`
-                : e2Note
+              e2 && !e2Mismatch
+                ? `진단 요청 ${e2.attempts} · 허용 ${allowedOk} · 막음 ${blocked} · 결과 불명 · 실패 ${unsure}`
+                : e2Text
             }
           />
         }
@@ -358,6 +365,8 @@ export function UrlDashboardLive() {
   });
   let e2Note = "점검이 시작되면 셉니다";
   if (e2Task && e2.error) e2Note = "전송 기록을 읽지 못했습니다";
+  // 저널 검증 실패면 서버가 수를 전부 0으로 보낸다 — '아무것도 안 보냄'으로 그리지 않는다(#917 리뷰 P2, 규칙 5)
+  else if (e2Task && e2.data?.journal === "invalid") e2Note = "전송 기록 검증 실패";
   else if (e2Task) e2Note = "전송 기록을 읽는 중";
   const [ff, setFf] = useState<SevF | "all">("all");
   const [findAll, setFindAll] = useState(false);
@@ -496,6 +505,7 @@ export function UrlDashboardLive() {
         onApprovals={first ? () => pick({ kind: "approval", id: first.id }) : undefined}
         result={result}
         coverage={coverage}
+        e2Flow={e2Task && !e2.error ? (e2.data ?? null) : null}
       />
     );
   } else {
@@ -544,7 +554,7 @@ export function UrlDashboardLive() {
             explore={
               flow && job?.input.workflow_mode ? { found: flow.counts.found, visited: flow.counts.visited } : null
             }
-            e2={e2Task && !e2.error ? (e2.data?.counts ?? null) : null}
+            e2={e2Task && !e2.error && e2.data?.journal === "verified" ? e2.data.counts : null}
             e2Note={e2Note}
             approvals={pending ? pending.length : null}
             selecting={!!job && flow?.stage === "awaiting_selection"}

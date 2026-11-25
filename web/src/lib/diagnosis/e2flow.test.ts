@@ -1,7 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
 import { apiFetch } from "./api";
-import { decisionClass, type E2Reason, getE2Flow, mergeE2Flow, parseE2Flow, REASON_LABEL } from "./e2flow";
+import {
+  decisionClass,
+  type E2Reason,
+  type E2TargetRequests,
+  getE2Flow,
+  mergeE2Flow,
+  parseE2Flow,
+  REASON_LABEL,
+  sentRequestsOf,
+} from "./e2flow";
 import { e2Attempt, e2Flow } from "./e2flow-fixtures";
+
 vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), apiFetch: vi.fn() }));
 beforeEach(() => vi.resetAllMocks());
 describe("계약 §4 사유·단계와 송신 관측", () => {
@@ -199,5 +210,128 @@ describe("실제 intent/마감 사건과 계약 엄격성", () => {
     const merged = mergeE2Flow(closed, late);
     expect(merged.calls[0]).toMatchObject({ closed: true, closed_index: 3 });
     expect(merged.calls[0].attempts[0].path_pattern).toBe("/latest");
+  });
+});
+
+// #929: 검증된 응답의 target_requests(대상 요청 내역). 서버 url_target_requests.go 규칙과 같게 닫는다
+describe("target_requests — 대상 요청 내역(계약 workbench-live-data §4)", () => {
+  const tr = (over: Partial<E2TargetRequests> = {}): E2TargetRequests => ({
+    model: 50,
+    login: 6,
+    confirmation: 0,
+    unclassified: 0,
+    exploration: 0,
+    exploration_state: "none",
+    total: 56,
+    ...over,
+  });
+  const withTR = (t: unknown) => ({ ...e2Flow(), target_requests: t });
+
+  it.each([
+    ["탐색 없음(none) — 11/24 회차 2와 같은 모양", tr()],
+    ["탐색 열지 않음(not_run)", tr({ exploration_state: "not_run" })],
+    ["탐색 확정(closed)", tr({ exploration: 30, exploration_state: "closed", total: 86 })],
+    ["탐색 중 경계 수 있음", tr({ exploration: 12, exploration_state: "running", total: 68 })],
+    ["탐색 중 경계 수 없음 → 총계 모름", tr({ exploration: null, exploration_state: "running", total: null })],
+    ["모름(unknown) → 총계 모름", tr({ exploration: null, exploration_state: "unknown", total: null })],
+    ["분류 안 된 프로그램 요청 → 총계 모름", tr({ unclassified: 2, total: null })],
+  ])("받는다: %s", (_, value) => {
+    expect(parseE2Flow(withTR(value)).target_requests).toEqual(value);
+  });
+
+  it("내역 칸이 없는 응답(#929 이전 서버)도 받는다", () => {
+    expect(parseE2Flow(e2Flow()).target_requests).toBeUndefined();
+  });
+
+  it.each([
+    ["총계가 합과 다름", tr({ total: 50 })],
+    ["탐색 수를 모르는데 총계 있음", tr({ exploration: null, exploration_state: "running", total: 50 })],
+    ["분류 안 된 요청이 있는데 총계 있음", tr({ unclassified: 1, total: 57 })],
+    ["none 인데 탐색 수가 0 이 아님", tr({ exploration: 5, total: 61 })],
+    ["not_run 인데 탐색 수 모름", tr({ exploration_state: "not_run", exploration: null, total: null })],
+    ["closed 인데 탐색 수 모름", tr({ exploration_state: "closed", exploration: null, total: null })],
+    ["unknown 인데 탐색 수 있음", tr({ exploration_state: "unknown", exploration: 3, total: 59 })],
+    ["모르는 탐색 상태", { ...tr(), exploration_state: "paused" }],
+    ["음수", tr({ model: -1, total: 5 })],
+    ["모르는 칸", { ...tr(), extra: 1 }],
+    ["칸 빠짐", { model: 50, login: 6, confirmation: 0, exploration: 0, exploration_state: "none", total: 56 }],
+    ["문자 수", { ...tr(), model: "50" }],
+    ["배열", [tr()]],
+  ])("계약 밖은 거부한다: %s", (_, value) => {
+    expect(() => parseE2Flow(withTR(value))).toThrow();
+  });
+
+  it("커서로 이어 읽으면 새 응답의 내역을 쓴다", () => {
+    const first = parseE2Flow(withTR(tr()));
+    const next = parseE2Flow({ ...withTR(tr({ model: 52, total: 58 })), last_index: 3 });
+    expect(mergeE2Flow(first, next).target_requests?.total).toBe(58);
+  });
+});
+
+describe("sentRequestsOf — '보낸 요청' 칸(사용자 11/25: 총계 + 마우스 올리면 내역)", () => {
+  const flowWith = (t: E2TargetRequests) => parseE2Flow({ ...e2Flow(), target_requests: t });
+
+  it("숫자는 대상에 나간 요청 총계, 내역은 0 이 아닌 갈래만(모델은 늘)", () => {
+    expect(
+      sentRequestsOf(
+        flowWith({
+          model: 50,
+          login: 6,
+          confirmation: 0,
+          unclassified: 0,
+          exploration: 0,
+          exploration_state: "none",
+          total: 56,
+        }),
+      ),
+    ).toEqual({ value: "56건", detail: "모델 50 · 로그인 6" });
+    expect(
+      sentRequestsOf(
+        flowWith({
+          model: 50,
+          login: 6,
+          confirmation: 2,
+          unclassified: 0,
+          exploration: 30,
+          exploration_state: "closed",
+          total: 88,
+        }),
+      ),
+    ).toEqual({ value: "88건", detail: "모델 50 · 로그인 6 · 확정 2 · 탐색 30" });
+  });
+
+  it("총계를 모르면 0 · 모델 수로 대신하지 않고 '—'와 까닭", () => {
+    expect(
+      sentRequestsOf(
+        flowWith({
+          model: 50,
+          login: 6,
+          confirmation: 0,
+          unclassified: 0,
+          exploration: null,
+          exploration_state: "unknown",
+          total: null,
+        }),
+      ),
+    ).toEqual({ value: "—", detail: "탐색 요청 수를 확인하지 못해 총계를 모릅니다 · 모델 50 · 로그인 6 · 탐색 모름" });
+    expect(
+      sentRequestsOf(
+        flowWith({
+          model: 3,
+          login: 0,
+          confirmation: 0,
+          unclassified: 1,
+          exploration: 0,
+          exploration_state: "none",
+          total: null,
+        }),
+      )?.detail,
+    ).toBe("분류 안 된 프로그램 요청이 있어 총계를 모릅니다 · 모델 3 · 분류 안 된 프로그램 요청 1");
+  });
+
+  it("검증 실패는 '검증 실패', 내역 칸이 없거나 응답이 없으면 null", () => {
+    expect(sentRequestsOf(parseE2Flow({ ...e2Flow(), journal: "invalid", calls: [] }))?.value).toBe("검증 실패");
+    expect(sentRequestsOf(parseE2Flow(e2Flow()))).toBeNull();
+    expect(sentRequestsOf(null)).toBeNull();
   });
 });

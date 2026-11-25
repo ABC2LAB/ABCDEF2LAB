@@ -39,7 +39,9 @@ func TestURLClosingResultByState(t *testing.T) {
 // 확인한 사본으로 마감 결과에 실린다.
 func TestURLClosingAccountAuth(t *testing.T) {
 	auth := map[string]string{"tester-a": "authenticated"}
-	for state, kept := range map[diagnosisprep.State]bool{diagnosisprep.Completed: true, diagnosisprep.Cancelled: true, diagnosisprep.Failed: true, diagnosisprep.Unknown: false, diagnosisprep.Running: false} {
+	// 2026-11-25부터 인증 준비 뒤의 실행 중(running·stopping)에도 싣는다. 준비 중·결과 불명에는 싣지 않는다.
+	for state, kept := range map[diagnosisprep.State]bool{diagnosisprep.Completed: true, diagnosisprep.Cancelled: true, diagnosisprep.Failed: true, diagnosisprep.Unknown: false,
+		diagnosisprep.Running: true, diagnosisprep.Stopping: true, diagnosisprep.Preparing: false} {
 		got := urlClosingResult(diagnosisprep.Update{State: state, AccountAuth: auth})
 		if (got.AccountAuth != nil) != kept {
 			t.Errorf("%s: account_auth kept=%v", state, got.AccountAuth != nil)
@@ -87,5 +89,54 @@ func TestURLAccountBindingStopCarriesAccountAuth(t *testing.T) {
 		if v.State != diagnosisprep.Unknown || v.ReasonCode != tc.reason || v.AccountAuth != nil {
 			t.Fatalf("%s: state=%s reason=%q auth=%v", name, v.State, v.ReasonCode, v.AccountAuth)
 		}
+	}
+}
+
+type fakeAuthNowRuntime struct {
+	auth map[string]string
+	ok   bool
+}
+
+func (f *fakeAuthNowRuntime) AccountAuthNow() (map[string]string, bool) { return f.auth, f.ok }
+
+// 실행 중에는 지금 세션 기준 값이 바뀐 때만 싣고, 모르는 순간에는 앞 값을 둔다. 마감은 마지막으로 실은 값을 잇는다(2026-11-25).
+func TestAccountAuthProgressPublishesChangesAndCarriesLast(t *testing.T) {
+	var progress accountAuthProgress
+	runtime := &fakeAuthNowRuntime{}
+	if _, changed := progress.next(runtime); changed {
+		t.Fatal("인증 준비 전에 실음")
+	}
+	if _, changed := progress.next(struct{}{}); changed {
+		t.Fatal("지금 값을 모르는 런타임인데 실음")
+	}
+	runtime.auth, runtime.ok = map[string]string{"tester-a": "authenticated", "tester-b": "session_not_found"}, true
+	first, changed := progress.next(runtime)
+	if !changed || first["tester-b"] != "session_not_found" {
+		t.Fatalf("첫 값 %v %t", first, changed)
+	}
+	progress.published = first
+	if _, changed := progress.next(runtime); changed {
+		t.Fatal("같은 값을 다시 실음")
+	}
+	runtime.ok = false
+	if _, changed := progress.next(runtime); changed {
+		t.Fatal("모르는 순간에 값을 바꿈")
+	}
+	runtime.auth, runtime.ok = map[string]string{"tester-a": "authenticated", "tester-b": "authenticated"}, true
+	second, changed := progress.next(runtime)
+	if !changed || second["tester-b"] != "authenticated" {
+		t.Fatalf("세션 다시 받기 뒤 %v %t", second, changed)
+	}
+	progress.published = second
+	runtime.auth = map[string]string{"Tester@x": "authenticated"}
+	if _, changed := progress.next(runtime); changed {
+		t.Fatal("형식이 틀린 값을 실음")
+	}
+	closing := map[string]string{"tester-a": "authenticated", "tester-b": "session_not_found"}
+	if got := progress.final(closing); got["tester-b"] != "authenticated" {
+		t.Fatalf("마감이 최초 결과로 되돌아감 %v", got)
+	}
+	if got := (&accountAuthProgress{}).final(closing); got["tester-b"] != "session_not_found" {
+		t.Fatalf("실행 중에 싣지 못했으면 마감 결과 %v", got)
 	}
 }

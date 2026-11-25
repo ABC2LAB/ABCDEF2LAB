@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { useContext } from "react";
 
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // 실 seam(정규화·판정)은 그대로 쓰고 getControlPolicy 만 spy — 기본은 실 구현 위임(task 없음 → 예시), edge 는 per-test override.
@@ -251,6 +251,31 @@ describe("UrlControlPolicyLive (#689 리뷰 — 결속·진입·시각·계정 �
     rerender(<At route="controlpolicy" />);
     expect(await screen.findByText(/pol-entry/)).toBeInTheDocument();
     expect(g).toHaveBeenCalledTimes(2);
+  });
+
+  // 뒤로 가기(사용자 11/25): 들어오기 직전 화면으로 — 전송 통제 흐름에서 왔으면 그리로, 그 밖은 새 점검
+  it("뒤로 가기는 들어오기 직전 화면(전송 통제 흐름 · 새 점검)으로 간다", async () => {
+    g.mockResolvedValue({ state: "unbound" });
+    const goTo = vi.fn();
+    function At({ route }: { route: "new" | "e2flow" | "dashboard" | "controlpolicy" }) {
+      const shell = useContext(ShellContext);
+      return (
+        <ShellContext.Provider value={{ ...shell, route, goTo }}>
+          <UrlControlPolicyLive />
+        </ShellContext.Provider>
+      );
+    }
+    const { rerender } = render(<At route="e2flow" />);
+    rerender(<At route="controlpolicy" />);
+    fireEvent.click(screen.getByRole("button", { name: "전송 통제 흐름으로 돌아가기" }));
+    expect(goTo).toHaveBeenLastCalledWith("e2flow");
+    rerender(<At route="dashboard" />);
+    rerender(<At route="controlpolicy" />);
+    fireEvent.click(screen.getByRole("button", { name: "새 점검으로 돌아가기" }));
+    expect(goTo).toHaveBeenLastCalledWith("new");
+    rerender(<At route="new" />);
+    rerender(<At route="controlpolicy" />);
+    expect(screen.getByRole("button", { name: "새 점검으로 돌아가기" })).toBeInTheDocument();
   });
 
   it("열어 둔 채 유효기간이 지나면 '유효기간 내'를 지우고 만료 안내를 띄운다", async () => {
