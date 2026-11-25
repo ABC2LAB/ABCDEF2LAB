@@ -120,11 +120,14 @@ func TestSelectedVerificationKeepsCandidateWithoutAutomaticVerdictPostgres(t *te
 		t.Fatal("missing original call was represented as available")
 	}
 	context.Candidate.Summary = "Observed concern; password=synthetic-model-secret"
-	modelRequest, err := BuildCandidateAnalysisRequest(context)
-	if err != nil || len(modelRequest.Tools) != 0 || len(modelRequest.Messages) != 1 ||
+	modelRequest, err := BuildCandidateAnalysisRequest(context, 512)
+	if err != nil || modelRequest.MaxTokens != 512 || len(modelRequest.Tools) != 0 || len(modelRequest.Messages) != 1 ||
 		strings.Contains(modelRequest.Messages[0].Text(), "synthetic-model-secret") ||
 		!strings.Contains(modelRequest.Messages[0].Text(), `"original_observation_available":true`) {
 		t.Fatal("selected model context has unsafe tools, missing provenance, or a synthetic secret")
+	}
+	if _, err := BuildCandidateAnalysisRequest(context, 0); err == nil {
+		t.Fatal("model request without an installed output cap was accepted")
 	}
 	proposal := fmt.Sprintf(`{"version":"selected/analysis-v1","candidate_id":%d,"claim":"검토 대상","normal_explanation":"정상 설명 가능","existing_call_refs":[%q],"business_questions":["이 접근이 의도된 정책인가요?"],"actions":[{"purpose":"관찰 비교","method":"GET","path_hint":"/books/v1"}],"limitations":"원문 입력은 저장되지 않음"}`,
 		id, context.Candidate.CallRef)

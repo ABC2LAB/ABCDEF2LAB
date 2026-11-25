@@ -48,8 +48,8 @@ Each action has purpose, method, path_hint. Do not invent an exact path from a m
 // the verified stored context. It does not call a model or a target. The
 // provider's installation budget still checks the serialized request before
 // any actual model transport.
-func BuildCandidateAnalysisRequest(c CandidateSelectedContext) (llm.CompletionRequest, error) {
-	if c.RequestID <= 0 || c.TaskID <= 0 || c.Candidate.ID <= 0 || c.Candidate.TaskID != c.TaskID ||
+func BuildCandidateAnalysisRequest(c CandidateSelectedContext, maxTokens int) (llm.CompletionRequest, error) {
+	if maxTokens <= 0 || maxTokens > 2048 || c.RequestID <= 0 || c.TaskID <= 0 || c.Candidate.ID <= 0 || c.Candidate.TaskID != c.TaskID ||
 		c.Candidate.Validate() != nil || c.RunRef != c.Candidate.RunRef || len(c.Observations) > candidateverify.MaxStoredObservationsV2 {
 		return llm.CompletionRequest{}, ErrCandidateAnalysis
 	}
@@ -109,7 +109,7 @@ func BuildCandidateAnalysisRequest(c CandidateSelectedContext) (llm.CompletionRe
 	if err != nil || len(raw) > 48<<10 {
 		return llm.CompletionRequest{}, ErrCandidateAnalysis
 	}
-	return llm.CompletionRequest{System: []string{selectedAnalysisSystem}, Messages: []llm.Message{llm.UserText(string(raw))}, MaxTokens: 2048}, nil
+	return llm.CompletionRequest{System: []string{selectedAnalysisSystem}, Messages: []llm.Message{llm.UserText(string(raw))}, MaxTokens: maxTokens}, nil
 }
 
 func candidateAnalysisObservations(c CandidateSelectedContext, original *candidateverify.StoredObservationV2) []candidateverify.StoredObservationV2 {
@@ -137,7 +137,7 @@ func ParseCandidateAnalysisProposal(raw []byte, c CandidateSelectedContext) (Can
 	if len(raw) == 0 || len(raw) > 16<<10 || !utf8.Valid(raw) {
 		return out, ErrCandidateAnalysis
 	}
-	if _, err := BuildCandidateAnalysisRequest(c); err != nil {
+	if _, err := BuildCandidateAnalysisRequest(c, 2048); err != nil {
 		return out, ErrCandidateAnalysis
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
