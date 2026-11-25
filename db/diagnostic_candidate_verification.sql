@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS diagnostic_candidate_verification_events (
     process_state text NOT NULL CHECK (process_state IN ('checking_stored_evidence','awaiting_approval','running','completed','failed','cancelled','expired')),
     verdict text CHECK (verdict IN ('confirmed','negative','insufficient','unsupported')),
     reason text NOT NULL CHECK (length(reason) BETWEEN 1 AND 128),
-    sources json NOT NULL DEFAULT '[]'::json CHECK (json_typeof(sources) = 'array' AND octet_length(sources::text) <= 65536),
+    sources json NOT NULL DEFAULT '[]'::json CHECK (json_typeof(sources) = 'array' AND octet_length(sources::text) <= 16384),
     sources_digest text NOT NULL CHECK (sources_digest ~ '^[0-9a-f]{64}$'),
     rule_version text NOT NULL CHECK (length(rule_version) BETWEEN 1 AND 64),
     execution_ref text NOT NULL DEFAULT '',

@@ -29,6 +29,19 @@ const candidateVerificationHistoryLimit = 100
 
 var candidateVerificationKey = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{7,127}$`)
 var candidateVerificationDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var candidateVerificationReason = regexp.MustCompile(`^[a-z][a-z0-9_]{0,127}$`)
+
+func validStoredAutomaticCandidateAssessment(candidate db.DiagnosticCandidate, assessment report.CandidateAssessment) bool {
+	if !candidateVerificationReason.MatchString(assessment.Reason) || assessment.EvidenceDigest != candidate.EvidenceDigest {
+		return false
+	}
+	switch assessment.Status {
+	case candidateverify.Confirmed, candidateverify.Negative, candidateverify.Insufficient, candidateverify.Unsupported:
+	default:
+		return false
+	}
+	return candidateverify.ValidateStoredV2(candidate, candidateverify.Result{Status: assessment.Status, Reason: assessment.Reason, Attempts: assessment.AttemptRefs, Sources: assessment.Sources})
+}
 
 type candidateVerificationRoute struct{ task, candidate, before int64 }
 
@@ -77,6 +90,22 @@ type candidateVerificationEvent struct {
 	ExecutionRef  string          `json:"execution_ref,omitempty"`
 	ApprovalRef   string          `json:"approval_ref,omitempty"`
 	At            time.Time       `json:"at"`
+}
+
+// 후속 이력에는 이미 종료 기록에 있는 관찰 본문 projection을 복제하지 않는다.
+// 원본 종료 기록을 다시 대조할 수 있는 비민감 참조와 digest만 보존한다.
+type candidateVerificationSourceRef struct {
+	CallRef           string `json:"call_ref"`
+	AttemptRef        string `json:"attempt_ref"`
+	ObservationDigest string `json:"observation_digest"`
+}
+
+func candidateVerificationSourceRefs(sources []candidateverify.SourceV2) []candidateVerificationSourceRef {
+	out := make([]candidateVerificationSourceRef, 0, len(sources))
+	for _, source := range sources {
+		out = append(out, candidateVerificationSourceRef{CallRef: source.CallRef, AttemptRef: source.Observation.AttemptRef, ObservationDigest: source.Digest})
+	}
+	return out
 }
 
 type candidateVerificationAttempt struct {
@@ -211,8 +240,7 @@ func candidateVerificationHTTP(w http.ResponseWriter, r *http.Request, pool *sql
 			automatic = &run.CandidateAssessments[i]
 		}
 	}
-	if automatic == nil || automatic.EvidenceDigest != candidate.EvidenceDigest ||
-		!candidateverify.ValidateStoredV2(candidate, candidateverify.Result{Status: automatic.Status, Reason: automatic.Reason, Attempts: automatic.AttemptRefs, Sources: automatic.Sources}) {
+	if automatic == nil || !validStoredAutomaticCandidateAssessment(candidate, *automatic) {
 		candidateVerificationError(w, 503, "verification_evidence_invalid")
 		return
 	}
@@ -280,12 +308,8 @@ func createCandidateVerification(ctx context.Context, tx *sql.Tx, route candidat
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	sources := automatic.Sources
-	if sources == nil {
-		sources = []candidateverify.SourceV2{}
-	}
-	raw, err := json.Marshal(sources)
-	if err != nil || len(raw) > 64<<10 {
+	raw, err := json.Marshal(candidateVerificationSourceRefs(automatic.Sources))
+	if err != nil || len(raw) > 16<<10 {
 		return db.ErrDiagnosticCandidate
 	}
 	sum := sha256.Sum256(raw)
@@ -357,15 +381,15 @@ func scanCandidateVerificationAttempt(scanner candidateVerificationScanner) (can
 
 func validateCandidateVerificationAttempt(row candidateVerificationAttempt, step int, candidate db.DiagnosticCandidate, automatic report.CandidateAssessment) error {
 	if row.ID == "" || row.CandidateID != strconv.FormatInt(candidate.ID, 10) || !candidateVerificationKey.MatchString(row.RequestKey) || row.RequestedAt.IsZero() || row.Latest.At.IsZero() || row.Latest.At.Before(row.RequestedAt) ||
-		row.OriginalDigest != candidate.EvidenceDigest || row.OriginalVersion != candidate.EvidenceVersion || row.OriginalRunRef != candidate.RunRef || row.Method != "stored/v1" || step != 1 || row.Latest.RuleVersion != "passive/v2" || row.Latest.ExecutionRef != "" || row.Latest.ApprovalRef != "" || !candidateVerificationDigest.MatchString(row.Latest.SourcesDigest) || len(row.Latest.Sources) > 64<<10 {
+		row.OriginalDigest != candidate.EvidenceDigest || row.OriginalVersion != candidate.EvidenceVersion || row.OriginalRunRef != candidate.RunRef || row.Method != "stored/v1" || step != 1 || row.Latest.RuleVersion != "passive/v2" || row.Latest.ExecutionRef != "" || row.Latest.ApprovalRef != "" || !candidateVerificationDigest.MatchString(row.Latest.SourcesDigest) || len(row.Latest.Sources) > 16<<10 {
 		return db.ErrDiagnosticCandidate
 	}
 	sum := sha256.Sum256(row.Latest.Sources)
 	if row.Latest.SourcesDigest != hex.EncodeToString(sum[:]) {
 		return db.ErrDiagnosticCandidate
 	}
-	var sources []candidateverify.SourceV2
-	if json.Unmarshal(row.Latest.Sources, &sources) != nil || !reflect.DeepEqual(sources, append([]candidateverify.SourceV2{}, automatic.Sources...)) || row.Latest.Reason != automatic.Reason {
+	var sources []candidateVerificationSourceRef
+	if json.Unmarshal(row.Latest.Sources, &sources) != nil || !reflect.DeepEqual(sources, candidateVerificationSourceRefs(automatic.Sources)) || row.Latest.Reason != automatic.Reason {
 		return db.ErrDiagnosticCandidate
 	}
 	if row.Latest.State != "completed" || row.Latest.Verdict == nil || *row.Latest.Verdict != automatic.Status {

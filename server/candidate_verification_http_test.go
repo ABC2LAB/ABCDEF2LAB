@@ -42,10 +42,12 @@ func (e *verificationOwnerEndpoint) Call(_ context.Context, req diagnosisprep.Re
 
 func TestCandidateVerificationStoredOnlyProductAPIPostgres(t *testing.T) {
 	for _, tc := range []struct {
-		name, second, state, verdict string
+		name, claim, first, second, state, verdict string
 	}{
-		{"stored-confirmed", "nosniff_missing", "completed", "confirmed"},
-		{"needs-new-evidence", "", "completed", "insufficient"},
+		{"stored-confirmed", "html_nosniff_missing", "nosniff_missing", "nosniff_missing", "completed", "confirmed"},
+		{"stored-negative", "html_nosniff_missing", "nosniff_present", "nosniff_present", "completed", "negative"},
+		{"needs-new-evidence", "html_nosniff_missing", "nosniff_missing", "", "completed", "insufficient"},
+		{"unsupported", "", "nosniff_missing", "", "completed", "unsupported"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, f, reportRequest := trafficEvidenceServer(t)
@@ -57,7 +59,7 @@ func TestCandidateVerificationStoredOnlyProductAPIPostgres(t *testing.T) {
 			if err := saveDiagnosisVerificationPolicy(t.Context(), s.m.pg.DB, taskID, passiveRunRef); err != nil {
 				t.Fatal(err)
 			}
-			candidateID := storePassiveCandidate(t, s, taskID, "html_nosniff_missing", "nosniff_missing", "")
+			candidateID := storePassiveCandidate(t, s, taskID, tc.claim, tc.first, "")
 			rows, err := s.m.ResolveTask(fmt.Sprint(taskID)).Store.ListDiagnosticCandidates(taskID, passiveRunRef, 2)
 			if err != nil || len(rows) != 1 {
 				t.Fatal(err)

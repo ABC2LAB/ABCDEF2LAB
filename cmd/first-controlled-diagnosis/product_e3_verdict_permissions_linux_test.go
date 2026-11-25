@@ -115,6 +115,12 @@ func TestProductRuntimeE3VerdictInsertOnly(t *testing.T) {
 			t.Fatalf("%s must be append-only for product_api and unavailable to runtime", table)
 		}
 	}
+	for _, col := range []string{"exploration_id", "src_id", "rel", "dst_id"} {
+		var readable bool
+		if err := installer.QueryRowContext(t.Context(), `SELECT has_column_privilege('product_api','exploration_edges',$1,'SELECT')`, col).Scan(&readable); err != nil || !readable {
+			t.Fatalf("product_api candidate edge binding column %s unavailable: %v", col, err)
+		}
+	}
 	// 실제 실행 역할 연결로 저장하고, 같은 연결로 바꾸기·지우기를 시도한다.
 	task, err := installer.CreateTask("synthetic product verdict store", "synthetic only", nil, 0, 0)
 	if err != nil {

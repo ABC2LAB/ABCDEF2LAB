@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/report"
 )
@@ -59,8 +58,8 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 		candidateRow, found := byID[candidateID]
 		assessment, assessed := automatic[candidateID]
 		index, included := entryIndex[candidateID]
-		if !found || !included || !assessed || candidateRow.Unavailable || assessment.EvidenceDigest != candidateRow.Candidate.EvidenceDigest ||
-			!candidateverify.ValidateStoredV2(candidateRow.Candidate, candidateverify.Result{Status: assessment.Status, Reason: assessment.Reason, Attempts: assessment.AttemptRefs, Sources: assessment.Sources}) ||
+		if !found || !included || !assessed || candidateRow.Unavailable ||
+			!validStoredAutomaticCandidateAssessment(candidateRow.Candidate, assessment) ||
 			validateCandidateVerificationAttempt(row, step, candidateRow.Candidate, assessment) != nil {
 			return errCandidateVerificationHistory
 		}

@@ -767,6 +767,11 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow 
 			return errPreparation
 		}
 	}
+	// 원본 후보가 같은 탐색 intent에서 나온 사실만 확인한다. 그래프 전체
+	// 변경 권한은 제품 API에 주지 않는다.
+	if exec("GRANT SELECT(exploration_id,src_id,rel,dst_id) ON exploration_edges TO product_api") != nil {
+		return errPreparation
+	}
 	for _, sequence := range []string{"diagnostic_candidate_verification_requests_id_seq", "diagnostic_candidate_verification_events_id_seq"} {
 		if exec("GRANT USAGE ON SEQUENCE "+sequence+" TO product_api") != nil {
 			return errPreparation

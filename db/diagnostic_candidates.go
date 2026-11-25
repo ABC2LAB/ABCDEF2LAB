@@ -318,11 +318,31 @@ func ReadDiagnosticCandidateWithFence(ctx context.Context, q DiagnosticCandidate
 	if err := rows.Close(); err != nil {
 		return DiagnosticCandidate{}, false, err
 	}
-	items := []DiagnosticCandidate{c}
-	if err := attachDiagnosticCandidateSaveFences(ctx, q, explorationID, taskID, items); err != nil {
+	fences, err := q.QueryContext(ctx, `SELECT payload FROM exploration_nodes WHERE exploration_id=$1 AND kind='fact' AND state='confirmed' AND origin=$2 AND payload->>'task_id'=$3 AND payload->>'candidate_id'=$4 ORDER BY id LIMIT 2`, explorationID, diagnosticCandidateSaveFenceOrigin, strconv.FormatInt(taskID, 10), strconv.FormatInt(id, 10))
+	if err != nil {
 		return DiagnosticCandidate{}, false, err
 	}
-	return items[0], true, nil
+	defer fences.Close()
+	for fences.Next() {
+		if c.SaveFence != nil {
+			return DiagnosticCandidate{}, false, ErrDiagnosticCandidate
+		}
+		var raw []byte
+		var marker struct {
+			CandidateID int64                        `json:"candidate_id"`
+			TaskID      int64                        `json:"task_id"`
+			Fence       DiagnosticCandidateSaveFence `json:"fence"`
+		}
+		if fences.Scan(&raw) != nil || json.Unmarshal(raw, &marker) != nil || marker.CandidateID != id || marker.TaskID != taskID || marker.Fence.AttemptHighWater == 0 || marker.Fence.CapturedAt.IsZero() || marker.Fence.TaskRef != strconv.FormatInt(taskID, 10) || marker.Fence.RunRef != c.RunRef {
+			return DiagnosticCandidate{}, false, ErrDiagnosticCandidate
+		}
+		fence := marker.Fence
+		c.SaveFence = &fence
+	}
+	if err := fences.Err(); err != nil {
+		return DiagnosticCandidate{}, false, err
+	}
+	return c, true, nil
 }
 
 // ListDiagnosticCandidatesQuery는 보고서의 동일 repeatable-read 트랜잭션에 참여한다.
