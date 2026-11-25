@@ -118,7 +118,13 @@ const NO_RUNS: URLRunSummary[] = [];
 /** 레일 한 묶음에 줄을 몇 개까지 그리는가. 넘으면 마지막에 '전체 n건'(그 목록 화면으로) */
 const RAIL_MAX_ROWS = 6;
 
-/** 서버 목록의 점검 한 줄: 주소(못 읽으면 이름) · 상태 · 진단 모드 · 시작 시각. 누르면 그 점검을 열고 그 목록 화면으로(이어 보는 줄과 같다) */
+/**
+ * 끝난 점검 줄을 눌렀을 때 갈 화면(사용자 11/25: 끝난 점검 전체 목록 말고 그 점검 보고서). 결과가 저장된 점검은 보고서, 저장 전에
+ * 끝난 점검(중지 · 실패)은 보고서가 나오지 않으니 끝난 까닭이 보이는 점검 진행으로
+ */
+const endedView = (reportReady: boolean): View => (reportReady ? "report" : "live");
+
+/** 서버 목록의 점검 한 줄: 주소(못 읽으면 이름) · 상태 · 진단 모드 · 시작 시각. 누르면 그 점검을 열고, 진행 중이면 그 목록 화면으로 · 끝났으면 그 점검 보고서로 */
 function ServerRunRow({ run, list }: { run: URLRunSummary; list: View }) {
   const { goTo } = useShell();
   const owner = useUrlRuns((st) => st.owner);
@@ -147,7 +153,7 @@ function ServerRunRow({ run, list }: { run: URLRunSummary; list: View }) {
       disabled={writeBusy}
       onClick={() =>
         void selectUrlRun(run).then((ok) => {
-          if (ok) goTo(list);
+          if (ok) goTo(endedURLRun(run) ? endedView(run.report_available) : list);
         })
       }
     >
@@ -195,7 +201,7 @@ export function LiveRailTasks() {
       type="button"
       data-url-job={job?.id ?? ""}
       aria-current={here ? "true" : undefined}
-      onClick={() => goTo(list)}
+      onClick={() => goTo(ended ? endedView(job.result_ready === true && !!job.task_id) : list)}
     >
       <span className={s.mk} aria-hidden="true" />
       <span className={s.host}>{urlHost(handle.input.target_url)}</span>
