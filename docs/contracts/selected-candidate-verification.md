@@ -36,7 +36,7 @@
 
 오류는 `{"error":"<고정 코드>"}`다. `400 invalid_verification_request`는 경로·메서드·본문·커서 오류, `401 authentication_required`는 인증 부재/변경, `403 verification_scope_denied`는 Job 소유권/권한 거부, `404 task_not_found`와 `candidate_not_found`·`verification_not_found`는 해당 범위의 자료 부재, `409 diagnosis_not_completed`와 `candidate_evidence_changed`는 실행/증거 상태 불일치, `409 verification_already_pending`은 승인·실행 중 요청과 충돌할 때 사용한다. `409 verification_plan_changed`, `verification_plan_expired`, `verification_already_decided`, `candidate_active_plan_unavailable`은 계획·승인 상태가 달라진 경우다. `503 verification_owner_unavailable`, `verification_target_unavailable`, `verification_storage_unavailable`, `verification_run_invalid`, `verification_evidence_invalid`, `candidate_integrity_failed`는 안전한 재시도 또는 운영 조사가 필요하며 정상 판정으로 해석하지 않는다. 저장 이력의 결속·digest가 훼손되면 조회와 보고서 출력을 503으로 막는다.
 
-정상 완료 v2 HTML·DOCX의 항목별 **최근 선택 검증**은 원본 자동 판정과 별도의 처리 상태로 표시한다. `stored/v1`은 자동 판정을 재확인하며, 그보다 앞선 유효한 `active/v1` 판정을 지우지 않는다. 이전의 봉인된 활성 판정은 보고서에 별도로 보이고 저장 재검토 뒤에도 해당 판정이 현재 집계에 남는다. `active/v1`이 완료되면 새 회차에서 봉인된 독립 관찰 두 건을 읽을 때마다 재검증하고 최신 집계에 반영한다. 최근 활성 실행이 실패·취소·만료되면 과거 확정은 이전 이력으로 보존하되 현재 확정 건수에는 넣지 않는다. 같은 PostgreSQL 조회 snapshot으로 원본과 최근 이력을 읽고 검증한다. 이미 다운로드된 파일은 변경하지 않는다. 기존 저장 보고서에 이력이 없으면 추가 칸이 없다.
+정상 완료 v2 HTML·DOCX의 항목별 **최근 선택 검증**은 원본 자동 판정과 별도의 처리 상태로 표시한다. `stored/v1`은 자동 판정을 재확인하며, 그보다 앞선 유효한 `active/v1` 판정을 지우지 않는다. 이전의 봉인된 활성 판정은 보고서에 별도로 보이고 그 뒤 새 활성 검증이 없을 때만 저장 재검토 후에도 해당 판정이 현재 집계에 남는다. 활성 검증이 실패·취소·만료되거나 근거 부족으로 끝난 뒤 저장 자료를 다시 열어도 이전 확정·정상 건수가 되살아나지 않는다. `active/v1`이 완료되면 새 회차에서 봉인된 독립 관찰 두 건을 읽을 때마다 재검증하고 최신 집계에 반영한다. 최근 활성 실행이 실패·취소·만료되면 과거 확정은 이전 이력으로 보존하되 현재 확정 건수에는 넣지 않는다. 같은 PostgreSQL 조회 snapshot으로 원본과 최근 이력을 읽고 검증한다. 이미 다운로드된 파일은 변경하지 않는다. 기존 저장 보고서에 이력이 없으면 추가 칸이 없다.
 
 ## 추가 승인과 실행 API
 

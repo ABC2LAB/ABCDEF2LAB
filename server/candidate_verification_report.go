@@ -100,14 +100,8 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 		// A later stored review or failed run does not erase a prior sealed
 		// confirmation. Read and validate the previous completed active event,
 		// then display it separately from the most recent attempt.
-		earlier, earlierStep, earlierBinding, earlierErr := scanCandidateVerificationAttempt(tx.QueryRowContext(ctx, `SELECT q.id,q.candidate_id,q.request_key,q.method,q.original_evidence_digest,q.original_evidence_version,q.original_run_ref,q.requested_at,e.step,e.process_state,e.verdict,e.reason,e.sources,e.sources_digest,e.rule_version,e.execution_ref,e.approval_ref,e.event_at,p.plan,p.plan_digest,d.decision,d.plan_digest,x.followup_task_id,x.run_ref
-FROM diagnostic_candidate_verification_requests q
-JOIN LATERAL (SELECT * FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON e.process_state='completed' AND e.verdict IN ('confirmed','negative')
-JOIN diagnostic_candidate_verification_plans p ON p.request_id=q.id
-JOIN diagnostic_candidate_verification_decisions d ON d.request_id=q.id
-JOIN diagnostic_candidate_verification_executions x ON x.request_id=q.id AND x.plan_digest=p.plan_digest
-WHERE q.task_id=$1 AND q.candidate_id=$2 AND q.id<$3 AND q.method='active/v1'
-ORDER BY q.id DESC LIMIT 1`, taskID, candidateID, latestID))
+		var superseded bool
+		earlier, earlierStep, earlierBinding, earlierErr := scanCandidateVerificationAttempt(tx.QueryRowContext(ctx, priorCandidateVerdictSQL, taskID, candidateID, latestID), &superseded)
 		if earlierErr != nil && !errors.Is(earlierErr, sql.ErrNoRows) {
 			return errCandidateVerificationHistory
 		}
@@ -118,6 +112,7 @@ ORDER BY q.id DESC LIMIT 1`, taskID, candidateID, latestID))
 			if err := validateCandidateActiveEvidence(ctx, tx, earlier, earlierBinding, candidateRow.Candidate); err != nil || earlier.Latest.Verdict == nil {
 				return errCandidateVerificationHistory
 			}
+			latest.EarlierSuperseded = row.Method == "stored/v1" && superseded
 			latest.EarlierVerdict, latest.EarlierReason, latest.EarlierRequestedAt = *earlier.Latest.Verdict, earlier.Latest.Reason, earlier.RequestedAt
 			var refs []candidateVerificationSourceRef
 			if json.Unmarshal(earlier.Latest.Sources, &refs) != nil || len(refs) != 2 {
@@ -132,7 +127,7 @@ ORDER BY q.id DESC LIMIT 1`, taskID, candidateID, latestID))
 		}
 		activeRow := row
 		applyActive := row.Method == "active/v1" && row.Latest.State == "completed"
-		if row.Method == "stored/v1" && earlierErr == nil {
+		if row.Method == "stored/v1" && earlierErr == nil && !latest.EarlierSuperseded {
 			activeRow, applyActive = earlier, true
 		}
 		if applyActive {
@@ -175,3 +170,17 @@ ORDER BY q.id DESC LIMIT 1`, taskID, candidateID, latestID))
 	}
 	return nil
 }
+
+// Keep the last decisive result as history, but also count intervening active
+// requests before filtering out failed, cancelled or inconclusive attempts.
+const priorCandidateVerdictSQL = `WITH prior_active AS (
+	SELECT *, max(id) OVER () AS last_active_id FROM diagnostic_candidate_verification_requests
+	WHERE task_id=$1 AND candidate_id=$2 AND id<$3 AND method='active/v1'
+)
+SELECT q.id,q.candidate_id,q.request_key,q.method,q.original_evidence_digest,q.original_evidence_version,q.original_run_ref,q.requested_at,e.step,e.process_state,e.verdict,e.reason,e.sources,e.sources_digest,e.rule_version,e.execution_ref,e.approval_ref,e.event_at,p.plan,p.plan_digest,d.decision,d.plan_digest,x.followup_task_id,x.run_ref,q.id<>q.last_active_id
+FROM prior_active q
+JOIN LATERAL (SELECT * FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON e.process_state='completed' AND e.verdict IN ('confirmed','negative')
+JOIN diagnostic_candidate_verification_plans p ON p.request_id=q.id
+JOIN diagnostic_candidate_verification_decisions d ON d.request_id=q.id
+JOIN diagnostic_candidate_verification_executions x ON x.request_id=q.id AND x.plan_digest=p.plan_digest
+ORDER BY q.id DESC LIMIT 1`

@@ -7,15 +7,21 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/candidateverify"
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/e2runner"
+	"github.com/Autumn-27/artex/report"
 )
 
 func TestCandidateActivePlanAndDecisionProductAPIPostgres(t *testing.T) {
-	s, finding, _ := trafficEvidenceServer(t)
+	s, finding, reportRequest := trafficEvidenceServer(t)
 	stored, err := s.m.pg.GetFinding(finding.FindingID)
 	if err != nil || stored.TaskID == nil {
 		t.Fatal(err)
@@ -112,5 +118,118 @@ func TestCandidateActivePlanAndDecisionProductAPIPostgres(t *testing.T) {
 	var executions int
 	if err := s.m.pg.QueryRowContext(t.Context(), `SELECT count(*) FROM diagnostic_candidate_verification_executions WHERE request_id=$1`, item.ID).Scan(&executions); err != nil || executions != 0 {
 		t.Fatalf("approval unexpectedly sent target request: %d %v", executions, err)
+	}
+	t.Run("failed followup then stored reread", func(t *testing.T) {
+		storeSyntheticCandidateConfirmation(t, s, rows[0], item)
+		assertCount := func(want int) {
+			t.Helper()
+			model, err := loadDiagnosticReport(t.Context(), s.m.pg, task, time.Now().UTC())
+			if err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := report.PrepareDiagnostic(model)
+			if err != nil || prepared.Confirmed != want {
+				t.Fatalf("confirmed=%d want=%d err=%v", prepared.Confirmed, want, err)
+			}
+		}
+		assertCount(1)
+		next := invoke(http.MethodPost, path, strings.Replace(requestBody, "request-002", "request-003", 1))
+		if next.Code != 200 || json.Unmarshal(next.Body.Bytes(), &page) != nil {
+			t.Fatalf("next request: %d %s", next.Code, next.Body)
+		}
+		newest := page.Verifications[0]
+		decision := invoke(http.MethodPost, path+"/"+newest.ID+"/decision", fmt.Sprintf(`{"plan_digest":%q,"decision":"approved"}`, newest.PlanDigest))
+		if decision.Code != 200 {
+			t.Fatal(decision.Code, decision.Body)
+		}
+		_, err := s.m.pg.ExecContext(t.Context(), `INSERT INTO diagnostic_candidate_verification_events(request_id,step,process_state,reason,sources,sources_digest,rule_version)
+SELECT request_id,3,'failed','execution_interrupted',sources,sources_digest,rule_version FROM diagnostic_candidate_verification_events WHERE request_id=$1 AND step=2`, newest.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertCount(0)
+		reread := invoke(http.MethodPost, path, fmt.Sprintf(`{"request_id":"stored-after-failure","evidence_digest":%q}`, rows[0].EvidenceDigest))
+		if reread.Code != 200 {
+			t.Fatal(reread.Code, reread.Body)
+		}
+		assertCount(0)
+		for _, format := range []string{"html", "docx"} {
+			exported := reportRequest(http.MethodGet, fmt.Sprintf("/api/report/diagnostic?task=%d&audience=internal&format=%s", task, format), "")
+			if exported.Code != 200 {
+				t.Fatal(format, exported.Code, exported.Body)
+			}
+			content := exported.Body.String()
+			if format == "docx" {
+				content = diagnosticWordText(t, wordParts(t, exported.Body.Bytes())["word/document.xml"])
+			}
+			if !strings.Contains(content, "이후 추가 검증으로 현재 집계에서 제외") || !strings.Contains(content, "html_nosniff_missing_followup_twice") {
+				t.Fatalf("%s lost historical confirmation", format)
+			}
+		}
+	})
+
+}
+
+// Record a sealed, synthetic observation pair in the same schema read by
+// the product report. This fixture has no target or network execution.
+func storeSyntheticCandidateConfirmation(t *testing.T, s *Server, candidate db.DiagnosticCandidate, proposal candidateVerificationAttempt) {
+	t.Helper()
+	ctx := t.Context()
+	task, err := s.m.CreateTask("synthetic report history", "stored evidence fixture", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	followup, err := strconv.ParseInt(task.ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := strconv.ParseInt(proposal.ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const run = "synthetic-stored-followup"
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := s.m.pg.ExecContext(ctx, query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`UPDATE tasks SET queued=false,paused=true WHERE id=$1`, followup)
+	exec(`INSERT INTO diagnostic_candidate_verification_executions(request_id,followup_task_id,approval_event_id,plan_digest,run_ref)
+SELECT request_id,$2,id,$3,$4 FROM diagnostic_candidate_verification_events WHERE request_id=$1 AND step=2`, request, followup, proposal.PlanDigest, run)
+	exec(`INSERT INTO diagnostic_candidate_verification_events(request_id,step,process_state,reason,sources,sources_digest,rule_version,execution_ref)
+SELECT request_id,3,'running','execution_started',sources,sources_digest,rule_version,$2 FROM diagnostic_candidate_verification_events WHERE request_id=$1 AND step=2`, request, run)
+	exec(`UPDATE tasks SET status='done',completed_at=clock_timestamp() WHERE id=$1`, followup)
+	mac := strings.Repeat("a", 64)
+	err = s.m.pg.RecordSealCheck(ctx, db.SealCheckRecord{TaskID: followup, RunRef: run,
+		Head:   db.ProductCheckpoint{JournalID: "synthetic-journal", Sequence: 2, MAC: mac},
+		Checks: []db.SealCheck{{Sequence: 1, MAC: strings.Repeat("b", 64), Included: true}, {Sequence: 2, MAC: mac, Included: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Trusted e2runner.TrustedResult `json:"trusted"`
+	}
+	if err := json.Unmarshal([]byte(candidate.Evidence), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var calls []e2runner.TrustedResult
+	for i := 1; i <= 2; i++ {
+		call := envelope.Trusted
+		call.Call = e2proxy.CloneCallResult(call.Call)
+		call.Call.CallRef = fmt.Sprintf("followup-call-%d", i)
+		call.Call.Observations[0].AttemptRef = fmt.Sprintf("followup-attempt-%d", i)
+		call.Call.Observations[0].Sequence = uint64(i)
+		call.ProcessDrained, call.ProxyDrained, call.Execution.AuditComplete = true, true, true
+		call.Execution.Scope.TaskRef, call.Execution.Scope.RunRef = task.ID, run
+		calls = append(calls, call)
+	}
+	observations, err := candidateverify.ProjectTrustedV2(followup, run, calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := CompleteCandidateActiveVerification(ctx, s.m.pg.DB, request, followup, proposal.PlanDigest, run, observations)
+	if err != nil || result.Status != candidateverify.Confirmed {
+		t.Fatalf("fixture confirmation: %s %v", result.Status, err)
 	}
 }

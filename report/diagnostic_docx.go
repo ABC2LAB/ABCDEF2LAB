@@ -224,6 +224,9 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 			}
 			if v.EarlierVerdict != "" {
 				w.paragraph("Normal", "이전 유효 추가 검증: "+v.EarlierVerdict+" · "+v.EarlierReason+" · 요청 "+v.EarlierRequestedAt.UTC().Format(time.RFC3339))
+				if v.EarlierSuperseded {
+					w.paragraph("Normal", "이후 추가 검증으로 현재 집계에서 제외")
+				}
 				for _, source := range v.EarlierSources {
 					w.paragraph("Normal", "이전 감사 관찰: 호출 "+source.CallRef+" · 시도 "+source.AttemptRef+" · digest "+source.ObservationDigest)
 				}

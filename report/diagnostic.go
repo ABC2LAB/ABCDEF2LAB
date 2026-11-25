@@ -122,6 +122,7 @@ type DiagnosticLatestVerification struct {
 	Sources                                        []DiagnosticVerificationSourceRef
 	RequestedAt                                    time.Time
 	EarlierVerdict, EarlierReason                  string
+	EarlierSuperseded                              bool
 	EarlierSources                                 []DiagnosticVerificationSourceRef
 	EarlierRequestedAt                             time.Time
 }
@@ -287,18 +288,20 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 				if (latest.EarlierVerdict != "confirmed" && latest.EarlierVerdict != "negative") || latest.EarlierReason == "" || latest.EarlierRequestedAt.IsZero() || len(latest.EarlierSources) != 2 || latest.EarlierRequestedAt.After(latest.RequestedAt) {
 					return DiagnosticReport{}, ErrExportBlocked
 				}
-			} else if latest.EarlierReason != "" || !latest.EarlierRequestedAt.IsZero() || len(latest.EarlierSources) != 0 {
+			} else if latest.EarlierSuperseded || latest.EarlierReason != "" || !latest.EarlierRequestedAt.IsZero() || len(latest.EarlierSources) != 0 {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
 			switch latest.Method {
 			case "stored/v1":
-				if latest.State != "completed" || latest.InitialVerdict != "" || latest.InitialReason != "" || len(latest.Sources) != 0 ||
-					(latest.EarlierVerdict == "" && latest.Verdict != e.AssessmentStatus) ||
-					(latest.EarlierVerdict != "" && latest.EarlierVerdict != e.AssessmentStatus) {
+				current := latest.Verdict
+				if latest.EarlierVerdict != "" && !latest.EarlierSuperseded {
+					current = latest.EarlierVerdict
+				}
+				if latest.State != "completed" || latest.InitialVerdict != "" || latest.InitialReason != "" || len(latest.Sources) != 0 || current != e.AssessmentStatus {
 					return DiagnosticReport{}, ErrExportBlocked
 				}
 			case "active/v1":
-				if latest.InitialVerdict == "" || latest.InitialReason == "" || len(latest.Sources) > 2 {
+				if latest.EarlierSuperseded || latest.InitialVerdict == "" || latest.InitialReason == "" || len(latest.Sources) > 2 {
 					return DiagnosticReport{}, ErrExportBlocked
 				}
 				if latest.State == "completed" {
@@ -348,7 +351,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			activeCandidate := e.Verification == "active_observation_v1" && in.Run != nil && in.Run.VerificationVersion == "passive/v2" &&
 				e.LatestVerification != nil &&
 				(e.LatestVerification.State == "completed" && e.LatestVerification.Verdict == "confirmed" && e.LatestVerification.Method == "active/v1" ||
-					e.LatestVerification.Method == "stored/v1" && e.LatestVerification.EarlierVerdict == "confirmed" && e.LatestVerification.EarlierReason == verificationReason) &&
+					e.LatestVerification.Method == "stored/v1" && !e.LatestVerification.EarlierSuperseded && e.LatestVerification.EarlierVerdict == "confirmed" && e.LatestVerification.EarlierReason == verificationReason) &&
 				((verificationReason == "html_nosniff_missing_followup_twice" && e.VulnClass == "security_headers") ||
 					(verificationReason == "server_version_banner_followup_twice" && e.VulnClass == "information_disclosure"))
 			passiveCandidate := e.Kind == "candidate" && (legacyPassiveCandidate || activeCandidate)
@@ -708,7 +711,7 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 {{range .Entries}}<article id="{{.ID}}"><h3>{{.ID}} · {{.Title}}</h3>
 <dl><dt>유형</dt><dd>{{.VulnClass}}</dd><dt>현재 판정</dt><dd>{{.VerdictText}}</dd><dt>원본 결과 구분</dt><dd>{{.Outcome}}</dd>
 <dt>검증 방법</dt><dd>{{.Verification}}</dd><dt>검증 결과·사유</dt><dd>{{if .AssessmentStatus}}{{.AssessmentStatus}} / {{.AssessmentReason}}{{else}}추가 검증 기록 없음{{end}}</dd><dt>심각도</dt><dd>{{.SeverityText}}</dd>{{if .SeverityRationale}}<dt>예상 심각도 근거 · 모델 제안</dt><dd>{{.SeverityRationale}}</dd>{{end}}<dt>원본 처리/실행 상태</dt><dd>{{.Status}}</dd>
-{{with .LatestVerification}}<dt>최근 선택 검증</dt><dd>{{.State}} · {{if .Verdict}}{{.Verdict}}{{else}}판정 없음{{end}} · {{.Reason}} · {{.Method}} · 요청 {{.RequestedAt}}</dd>{{if .InitialVerdict}}<dt>최초 자동 검증</dt><dd>{{.InitialVerdict}} · {{.InitialReason}}</dd>{{end}}{{range .Sources}}<dt>추가 감사 관찰</dt><dd>호출 {{.CallRef}} · 시도 {{.AttemptRef}} · digest {{.ObservationDigest}}</dd>{{end}}{{if .EarlierVerdict}}<dt>이전 유효 추가 검증</dt><dd>{{.EarlierVerdict}} · {{.EarlierReason}} · 요청 {{.EarlierRequestedAt}}</dd>{{range .EarlierSources}}<dt>이전 감사 관찰</dt><dd>호출 {{.CallRef}} · 시도 {{.AttemptRef}} · digest {{.ObservationDigest}}</dd>{{end}}{{end}}{{end}}
+{{with .LatestVerification}}<dt>최근 선택 검증</dt><dd>{{.State}} · {{if .Verdict}}{{.Verdict}}{{else}}판정 없음{{end}} · {{.Reason}} · {{.Method}} · 요청 {{.RequestedAt}}</dd>{{if .InitialVerdict}}<dt>최초 자동 검증</dt><dd>{{.InitialVerdict}} · {{.InitialReason}}</dd>{{end}}{{range .Sources}}<dt>추가 감사 관찰</dt><dd>호출 {{.CallRef}} · 시도 {{.AttemptRef}} · digest {{.ObservationDigest}}</dd>{{end}}{{if .EarlierVerdict}}<dt>이전 유효 추가 검증</dt><dd>{{.EarlierVerdict}} · {{.EarlierReason}} · 요청 {{.EarlierRequestedAt}}{{if .EarlierSuperseded}} · 이후 추가 검증으로 현재 집계에서 제외{{end}}</dd>{{range .EarlierSources}}<dt>이전 감사 관찰</dt><dd>호출 {{.CallRef}} · 시도 {{.AttemptRef}} · digest {{.ObservationDigest}}</dd>{{end}}{{end}}{{end}}
 <dt>회차 / intent</dt><dd>{{if .Run}}{{.Run}}{{else}}회차 미기록{{end}} / {{if .IntentID}}{{.IntentID}}{{else}}intent 미기록{{end}}</dd><dt>관찰 시각</dt><dd>{{if .ObservedAt.IsZero}}미기록{{else}}{{.ObservedAt}}{{end}}</dd>
 <dt>증거 버전 / digest</dt><dd>{{.EvidenceVersion}} / {{.Digest}}</dd></dl>
 {{if .LanguageMixed}}<p>다른 언어 섞임: 모델이 쓴 이름·설명·조치·근거에 한자·가나가 섞여 있습니다. 섞인 부분을 짚어 한국어로 다시 쓰게 했지만 남았습니다.</p>{{end}}

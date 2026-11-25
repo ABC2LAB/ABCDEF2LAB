@@ -93,4 +93,29 @@ func TestActiveCandidateVerdictCountsAndExports(t *testing.T) {
 	if got, err := PrepareDiagnostic(failedAfterActive); err != nil || got.Confirmed != 0 || got.Inconclusive != 1 {
 		t.Fatalf("failed latest attempt presented historical confirmation as current: %+v %v", got, err)
 	}
+	// A stored reread after a newer failed active attempt has no new evidence.
+	history := failedAfterActive
+	history.Entries = append([]DiagnosticEntry(nil), failedAfterActive.Entries...)
+	latest := *storedAfterActive.Entries[0].LatestVerification
+	latest.EarlierSuperseded = true
+	history.Entries[0].LatestVerification = &latest
+	for _, verdict := range []string{"confirmed", "negative"} {
+		latest.EarlierVerdict = verdict
+		if verdict == "negative" {
+			latest.EarlierReason = "html_nosniff_present_followup_twice"
+		}
+		got, err := PrepareDiagnostic(history)
+		if err != nil || got.Confirmed != 0 || got.Negative != 0 || got.Inconclusive != 1 {
+			t.Fatalf("historical %s reapplied: %+v %v", verdict, got, err)
+		}
+		html, err := DiagnosticHTML(history)
+		if err != nil || !strings.Contains(string(html), "이후 추가 검증으로 현재 집계에서 제외") {
+			t.Fatal("missing HTML history", err)
+		}
+		docx, err := DiagnosticDOCX(history)
+		if err != nil || !strings.Contains(string(readWord(t, docx)["word/document.xml"]), "이후 추가 검증으로 현재 집계에서 제외") {
+			t.Fatal("missing DOCX history", err)
+		}
+	}
+
 }

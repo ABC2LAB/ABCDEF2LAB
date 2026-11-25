@@ -508,7 +508,7 @@ type candidateVerificationBinding struct {
 	RunRef                   sql.NullString
 }
 
-func scanCandidateVerificationAttempt(scanner candidateVerificationScanner) (candidateVerificationAttempt, int, candidateVerificationBinding, error) {
+func scanCandidateVerificationAttempt(scanner candidateVerificationScanner, extraColumns ...any) (candidateVerificationAttempt, int, candidateVerificationBinding, error) {
 	var id int64
 	var candidateID int64
 	var step int
@@ -517,7 +517,8 @@ func scanCandidateVerificationAttempt(scanner candidateVerificationScanner) (can
 	var planDigest sql.NullString
 	var binding candidateVerificationBinding
 	var row candidateVerificationAttempt
-	err := scanner.Scan(&id, &candidateID, &row.RequestKey, &row.Method, &row.OriginalDigest, &row.OriginalVersion, &row.OriginalRunRef, &row.RequestedAt, &step, &row.Latest.State, &verdict, &row.Latest.Reason, &row.Latest.Sources, &row.Latest.SourcesDigest, &row.Latest.RuleVersion, &row.Latest.ExecutionRef, &row.Latest.ApprovalRef, &row.Latest.At, &planJSON, &planDigest, &binding.Decision, &binding.DecisionDigest, &binding.FollowupTask, &binding.RunRef)
+	columns := []any{&id, &candidateID, &row.RequestKey, &row.Method, &row.OriginalDigest, &row.OriginalVersion, &row.OriginalRunRef, &row.RequestedAt, &step, &row.Latest.State, &verdict, &row.Latest.Reason, &row.Latest.Sources, &row.Latest.SourcesDigest, &row.Latest.RuleVersion, &row.Latest.ExecutionRef, &row.Latest.ApprovalRef, &row.Latest.At, &planJSON, &planDigest, &binding.Decision, &binding.DecisionDigest, &binding.FollowupTask, &binding.RunRef}
+	err := scanner.Scan(append(columns, extraColumns...)...)
 	if err != nil {
 		return row, 0, binding, err
 	}
