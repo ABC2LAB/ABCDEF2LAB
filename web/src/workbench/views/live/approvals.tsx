@@ -277,21 +277,159 @@ export function ApprovalActions({ a, row, size }: { a: Approvals; row: RequestAp
   );
 }
 
+// 허용(초록) · 거부(빨강) · 만료 · 취소(점선 회색)를 한눈에 가른다(사용자 11/25: 거부와 승인을 구별)
 const APPROVAL_TONE: Readonly<Record<RequestApproval["state"], string>> = {
   pending: "ap",
   allowed: "in",
-  denied: "out",
+  denied: "deny",
   expired: "ex",
   cancelled: "ex",
 };
 
 /**
- * 점검 진행의 승인 요청 목록(사용자 11/24: 요청이 올 때마다 큰 상자가 계속 떠서 목록으로). 줄마다 메서드 · 경로 · 계획 ·
- * 상태 · 받은 시각만 두고, 줄을 누르면 그 아래에 보낼 요청 미리보기 · 승인 정보가 펼쳐진다. 승인 · 거부는 펼친 칸에만 둔다
- * — 무엇을 보내는지 본 뒤에 정하게(예전 상자가 미리보기를 접지 않던 이유와 같다). 대기 줄이 위(먼저 온 것부터), 끝난 줄은
- * 아래(최근 것부터). 결정한 요청도 목록에 남아 무엇을 눌렀는지 볼 수 있다.
+ * 승인 요청 한 줄(메서드 · 경로 · 계획 제목 · 상태 · 받은 시각). 누르면 그 아래에 보낼 요청 미리보기 · 승인 정보가 펼쳐지고,
+ * 대기 중인 요청만 펼친 칸에 승인 · 거부를 둔다 — 무엇을 보내는지 본 뒤에 정하게.
+ */
+function ApprovalRow({
+  a,
+  r,
+  open,
+  onToggle,
+  planTitle,
+}: {
+  a: Approvals;
+  r: RequestApproval;
+  open: boolean;
+  onToggle: () => void;
+  planTitle: (intentId: RequestApproval["intent_id"]) => string | undefined;
+}) {
+  const panel = `apq-${r.id}`;
+  return (
+    <li className={cx(s["apq-item"], open && s.on)}>
+      <button className={s["apq-row"]} type="button" aria-expanded={open} aria-controls={panel} onClick={onToggle}>
+        <span className={cx(s.m, s[r.method])}>{r.method}</span>
+        <span className={s.p}>{r.path}</span>
+        <span className={s["apq-plan"]}>{planTitle(r.intent_id) ?? "계획 제목 없음"}</span>
+        <span className={cx(s.tag, s[APPROVAL_TONE[r.state]])}>{APPROVAL_STATE_TEXT[r.state]}</span>
+        <span className={s["apq-at"]}>{clockOf(r.created_at)}</span>
+      </button>
+      {open ? (
+        <div className={s["lv-aprev"]} id={panel}>
+          <ApprovalRequestCode row={r} />
+          <ApprovalFacts row={r} />
+          {r.state === "pending" ? (
+            <div className={s.acts}>
+              <button
+                className={cx(s.btn, s.pri, s.sm)}
+                type="button"
+                disabled={!a.canDecide(r)}
+                onClick={() => void a.decide(r, "allow")}
+              >
+                {a.busy === r.id ? "보내는 중…" : "승인하고 보내기"}
+              </button>
+              <button
+                className={cx(s.btn, s.sm)}
+                type="button"
+                disabled={!a.canDecide(r)}
+                onClick={() => void a.decide(r, "deny")}
+              >
+                거부
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+const createdAt = (r: RequestApproval) => Date.parse(r.created_at) || 0;
+/** 승인 대기(먼저 온 것부터) */
+export const pendingApprovals = (rows: readonly RequestApproval[]) =>
+  rows.filter((r) => r.state === "pending").sort((x, y) => createdAt(x) - createdAt(y));
+/** 처리된 요청(허용 · 거부 · 만료 · 취소, 최근 것부터) */
+export const doneApprovals = (rows: readonly RequestApproval[]) =>
+  rows.filter((r) => r.state !== "pending").sort((x, y) => createdAt(y) - createdAt(x));
+
+/**
+ * 점검 진행 가운데의 승인 요청 칸(사용자 11/24 목록, 11/25): 승인 대기 요청만 목록으로 둔다 — 처리된 요청이 계속 쌓여 대기
+ * 요청이 묻혔다. 처리된 요청(허용 · 거부 · 만료 · 취소)은 머리의 [처리된 요청 n]을 누르면 오른쪽 패널에 목록으로 뜨고, 패널의
+ * [← 진행 요약]으로 돌아온다(발견 목록에서 취약점을 누를 때와 같은 방식).
  */
 export function ApprovalQueue({
+  a,
+  planTitle,
+  doneShown,
+  onShowDone,
+}: {
+  a: Approvals;
+  planTitle: (intentId: RequestApproval["intent_id"]) => string | undefined;
+  /** 오른쪽 패널에 처리된 요청 목록이 떠 있는가 */
+  doneShown: boolean;
+  onShowDone: () => void;
+}) {
+  // 대기 요청은 처음부터 펼쳐 미리보기 · 승인/거부가 바로 보인다(사용자 11/25). 여러 개 쌓여도 아래로 늘어놓지 않고 먼저 온
+  // 하나만 그 자리에 보이며, 승인 · 거부하면 다음 요청이 같은 자리에 뜬다 — 남은 수는 머리 '대기 n'. 줄을 누르면 접힌다
+  const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
+  if (!a.rows.length) return null;
+  const pending = pendingApprovals(a.rows);
+  const current = pending.slice(0, 1);
+  const doneN = a.rows.length - pending.length;
+  return (
+    <section className={cx(s.ldecide, !pending.length && s["ldecide-done"])} aria-labelledby="lDecideH">
+      <div className={s.sh}>
+        <h2 id="lDecideH">승인 요청</h2>
+        <span className={s.n}>{`대기 ${pending.length}`}</span>
+        {doneN ? (
+          <button
+            className={cx(s.btn, s.sm, s["apq-done"])}
+            type="button"
+            aria-pressed={doneShown}
+            onClick={onShowDone}
+          >
+            {`처리된 요청 ${doneN}`}
+          </button>
+        ) : null}
+      </div>
+      {pending.length ? (
+        <ul className={s.apq}>
+          {current.map((r) => (
+            <ApprovalRow
+              key={r.id}
+              a={a}
+              r={r}
+              open={!folded.has(r.id)}
+              onToggle={() =>
+                setFolded((prev) => {
+                  const next = new Set(prev);
+                  if (!next.delete(r.id)) next.add(r.id);
+                  return next;
+                })
+              }
+              planTitle={planTitle}
+            />
+          ))}
+        </ul>
+      ) : null}
+    </section>
+  );
+}
+
+/** 처리된 요청 거르기: 허용 · 거부 · 만료(만료 + 취소, 보내지 않고 닫힘) */
+type DoneFilter = "allowed" | "denied" | "closed";
+const DONE_FILTERS: readonly (readonly [DoneFilter, string])[] = [
+  ["allowed", "허용"],
+  ["denied", "거부"],
+  ["closed", "만료"],
+];
+const doneGroup = (r: RequestApproval): DoneFilter =>
+  r.state === "allowed" || r.state === "denied" ? r.state : "closed";
+
+/**
+ * 오른쪽 패널의 처리된 요청 목록(최근 것부터). 위 거르기(허용 · 거부 · 만료, 수와 함께 — 있는 것만)로 나눠 보고, 다시 누르면
+ * 전체. 줄을 누르면 미리보기 · 승인 정보가 펼쳐진다(승인 · 거부 버튼은 없다).
+ */
+export function ApprovalHistory({
   a,
   planTitle,
 }: {
@@ -299,68 +437,53 @@ export function ApprovalQueue({
   planTitle: (intentId: RequestApproval["intent_id"]) => string | undefined;
 }) {
   const [open, setOpen] = useState<string | null>(null);
-  if (!a.rows.length) return null;
-  const at = (r: RequestApproval) => Date.parse(r.created_at) || 0;
-  const pending = a.rows.filter((r) => r.state === "pending").sort((x, y) => at(x) - at(y));
-  const done = a.rows.filter((r) => r.state !== "pending").sort((x, y) => at(y) - at(x));
+  const [only, setOnly] = useState<DoneFilter | null>(null);
+  const done = doneApprovals(a.rows);
+  if (!done.length) return <p className={s.empty}>처리된 요청이 없습니다.</p>;
+  const countOf = (k: DoneFilter) => done.filter((r) => doneGroup(r) === k).length;
+  const chips = DONE_FILTERS.filter(([k]) => countOf(k) > 0);
+  const shown = only ? done.filter((r) => doneGroup(r) === only) : done;
   return (
-    <section className={cx(s.ldecide, !pending.length && s["ldecide-done"])} aria-labelledby="lDecideH">
-      <div className={s.sh}>
-        <h2 id="lDecideH">승인 요청</h2>
-        <span className={s.n}>
-          {pending.length ? `대기 ${pending.length} · 전체 ${a.rows.length}` : `${a.rows.length}건`}
-        </span>
+    <>
+      {/* biome-ignore lint/a11y/useSemanticElements: 켜고 끄는 거르기 칸 묶음 (fieldset 은 폼 입력 묶음이라 맞지 않음) */}
+      <div className={cx(s.seg, s["apq-fil"])} role="group" aria-label="결과로 거르기">
+        {chips.map(([k, label]) => (
+          <button key={k} type="button" aria-pressed={only === k} onClick={() => setOnly(only === k ? null : k)}>
+            {`${label} ${countOf(k)}`}
+          </button>
+        ))}
       </div>
-      <ul className={s.apq}>
-        {[...pending, ...done].map((r) => {
-          const isOpen = open === r.id;
-          const panel = `apq-${r.id}`;
-          return (
-            <li key={r.id} className={cx(s["apq-item"], isOpen && s.on)}>
-              <button
-                className={s["apq-row"]}
-                type="button"
-                aria-expanded={isOpen}
-                aria-controls={panel}
-                onClick={() => setOpen(isOpen ? null : r.id)}
-              >
-                <span className={cx(s.m, s[r.method])}>{r.method}</span>
-                <span className={s.p}>{r.path}</span>
-                <span className={s["apq-plan"]}>{planTitle(r.intent_id) ?? "계획 제목 없음"}</span>
-                <span className={cx(s.tag, s[APPROVAL_TONE[r.state]])}>{APPROVAL_STATE_TEXT[r.state]}</span>
-                <span className={s["apq-at"]}>{clockOf(r.created_at)}</span>
-              </button>
-              {isOpen ? (
-                <div className={s["lv-aprev"]} id={panel}>
-                  <ApprovalRequestCode row={r} />
-                  <ApprovalFacts row={r} />
-                  {r.state === "pending" ? (
-                    <div className={s.acts}>
-                      <button
-                        className={cx(s.btn, s.pri, s.sm)}
-                        type="button"
-                        disabled={!a.canDecide(r)}
-                        onClick={() => void a.decide(r, "allow")}
-                      >
-                        {a.busy === r.id ? "보내는 중…" : "승인하고 보내기"}
-                      </button>
-                      <button
-                        className={cx(s.btn, s.sm)}
-                        type="button"
-                        disabled={!a.canDecide(r)}
-                        onClick={() => void a.decide(r, "deny")}
-                      >
-                        거부
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </li>
-          );
-        })}
-      </ul>
-    </section>
+      <ApprovalHistoryList a={a} rows={shown} open={open} setOpen={setOpen} planTitle={planTitle} />
+    </>
+  );
+}
+
+function ApprovalHistoryList({
+  a,
+  rows,
+  open,
+  setOpen,
+  planTitle,
+}: {
+  a: Approvals;
+  rows: readonly RequestApproval[];
+  open: string | null;
+  setOpen: (id: string | null) => void;
+  planTitle: (intentId: RequestApproval["intent_id"]) => string | undefined;
+}) {
+  return (
+    <ul className={cx(s.apq, s["apq-side"])} aria-label="처리된 요청">
+      {rows.map((r) => (
+        <ApprovalRow
+          key={r.id}
+          a={a}
+          r={r}
+          open={open === r.id}
+          onToggle={() => setOpen(open === r.id ? null : r.id)}
+          planTitle={planTitle}
+        />
+      ))}
+    </ul>
   );
 }
 

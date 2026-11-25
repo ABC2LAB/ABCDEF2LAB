@@ -160,7 +160,9 @@ func (p *Proxy) Serve(listener net.Listener) error {
 			conn.Close()
 			continue
 		}
-		ctx, cancel := context.WithTimeout(p.call.Context(), p.cfg.RequestTimeout)
+		// 요청 시간 상한은 승인 대기 동안 멈출 수 있는 시계다(request_clock.go).
+		clock := startRequestClock(p.call.Context(), conn, p.cfg.RequestTimeout)
+		ctx, cancel := context.Context(clock), clock.cancel
 		p.conns[conn] = cancel
 		p.wg.Add(1)
 		p.mu.Unlock()

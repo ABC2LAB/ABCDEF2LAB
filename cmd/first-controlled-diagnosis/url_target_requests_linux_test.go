@@ -239,3 +239,66 @@ func TestExplorationStageWriteFailureNeverReadsKnownCount(t *testing.T) {
 	}
 	unknownTotal(explorationRunning)
 }
+
+// Host 모드 화면 사본에 실린 확정 단계 투영(E3ScreenProjection)은 보낸 요청 총계의 확정 몫과 전체 요청 목록에 보낸 시도마다
+// 한 번씩만 들어간다. 같은 시도의 결과 행이 둘이어도 하나로 센다(2026-11-25 화면 회차: 확정 요청 5건이 둘 다에서 빠짐).
+func TestE2FlowCountsConfirmationProjectionOnce(t *testing.T) {
+	confirm := func(e e2proxy.Event, kind e2proxy.ProgramCallKind) e2proxy.Event {
+		e.IntentID, e.Program, e.Method = 0, kind, "GET"
+		e.E3Audit = &e2proxy.E3Audit{AccountLabel: "tester-a", ResourceType: "book"}
+		if e.Decision == "allowed" {
+			e.RuleRef = "e3-rule"
+		}
+		return e2proxy.E3ScreenProjection(e)
+	}
+	identity := confirm(liveEvent("result", "call-e3-identity", strings.Repeat("4", 32), 1, "allowed", e2proxy.Complete), e2proxy.ProgramE3Identity)
+	create := confirm(liveEvent("result", "call-e3-create", strings.Repeat("5", 32), 1, "allowed", e2proxy.Unknown), e2proxy.ProgramE3Create)
+	read := confirm(liveEvent("result", "call-e3-read", strings.Repeat("6", 32), 1, "denied", e2proxy.PolicyDenied), e2proxy.ProgramE3Read)
+	closed := confirm(liveEvent("call_closed", "call-e3-create", "", 0, "", e2proxy.Unknown), e2proxy.ProgramE3Create)
+	events := append(targetRequestEvents(), identity, identity, create, read, closed)
+	runsDir, policy := liveRunFixture(t, func(add func(e2proxy.Event)) {
+		for _, e := range events {
+			add(e)
+		}
+	})
+	if err := writeExplorationRequests(policy.StateDir, explorationKnown(explorationClosed, 7)); err != nil {
+		t.Fatal(err)
+	}
+	model, login := writtenAttempts(targetRequestEvents())
+	flow := targetRequestsGet(t, runsDir, nil)
+	if flow.Model != model || flow.Login != login || flow.Confirmation != 2 || flow.Unclassified != 0 || flow.Total == nil || *flow.Total != uint64(model+login+2+7) {
+		t.Fatalf("확정 투영 총계 %+v", flow)
+	}
+	var rows []e2RequestRow
+	path := "/api/tasks/9/e2-flow/requests?limit=2"
+	for pages := 0; ; pages++ {
+		if pages > 20 {
+			t.Fatal("쪽이 끝나지 않음")
+		}
+		w := requestDetailsGet(t, runsDir, path)
+		var page e2RequestsPage
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &page) != nil || page.Total != model+login+2 {
+			t.Fatalf("전체 기록 쪽 %d: %s", w.Code, w.Body.String())
+		}
+		rows = append(rows, page.Rows...)
+		if page.NextCursor == nil {
+			break
+		}
+		path = "/api/tasks/9/e2-flow/requests?limit=2&cursor=" + strings.TrimSpace(string(must(json.Marshal(*page.NextCursor))))
+	}
+	seen := map[string]int{}
+	for _, row := range rows {
+		if row.Kind == e2RequestKindConfirmation {
+			seen[row.CallRef]++
+		}
+	}
+	if len(rows) != model+login+2 || len(seen) != 2 || seen["call-e3-identity"] != 1 || seen["call-e3-create"] != 1 {
+		t.Fatalf("요청 목록 확정 줄 %v, 전체 %d", seen, len(rows))
+	}
+	w := requestDetailsGet(t, runsDir, "/api/tasks/9/e2-flow/requests/call-e3-create/"+strings.Repeat("5", 32))
+	var detail e2RequestDetail
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &detail) != nil || detail.Kind != e2RequestKindConfirmation ||
+		!detail.RequestWritten || detail.ResponseReceived || detail.Method != "" {
+		t.Fatalf("확정 상세 %d %+v", w.Code, detail)
+	}
+}

@@ -87,7 +87,7 @@
 
 `GET /api/tasks/{id}/e2-flow` · `GET /api/tasks/{id}/e2-flow?after=<index>`
 
-제품 화면의 누계는 검증된 화면용 v2 저널 전체를 기준으로 한다. 호스트 v3 저널의 E③ 확정 단계 사건은 이 사본에서 제외되며, 저장된 `diagnosis-run`의 실행 누계에는 포함된다. 호출 목록의 페이지 제한은 화면 누계에 영향이 없다. 시도는 고유 시도 ID의 결과 사건을 세므로 호출 마감이나 제어 사건이 시도 수를 더하지 않는다.
+제품 화면의 누계는 검증된 화면용 v2 저널(화면 사본) 전체를 기준으로 한다. Host 모드에서는 호스트 v3 저널의 E③ 확정 단계 사건도 이 사본에 화면 투영으로 실린다(2026-11-25, 그 전 회차의 사본에는 없다). 투영은 호출·시도 식별자, 프로그램 종류(`e3_identity`·`e3_create`·`e3_read`), 결정, 송신 단계 칸(`request_written`과, 사본 검증이 정합을 보는 `forward_attempted`·`response_received`·`response_complete`·`not_sent`), 상태 코드와 모든 행이 가지는 범위·정책 판·규칙 참조·순번·사유·시각만 담는다. E③ 감사 칸(`E3Audit`)·메서드·명령 참조는 싣지 않으므로 확정 줄의 `method`는 빈 값이다. 순번은 사본 자체 순번이다. 판정·근거 검증은 계속 Host v3 저널만 쓰고, 확정 투영 행은 화면 사본 검증(`e2proxy.VerifyScreenJournalEvents`)만 받는다(일반 v2·v3·평가 검증은 거부). 저장된 `diagnosis-run`의 실행 누계에도 포함된다. 호출 목록의 페이지 제한은 화면 누계에 영향이 없다. 시도는 고유 시도 ID의 결과 사건을 세므로 호출 마감이나 제어 사건이 시도 수를 더하지 않는다.
 
 `X-Jindo-E2-Model-Writes: 1` 헤더를 보낸 클라이언트에는 검증된 응답에 `model_writes`를 추가한다. 운영자가 다음 점검 전 대상을 확인할 때 쓰는 읽기 전용 요약으로, 모델 단계 POST·PUT·PATCH·DELETE만 시도 ID로 센다. `responded_2xx`는 2xx 응답을 받은 수이며 객체 생성 여부는 알 수 없다. `unverified`는 송신했을 수 있으나 2xx 응답이 확인되지 않은 수다. 송신 전 거부, 송신하지 못한 연결 실패, 인증 준비·갱신, E③ 쓰기는 포함하지 않는다. 기존 E③ 리셋 기록이나 운영자 확인의 효력을 이 요약으로 바꾸지 않는다.
 
@@ -97,7 +97,7 @@
 |---|---|---|
 | `model` | 모델이 진단 단계에서 보낸 요청 | 검증한 E② 저널의 결과 행 중 `request_written`이고 프로그램 호출이 아닌 시도 수 |
 | `login` | 프로그램 로그인(인증 준비 `auth_prep` + 세션 다시 받기 `refresh_session`) | 같은 저널, 같은 기준 |
-| `confirmation` | 확정 단계(E③) 요청 | 같은 저널, 같은 기준. E③ 확정 호출 행(E③ 감사 칸 또는 E③ 프로그램 호출)이 이 저널에 있을 때만 센다 |
+| `confirmation` | 확정 단계(E③) 요청 | 같은 저널, 같은 기준. Host 모드 화면 사본의 확정 투영 행(E③ 프로그램 호출)을 센다. 그 전 회차의 사본에는 확정 행이 없어 0이다 |
 | `unclassified` | 이 판이 모르는 프로그램 호출 종류가 보낸 요청 | 같은 저널. 0이 아니면 `total`은 `null`이다(모르는 종류를 다른 내역에 넣지 않는다) |
 | `exploration` | 탐색 단계에서 탐색 경계를 지난 대상 요청 | 회차 상태 디렉터리의 `exploration-requests.json`(탐색 경계가 세션 마감 때 확정한 `target_requests`, 진단 E② 예산에서 빼는 그 몫). 탐색 중이면 경계가 지금 보고하는 수 |
 | `exploration_state` | `none`(탐색 단계 없음을 기록함, 0) · `running`(탐색 중) · `closed`(경계 확정) · `not_run`(열지 않음, 0) · `unknown`(경계가 확정하지 못함, 기록이 없거나 못 읽음) | 탐색 단계가 없는 회차도 `none`을 기록한다. 기록이 없으면 탐색 시작 전·쓰기 실패·이 칸 이전 회차라 `unknown`이다 |
@@ -182,7 +182,8 @@ e2-flow와 같은 결속·정책 확인을 지나, 검증한 E② 저널만 읽�
 
 **요청 상세** `GET /api/tasks/{id}/e2-flow/requests/{call_ref}/{attempt_id}` (형식 `abc2lab.e2-flow-request/v1`, 조회 조건 없음)
 
-- 칸: `kind`·`index`·`at`·`method`·`path_pattern`·`rule_ref`·`decision`·`reason`·`status_code`·`forward_attempted`·`request_written`·`response_received`·`response_complete`·`response_truncated`. 그 시도의 마지막 결과 행(없으면 의도 행)이다. 보내지 않은 시도도 저널에 있으면 열린다.
+- 칸: `kind`·`index`·`at`·`method`·`path_pattern`·`path_detail_state`·`rule_ref`·`decision`·`reason`·`status_code`·`forward_attempted`·`request_written`·`response_received`·`response_complete`·`response_truncated`. 그 시도의 마지막 결과 행(없으면 의도 행)이다. 보내지 않은 시도도 저널에 있으면 열린다.
+- `path_detail_state`는 전체 요청 기록의 각 줄과 요청 상세에서 같은 기준으로 실린다. 표시 패턴이 있으면 `"pattern_only"`다. 패턴이 없거나 길이 상한 표식 `/{too_long}`만 있으면 `"unavailable"`이다. 기존 목록의 `path`와 상세의 `path_pattern`은 그대로 전달한다. 값을 조회 시 계산하며 과거 기록의 원문은 복원하지 않는다. 화면은 상태 필드가 없는 이전 서버 응답도 받는다. 흐름 `GET …/e2-flow`는 기존 엄격 파서를 위해 응답을 유지한다.
 - `request_headers`·`request_body`·`response_headers`·`response_body`: 늘 `{"state":"not_stored"}`다. E② 저널은 헤더·본문·크기·경로 원문을 저장하지 않는다. 저장 기록 가림(시험 계정 비밀번호 정확값·세션 토큰·쿠키)이 걸릴 값 자체가 응답에 없다.
 
 **못 읽는 경우의 이유 코드** (JSON `{"reason": ...}`)

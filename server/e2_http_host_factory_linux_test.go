@@ -136,6 +136,7 @@ func TestE2HTTPFactoryPreparationFailuresCloseHostBeforeNextRun(t *testing.T) {
 		}
 		return e2host.OpenClient(ctx, path, scope, revision)
 	}
+	var screenCopies []bool
 	for _, tc := range []struct {
 		name                                        string
 		existingJournal, rejectAcquire, stuckRecord bool
@@ -145,7 +146,11 @@ func TestE2HTTPFactoryPreparationFailuresCloseHostBeforeNextRun(t *testing.T) {
 		{name: "next-run"},
 		{name: "stuck-record", stuckRecord: true},
 	} {
-		input.OnAcquire = nil
+		// Host 모드 로컬 저널은 화면 사본이라 확정 단계 투영을 받는다(받지 못하면 실제 회차에서 확정 사건 기록이 감사 실패).
+		input.OnAcquire = func(_ context.Context, a E2HTTPAcquired) error {
+			screenCopies = append(screenCopies, a.Journal.ScreenCopy())
+			return nil
+		}
 		input.SealChecked = recordHook
 		if tc.stuckRecord {
 			input.SealChecked = stuckHook
@@ -209,6 +214,9 @@ func TestE2HTTPFactoryPreparationFailuresCloseHostBeforeNextRun(t *testing.T) {
 		if tc.stuckRecord && time.Since(started) > 5*time.Second {
 			t.Fatalf("멈춘 봉인 확인 기록이 마감을 붙잡음: %s", time.Since(started))
 		}
+	}
+	if len(screenCopies) != 2 || !screenCopies[0] || !screenCopies[1] {
+		t.Fatalf("Host 모드 로컬 저널이 화면 사본이 아님: %v", screenCopies)
 	}
 	mu.Lock()
 	defer mu.Unlock()

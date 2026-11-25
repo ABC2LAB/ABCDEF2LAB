@@ -554,7 +554,12 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				return E2HTTPRunOptions{}, ErrE2HTTPHost
 			}
 		}
-		journal, createErr := e2proxy.CreateJournal(policy.StateDir, "events.jsonl", auditKey)
+		// Host 모드의 로컬 저널은 화면 사본이다. 확정 단계 사건의 화면 투영도 싣는다(e2HTTPV3MirrorRecorder).
+		createLocal := e2proxy.CreateJournal
+		if hostRecorder != nil {
+			createLocal = e2proxy.CreateScreenJournal
+		}
+		journal, createErr := createLocal(policy.StateDir, "events.jsonl", auditKey)
 		if createErr != nil {
 			if hostRecorder != nil {
 				// 아직 실행이나 송신자가 없다. 취소된 준비 문맥과 분리하여
@@ -612,7 +617,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			if policy.ApprovalMode == e2proxy.ApprovalConfirmEveryRequest || policy.ApprovalMode == e2proxy.ApprovalWorkbenchV1 {
 				gate = input.RequestApprovals
 			}
-			recorder = e2HTTPJournalObserver{next: recorder, observe: input.RequestApprovals.observe}
+			recorder = e2HTTPJournalObserver{next: recorder, observe: input.RequestApprovals.observe, observeE3: input.RequestApprovals.observeE3}
 		}
 		// 승인 틀의 이름 조각도 실행 자격값이나 시험 계정명과 같으면 가린다.
 		var patternExecution atomic.Pointer[e2proxy.Execution]
@@ -767,10 +772,15 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 type e2HTTPJournalObserver struct {
 	next    e2proxy.Recorder
 	observe func(context.Context, e2proxy.Event) error
+	// observeE3는 확정 단계 사건 중 이 관찰자가 다뤄야 하는 것만 받는다(승인 이력 갱신). nil이면 확정 사건을 넘기지
+	// 않는다. 확정 사건은 일반 observe에 넘기지 않는다: 평가 관찰기도 이 관찰자를 쓰고 그 오류는 감사 실패로 번진다.
+	// 실패를 반환하지 않으므로 확정 사건 기록을 실패로 만들지 않는다.
+	observeE3 func(context.Context, e2proxy.Event)
 }
 
-// 제품 화면의 기존 v2 흐름은 Host가 ACK한 일반 행만 투영한다. E③ 행은
-// v3 검증 조회에만 쓰므로 v2 화면 저널에 넣지 않는다.
+// 제품 화면의 v2 흐름(화면 사본)은 Host가 ACK한 행을 투영한다. E③ 확정 단계 행은 E3Audit을 뺀 화면 투영
+// (e2proxy.E3ScreenProjection)으로 싣는다. 판정·근거 검증은 계속 Host v3 저널만 쓴다. 사본에 확정 행이 없으면 작업대
+// 보낸 요청 총계·요청 목록에서 확정 요청이 빠졌다(2026-11-25 화면 회차, 사용자·이동찬 결정 (가)).
 type e2HTTPV3MirrorRecorder struct {
 	host   e2proxy.Recorder
 	legacy *e2proxy.Journal
@@ -784,11 +794,10 @@ func (r e2HTTPV3MirrorRecorder) Record(ctx context.Context, event e2proxy.Event)
 		return err
 	}
 	if e3ProgramEvent(event) {
-		return nil
+		event = e2proxy.E3ScreenProjection(event)
 	}
-	// 화면용 v2 사본은 E③ 사건을 싣지 않으므로 Host v3 순번을 그대로 쓰면 E③ 사건 뒤 첫 사건(정지 때 control 등)이
-	// 사본의 연속 순번 검사에 걸려 감사 실패로 래치된다(실제 제품 합성 A/B 회차에서 회차 마감 실패, 11/20). 사본은
-	// 자기 MAC 체인의 다음 순번을 쓴다. Host v3 저널이 권위 원본이고 사건 내용·MAC은 그대로다. 기록은 실행의 기록
+	// 사본은 Host v3 순번이 아니라 자기 MAC 체인의 다음 순번을 쓴다(11/20 회차 마감 실패에서 고침). Host v3 저널이 권위
+	// 원본이다. 사본 기록 실패는 일반 행과 같게 감사 실패다(사본이 빠지면 총계가 저널과 맞지 않는다). 기록은 실행의 기록
 	// 잠금으로 직렬화된다(e2proxy Execution.recordEvent).
 	event.Version = e2proxy.Version
 	event.Index = r.legacy.Checkpoint().Sequence + 1
@@ -800,6 +809,9 @@ func (r e2HTTPJournalObserver) Record(ctx context.Context, event e2proxy.Event) 
 		return err
 	}
 	if e3ProgramEvent(event) {
+		if r.observeE3 != nil {
+			r.observeE3(ctx, event)
+		}
 		return nil
 	}
 	if err := r.observe(ctx, event); err != nil {

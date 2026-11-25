@@ -70,7 +70,7 @@ import { Icon } from "../../ui/icons";
 import { Markdown } from "../../ui/Markdown";
 import { InspHead, InspOpenButton, Isec, PaneToggle, useScrollTopOnChange, vulnClassParts } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { ApprovalQueue, useRequestApprovals } from "./approvals";
+import { ApprovalHistory, ApprovalQueue, useRequestApprovals } from "./approvals";
 import { CoverageGraphSection } from "./coverageGraphView";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
 import { AccountAuthWarning, LoginMethodMissingWarning } from "./liveAccountWarnings";
@@ -78,6 +78,7 @@ import { PriceCapsNotice } from "./PriceCapsNotice";
 import { ProductVerdictReport, productConfirmationSummary, useProductVerdicts } from "./productVerdictViews";
 import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
+import { useE2FlowFor } from "./sentRequests";
 import { TaskActivity } from "./TaskActivity";
 import { AccessMapPanel } from "./UrlAccessMapLive";
 import {
@@ -91,7 +92,7 @@ import {
   useUrlHost,
 } from "./urlParts";
 import { VerdictDetailCard } from "./VerdictDetailCard";
-import { crawlPct, PauseButton, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
+import { CrawlMeters, crawlPct, PauseButton, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
 /** 보고서 위치의 상위 화면 (작업대 / 끝난 점검 / 주소 / 보고서) */
 const FINISHED = { href: "#finished", label: "끝난 점검" };
@@ -705,8 +706,15 @@ export function UrlLiveLive() {
   // (진행 중 후보는 'candidate-<id>')로 둔다
   const [pick, setPick] = useState<{ task: string; entry: string } | null>(null);
   const picked = pick && pick.task === job?.task_id ? pick.entry : null;
+  // 오른쪽 패널에 처리된 승인 요청 목록(사용자 11/25: 가운데엔 대기 요청만). 고른 취약점과 번갈아 하나만 띄운다. task 에 묶어
+  // 다른 점검으로 바뀌면 풀린다
+  const [apTask, setApTask] = useState<string | null>(null);
+  const apShown = !picked && !!job?.task_id && apTask === job.task_id;
   // 다른 후보를 고르면 오른쪽 패널을 맨 위로(사용자 11/24)
-  const liveInspRef = useScrollTopOnChange<HTMLElement>(picked);
+  const liveInspRef = useScrollTopOnChange<HTMLElement>(picked ?? (apShown ? "approvals" : null));
+  let inspLabel = "진행 요약";
+  if (picked) inspLabel = "취약점 상세";
+  else if (apShown) inspLabel = "처리된 승인 요청";
   const runEnded = !job || URL_ENDED_STATES.includes(job.state);
   // 같은 자료로 후보 줄에 취약점 이름도 붙인다(사용자 11/24). 그래서 고른 동안만이 아니라 후보가 있으면 읽고, 새 후보가
   // 오면 바로 다시 읽는다(그 사이엔 쉬었다가)
@@ -734,9 +742,17 @@ export function UrlLiveLive() {
   }, [pickedRem.data, job?.task_id]);
   const pickEntry = (entry: string) => {
     if (!job?.task_id) return;
+    setApTask(null);
     setPick({ task: job.task_id, entry });
     openInsp();
   };
+  const showDoneApprovals = () => {
+    if (!job?.task_id) return;
+    setPick(null);
+    setApTask(job.task_id);
+    openInsp();
+  };
+  const planTitle = (id: number) => flow?.plan?.find((p) => p.id === id)?.title;
   // 끝난 점검의 발견: 결과 저장이 확인된 task 의 저장 판정 결과 (보고서와 같은 자료)
   const savedTask = g.reportReadable && job?.task_id ? job.task_id : null;
   const saved = usePoll(() => fetchRemediation(savedTask as string, "internal"), [savedTask], {
@@ -976,8 +992,9 @@ export function UrlLiveLive() {
             </section>
           ) : null}
           {stateNote}
-          {/* 승인 요청: 한 줄씩 쌓이는 목록(사용자 11/24). 줄을 누르면 미리보기 · 승인 정보 · 승인/거부가 펼쳐진다 */}
-          <ApprovalQueue a={a} planTitle={(id) => flow?.plan?.find((p) => p.id === id)?.title} />
+          {/* 승인 요청: 대기 요청만 한 줄씩(사용자 11/24 · 11/25). 줄을 누르면 미리보기 · 승인 정보 · 승인/거부가 펼쳐진다.
+              처리된 요청은 머리 버튼으로 오른쪽 패널에 */}
+          <ApprovalQueue a={a} planTitle={planTitle} doneShown={apShown} onShowDone={showDoneApprovals} />
           {/* 발견: 점검 중엔 발견 후보(실시간), 끝나면 저장된 결과를 보고서 형식으로 */}
           {!ended && job.task_id ? (
             <LiveCandidates
@@ -1003,7 +1020,7 @@ export function UrlLiveLive() {
         </div>
         {/* 오른쪽 진행 요약: 서버가 점검 중에 주는 값만(전송 통제 · 탐색 현황 · 커버리지 · 점검 정보).
             발견은 가운데에 둔다(점검 중엔 발견 후보, 끝나면 저장된 결과) */}
-        <aside className={s.vi} id="lInsp" ref={liveInspRef} aria-label={picked ? "취약점 상세" : "진행 요약"}>
+        <aside className={s.vi} id="lInsp" ref={liveInspRef} aria-label={inspLabel}>
           {picked && job.task_id ? (
             <LiveCandidateDetail
               entry={picked}
@@ -1012,7 +1029,20 @@ export function UrlLiveLive() {
               taskId={job.task_id}
               onBack={() => setPick(null)}
             />
-          ) : (
+          ) : null}
+          {apShown ? (
+            <>
+              <div className={s["vi-back"]}>
+                <BackButton to="진행 요약" onClick={() => setApTask(null)} />
+              </div>
+              <InspHead
+                eyebrow={<span className={s.host}>{host}</span>}
+                title={`처리된 요청 ${a.rows.filter((r) => r.state !== "pending").length}`}
+              />
+              <ApprovalHistory a={a} planTitle={planTitle} />
+            </>
+          ) : null}
+          {!(picked && job.task_id) && !apShown ? (
             <>
               <InspHead
                 eyebrow={
@@ -1090,7 +1120,7 @@ export function UrlLiveLive() {
                 <UrlFacts job={job} />
               </Isec>
             </>
-          )}
+          ) : null}
         </aside>
         <PaneToggle />
       </div>
@@ -1764,6 +1794,9 @@ export function UrlReportLive() {
   const verdicts = useProductVerdicts(taskId, visible);
   const { confirmed: productConfirmed, notice: productConfirmationNotice } = productConfirmationSummary(verdicts);
   // 저장된 실행 기록(diagnosis-run)은 보고서에서 더 쓰지 않는다(사용자 11/19 — 실행 종료 기록 · 요청 수를 뺌)
+  // 자산 탐색 숫자 칸 3개(발견한 API · 보낸 요청 · 막은 요청)를 보고서에도(사용자 11/25). 보고서는 끝난 점검이라 전송 기록을
+  // 한 번만 읽는다. 탐색 흐름이 없는 점검(flow 없음)은 칸을 두지 않는다
+  const crawlE2 = useE2FlowFor(flow ? taskId : null, visible, true);
   // 자산 커버리지 (요약 칸): 서버 task 의 방문 · 검사한 자산 비율(판정 커버리지 아님 · 리뷰 #479).
   // 꺼졌거나 못 읽으면 값을 만들지 않고 "—"
   const covOff = useCoverageForbidden(taskId);
@@ -2059,6 +2092,7 @@ export function UrlReportLive() {
                 </div>
               </section>
             ) : null}
+            {flow ? <CrawlMeters flow={flow} e2={crawlE2.data} /> : null}
             <section className={s.sec}>
               <div className={s["seg-tabs"]} role="tablist" aria-label="보고서 내용" id="rTabs">
                 {R_TABS.map(([k, label], i) => (

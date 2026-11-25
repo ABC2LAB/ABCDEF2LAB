@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/pathmask"
+	"github.com/Autumn-27/artex/server"
 )
 
 // 작업대 요청 상세와 전체 기록(2026-11-25 사용자 지시, 재상님 요구사항). 검증한 E② 저널만 읽는다. 저널에는 헤더·본문·
@@ -61,6 +63,8 @@ type e2RequestRow struct {
 	CallRef   string    `json:"call_ref"`
 	AttemptID string    `json:"attempt_id"`
 	Index     uint64    `json:"index"`
+
+	PathDetailState server.PathDetailState `json:"path_detail_state"`
 }
 
 type e2RequestsPage struct {
@@ -99,6 +103,8 @@ type e2RequestDetail struct {
 	RequestBody       e2RequestField `json:"request_body"`
 	ResponseHeaders   e2RequestField `json:"response_headers"`
 	ResponseBody      e2RequestField `json:"response_body"`
+
+	PathDetailState server.PathDetailState `json:"path_detail_state"`
 }
 
 // requestKind는 시도의 귀속이다. 프로그램 로그인은 프로그램 호출 이름(auth_prep·refresh_session)을 그대로 쓴다.
@@ -138,6 +144,14 @@ func sentRequests(events []e2proxy.Event) []e2proxy.Event {
 	return out
 }
 
+// attemptPathDetailState는 저장된 화면용 패턴의 상세 수준을 나타낸다.
+func attemptPathDetailState(pattern string) server.PathDetailState {
+	if pattern == "" || pattern == pathmask.LongPath {
+		return server.PathDetailUnavailable
+	}
+	return server.PathDetailPatternOnly
+}
+
 func e2RequestsPageOf(events []e2proxy.Event, patterns map[string]string, cursor uint64, limit int) e2RequestsPage {
 	sent := sentRequests(events)
 	page := e2RequestsPage{Format: e2RequestsViewFormat, Rows: []e2RequestRow{}, Total: len(sent)}
@@ -150,7 +164,9 @@ func e2RequestsPageOf(events []e2proxy.Event, patterns map[string]string, cursor
 			page.NextCursor = &next
 			break
 		}
-		page.Rows = append(page.Rows, e2RequestRow{At: e.At, Kind: requestKind(e), Method: e.Method, Path: patterns[e.AttemptID], Status: e.StatusCode, CallRef: e.CallRef, AttemptID: e.AttemptID, Index: e.Index})
+		pattern := patterns[e.AttemptID]
+		page.Rows = append(page.Rows, e2RequestRow{At: e.At, Kind: requestKind(e), Method: e.Method, Path: pattern,
+			PathDetailState: attemptPathDetailState(pattern), Status: e.StatusCode, CallRef: e.CallRef, AttemptID: e.AttemptID, Index: e.Index})
 	}
 	return page
 }
@@ -172,8 +188,9 @@ func e2RequestDetailOf(events []e2proxy.Event, patterns map[string]string, call,
 	}
 	e := *found
 	notStored := e2RequestField{State: e2FieldNotStored}
+	pattern := patterns[e.AttemptID]
 	return e2RequestDetail{Format: e2RequestViewFormat, CallRef: e.CallRef, AttemptID: e.AttemptID, Kind: requestKind(e), Index: e.Index, At: e.At,
-		Method: e.Method, PathPattern: patterns[e.AttemptID], RuleRef: e.RuleRef, Decision: e.Decision, Reason: string(e.Reason), StatusCode: e.StatusCode,
+		Method: e.Method, PathPattern: pattern, PathDetailState: attemptPathDetailState(pattern), RuleRef: e.RuleRef, Decision: e.Decision, Reason: string(e.Reason), StatusCode: e.StatusCode,
 		ForwardAttempted: e.ForwardAttempted, RequestWritten: e.RequestWritten, ResponseReceived: e.ResponseReceived, ResponseComplete: e.ResponseComplete,
 		ResponseTruncated: e.ResponseTruncated, RequestHeaders: notStored, RequestBody: notStored, ResponseHeaders: notStored, ResponseBody: notStored}, true
 }
@@ -274,6 +291,6 @@ func serveE2Requests(w http.ResponseWriter, r *http.Request, b *runBinding, view
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(w).Encode(out); err != nil {
-		log.Printf("[first-diagnosis] 작업대 실데이터 응답 쓰기 실패: 화면=%s", view)
+		logLiveWriteError(r, view, err)
 	}
 }
