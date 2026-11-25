@@ -1285,7 +1285,10 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
     .split("\n")
     .map((p) => p.trim())
     .filter(Boolean);
-  const eligible = (e: WorkflowEndpoint) => e.in_scope && (e.change === "attested_read" || flow.reversible_writes);
+  // 고를 수 있는 경로 = 서버 선택 검사와 같다(diagnosisflow controller.go 선택: 범위 밖 · 막힘(blocked) · 쓰기 미승인은 거부).
+  // 막힘을 빼먹으면 그 경로를 넣었을 때 서버가 선택 전체를 거절했다(11/25 목업에서 /logout · DELETE)
+  const eligible = (e: WorkflowEndpoint) =>
+    e.in_scope && e.change !== "blocked" && (e.change === "attested_read" || flow.reversible_writes);
   const waiting = flow.stage === "awaiting_selection";
   // 사전 확인한 읽기 경로는 기본 포함, 데이터를 바꿀 수 있는 경로는 직접 고른다
   const [selected, setSelected] = useState<Set<string>>(() => {

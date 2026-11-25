@@ -410,6 +410,20 @@ describe("범위 확인 · 한 번에 고르기", () => {
     expect(within(found).getByRole("checkbox", { name: "GET /api/products/1 점검에 포함" })).toBeEnabled();
   });
 
+  // 서버 선택 검사와 같게: 범위 안이어도 막힘(blocked) 경로는 고를 수 없다 — 넣으면 서버가 선택 전체를 거절한다(11/25)
+  it("범위 안이어도 막힘(blocked) 경로의 네모칸은 꺼져 있다(쓰기 승인이 있어도)", () => {
+    const blocked: WorkflowSnapshot = {
+      ...flow,
+      reversible_writes: true,
+      endpoints: flow.endpoints.map((e) =>
+        e.id === "write" ? { ...e, in_scope: true, change: "blocked" as const } : e,
+      ),
+    };
+    const found = mount({}, blocked);
+    expect(within(found).getByRole("checkbox", { name: "PUT /api/users/2 점검에 포함" })).toBeDisabled();
+    expect(within(found).getByRole("checkbox", { name: "GET /api/products/1 점검에 포함" })).toBeEnabled();
+  });
+
   it("내가 점검에서 뺀 알약만 흐리게 · 취소선으로 표시하고, 다시 넣으면 사라진다 (처음부터 빠진 경로와 구분)", () => {
     const found = mount();
     const putName = within(found).getByRole("button", { name: /^PUT \/api\/users\/2/ });
