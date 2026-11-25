@@ -5,11 +5,11 @@
     {"key":"a:13","kind":"ip","label":"자산 #13","tested":false,"in_scope":true,"asset_id":13,"company_id":1,"ip":"192.0.2.13"},
     {"key":"a:14","kind":"service","label":"https://api.example.test","tested":false,"in_scope":true,"asset_id":14,"domain":"api.example.test","url":"https://api.example.test","port":443,"status_code":200},
     {"key":"a:15","kind":"app","label":"자산 #15","tested":false,"in_scope":true,"asset_id":15,"company_id":1},
-    {"key":"a:21","kind":"endpoint","label":"https://api.example.test","tested":true,"in_scope":true,"asset_id":21,"url":"https://api.example.test","display_path":"/{id}/{id}"},
-    {"key":"a:22","kind":"endpoint","label":"https://api.example.test","tested":true,"in_scope":true,"asset_id":22,"url":"https://api.example.test","display_path":"/{id}/{id}/{id}"},
-    {"key":"a:23","kind":"endpoint","label":"https://api.example.test","tested":false,"in_scope":true,"asset_id":23,"url":"https://api.example.test","display_path":"/{id}/{id}/{id}"},
-    {"key":"a:24","kind":"endpoint","label":"https://api.example.test","tested":false,"in_scope":true,"asset_id":24,"url":"https://api.example.test","display_path":"/"},
-    {"key":"a:25","kind":"endpoint","label":"https://api.example.test","tested":false,"in_scope":true,"asset_id":25,"url":"https://api.example.test"},
+    {"key":"a:21","kind":"endpoint","label":"https://api.example.test","tested":true,"in_scope":true,"asset_id":21,"url":"https://api.example.test","display_path":"/{id}/{id}","path_detail_state":"pattern_only"},
+    {"key":"a:22","kind":"endpoint","label":"https://api.example.test","tested":true,"in_scope":true,"asset_id":22,"url":"https://api.example.test","display_path":"/{id}/{id}/{id}","path_detail_state":"pattern_only"},
+    {"key":"a:23","kind":"endpoint","label":"https://api.example.test","tested":false,"in_scope":true,"asset_id":23,"url":"https://api.example.test","display_path":"/{id}/{id}/{id}","path_detail_state":"pattern_only"},
+    {"key":"a:24","kind":"endpoint","label":"https://api.example.test","tested":false,"in_scope":true,"asset_id":24,"url":"https://api.example.test","display_path":"/","path_detail_state":"exact"},
+    {"key":"a:25","kind":"endpoint","label":"https://api.example.test","tested":false,"in_scope":true,"asset_id":25,"url":"https://api.example.test","path_detail_state":"unavailable"},
     {"key":"c:1","kind":"company","label":"회사 #1","tested":false,"in_scope":false,"company_id":1}
   ],
   "edges": [
