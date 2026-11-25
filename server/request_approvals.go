@@ -400,6 +400,16 @@ func (s *RequestApprovalService) observeE3(ctx context.Context, event e2proxy.Ev
 	}
 }
 
+// unknownAfterStoreFailureLocked는 확정 사건(confirmation)의 승인 이력을 읽거나 저장하지 못했을 때 그 시도를 바로 결과
+// 불명으로 보이게 한다. 일반 관찰은 저장 실패가 감사 실패로 실행을 래치해 decorate가 결과 불명으로 투영하지만, 확정 사건은
+// 감사 실패로 올리지 않으므로 대기자를 실패로 표시해야 실행 중 조회에서도 decorate가 소비된 승인의 awaiting_dispatch·
+// dispatch_pending을 unknown으로 바꾼다(#952 이동찬 P2). 승인 대기는 이미 끝난 뒤라 대기 결과에는 영향이 없다. s.mu를 쥐고 부른다.
+func (s *RequestApprovalService) unknownAfterStoreFailureLocked(id string, confirmation bool) {
+	if w := s.waiters[id]; confirmation && w != nil {
+		w.failed = true
+	}
+}
+
 // observeAttempt는 시도 사건 하나로 그 승인 기록을 갱신한다. sameRun이면 승인 기록의 회차가 사건의 회차와 같아야 한다.
 func (s *RequestApprovalService) observeAttempt(ctx context.Context, event e2proxy.Event, sameRun bool) error {
 	ctx, cancel := context.WithTimeout(ctx, requestApprovalStoreTimeout)
@@ -417,7 +427,11 @@ func (s *RequestApprovalService) observeAttempt(ctx context.Context, event e2pro
 		return nil
 	}
 	a, err := s.store.GetRequestApproval(ctx, task, "ARTEX", event.AttemptID)
-	if err != nil || sameRun && a.RunRef != event.Scope.RunRef {
+	if err != nil {
+		s.unknownAfterStoreFailureLocked(event.AttemptID, sameRun)
+		return errRequestApproval
+	}
+	if sameRun && a.RunRef != event.Scope.RunRef {
 		return errRequestApproval
 	}
 	if event.Stage == "intent" {
@@ -437,6 +451,7 @@ func (s *RequestApprovalService) observeAttempt(ctx context.Context, event e2pro
 		}
 	}
 	if err = s.store.SwapRequestApproval(ctx, a, false); err != nil {
+		s.unknownAfterStoreFailureLocked(event.AttemptID, sameRun)
 		return errRequestApproval
 	}
 	// 결과의 영속화 뒤에는 이 시도의 대기 문맥을 보존할 필요가 없다.
