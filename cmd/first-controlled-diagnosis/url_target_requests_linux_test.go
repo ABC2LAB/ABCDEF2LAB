@@ -1,0 +1,241 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/Autumn-27/artex/e2proxy"
+)
+
+// targetRequestEvents는 모델 시도(보냄·결과 불명·거부), 프로그램 로그인(인증 준비·세션 다시 받기·거부), 같은 시도의 중복
+// 결과 행, 호출 닫힘·통제 행이 섞인 저널이다.
+func targetRequestEvents() []e2proxy.Event {
+	program := func(e e2proxy.Event, kind e2proxy.ProgramCallKind) e2proxy.Event {
+		e.IntentID, e.Program = 0, kind
+		if e.Decision == "allowed" {
+			e.RuleRef = "auth-login"
+		}
+		return e
+	}
+	modelSent := liveEvent("result", "call-model-a", strings.Repeat("a", 32), 1, "allowed", e2proxy.Complete)
+	return []e2proxy.Event{
+		program(liveEvent("result", "call-login", strings.Repeat("1", 32), 1, "allowed", e2proxy.Complete), e2proxy.ProgramAuthPrep),
+		program(liveEvent("result", "call-login-denied", strings.Repeat("2", 32), 1, "denied", e2proxy.PolicyDenied), e2proxy.ProgramAuthPrep),
+		modelSent,
+		modelSent,
+		liveEvent("result", "call-model-b", strings.Repeat("b", 32), 1, "allowed", e2proxy.Unknown),
+		liveEvent("result", "call-model-c", strings.Repeat("c", 32), 1, "denied", e2proxy.PolicyDenied),
+		liveEvent("call_closed", "call-model-a", "", 0, "", e2proxy.Complete),
+		program(liveEvent("result", "call-refresh", strings.Repeat("3", 32), 1, "allowed", e2proxy.Complete), e2proxy.ProgramRefreshSession),
+		liveEvent("control", "", "", 0, "", e2proxy.Closed),
+	}
+}
+
+// writtenAttempts는 저널에서 요청을 쓴 시도 수를 시험 쪽에서 따로 센다(서버 계산과 대조).
+func writtenAttempts(events []e2proxy.Event) (model, login int) {
+	seen := map[string]bool{}
+	for _, e := range events {
+		if e.Stage != "result" || seen[e.AttemptID] || !e.RequestWritten {
+			continue
+		}
+		seen[e.AttemptID] = true
+		if e.Program == "" {
+			model++
+		} else {
+			login++
+		}
+	}
+	return model, login
+}
+
+func targetRequestsFixture(t *testing.T, record *explorationRequestsRecord, raw string) string {
+	t.Helper()
+	runsDir, policy := liveRunFixture(t, func(add func(e2proxy.Event)) {
+		for _, e := range targetRequestEvents() {
+			add(e)
+		}
+	})
+	switch {
+	case record != nil:
+		if err := writeExplorationRequests(policy.StateDir, *record); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(filepath.Join(policy.StateDir, explorationRequestsFile))
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("탐색 요청 수 기록 권한 %v err=%v", info, err)
+		}
+	case raw != "":
+		if err := os.WriteFile(filepath.Join(policy.StateDir, explorationRequestsFile), []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return runsDir
+}
+
+func targetRequestsGet(t *testing.T, runsDir string, live liveExploration) e2FlowTargetRequests {
+	t.Helper()
+	w := httptest.NewRecorder()
+	serveLiveDataWith(w, httptest.NewRequest(http.MethodGet, "/api/tasks/9/e2-flow", nil), runsDir, liveJob, "e2-flow", live)
+	var out e2FlowView
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil || out.Journal != "verified" || out.TargetRequests == nil {
+		t.Fatalf("e2-flow 대상 요청 내역 없음: %d %s", w.Code, w.Body.String())
+	}
+	return *out.TargetRequests
+}
+
+// 모델·로그인 수는 검증한 저널에서 요청을 쓴 시도 수와 같고, 탐색 수는 경계가 확정한 기록과 같으며, 합은 둘을 더한 값이다.
+func TestE2FlowTargetRequestsMatchJournalAndExplorationRecord(t *testing.T) {
+	model, login := writtenAttempts(targetRequestEvents())
+	if model != 2 || login != 2 {
+		t.Fatalf("시험 저널 구성이 바뀜 model=%d login=%d", model, login)
+	}
+	closed := explorationKnown(explorationClosed, 7)
+	got := targetRequestsGet(t, targetRequestsFixture(t, &closed, ""), nil)
+	if got.Model != model || got.Login != login || got.Confirmation != 0 || got.ExplorationState != explorationClosed ||
+		got.Exploration == nil || *got.Exploration != 7 || got.Total == nil || *got.Total != uint64(model+login)+7 {
+		t.Fatalf("대상 요청 내역 %+v", got)
+	}
+}
+
+func TestE2FlowTargetRequestsExplorationStates(t *testing.T) {
+	model, login := writtenAttempts(targetRequestEvents())
+	written := uint64(model + login)
+	notRun, unknown := explorationKnown(explorationNotRun, 0), explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationUnknown}
+	none := explorationKnown(explorationNone, 0)
+	running := explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationRunning}
+	liveThree := func(ctx context.Context, job string) (uint64, bool) { return 3, job == liveJob && ctx.Err() == nil }
+	noLive := func(context.Context, string) (uint64, bool) { return 0, false }
+	for name, c := range map[string]struct {
+		record      *explorationRequestsRecord
+		raw         string
+		live        liveExploration
+		state       string
+		exploration int64 // -1이면 모름(null)
+	}{
+		"no-exploration-stage": {record: &none, state: explorationNone, exploration: 0},
+		// 기록이 없으면(쓰기 실패·이 칸 이전 회차) 탐색 단계 없음이 아니라 모름이다(#929 이동찬 P2).
+		"no-record":            {state: explorationUnknown, exploration: -1},
+		"not-run":              {record: &notRun, state: explorationNotRun, exploration: 0},
+		"running-live":         {record: &running, live: liveThree, state: explorationRunning, exploration: 3},
+		"running-no-boundary":  {record: &running, live: noLive, state: explorationRunning, exploration: -1},
+		"running-no-live-func": {record: &running, state: explorationRunning, exploration: -1},
+		"unknown":              {record: &unknown, state: explorationUnknown, exploration: -1},
+		"broken-record":        {raw: `{"format":"abc2lab.exploration-requests/v1","state":"closed"}`, state: explorationUnknown, exploration: -1},
+	} {
+		got := targetRequestsGet(t, targetRequestsFixture(t, c.record, c.raw), c.live)
+		if got.Model != model || got.Login != login || got.ExplorationState != c.state {
+			t.Fatalf("%s: %+v", name, got)
+		}
+		if c.exploration < 0 {
+			if got.Exploration != nil || got.Total != nil {
+				t.Fatalf("%s: 모르는 탐색 수를 숫자로 보임 %+v", name, got)
+			}
+			continue
+		}
+		if got.Exploration == nil || *got.Exploration != uint64(c.exploration) || got.Total == nil || *got.Total != written+uint64(c.exploration) {
+			t.Fatalf("%s: %+v", name, got)
+		}
+	}
+}
+
+func TestExplorationResultRecordKeepsOnlyBoundaryConfirmedCounts(t *testing.T) {
+	for _, c := range []struct {
+		notRun, known bool
+		requests      uint64
+		state         string
+		count         int64
+	}{
+		{false, true, 9, explorationClosed, 9},
+		{true, true, 0, explorationNotRun, 0},
+		{false, true, 0, explorationClosed, 0},
+		{false, false, 5, explorationUnknown, -1},
+		{true, false, 0, explorationUnknown, -1},
+	} {
+		r := explorationResultRecord(c.notRun, c.known, c.requests)
+		if !r.valid() || r.State != c.state || (c.count < 0) != (r.TargetRequests == nil) || c.count >= 0 && *r.TargetRequests != uint64(c.count) {
+			t.Fatalf("%+v -> %+v", c, r)
+		}
+	}
+	three := uint64(3)
+	for _, bad := range []explorationRequestsRecord{
+		{Format: "other", State: explorationClosed, TargetRequests: &three},
+		{Format: explorationRequestsFormat, State: explorationRunning, TargetRequests: &three},
+		{Format: explorationRequestsFormat, State: "pending", TargetRequests: &three},
+		{Format: explorationRequestsFormat, State: "pending", TargetRequests: new(uint64)},
+		{Format: explorationRequestsFormat, State: explorationClosed},
+		{Format: explorationRequestsFormat, State: explorationNone},
+		{Format: explorationRequestsFormat, State: explorationNone, TargetRequests: &three},
+	} {
+		if writeExplorationRequests(t.TempDir(), bad) == nil {
+			t.Fatalf("잘못된 기록을 씀 %+v", bad)
+		}
+	}
+}
+
+// 프로그램 호출 종류는 알려진 것만 내역에 넣는다. 모르는 종류가 보낸 요청은 따로 세고 합은 모름이다(#929 재상 봇 P3).
+func TestTargetRequestsKeepUnknownProgramOutOfBreakdown(t *testing.T) {
+	sent := func(attempt string, program e2proxy.ProgramCallKind) e2proxy.Event {
+		e := liveEvent("result", "call-"+attempt[:4], attempt, 1, "allowed", e2proxy.Complete)
+		e.IntentID, e.Program = 0, program
+		return e
+	}
+	five := uint64(5)
+	closed := explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationClosed, TargetRequests: &five}
+	known := targetRequestsOf([]e2proxy.Event{sent(strings.Repeat("1", 32), e2proxy.ProgramAuthPrep), sent(strings.Repeat("2", 32), e2proxy.ProgramE3Read)}, closed)
+	if known.Login != 1 || known.Confirmation != 1 || known.Unclassified != 0 || known.Total == nil || *known.Total != 7 {
+		t.Fatalf("알려진 종류 내역 %+v", known)
+	}
+	unknown := targetRequestsOf([]e2proxy.Event{sent(strings.Repeat("1", 32), e2proxy.ProgramAuthPrep), sent(strings.Repeat("3", 32), e2proxy.ProgramCallKind("future_kind"))}, closed)
+	if unknown.Login != 1 || unknown.Confirmation != 0 || unknown.Unclassified != 1 || unknown.Total != nil || unknown.Exploration == nil || *unknown.Exploration != 5 {
+		t.Fatalf("모르는 종류 내역 %+v", unknown)
+	}
+}
+
+// 단계 기록을 쓰지 못하면 수를 확정으로 보이지 않는다(#929 이동찬 P2 두 번). 시작 전에는 기록이 없어 모름이고, 탐색 중
+// 기록(running)에는 수가 없다. 끝 기록을 쓰지도 지우지도 못해 running이 남아도 확정 0이 되지 않는다.
+func TestExplorationStageWriteFailureNeverReadsKnownCount(t *testing.T) {
+	runsDir, policy := liveRunFixture(t, func(add func(e2proxy.Event)) {
+		for _, e := range targetRequestEvents() {
+			add(e)
+		}
+	})
+	unknownTotal := func(state string) {
+		t.Helper()
+		got := targetRequestsGet(t, runsDir, nil)
+		if got.ExplorationState != state || got.Exploration != nil || got.Total != nil {
+			t.Fatalf("탐색 수를 숫자로 보임(기대 %s) %+v", state, got)
+		}
+	}
+	unknownTotal(explorationUnknown) // 시작 전: 기록 없음
+	// 시작 기록을 못 쓰면(임시 파일 자리를 막음) 기록이 없고 모름이다.
+	block := filepath.Join(policy.StateDir, explorationRequestsFile+".tmp")
+	if err := os.Mkdir(block, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	recordExplorationStage(policy.StateDir, explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationRunning})
+	unknownTotal(explorationUnknown)
+	if err := os.Remove(block); err != nil {
+		t.Fatal(err)
+	}
+	recordExplorationStage(policy.StateDir, explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationRunning})
+	unknownTotal(explorationRunning)
+	if os.Geteuid() == 0 {
+		t.Skip("root는 디렉터리 권한을 무시해 쓰기·지우기 실패를 만들 수 없음")
+	}
+	// 상태 디렉터리를 읽기만 가능하게 해 끝 기록 쓰기와 지우기를 둘 다 실패시킨다. 남은 running은 확정 수가 아니다.
+	if err := os.Chmod(policy.StateDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(policy.StateDir, 0o700) })
+	recordExplorationStage(policy.StateDir, explorationKnown(explorationClosed, 4))
+	if _, err := os.Stat(filepath.Join(policy.StateDir, explorationRequestsFile)); err != nil {
+		t.Fatalf("읽기 전용인데 기록이 사라짐 err=%v", err)
+	}
+	unknownTotal(explorationRunning)
+}

@@ -74,6 +74,85 @@ func PrepareFirstDiagnosisTask(ctx context.Context, pool *sql.DB, description, g
 	return out, nil
 }
 
+// FirstDiagnosisBoundTask는 준비 서비스가 URL 진단 회차에 결속한 작업이다(제품 실행기가 보호 상태 디렉터리에 남긴 기록).
+type FirstDiagnosisBoundTask struct {
+	TaskID        int64
+	ExplorationID int64
+}
+
+// FirstDiagnosisInterruptedOrigin은 끊긴 실행의 고정 사유 표지(exploration_nodes fact)의 origin이다. 실행 종료 기록
+// (first_diagnosis_run_v1)과 같은 자리에 두어 보고서가 종료 기록 대신 읽는다.
+const FirstDiagnosisInterruptedOrigin = "first_diagnosis_interrupted_v1"
+
+// FirstDiagnosisInterruptedReason은 표지의 고정 사유다. 준비 서비스가 실행 도중 끝나 마감하지 못했다는 사실만 적는다.
+const FirstDiagnosisInterruptedReason = "preparation_service_stopped"
+
+type firstDiagnosisInterruptedRecord struct {
+	Version    int       `json:"version"`
+	TaskID     int64     `json:"task_id"`
+	Reason     string    `json:"reason"`
+	RecordedAt time.Time `json:"recorded_at"`
+}
+
+// ReleaseInterruptedFirstDiagnosisTasks는 이전 URL 진단 회차가 결속했지만 마감하지 못한 작업을, 정상 마감
+// (FirstDiagnosisSupervisor.drainTask)과 같은 일시정지 상태(paused=true, queued=false)로 돌리고 고정 사유 표지를 남긴다.
+// 돌린 수를 돌려준다.
+//
+// 준비 서버는 시작할 때 끝나지 않았는데 일시정지도 아닌 작업이 있으면 다른 실행을 자동 복원하지 않으려고 시작을
+// 거부한다(newServerConfiguredWithOptions). 준비 서비스가 drainTask 전에 죽으면 그 작업이 paused=false로 남아, 볼륨을
+// 지우기 전까지 같은 설치의 모든 새 점검이 task_binding/preparation_server_failed로 실패했다(#912 러너 재현, 11/25).
+//
+// 대상은 previous뿐이다: 제품 실행기가 이 준비 서비스의 회차가 결속한 작업으로 기록했고, 그 회차의 Execute가 돌아오지
+// 못해 기록이 남은 작업이다. 준비 서비스는 이전 회차가 돌아왔거나 자원 마감이 확인된 뒤에만 새 시작을 받으므로
+// (diagnosisprep blocksStart) 그 회차는 끝났다. 기록에 없는 작업(다른 실행·대기 작업)은 건드리지 않아 준비 서버의 거부가
+// 그대로 남는다(#927 이동찬 P1). 결과는 추정하지 않는다: status·intent·기록은 그대로 두고 일시정지·대기 칸만 바꾼다.
+func ReleaseInterruptedFirstDiagnosisTasks(ctx context.Context, pool *sql.DB, current int64, previous []FirstDiagnosisBoundTask) (int64, error) {
+	if ctx == nil || ctx.Err() != nil || pool == nil || current <= 0 {
+		return 0, ErrControlledReadHostConfiguration
+	}
+	for _, p := range previous {
+		if p.TaskID <= 0 || p.ExplorationID <= 0 || p.TaskID == current {
+			return 0, ErrControlledReadHostConfiguration
+		}
+	}
+	if len(previous) == 0 {
+		return 0, nil
+	}
+	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := pool.BeginTx(bounded, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
+	if err != nil {
+		return 0, ErrControlledReadHostConfiguration
+	}
+	defer tx.Rollback()
+	var released int64
+	for _, p := range previous {
+		// 조건은 준비 서버 시작 검사의 거부 조건(!Paused || Queued)과 끝난 상태(pgdb.IsTerminal)를 그대로 옮긴 것이다.
+		var id int64
+		err := tx.QueryRowContext(bounded, `UPDATE tasks SET paused=true,queued=false
+ WHERE id=$1 AND exploration_id=$2 AND deleted_at IS NULL AND status NOT IN ('done','failed','timeout') AND (paused=false OR queued=true)
+ RETURNING id`, p.TaskID, p.ExplorationID).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil || id != p.TaskID {
+			return 0, ErrControlledReadHostConfiguration
+		}
+		payload, err := json.Marshal(firstDiagnosisInterruptedRecord{Version: 1, TaskID: p.TaskID, Reason: FirstDiagnosisInterruptedReason, RecordedAt: time.Now().UTC()})
+		if err != nil {
+			return 0, ErrControlledReadHostConfiguration
+		}
+		if _, err := tx.ExecContext(bounded, `INSERT INTO exploration_nodes(exploration_id,kind,state,origin,payload) VALUES($1,'fact','confirmed',$2,$3::jsonb)`, p.ExplorationID, FirstDiagnosisInterruptedOrigin, string(payload)); err != nil {
+			return 0, ErrControlledReadHostConfiguration
+		}
+		released++
+	}
+	if bounded.Err() != nil || tx.Commit() != nil {
+		return 0, ErrControlledReadHostConfiguration
+	}
+	return released, nil
+}
+
 // SeedFirstDiagnosisTarget은 원본 작업 시작의 대상 자산 등록(seed)을 첫 진단 준비에서 한다(C24, 루프 복원 결정안
 // §9-5). 진단 Planner의 list_assets·list_untested_assets가 대상에서 시작하게 한다. 작업 설명 글을 파싱하지 않고,
 // 승인 범위로 검사한 대상 URL의 origin 하나만 등록한다. 실행 역할의 자산 쓰기 권한(#481)이 필요하다.

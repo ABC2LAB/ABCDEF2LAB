@@ -21,7 +21,7 @@ func readDiagnosticRun(ctx context.Context, tx *sql.Tx, task int64) (*report.Dia
 	var raw []byte
 	err := tx.QueryRowContext(ctx, `SELECT n.payload FROM tasks t JOIN exploration_nodes n ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND t.deleted_at IS NULL AND n.kind='fact' AND n.state='confirmed' AND n.origin=$2 AND n.payload->>'task_id'=$3 ORDER BY n.id DESC LIMIT 1`, task, diagnosisRunOrigin, strconv.FormatInt(task, 10)).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return readDiagnosticInterrupted(ctx, tx, task)
 	}
 	if err != nil {
 		return nil, err
@@ -35,6 +35,24 @@ func readDiagnosticRun(ctx context.Context, tx *sql.Tx, task int64) (*report.Dia
 		state = report.DiagnosticRunClosureFailed
 	}
 	return &report.DiagnosticRun{State: state, Result: record.Result}, nil
+}
+
+// readDiagnosticInterrupted는 종료 기록이 없는 작업의 끊김 표지(ReleaseInterruptedFirstDiagnosisTasks)를 읽는다. 표지가
+// 없으면 nil(종료 기록 없음)이고, 형식이 맞지 않으면 상태 없는 값(확인할 수 없음)이다. 진행 중이나 완료로 바꾸지 않는다.
+func readDiagnosticInterrupted(ctx context.Context, tx *sql.Tx, task int64) (*report.DiagnosticRun, error) {
+	var raw []byte
+	err := tx.QueryRowContext(ctx, `SELECT n.payload FROM tasks t JOIN exploration_nodes n ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND t.deleted_at IS NULL AND n.kind='fact' AND n.state='confirmed' AND n.origin=$2 AND n.payload->>'task_id'=$3 ORDER BY n.id DESC LIMIT 1`, task, FirstDiagnosisInterruptedOrigin, strconv.FormatInt(task, 10)).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var record firstDiagnosisInterruptedRecord
+	if json.Unmarshal(raw, &record) != nil || record.Version != 1 || record.TaskID != task || record.Reason != FirstDiagnosisInterruptedReason || record.RecordedAt.IsZero() {
+		return &report.DiagnosticRun{}, nil
+	}
+	return &report.DiagnosticRun{State: report.DiagnosticRunInterrupted}, nil
 }
 
 // 저장된 준비·실행 정산을 출처별로 표시한다. 두 단계를 합산하거나 미확정 비용을 0으로 단정하지 않는다.
