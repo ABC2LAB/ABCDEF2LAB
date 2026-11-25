@@ -539,16 +539,17 @@ running:
 		t.Fatal("저장과 복사 본문 불일치")
 	}
 	code, body, headers := client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&download=1", "")
-	if passive && !reordered {
-		if code != 200 || !strings.Contains(string(body), "HTML 문서 보안 헤더 누락") || strings.Contains(string(body), record.Bundle.AIPrompt) {
-			t.Fatal("독립 검증된 후보의 HTML 보고서 누락")
+	v2Report := saved.Verification != nil && saved.Verification.Version == diagnosisVerificationV2
+	if v2Report {
+		if code != 200 || headers.Get("Content-Disposition") == "" || !strings.Contains(string(body), source.EntryID) || strings.Contains(string(body), record.Bundle.AIPrompt) {
+			t.Fatal("v2 완료 회차의 확정·미확정 후보 HTML 보고서 누락")
 		}
 	} else if code != 404 || headers.Get("Content-Disposition") != "" || strings.Contains(string(body), record.Bundle.AIPrompt) {
-		t.Fatal("미확정 후보만 있는 회차에 취약점 보고서가 생성됨")
+		t.Fatal("이전 v1 회차의 보고서 출력 계약 변경")
 	}
 	code, _, _ = client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&format=docx", "")
-	if passive && !reordered && code != 200 || (!passive || reordered) && code != 404 {
-		t.Fatal("미확정 후보만 있는 회차에 Word 보고서가 생성됨")
+	if v2Report && code != 200 || !v2Report && code != 404 {
+		t.Fatal("v2와 이전 v1 회차의 Word 출력 계약 불일치")
 	}
 	code, body, _ = client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&format=review-json", "")
 	if code != 200 || !strings.Contains(string(body), source.EntryID) {

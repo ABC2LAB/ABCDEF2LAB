@@ -25,6 +25,7 @@ import {
 import { EXTERNAL_ACCOUNT_STATEMENT, readExternalTestAccountPresence } from "@/lib/diagnosis/external-account-consent";
 
 import { cx } from "../../lib/cx";
+import { NO_SPACE_USERNAME } from "../../live/accounts";
 import { type ConfirmationPlan, confirmationPlanOf } from "../../live/confirmationPlan";
 import { getDeclaration } from "../../live/declaration";
 import { fmtDur, shortTimeOf } from "../../live/map";
@@ -986,6 +987,7 @@ export function UrlNewScanLive() {
                                 className={s.inp}
                                 placeholder="아이디"
                                 autoComplete="off"
+                                {...NO_SPACE_USERNAME}
                                 aria-label={`계정 ${id} (${role}) 아이디`}
                               />
                               <input
