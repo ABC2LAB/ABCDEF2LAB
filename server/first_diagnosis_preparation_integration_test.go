@@ -893,8 +893,8 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 			}
 			return status, paused, queued
 		}
-		// 강제 종료된 실행(감독자가 풀어 둔 채 죽음), 대기열에 남은 작업, 이미 끝난 작업.
-		killed, waiting, finished := create("Interrupted run."), create("Queued leftover."), create("Finished run.")
+		// 강제 종료된 실행(감독자가 풀어 둔 채 죽음), 대기열에 남은 작업, 이미 끝난 작업, 지운 작업.
+		killed, waiting, finished, deleted := create("Interrupted run."), create("Queued leftover."), create("Finished run."), create("Deleted run.")
 		for _, q := range []struct {
 			query string
 			id    int64
@@ -902,6 +902,7 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 			{`UPDATE tasks SET paused=false WHERE id=$1`, killed},
 			{`UPDATE tasks SET queued=true WHERE id=$1`, waiting},
 			{`UPDATE tasks SET paused=false,status='done' WHERE id=$1`, finished},
+			{`UPDATE tasks SET paused=false,deleted_at=now() WHERE id=$1`, deleted},
 		} {
 			if _, err := installer.ExecContext(ctx, q.query, q.id); err != nil {
 				t.Fatal("끊김 상태 준비 실패", err)
@@ -932,7 +933,7 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 			status         string
 			paused, queued bool
 		}{
-			{killed, "created", true, false}, {waiting, "created", true, false}, {finished, "done", false, false}, {current, "created", true, false},
+			{killed, "created", true, false}, {waiting, "created", true, false}, {finished, "done", false, false}, {deleted, "created", false, false}, {current, "created", true, false},
 		} {
 			if status, paused, queued := state(c.id); status != c.status || paused != c.paused || queued != c.queued {
 				t.Fatalf("task %d 정리 뒤 status=%s paused=%t queued=%t", c.id, status, paused, queued)
