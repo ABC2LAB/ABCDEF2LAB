@@ -492,7 +492,7 @@ func (c *Controller) saveLocked(ctx context.Context, create bool, kind, method, 
 	if c.poisoned {
 		return ErrProjection
 	}
-	if _, err := c.writeLocked(ctx, create, kind, method, path, status); err != nil {
+	if _, err := c.writeLocked(ctx, create, kind, method, path, status, eventRef{}); err != nil {
 		c.poisonLocked()
 		return ErrProjection
 	}
@@ -505,11 +505,11 @@ func (c *Controller) saveLocked(ctx context.Context, create bool, kind, method, 
 // 일시 오류는 판(revision)을 되돌리고 다음 저장에서 같은 기록 전체를 다시 쓴다. 판 충돌은 다른 기록과
 // 어긋났다는 뜻이고(커밋 결과를 모르는 실패 뒤에도 생긴다), 연달은 실패는 상한까지만 넘긴다. 둘 다 이후
 // 허용을 막는다(C13).
-func (c *Controller) saveObservationLocked(ctx context.Context, method, path string, status int) error {
+func (c *Controller) saveObservationLocked(ctx context.Context, method, path string, status int, ref eventRef) error {
 	if c.poisoned {
 		return ErrProjection
 	}
-	old, err := c.writeLocked(ctx, false, "request", method, path, status)
+	old, err := c.writeLocked(ctx, false, "request", method, path, status, ref)
 	if err == nil {
 		c.observationFailures = 0
 		c.notifyLocked()
@@ -527,12 +527,12 @@ func (c *Controller) saveObservationLocked(ctx context.Context, method, path str
 }
 
 // writeLocked는 판을 올려 기록 전체를 저장하고 이전 판을 돌려준다. 실패 처리는 호출자가 정한다.
-func (c *Controller) writeLocked(ctx context.Context, create bool, kind, method, path string, status int) (uint64, error) {
+func (c *Controller) writeLocked(ctx context.Context, create bool, kind, method, path string, status int, ref eventRef) (uint64, error) {
 	old := c.record.Snapshot.Revision
 	c.record.Snapshot.Revision++
 	c.record.Snapshot.UpdatedAt = time.Now().UTC()
 	if kind != "" {
-		c.record.Snapshot.Events = append(c.record.Snapshot.Events, Event{At: c.record.Snapshot.UpdatedAt, Kind: kind, Method: method, Path: safePath(path), Status: status})
+		c.record.Snapshot.Events = append(c.record.Snapshot.Events, Event{At: c.record.Snapshot.UpdatedAt, Kind: kind, Method: method, Path: safePath(path), Status: status, CallRef: ref.call, AttemptID: ref.attempt})
 		if len(c.record.Snapshot.Events) > 32 {
 			c.record.Snapshot.Events = c.record.Snapshot.Events[len(c.record.Snapshot.Events)-32:]
 		}
@@ -964,8 +964,17 @@ func (c *Controller) After(ctx context.Context, v e2proxy.RequestView, r e2proxy
 			}
 		}
 	}
-	return c.saveObservationLocked(ctx, normalizedMethod(v.Method), path, boundedStatus(r.StatusCode))
+	// 요청을 보낸 줄에만 E② 호출·시도 식별자를 붙인다(보내지 않은 시도는 상세로 열 원문 기록이 없다).
+	var ref eventRef
+	if r.RequestWritten {
+		ref = eventRef{call: r.CallRef, attempt: r.AttemptID}
+	}
+	return c.saveObservationLocked(ctx, normalizedMethod(v.Method), path, boundedStatus(r.StatusCode), ref)
 }
+
+// eventRef는 흐름 Event에 붙이는 E② 호출·시도 식별자다(요청을 보낸 관찰에만).
+type eventRef struct{ call, attempt string }
+
 func statusText(n int) string { raw, _ := json.Marshal(n); return string(raw) }
 func (c *Controller) Close(ctx context.Context, stage string) error {
 	c.mu.Lock()

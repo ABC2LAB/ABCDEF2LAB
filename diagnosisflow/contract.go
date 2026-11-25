@@ -77,6 +77,10 @@ type Event struct {
 	Method string    `json:"method,omitempty"`
 	Path   string    `json:"path,omitempty"`
 	Status int       `json:"status,omitempty"`
+	// CallRef·AttemptID는 대상에 요청을 보낸 줄(kind=request)에만 붙는 E② 호출·시도 식별자다. 작업대가 이 둘로 요청 상세
+	// (e2-flow/requests/{call_ref}/{attempt_id})를 연다. 다시 보낸 요청은 시도마다 다른 attempt_id를 갖는다.
+	CallRef   string `json:"call_ref,omitempty"`
+	AttemptID string `json:"attempt_id,omitempty"`
 }
 type Counts struct {
 	InventoryStored     int    `json:"inventory_stored,omitempty"`
