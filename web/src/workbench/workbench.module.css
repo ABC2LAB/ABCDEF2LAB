@@ -2348,6 +2348,13 @@ a.ph:hover {
   font-size: 13px;
   font-weight: 600;
 }
+/* 꼭 넣어야 하는 칸 이름 뒤 빨간 별(사용자 11/25). 화면 읽기에는 별을 읽히지 않고(대체 글 ""), 입력칸의 aria-required 가 알린다 */
+.must::after {
+  content: "*" / "";
+  margin-left: 3px;
+  color: var(--hi);
+  font-weight: 700;
+}
 .lbl .req {
   color: var(--hi);
   font-weight: 500;

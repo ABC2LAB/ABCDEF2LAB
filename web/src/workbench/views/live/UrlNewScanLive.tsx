@@ -766,13 +766,14 @@ export function UrlNewScanLive() {
                   </div>
                   <div className={s["fsec-b"]}>
                     <div className={s.field}>
-                      <label className={s.lbl} htmlFor="luUrl">
+                      <label className={cx(s.lbl, s.must)} htmlFor="luUrl">
                         점검할 사이트 주소
                       </label>
                       <div className={s.urlrow}>
                         <input
                           className={cx(s.inp, s.mono, s["w-url"])}
                           id="luUrl"
+                          aria-required="true"
                           type="url"
                           value={tv}
                           disabled={g.inputLocked}
@@ -874,12 +875,13 @@ export function UrlNewScanLive() {
                       시안 #nApi(외부 API): 제공자 · API 키 · 외부 전송 경고. 제공자는 설치된 외부 프로필 중에서 고른다.
                       반반 두 칸이면 다른 칸과 폭이 달라 위아래로 쌓는다(사용자 11/24 '네모 크기 통일') */}
                     <div className={s.field}>
-                      <label className={s.lbl} htmlFor="luProfile">
+                      <label className={cx(s.lbl, s.must)} htmlFor="luProfile">
                         {extView ? "제공자" : "모델"}
                       </label>
                       <select
                         className={s.inp}
                         id="luProfile"
+                        aria-required="true"
                         value={pv}
                         disabled={g.inputLocked || !choices.length}
                         onChange={(e) => setProfileId(e.target.value)}
@@ -1266,7 +1268,9 @@ export function UrlNewScanLive() {
           <div className={s.isec}>
             {/* 약관 동의(사용자 11/24): 범위 확인 전 시작 확인 두 칸 · 외부 전송 동의, 범위 확인 뒤 같은 자리 밑에 시작 동의 */}
             <div className={s.sh}>
-              <h3 id="nConfirmL">약관 동의</h3>
+              <h3 id="nConfirmL" className={s.must}>
+                약관 동의
+              </h3>
             </div>
             <fieldset className={s.confirmset} aria-labelledby="nConfirmL">
               <label className={s.ckline}>
