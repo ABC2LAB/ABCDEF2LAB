@@ -80,4 +80,13 @@ func TestRequestApprovalGeneralObserveUnchanged(t *testing.T) {
 	if err := s.observe(t.Context(), event); err != nil || store.row.ExecutionState != "completed" {
 		t.Fatalf("일반 관찰 %v %q", err, store.row.ExecutionState)
 	}
+	// 일반 관찰의 저장 실패는 지금처럼 오류로 올라가(감사 실패 래치) 대기자를 실패로 표시하지 않는다.
+	failing := &approvalReviewStore{row: db.RequestApproval{ID: "attempt", TaskID: 1, RunRef: "run", State: "allowed", Consumed: true, ExecutionState: "dispatch_pending"},
+		swap: func(context.Context, db.RequestApproval, bool) error { return errors.New("synthetic storage failure") }}
+	s, _ = approvalReviewFixture(t, failing)
+	waiter := &requestApprovalWaiter{ctx: t.Context(), decision: make(chan struct{})}
+	s.waiters["attempt"] = waiter
+	if err := s.observe(t.Context(), event); err == nil || waiter.failed {
+		t.Fatalf("일반 관찰 저장 실패 err=%v failed=%v", err, waiter.failed)
+	}
 }
