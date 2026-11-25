@@ -140,6 +140,11 @@ func TestSelectedVerificationKeepsCandidateWithoutAutomaticVerdictPostgres(t *te
 	if _, err := ParseCandidateAnalysisProposal([]byte(strings.TrimSuffix(proposal, "}")+`,"verdict":"confirmed"}`), context); err == nil {
 		t.Fatal("model proposed an authoritative verdict in the analysis stage")
 	}
+	secretProposal := strings.Replace(proposal, "검토 대상", "password=synthetic-analysis-secret", 1)
+	if parsed, err := ParseCandidateAnalysisProposal([]byte(secretProposal), context); err != nil ||
+		strings.Contains(parsed.Claim, "synthetic-analysis-secret") {
+		t.Fatal("model proposal returned a synthetic secret")
+	}
 	if retry := invoke("POST", selectedBody); retry.Code != 200 {
 		t.Fatalf("idempotent retry status=%d", retry.Code)
 	}

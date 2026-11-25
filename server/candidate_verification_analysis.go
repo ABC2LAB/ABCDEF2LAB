@@ -176,5 +176,15 @@ func ParseCandidateAnalysisProposal(raw []byte, c CandidateSelectedContext) (Can
 			return CandidateAnalysisProposal{}, ErrCandidateAnalysis
 		}
 	}
+	out.Claim = dlp.DiagnosticText(out.Claim)
+	out.NormalExplanation = dlp.DiagnosticText(out.NormalExplanation)
+	out.Limitations = dlp.DiagnosticText(out.Limitations)
+	for i := range out.BusinessQuestions {
+		out.BusinessQuestions[i] = dlp.DiagnosticText(out.BusinessQuestions[i])
+	}
+	for i := range out.Actions {
+		out.Actions[i].Purpose = dlp.DiagnosticText(out.Actions[i].Purpose)
+		out.Actions[i].PathHint = dlp.DiagnosticText(out.Actions[i].PathHint)
+	}
 	return out, nil
 }
