@@ -181,6 +181,9 @@ type E2HTTPExplorationStage func(context.Context, *Task) (ExplorationCharge, err
 
 type E2HTTPRuntimeOptions struct {
 	Exploration E2HTTPExplorationStage
+	// CaptureSelectedProof asks the audit Host for per-call checkpoints only
+	// in URL diagnosis runs that preserve candidate observations.
+	CaptureSelectedProof bool
 	// RunRequests는 회차 승인 요청 수 N이다. 탐색 단계가 있으면 탐색 몫을 뺀 나머지만 진단에 쓴다.
 	// 0이면 탐색 몫을 나눌 근거가 없어 탐색 뒤 진단 예산을 열지 않는다.
 	RunRequests             uint64
@@ -1197,6 +1200,15 @@ func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask,
 			// 신뢰 결과가 실행기 쪽에서 마감·드레인·감사까지 끝났다는 표시다. 이 중 하나라도 빠졌으면 내용 대조 실패로
 			// 낮추지 않고 실행 결과 기록 실패로 둔다(#492 이동찬 지적: Final만 보면 드레인·감사 미완료가 빠져나감).
 			closed := trusted.Final && trusted.ProcessDrained && trusted.ProxyDrained && trusted.Call.Final && trusted.Call.AuditComplete && trusted.Execution.AuditComplete
+			if r.options.CaptureSelectedProof && valid && found && closed && lease.VerifySelected != nil && len(trusted.Call.Observations) == 1 {
+				observation := trusted.Call.Observations[0]
+				verified, err := lease.VerifySelected(ctx, e2host.ObservationRef{
+					CallRef: trusted.Call.CallRef, AttemptID: observation.AttemptRef, Sequence: observation.Sequence,
+				})
+				if err == nil && selectedVerifiedResult(trusted, verified) {
+					trusted.SelectedProof = &e2runner.SelectedAuditProof{Event: verified.Event, Checkpoint: verified.Checkpoint}
+				}
+			}
 			t.mu.Lock()
 			// 같은 호출을 두 번 최종 관찰하면 내용과 관계없이 기록 실패다. 저장한 결과와 대조 실패로 표시한 호출을 함께 본다.
 			seen := t.untrustedCalls[trusted.Call.CallRef]
