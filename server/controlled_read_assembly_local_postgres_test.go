@@ -342,6 +342,7 @@ func newControlledLocalDatabaseFixture(t *testing.T) *controlledLocalDatabaseFix
 	for _, name := range []string{"llm_profiles", "settings", "agents", "agent_prompts", "task_categories", "task_relations", "task_archives", "intercept_rules", "assets", "companies", "company_scope", "task_asset_links", "asset_intercept_rules", "task_intercept_rules", "audit_checkpoint_history", "audit_checkpoint_heads", "audit_checkpoint_operations", "audit_checkpoint_epochs", "audit_key_registry_keys", "audit_key_registry_history", "audit_key_registry_operations"} {
 		exec(installer.DB, "GRANT SELECT ON TABLE "+ident(name)+" TO "+ident(role))
 	}
+	exec(installer.DB, "GRANT INSERT ON TABLE diagnostic_candidate_observations_v2 TO "+ident(role))
 	exec(installer.DB, "GRANT USAGE ON ALL SEQUENCES IN SCHEMA "+ident(schema)+" TO "+ident(role))
 	exec(installer.DB, "GRANT EXECUTE ON FUNCTION try_inet(text) TO "+ident(role))
 	exec(installer.DB, "GRANT UPDATE(id) ON TABLE e3_evidence_manifests,e3_verdict_issuances TO "+ident(role))
