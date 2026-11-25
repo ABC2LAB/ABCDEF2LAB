@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Autumn-27/artex/e2config"
@@ -472,6 +474,23 @@ func serveLiveDataWith(w http.ResponseWriter, r *http.Request, runsDir, jobID, v
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(w).Encode(out); err != nil {
-		log.Printf("[first-diagnosis] 작업대 실데이터 응답 쓰기 실패: 화면=%s", view)
+		logLiveWriteError(r, view, err)
 	}
+}
+
+// logLiveWriteError는 작업대 실데이터 응답을 쓰지 못한 까닭을 둘로 나눠 남긴다. 요청자가 응답 전에 연결을 끊은 경우(화면
+// 이동·폴링 취소로 브라우저가 요청을 중단하면 관리 브리지 요청도 끝난다)와 그 밖의 쓰기 오류다. 앞의 것은 화면 동작이라
+// 문제가 아니다. 둘을 한 문구로 남기면 리허설 기록에서 원인을 가를 수 없었다(2026-11-25 화면 회차 발견 6).
+func logLiveWriteError(r *http.Request, view string, err error) {
+	if liveWriteClosedByRequester(r.Context(), err) {
+		log.Printf("[first-diagnosis] 작업대 실데이터 응답 전에 요청자가 연결을 끊음(화면 이동·폴링 취소): 화면=%s", view)
+		return
+	}
+	log.Printf("[first-diagnosis] 작업대 실데이터 응답 쓰기 실패: 화면=%s", view)
+}
+
+// liveWriteClosedByRequester는 쓰기 실패가 요청자가 먼저 끊은 탓인지 본다. 서버는 연결이 닫히면 요청 문맥을 끝내지만
+// 쓰기 오류와 순서가 경합하므로, 끊긴 연결에 쓴 오류(EPIPE·ECONNRESET)도 같은 경우로 본다.
+func liveWriteClosedByRequester(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET)
 }
