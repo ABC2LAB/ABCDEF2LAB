@@ -370,6 +370,27 @@
 .vh.has-ph {
   padding-bottom: 0;
 }
+/*
+ * 단계 줄이 있는 네 화면(자산 탐색 · 범위 확인 · 점검 진행 · 보고서)의 제목 줄 높이를 버튼 높이(.btn 34px)로 맞춘다 — 끝난
+ * 점검의 점검 진행 · 보고서는 제목 옆 버튼이 없어 줄이 낮아져 단계 줄이 올라갔다(사용자 11/25)
+ */
+.vh.has-ph .vh-row {
+  min-height: 34px;
+}
+/* 제목 줄 오른쪽 메타(보고서): 두 줄(위 시작 · 소요, 아래 모델 · 토큰, 사용자 11/25)을 제목 줄 높이(34px) 안에 둔다 */
+.vh-row > .vh-meta {
+  margin-top: 0;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  line-height: 16px;
+}
+.vh-meta-ln {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0 14px;
+}
 .vb {
   flex: 1;
   min-height: 0;
@@ -1650,6 +1671,22 @@ a.ph:hover {
   margin-top: 10px;
   font-size: 13px;
 }
+/*
+ * 오른쪽 패널 바닥에 붙는 다음 단계 칸(새 점검 범위 확인 뒤 시작 동의 · [점검 시작], 사용자 11/25).
+ * 패널(.vi)이 스크롤 칸이라 내용이 길면 바닥에 붙고, 짧으면 내용 바로 밑에 놓인다. 패널 아래 여백(48px)까지 덮어 바닥에 닿게 한다
+ */
+.vistick {
+  position: sticky;
+  bottom: -48px;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 16px -18px -48px -20px;
+  padding: 12px 18px 16px 20px;
+  border-top: 1px solid var(--rule);
+  background: var(--well);
+}
 .isec {
   border-top: 1px solid var(--rule);
   padding-top: 14px;
@@ -2161,8 +2198,13 @@ a.ph:hover {
   padding-top: 22px;
   border-top: 1px solid var(--rule);
 }
+/* 섹션 제목(대상 · 분석 모델 · 로그인 · 점검 설정)은 칸 이름(.lbl 13px)과 확실히 다르게: 크게 · 굵게 · 왼쪽 강조 막대(사용자 11/25) */
 .fsec-h h2 {
-  font-size: 14.5px;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.3;
+  padding-left: 10px;
+  border-left: 3px solid var(--accent);
 }
 /* 제목 · 칸 이름 옆 작은 딱지 (예: 로그인 · 연결 전). 칸 높이만큼 늘어나지 않게 위에 붙인다 */
 .fsec-ht {
@@ -2265,7 +2307,8 @@ a.ph:hover {
   }
   .fgrp.fgrid .fsec {
     grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
+    /* 섹션 제목과 첫 칸 사이(사용자 11/25: 너무 붙어 보임) */
+    gap: 16px;
     padding-top: 12px;
   }
   .fgrp.fgrid > .fcol > .fsec:first-child {
@@ -2341,6 +2384,13 @@ a.ph:hover {
 .lbl {
   font-size: 13px;
   font-weight: 600;
+}
+/* 꼭 넣어야 하는 칸 이름 뒤 빨간 별(사용자 11/25). 화면 읽기에는 별을 읽히지 않고(대체 글 ""), 입력칸의 aria-required 가 알린다 */
+.must::after {
+  content: "*" / "";
+  margin-left: 3px;
+  color: var(--hi);
+  font-weight: 700;
 }
 .lbl .req {
   color: var(--hi);
@@ -5570,6 +5620,42 @@ button.smm:hover {
 .app .vb.solo,
 .app.insp-min .vb.solo {
   grid-template-columns: minmax(0, 1fr);
+}
+
+/*
+ * 전송 통제 정책 화면 두 단(사용자 11/25, 새 점검 .fgrid 처럼 스크롤 없이 한눈에): 왼쪽 요약 · 승인 · 감사 · 상한, 오른쪽 범위.
+ * 단 안의 섹션은 위 구분 줄 · 여백을 줄여 붙이고, 가운데 칸이 좁으면 한 줄로 이어진다.
+ */
+.polgrid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.polcol {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.polcol > .isec {
+  margin-top: 0;
+}
+.polcol:first-child > .isec:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+@container (min-width: 900px) {
+  .polgrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 32px;
+    align-items: start;
+  }
+  .polcol > .isec:first-child {
+    border-top: 0;
+    padding-top: 0;
+  }
 }
 /* 대시보드 원형 게이지 줄(사용자 11/24): 카드 4개(넓으면 한 줄, 좁으면 2 · 1 줄). 카드 = 제목 · 원 + 범례 · 작은 글 */
 .drings {

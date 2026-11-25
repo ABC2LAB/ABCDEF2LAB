@@ -73,6 +73,7 @@ import s from "../../workbench.module.css";
 import { ApprovalQueue, useRequestApprovals } from "./approvals";
 import { CoverageGraphSection } from "./coverageGraphView";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
+import { AccountAuthWarning, LoginMethodMissingWarning } from "./liveAccountWarnings";
 import { PriceCapsNotice } from "./PriceCapsNotice";
 import { ProductVerdictReport, productConfirmationSummary, useProductVerdicts } from "./productVerdictViews";
 import { ReportAssetGraph } from "./ReportAssetGraph";
@@ -924,6 +925,13 @@ export function UrlLiveLive() {
           {stop.box}
           <UrlNotices />
           <WorkflowNotice />
+          {/* 시험 계정 인증 경고(#936 account_auth, 2초 조회로 갱신) · 로그인 방식 없음(#914). 알림만, 회차는 멈추지 않는다 */}
+          <AccountAuthWarning auth={job.account_auth} at={job.account_auth_updated_at} />
+          <LoginMethodMissingWarning
+            targetUrl={handle.input.target_url}
+            active={visible && !ended}
+            authTried={!!job.account_auth}
+          />
           {job.reason_code ? <p className={s.help}>{`서버 사유: ${reasonText(job.reason_code)}`}</p> : null}
           {job.diagnostic_log_incomplete ? (
             <p className={s.help}>{reasonText("diagnostic_logging_incomplete")}</p>
@@ -1949,21 +1957,26 @@ export function UrlReportLive() {
   const usage = job?.model_usage;
   const startText = runStartText(job);
   const durationSec = runDurationSec(job);
-  const meta = [
-    <span key="start">시작 {startText ? <b>{startText}</b> : <NotYet why={runStartMissingWhy(job)} />}</span>,
-    <span key="dur">
-      소요 {durationSec !== null ? <b>{fmtDur(durationSec)}</b> : <NotYet why={runDurationMissingWhy(job)} />}
-    </span>,
-    profile ? (
-      <span key="model">
-        모델 <b>{`${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}`}</b>
+  // 두 줄(사용자 11/25): 위 시작 · 소요, 아래 모델 · 토큰
+  const meta = (
+    <>
+      <span className={s["vh-meta-ln"]}>
+        <span>시작 {startText ? <b>{startText}</b> : <NotYet why={runStartMissingWhy(job)} />}</span>
+        <span>
+          소요 {durationSec !== null ? <b>{fmtDur(durationSec)}</b> : <NotYet why={runDurationMissingWhy(job)} />}
+        </span>
       </span>
-    ) : null,
-    // 머리 줄은 토큰(입 · 출)에서 끝낸다(사용자 11/19 — 길어서 '모델 사용량' → '토큰', 요청 수는 두지 않음)
-    <span key="use" title={usage ? tokenExact(usage) : undefined}>
-      토큰 {usage ? <TokenChips u={usage} /> : <b>—</b>}
-    </span>,
-  ].filter(Boolean);
+      <span className={s["vh-meta-ln"]}>
+        {profile ? (
+          <span>
+            모델 <b>{`${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}`}</b>
+          </span>
+        ) : null}
+        {/* 머리 줄은 토큰(입 · 출)에서 끝낸다(사용자 11/19 — 길어서 '모델 사용량' → '토큰', 요청 수는 두지 않음) */}
+        <span title={usage ? tokenExact(usage) : undefined}>토큰 {usage ? <TokenChips u={usage} /> : <b>—</b>}</span>
+      </span>
+    </>
+  );
 
   return (
     <>

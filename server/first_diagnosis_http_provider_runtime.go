@@ -292,6 +292,14 @@ func (r *FirstDiagnosisHTTPRuntime) AccountAuthForE3() map[string]string {
 	return r.host.runtime.AccountAuthForE3()
 }
 
+// AccountAuthNow는 실행 중 상태 응답용 계정별 인증 상태다(E2HTTPRuntime.AccountAuthNow). 모르면 ok가 거짓이다.
+func (r *FirstDiagnosisHTTPRuntime) AccountAuthNow() (map[string]string, bool) {
+	if r == nil || r.host == nil || r.host.runtime == nil {
+		return nil, false
+	}
+	return r.host.runtime.AccountAuthNow()
+}
+
 // RecordProductVerdict는 제품 확정 단계 판정 하나를 이 실행의 DB 역할로 저장한다(INSERT만, 바꾸지 않음, docs/contracts/
 // e3-product-verdict-store.md §4·§5).
 func (r *FirstDiagnosisHTTPRuntime) RecordProductVerdict(ctx context.Context, v db.ProductVerdict) (db.ProductVerdictResult, error) {
