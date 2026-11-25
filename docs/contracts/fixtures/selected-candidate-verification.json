@@ -2,6 +2,30 @@
   "fixture_version": "selected-candidate-verification/stored-v1",
   "synthetic_only": true,
   "implemented_responses": {
+    "automatic_confirmed_before_request": {
+      "task_id": "41",
+      "candidate_id": "903",
+      "evidence_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "automatic": { "status": "confirmed", "reason": "html_nosniff_missing_twice" },
+      "verifications": [],
+      "truncated": false
+    },
+    "automatic_negative_before_request": {
+      "task_id": "41",
+      "candidate_id": "904",
+      "evidence_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "automatic": { "status": "negative", "reason": "html_nosniff_present_twice" },
+      "verifications": [],
+      "truncated": false
+    },
+    "unsupported_before_request": {
+      "task_id": "41",
+      "candidate_id": "905",
+      "evidence_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "automatic": { "status": "unsupported", "reason": "type_not_supported" },
+      "verifications": [],
+      "truncated": false
+    },
     "before_request": {
       "task_id": "41",
       "candidate_id": "902",
