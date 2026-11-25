@@ -107,20 +107,25 @@ func TestRequestApprovalStoresAndProjectsClosedReason(t *testing.T) {
 			t.Fatalf("%s(%s)에 closed_reason %q", row.ID, got.State, got.ClosedReason)
 		}
 	}
-	// 운영자 종료로 결속이 끝난 뒤 읽으면 투영으로 닫힌 대기 건과 까닭 없는 취소 기록은 operator_stopped다.
+	// 운영자 종료로 결속이 끝난 뒤 읽으면, 읽는 순간 취소로 투영되는 대기 건만 operator_stopped다. 이미 cancelled로 저장된
+	// 기록은 저장한 까닭을 그대로 쓰고, 까닭 없는 이전 기록은 지금의 운영자 종료를 덧씌우지 않고 run_closed다(#953 이동찬 P2).
 	stopped, _ := approvalReviewFixture(t, &approvalReviewStore{})
 	b := stopped.bindings[1]
 	b.stopRequested = true
 	stopped.bindings[1] = b
-	for _, row := range []db.RequestApproval{
-		{ID: "orphan", TaskID: 1, RunRef: "run", State: "pending", ExpiresAt: future},
-		{ID: "legacy", TaskID: 1, RunRef: "run", State: "cancelled", ExpiresAt: future},
+	for _, tc := range []struct {
+		row  db.RequestApproval
+		want string
+	}{
+		{db.RequestApproval{ID: "orphan", TaskID: 1, RunRef: "run", State: "pending", ExpiresAt: future}, approvalClosedOperator},
+		{db.RequestApproval{ID: "legacy", TaskID: 1, RunRef: "run", State: "cancelled", ExpiresAt: future}, approvalClosedRun},
+		{db.RequestApproval{ID: "earlier", TaskID: 1, RunRef: "run", State: "cancelled", ExpiresAt: future, ClosedReason: approvalClosedModelStage}, approvalClosedModelStage},
 	} {
 		stopped.mu.Lock()
-		got := stopped.decorate(row)
+		got := stopped.decorate(tc.row)
 		stopped.mu.Unlock()
-		if got.State != "cancelled" || got.ClosedReason != approvalClosedOperator {
-			t.Fatalf("운영자 종료 뒤 %s: state=%q closed_reason=%q", row.ID, got.State, got.ClosedReason)
+		if got.State != "cancelled" || got.ClosedReason != tc.want {
+			t.Fatalf("운영자 종료 뒤 %s: state=%q closed_reason=%q(기대 %q)", tc.row.ID, got.State, got.ClosedReason, tc.want)
 		}
 	}
 	// 대기자가 없는(재시작 등으로 투영으로 닫힌) 대기 건과 이 칸 이전 취소 기록은 run_closed다.

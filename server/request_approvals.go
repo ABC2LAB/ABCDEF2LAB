@@ -320,18 +320,23 @@ func approvalClosedReason(wait context.Context, binding requestApprovalBinding, 
 	return approvalClosedRun
 }
 
-// projectedClosedReason은 응답에 싣는 closed_reason이다. cancelled·expired에만 싣는다. 저장한 까닭이 없으면(읽을 때 투영으로
-// 닫힌 기록, 이 칸 이전 기록) 만료는 approval_expired, 취소는 운영자 종료면 operator_stopped, 아니면 run_closed다.
-func projectedClosedReason(a db.RequestApproval, b requestApprovalBinding, bound bool) string {
+// projectedClosedReason은 응답에 싣는 closed_reason이다. cancelled·expired에만 싣는다. 만료는 늘 approval_expired다.
+// 취소는 둘로 나눈다. 읽는 이 순간 대기 건(pending·미소비 allowed)을 취소로 투영한 경우(projected)만 지금 결속을 보고 운영자
+// 종료면 operator_stopped, 아니면 run_closed다. 이미 cancelled로 저장된 기록은 저장한 까닭을 쓰고, 까닭이 없으면(이 칸 이전
+// 기록) 실제 원인을 모르므로 run_closed다. 지금의 운영자 종료를 지난 취소에 덧씌우지 않는다(#953 이동찬 P2).
+func projectedClosedReason(a db.RequestApproval, b requestApprovalBinding, bound, projected bool) string {
 	switch a.State {
 	case "expired":
 		return approvalClosedExpired
 	case "cancelled":
+		if projected {
+			if bound && b.stopRequested {
+				return approvalClosedOperator
+			}
+			return approvalClosedRun
+		}
 		if a.ClosedReason != "" && a.ClosedReason != approvalClosedExpired {
 			return a.ClosedReason
-		}
-		if bound && b.stopRequested {
-			return approvalClosedOperator
 		}
 		return approvalClosedRun
 	}
@@ -353,6 +358,7 @@ func (s *RequestApprovalService) decorate(a db.RequestApproval) db.RequestApprov
 	if !a.Live && a.Consumed && (a.ExecutionState == "awaiting_dispatch" || a.ExecutionState == "dispatch_pending") {
 		a.ExecutionState = "unknown"
 	}
+	stored := a.State
 	if a.State == "pending" || a.State == "allowed" && !a.Consumed {
 		if !time.Now().Before(a.ExpiresAt) {
 			a.State = "expired"
@@ -360,7 +366,7 @@ func (s *RequestApprovalService) decorate(a db.RequestApproval) db.RequestApprov
 			a.State = "cancelled"
 		}
 	}
-	a.ClosedReason = projectedClosedReason(a, b, bok)
+	a.ClosedReason = projectedClosedReason(a, b, bok, a.State != stored)
 	a.CanDecide = a.Live && a.State == "pending" && time.Now().Before(a.ExpiresAt)
 	return a
 }
