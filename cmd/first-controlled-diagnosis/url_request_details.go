@@ -274,6 +274,6 @@ func serveE2Requests(w http.ResponseWriter, r *http.Request, b *runBinding, view
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	if err := json.NewEncoder(w).Encode(out); err != nil {
-		log.Printf("[first-diagnosis] 작업대 실데이터 응답 쓰기 실패: 화면=%s", view)
+		logLiveWriteError(r, view, err)
 	}
 }
