@@ -782,17 +782,17 @@ interface ScopePick {
   /** 고를 수 있는 경로인가 (범위 안 · 읽기이거나 사전 쓰기 승인이 있는 데이터 변경) */
   eligible: (e: WorkflowEndpoint) => boolean;
   locked: boolean;
-  /** 여러 개 고르기 모드(버튼 "제외 경로"): 알약을 누르면 상세 대신 고르기를 토글한다 */
-  multi: boolean;
-  picked: ReadonlySet<string>;
   /** 오른쪽 상세에 보이는 경로 */
   current: string | null;
-  /** 알약 누름. order 는 그 묶음 알약의 보이는 순서(Shift 범위 고르기용) */
-  press: (e: WorkflowEndpoint, shift: boolean, order: readonly string[]) => void;
+  /** 경로 이름 누름: 오른쪽 상세 */
+  show: (e: WorkflowEndpoint) => void;
+  /**
+   * 경로 오른쪽 네모칸 누름: 바로 점검에 넣거나 뺀다(사용자 11/25, 여러 개를 차례로 체크). Shift 를 누르면 같은 묶음에서 앞서
+   * 누른 네모칸부터 이 칸까지 같은 쪽으로 맞춘다. order 는 그 묶음 경로의 보이는 순서
+   */
+  toggle: (e: WorkflowEndpoint, shift: boolean, order: readonly string[]) => void;
   /** 묶음 전체 넣기 · 빼기 */
   setGroup: (rows: readonly WorkflowEndpoint[], on: boolean) => void;
-  /** 여러 개 고르기에서 묶음의 보이는 알약을 한꺼번에 고르거나 푼다 */
-  pickGroup: (ids: readonly string[], on: boolean) => void;
   /** 사용자가 점검에서 뺀 경로 (다시 넣으면 빠진다). 처음부터 안 들어가 있던 경로는 들지 않는다 */
   dropped: ReadonlySet<string>;
 }
@@ -800,9 +800,8 @@ interface ScopePick {
 /**
  * 찾은 경로 묶음 카드 (범위 확인 가운데, 시안 renderTree). 묶음 머리의 수는 거르기와 상관없이 그 묶음 전체,
  * 알약은 거른 경로만 메서드 · 경로 순으로. 탐색 중 · 전체 보기에서는 아직 경로가 안 나온 묶음을 아래에 적는다.
- * 점검에 넣은 경로의 알약은 체크로, 오른쪽 상세에 보이는 경로의 알약은 aria-current 로, 여러 개 고르기 모드(버튼 "제외 경로")에서 고른
- * 알약은 aria-pressed 로 표시한다. 묶음 머리의 체크는 평소에는 그 묶음 전체(거르기와 상관없이)를 넣고 빼고, 여러 개
- * 고르기(제외 경로)를 켜면 그 묶음에 보이는 알약의 네모칸을 전부 고르거나 푼다(넣기 · 빼기는 거르기 옆 버튼으로).
+ * 경로 줄은 이름(누르면 오른쪽 상세, aria-current)과 오른쪽 네모칸(체크 = 점검에 포함, 누르면 바로 넣고 뺌)으로 나뉜다
+ * (사용자 11/25: 여러 개는 네모칸을 차례로 체크). 묶음 머리의 체크는 그 묶음 전체(거르기와 상관없이)를 넣고 뺀다.
  */
 function EndpointCards({
   all,
@@ -824,39 +823,32 @@ function EndpointCards({
         const order = pills.map((e) => e.id);
         const can = rows.filter(pick.eligible);
         const onN = can.filter(pick.isOn).length;
+        // 묶음 체크는 ✓ 아니면 빈칸만 쓴다(반쯤 체크 '−' 없음): 고를 수 있는 게 전부 들어 있을 때만 ✓
         const full = can.length > 0 && onN === can.length;
-        // 여러 개 고르기(제외 경로)에서는 묶음 체크가 이 묶음에 보이는 알약 고르기를 따른다
-        const pickedN = order.filter((id) => pick.picked.has(id)).length;
-        const allPicked = order.length > 0 && pickedN === order.length;
-        // 묶음 체크는 ✓ 아니면 빈칸만 쓴다(반쯤 체크 '−' 없음): 전부 들어 있거나 전부 골랐을 때만 ✓
-        const checked = pick.multi ? allPicked : full;
         return (
           <section className={s.gc} key={name} aria-label={`${name} ${rows.length}개`}>
             <div className={s["gc-h"]}>
               <input
                 type="checkbox"
                 className={s["gc-ck"]}
-                aria-label={pick.multi ? `${name} 묶음 경로 전부 고르기` : `${name} 묶음 전체 점검에 포함`}
-                checked={checked}
-                disabled={pick.locked || (pick.multi ? !order.length : !can.length)}
-                onChange={() => (pick.multi ? pick.pickGroup(order, !allPicked) : pick.setGroup(rows, !full))}
+                aria-label={`${name} 묶음 전체 점검에 포함`}
+                checked={full}
+                disabled={pick.locked || !can.length}
+                onChange={() => pick.setGroup(rows, !full)}
               />
               <b>{name}</b>
-              {/* 제외 경로(여러 개 고르기)를 켜면 이 묶음에서 고른 수/묶음 경로 수, 아니면 묶음 경로 수 */}
-              <span className={s.n}>
-                {pick.multi ? `${rows.filter((e) => pick.picked.has(e.id)).length}/${rows.length}` : rows.length}
-              </span>
+              <span className={s.n}>{rows.length}</span>
               {/* 이 묶음에서 점검에 넣은 경로 수(사용자 11/24: 포함 표시가 약했다). 없으면 두지 않는다 */}
-              {!pick.multi && onN ? <span className={s["gc-inc"]}>{`포함 ${onN}`}</span> : null}
+              {onN ? <span className={s["gc-inc"]}>{`포함 ${onN}`}</span> : null}
             </div>
             <div className={s.pills}>
               {pills.map((e) => {
                 const k = kindOf(e);
                 const on = pick.isOn(e);
-                const got = pick.picked.has(e.id);
                 const out = !on && pick.dropped.has(e.id);
+                const cur = pick.current === e.id;
                 return (
-                  <button
+                  <div
                     className={cx(
                       s.pp,
                       k === "ap" && s.ap,
@@ -864,29 +856,35 @@ function EndpointCards({
                       k === "get" && s.get,
                       on && s.inc,
                       out && s.drop,
+                      cur && s.cur,
                     )}
                     key={e.id}
-                    type="button"
                     data-ep={e.id}
-                    aria-current={!pick.multi && pick.current === e.id ? "true" : undefined}
-                    aria-pressed={pick.multi ? got : undefined}
-                    aria-label={`${e.method} ${e.path}${PILL_FLAG[k]}${on ? ", 점검에 포함" : ""}${out ? ", 점검에서 제외함" : ""}${pick.multi ? "" : ", 요청·응답 보기"}`}
-                    onClick={(ev) => pick.press(e, ev.shiftKey, order)}
                   >
-                    {/* 여러 개 고르기(제외 경로)에서는 알약 전체를 칠하지 않고 메서드 옆 네모칸에만 체크한다. 그동안 점검 포함 ✓ 는
-                        네모칸과 겹쳐 보이지 않게 숨기고, 포함 여부는 알약 테두리(inc)와 읽기 글로 남긴다 */}
-                    {pick.multi ? (
-                      <span className={cx(s.pck, got && s.on)} data-pick={got ? "on" : "off"} aria-hidden="true">
-                        {got ? <Icon name="check" /> : null}
+                    <button
+                      className={s.ppb}
+                      type="button"
+                      aria-current={cur ? "true" : undefined}
+                      aria-label={`${e.method} ${e.path}${PILL_FLAG[k]}${on ? ", 점검에 포함" : ""}${out ? ", 점검에서 제외함" : ""}, 상세 보기`}
+                      onClick={() => pick.show(e)}
+                    >
+                      <span className={cx(s.pm, s[e.method])}>{e.method === "DELETE" ? "DEL" : e.method}</span>
+                      <span className={s.pt}>
+                        <Pth p={e.path} />
                       </span>
-                    ) : null}
-                    {!pick.multi && on ? <Icon name="check" className={s.pk} /> : null}
-                    <span className={cx(s.pm, s[e.method])}>{e.method === "DELETE" ? "DEL" : e.method}</span>
-                    <span className={s.pt}>
-                      <Pth p={e.path} />
-                    </span>
-                    {k !== "get" ? <span className={s.pf}>{k === "ap" ? "승인" : "제외"}</span> : null}
-                  </button>
+                      {k !== "get" ? <span className={s.pf}>{k === "ap" ? "승인" : "제외"}</span> : null}
+                    </button>
+                    {/* 오른쪽 네모칸: 체크 = 점검에 포함. 누르면 바로 넣고 뺀다. 고를 수 없는 경로(범위 밖 · 사전 쓰기 승인 없는 데이터
+                        변경)는 꺼 둔다 */}
+                    <input
+                      className={s.pcb}
+                      type="checkbox"
+                      aria-label={`${e.method} ${e.path} 점검에 포함`}
+                      checked={on}
+                      disabled={pick.locked || !pick.eligible(e)}
+                      onChange={(ev) => pick.toggle(e, (ev.nativeEvent as MouseEvent).shiftKey === true, order)}
+                    />
+                  </div>
                 );
               })}
             </div>
@@ -1279,9 +1277,7 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
   const [detail, setDetail] = useState<string | null>(null);
   // 찾은 경로 카드의 거르기
   const [treeFilter, setTreeFilter] = useState("all");
-  // 여러 개 고르기 모드(버튼 "제외 경로"): 알약을 눌러 여럿 고른 뒤 한 번에 넣거나 뺀다. anchor 는 Shift 범위의 시작 알약
-  const [multi, setMulti] = useState(false);
-  const [picked, setPicked] = useState<ReadonlySet<string>>(() => new Set());
+  // 경로 네모칸 Shift 범위의 시작 칸(앞서 누른 네모칸)
   const [anchor, setAnchor] = useState<string | null>(null);
   // 사용자가 점검에서 뺀 경로 — 알약을 흐리게 하고 경로에 취소선을 긋는다. 다시 넣으면 지운다
   const [dropped, setDropped] = useState<ReadonlySet<string>>(() => new Set());
@@ -1318,10 +1314,6 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
     setDetail(e.id);
     openInsp();
   };
-  const unpick = () => {
-    setPicked(new Set());
-    setAnchor(null);
-  };
   /**
    * 여러 경로를 한 번에 넣거나 뺀다. 고를 수 없는 경로(범위 밖 · 사전 쓰기 승인 없는 데이터 변경)는 건너뛴다.
    * 결과는 알약의 체크 · 흐림으로 바로 보여 따로 안내 글을 두지 않는다.
@@ -1332,62 +1324,26 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
       list.filter(eligible).map((e) => e.id),
       on,
     );
-  const press = (e: WorkflowEndpoint, shift: boolean, order: readonly string[]) => {
-    if (!multi) {
-      showDetail(e);
-      return;
-    }
-    const from = anchor ? order.indexOf(anchor) : -1;
-    const to = order.indexOf(e.id);
-    setPicked((old) => {
-      const next = new Set(old);
-      // Shift: 같은 묶음 안에서 앞서 누른 알약부터 이 알약까지 고른다
-      if (shift && from >= 0 && to >= 0)
-        for (const id of order.slice(Math.min(from, to), Math.max(from, to) + 1)) next.add(id);
-      else if (next.has(e.id)) next.delete(e.id);
-      else next.add(e.id);
-      return next;
-    });
-    setAnchor(e.id);
-  };
+  const byId = new Map(flow.endpoints.map((e) => [e.id, e]));
   const pick: ScopePick = {
     isOn,
     eligible,
     locked,
-    multi,
-    picked,
     current: current?.id ?? null,
-    press,
-    setGroup: (rows, on) => setMany(rows, on),
-    pickGroup: (ids, on) => {
-      setPicked((old) => {
-        const next = new Set(old);
-        for (const id of ids) {
-          if (on) next.add(id);
-          else next.delete(id);
-        }
-        return next;
-      });
-      setAnchor(null);
+    show: showDetail,
+    toggle: (e, shift, order) => {
+      const on = !isOn(e);
+      const from = anchor ? order.indexOf(anchor) : -1;
+      const to = order.indexOf(e.id);
+      const ids = shift && from >= 0 && to >= 0 ? order.slice(Math.min(from, to), Math.max(from, to) + 1) : [e.id];
+      setMany(
+        ids.map((id) => byId.get(id)).filter((x): x is WorkflowEndpoint => !!x),
+        on,
+      );
+      setAnchor(e.id);
     },
+    setGroup: (rows, on) => setMany(rows, on),
     dropped,
-  };
-  const pickedList = flow.endpoints.filter((e) => picked.has(e.id));
-  const applyPicked = (on: boolean) => {
-    setMany(pickedList, on);
-    unpick();
-  };
-  // 아래 줄의 '포함하기' · '제외하기': 여러 개 고르기(제외 경로)를 켰으면 고른 알약들, 아니면 오른쪽 상세에 떠 있는
-  // 경로 하나에 한다. 고를 수 없는 경로(범위 밖 · 사전 쓰기 승인 없는 데이터 변경)는 넣지도 빼지도 않는다
-  const canAddOne = !!current && !isOn(current) && eligible(current);
-  const canDropOne = !!current && isOn(current) && eligible(current);
-  const setOne = (on: boolean) => {
-    if (multi) {
-      applyPicked(on);
-      return;
-    }
-    if (!current || !(on ? canAddOne : canDropOne)) return;
-    include([current.id], on);
   };
   /** 경로 딱지 (시안 scopeTag): 빠진 경로는 제외, 넣은 경로는 자동 포함 · 포함 · 보낼 때 승인. */
   const tag = (e: WorkflowEndpoint) => {
@@ -1411,52 +1367,9 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
             onFilter={(id) => {
               // 거르기로 안 보이게 된 알약이 고른 채 남지 않게 고르기를 비운다
               setTreeFilter(id);
-              unpick();
+              setAnchor(null);
             }}
             pick={pick}
-            tools={
-              <div className={s["sh-tools"]}>
-                <button
-                  className={cx(s.btn, s.sm)}
-                  type="button"
-                  aria-pressed={multi}
-                  disabled={locked}
-                  onClick={() => {
-                    // 껐다 켜도 전에 골라 둔 경로는 그대로 둔다(꺼진 동안은 네모칸만 숨고 넣기 · 빼기는 상세 경로에만 한다)
-                    setMulti((m) => !m);
-                    setAnchor(null);
-                  }}
-                >
-                  제외 경로
-                </button>
-              </div>
-            }
-            bar={
-              <>
-                {/* 넣기 · 빼기 줄은 늘 보인다. 제외 경로를 켜면 고른 경로들, 끄면 오른쪽 상세에 떠 있는 경로 하나에 한다 */}
-                {/* 머리글(상세 경로 · 고른 수)은 보이지 않는다. 읽기 이름만 둔다 */}
-                <fieldset className={s.pickbar} aria-label={multi ? "고른 경로 포함 · 제외" : "상세 경로 포함 · 제외"}>
-                  <button
-                    className={cx(s.btn, s.sm, s.pri)}
-                    type="button"
-                    title={multi ? "고른 경로들을 점검에 넣습니다" : "오른쪽 상세에 보이는 경로를 점검에 넣습니다"}
-                    disabled={locked || (multi ? !picked.size : !canAddOne)}
-                    onClick={() => setOne(true)}
-                  >
-                    포함하기
-                  </button>
-                  <button
-                    className={cx(s.btn, s.sm)}
-                    type="button"
-                    title={multi ? "고른 경로들을 점검에서 뺍니다" : "오른쪽 상세에 보이는 경로를 점검에서 뺍니다"}
-                    disabled={locked || (multi ? !picked.size : !canDropOne)}
-                    onClick={() => setOne(false)}
-                  >
-                    제외하기
-                  </button>
-                </fieldset>
-              </>
-            }
           />
         </div>
         <aside className={s.vi} id="sInsp" aria-label="경로 상세">

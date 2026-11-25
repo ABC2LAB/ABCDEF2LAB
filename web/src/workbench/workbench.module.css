@@ -3188,18 +3188,47 @@ button.lr.on {
 .pp {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   max-width: 100%;
   min-width: 0;
   height: 26px;
-  padding: 0 8px 0 3px;
+  padding: 0 6px 0 3px;
   border: 1px solid var(--rule-2);
   border-radius: 6px;
   background: var(--bg);
   font-family: var(--mono);
   font-size: 12px;
   color: var(--ink);
+}
+/* 범위 확인 경로 = 이름 버튼(누르면 오른쪽 상세) + 오른쪽 네모칸(체크 = 점검에 포함, 사용자 11/25) */
+.pp .ppb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
   cursor: pointer;
+}
+.pp .ppb:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.pp .pcb {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0 0 0 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.pp .pcb:disabled {
+  cursor: not-allowed;
 }
 .pp:hover {
   border-color: var(--ink-2);
@@ -3234,77 +3263,24 @@ button.lr.on {
   font-style: normal;
   color: var(--accent-ink);
 }
-/* 범위 확인: 점검에 넣은 경로는 강조 테두리 한 겹 + 채운 체크 동그라미(사용자 11/24: 포함 표시가 약했다 · 테두리 겹은
-   싫다). 바탕색은 승인 · 로그인 경로가 쓰므로 건드리지 않는다 */
+/* 범위 확인: 점검에 넣은 경로는 강조 테두리 한 겹 + 오른쪽 네모칸 체크(사용자 11/24 · 11/25). 바탕색은 승인 · 로그인
+   경로가 쓰므로 건드리지 않는다 */
 .pp.inc {
   border-color: var(--accent);
 }
-.pp .pk {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  margin-left: 2px;
-  padding: 2px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: var(--bg);
-}
 /* 지금 오른쪽 상세에 보이는 경로: 테두리를 더 두르지 않는다(사용자 11/24: 포함 테두리와 겹이 두 개로 보였다). 회색 바탕 +
    굵은 경로 글자만. 승인 · 로그인 경로는 제 바탕을 두고 글자만 굵게 */
-.pp[aria-current="true"] {
+.pp.cur {
   background: var(--well);
 }
-.pp.ap[aria-current="true"] {
+.pp.ap.cur {
   background: var(--warn-bg);
 }
-.pp.login[aria-current="true"] {
+.pp.login.cur {
   background: var(--accent-bg);
 }
-.pp[aria-current="true"] .pt {
+.pp.cur .pt {
   font-weight: 700;
-}
-/* 여러 개 고르기(삭제)의 고르기 네모칸: 알약 전체를 칠하지 않고 메서드 옆 네모칸에만 체크한다 */
-.pp .pck {
-  width: 13px;
-  height: 13px;
-  flex: none;
-  margin-left: 3px;
-  display: inline-grid;
-  place-items: center;
-  border: 1.5px solid var(--ink-3);
-  border-radius: 3px;
-  background: var(--bg);
-}
-.pp .pck.on {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--bg);
-}
-.pp .pck .ic {
-  width: 10px;
-  height: 10px;
-}
-/* 고른 경로 한 번에 넣기 · 빼기 줄: 카드가 길어도 보이게 가운데 칸 위에 붙는다 */
-.pickbar {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 0;
-  min-inline-size: 0;
-  padding: 8px 10px;
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  background: var(--well);
-}
-.pickbar legend {
-  float: left;
-  padding: 0;
-  margin-right: 4px;
-  font-size: 12.5px;
 }
 .pp .pf {
   font-family: var(--sans);
