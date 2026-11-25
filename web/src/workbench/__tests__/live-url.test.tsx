@@ -4057,7 +4057,7 @@ describe("진행 화면 계정 경고(최민준 요청 11/25 — #936 account_au
     const box = await screen.findByTestId("account-auth-warning");
     const rows = within(box).getAllByRole("listitem");
     expect(rows).toHaveLength(1);
-    expect(rows[0].textContent).toMatch(/^B\(rh_tester_b\) 로그인 실패 — 세션을 받지 못함 \(\d{2}:\d{2}\)$/);
+    expect(rows[0].textContent).toMatch(/^B\(rh_tester_b\) — 세션을 받지 못함 \(\d{2}:\d{2}\)$/);
     expect(box).toHaveTextContent("인증 안 된 계정은 세션이 없어 그 계정으로는 요청하지 못합니다");
     expect(box).not.toHaveTextContent("익명으로 나갑니다");
     expect(box).toHaveTextContent("test_accounts_unavailable");
@@ -4109,7 +4109,8 @@ describe("진행 화면 계정 경고(최민준 요청 11/25 — #936 account_au
       revision: running.revision + 1,
     });
     const box = await screen.findByTestId("account-auth-warning", {}, { timeout: 5000 });
-    expect(box).toHaveTextContent("B(rh_tester_b) 로그인 실패 — 로그인 거절");
+    expect(box).toHaveTextContent("B(rh_tester_b) — 로그인 거절");
+    expect(box).not.toHaveTextContent("로그인 실패");
     u.readURLStatus.mockResolvedValue({
       ...withAuth({ rh_tester_a: "authenticated", rh_tester_b: "authenticated" }),
       revision: running.revision + 2,

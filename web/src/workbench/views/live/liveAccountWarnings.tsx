@@ -33,7 +33,7 @@ function accountName(i: number): string {
 }
 
 /**
- * 인증 안 된 계정 줄: "B(rh_tester_b) 로그인 실패 — 세션을 받지 못함 (14:46)". 모두 인증됐거나 칸이 없으면 빈 배열.
+ * 인증 안 된 계정 줄: "B(rh_tester_b) — 세션을 받지 못함 (14:46)". 모두 인증됐거나 칸이 없으면 빈 배열.
  * 시각은 그 계정 값이 마지막으로 바뀐 때(없으면 생략 — 칸이 생기기 전 끝난 점검).
  */
 export function accountAuthWarningRows(
@@ -48,7 +48,8 @@ export function accountAuthWarningRows(
     const result = auth[label];
     if (result === "authenticated") return;
     const when = at?.[label] ? shortTimeOf(at[label], nowMs) : "";
-    rows.push(`${accountName(i)}(${label}) 로그인 실패 — ${ACCOUNT_AUTH_FAIL_TEXT[result]}${when ? ` (${when})` : ""}`);
+    // 결과만 둔다 — '결과 모름' · '보내지 않음'을 '로그인 실패'로 적지 않는다(#941 윤재상 P3, 규칙 5). 제목이 '인증 안 됨'이다
+    rows.push(`${accountName(i)}(${label}) — ${ACCOUNT_AUTH_FAIL_TEXT[result]}${when ? ` (${when})` : ""}`);
   });
   return rows;
 }
