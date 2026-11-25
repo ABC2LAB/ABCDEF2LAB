@@ -180,6 +180,47 @@ it.each(["completed", "cancelled", "failed"] as const)("끝난(%s) 점검은 승
   expect(item).not.toHaveTextContent("승인 만료");
   expect(item).not.toHaveTextContent("확인 필요");
 });
+// 만료 말고 철회 · 변경 · 불명은 끝난 점검에도 보인다 — '점검 완료'(초록)로만 보이면 정상 성공처럼 읽힌다
+// (product-run-list 계약 화면 3, #917 리뷰 P2)
+it.each([
+  ["completed", "revoked", "승인 철회"],
+  ["completed", "changed", "승인 변경"],
+  ["failed", "unavailable", "승인 상태 확인 불가"],
+] as const)("끝난(%s) 점검의 %s 는 승인 상태와 확인 필요를 보이고 초록으로 칠하지 않는다", (state, approval_status, label) => {
+  const row: URLRunSummary = { ...projection(completed), state, approval_status, action_required: true };
+  render(
+    <ShellContext.Provider value={shell("finished")}>
+      <RunRow row={row} />
+    </ShellContext.Provider>,
+  );
+  const item = screen.getByRole("button", { name: /job-1/ });
+  const pill = within(item).getByText(`${urlStateText(state)} · ${label}`);
+  expect(pill.className).toMatch(/wait/);
+  expect(pill.className).not.toMatch(/\bok\b|_ok_/);
+  expect(item).toHaveTextContent("확인 필요");
+});
+it("레일 끝난 점검 줄: 승인 만료엔 '확인 필요'를 붙이지 않고, 철회엔 붙인다", () => {
+  useUrlRuns.setState({
+    owner: catalog.ownerContext,
+    page: {
+      snapshot: "c".repeat(64),
+      limit: 25,
+      more: false,
+      runs: [
+        { ...projection(completed), id: "job-exp", approval_status: "expired", action_required: true },
+        { ...projection(completed), id: "job-rev", approval_status: "revoked", action_required: true },
+      ],
+    },
+  });
+  const { container } = render(
+    <ShellContext.Provider value={shell("finished")}>
+      <LiveRailTasks />
+    </ShellContext.Provider>,
+  );
+  const rail = (id: string) => container.querySelector(`[data-url-run="${id}"]`) as HTMLElement;
+  expect(rail("job-exp")).not.toHaveTextContent("확인 필요");
+  expect(rail("job-rev")).toHaveTextContent("확인 필요");
+});
 it.each([
   ["running", "expired", "엔진 실행 중", "승인 만료"],
   ["awaiting_approval", "not_revalidated", "승인 대기", "확인 필요"],

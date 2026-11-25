@@ -107,9 +107,12 @@ export function UrlHead({
           <h1 tabIndex={-1}>{title}</h1>
           {pill}
         </div>
+        {/* 단계 줄이 있는 네 화면은 머리 높이가 같아야 단계를 눌러도 단계 줄이 오르내리지 않는다(사용자 11/25: 점검 진행 ·
+            보고서로 가면 줄 위치가 바뀜). 그래서 메타 줄(보고서 시작 · 소요 · 모델 · 토큰)은 따로 줄을 두지 않고 제목 줄 오른쪽에 */}
+        {phase && meta !== undefined ? <div className={s["vh-meta"]}>{meta}</div> : null}
         {acts !== undefined ? <div className={s["vh-acts"]}>{acts}</div> : null}
       </div>
-      {meta !== undefined ? <div className={s["vh-meta"]}>{meta}</div> : null}
+      {!phase && meta !== undefined ? <div className={s["vh-meta"]}>{meta}</div> : null}
       {phase ? <Phases phase={phase} onCurrent={onCurrentPhase} /> : null}
     </header>
   );

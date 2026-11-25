@@ -370,6 +370,27 @@
 .vh.has-ph {
   padding-bottom: 0;
 }
+/*
+ * 단계 줄이 있는 네 화면(자산 탐색 · 범위 확인 · 점검 진행 · 보고서)의 제목 줄 높이를 버튼 높이(.btn 34px)로 맞춘다 — 끝난
+ * 점검의 점검 진행 · 보고서는 제목 옆 버튼이 없어 줄이 낮아져 단계 줄이 올라갔다(사용자 11/25)
+ */
+.vh.has-ph .vh-row {
+  min-height: 34px;
+}
+/* 제목 줄 오른쪽 메타(보고서): 두 줄(위 시작 · 소요, 아래 모델 · 토큰, 사용자 11/25)을 제목 줄 높이(34px) 안에 둔다 */
+.vh-row > .vh-meta {
+  margin-top: 0;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  line-height: 16px;
+}
+.vh-meta-ln {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0 14px;
+}
 .vb {
   flex: 1;
   min-height: 0;
@@ -1650,6 +1671,22 @@ a.ph:hover {
   margin-top: 10px;
   font-size: 13px;
 }
+/*
+ * 오른쪽 패널 바닥에 붙는 다음 단계 칸(새 점검 범위 확인 뒤 시작 동의 · [점검 시작], 사용자 11/25).
+ * 패널(.vi)이 스크롤 칸이라 내용이 길면 바닥에 붙고, 짧으면 내용 바로 밑에 놓인다. 패널 아래 여백(48px)까지 덮어 바닥에 닿게 한다
+ */
+.vistick {
+  position: sticky;
+  bottom: -48px;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 16px -18px -48px -20px;
+  padding: 12px 18px 16px 20px;
+  border-top: 1px solid var(--rule);
+  background: var(--well);
+}
 .isec {
   border-top: 1px solid var(--rule);
   padding-top: 14px;
@@ -2161,8 +2198,13 @@ a.ph:hover {
   padding-top: 22px;
   border-top: 1px solid var(--rule);
 }
+/* 섹션 제목(대상 · 분석 모델 · 로그인 · 점검 설정)은 칸 이름(.lbl 13px)과 확실히 다르게: 크게 · 굵게 · 왼쪽 강조 막대(사용자 11/25) */
 .fsec-h h2 {
-  font-size: 14.5px;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.3;
+  padding-left: 10px;
+  border-left: 3px solid var(--accent);
 }
 /* 제목 · 칸 이름 옆 작은 딱지 (예: 로그인 · 연결 전). 칸 높이만큼 늘어나지 않게 위에 붙인다 */
 .fsec-ht {
@@ -2265,7 +2307,8 @@ a.ph:hover {
   }
   .fgrp.fgrid .fsec {
     grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
+    /* 섹션 제목과 첫 칸 사이(사용자 11/25: 너무 붙어 보임) */
+    gap: 16px;
     padding-top: 12px;
   }
   .fgrp.fgrid > .fcol > .fsec:first-child {
@@ -2341,6 +2384,13 @@ a.ph:hover {
 .lbl {
   font-size: 13px;
   font-weight: 600;
+}
+/* 꼭 넣어야 하는 칸 이름 뒤 빨간 별(사용자 11/25). 화면 읽기에는 별을 읽히지 않고(대체 글 ""), 입력칸의 aria-required 가 알린다 */
+.must::after {
+  content: "*" / "";
+  margin-left: 3px;
+  color: var(--hi);
+  font-weight: 700;
 }
 .lbl .req {
   color: var(--hi);
@@ -2860,7 +2910,9 @@ select.inp {
 .lh,
 .lr {
   display: grid;
-  grid-template-columns: 62px 56px minmax(0, 1fr) auto;
+  /* 시각 · 메서드 · 경로 · 기록 · 출처 · 결과(사용자 11/25). 줄마다 따로 그리는 grid 라 폭을 고정해야 세로줄이 맞는다.
+     남는 폭은 경로 · 기록 · 출처가 2 : 1 : 1 로 나눈다 — 경로 칸만 넓으면 가운데가 비어 보인다(사용자 11/25) */
+  grid-template-columns: 62px 56px minmax(200px, 2fr) minmax(80px, 1fr) minmax(140px, 1fr) 56px;
   gap: 2px 12px;
   padding: 6px 12px;
   align-items: baseline;
@@ -2886,10 +2938,11 @@ select.inp {
   font-size: 12px;
   color: var(--ink-3);
 }
-.lr .ln {
-  grid-column: 3 / -1;
+.lr .lk {
   font-size: 12.5px;
   color: var(--ink-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 /* 탐색 기록 줄은 눌러서 펼친다 (시안 v75 ~ v76) */
 button.lr {
@@ -3185,18 +3238,47 @@ button.lr.on {
 .pp {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   max-width: 100%;
   min-width: 0;
   height: 26px;
-  padding: 0 8px 0 3px;
+  padding: 0 6px 0 3px;
   border: 1px solid var(--rule-2);
   border-radius: 6px;
   background: var(--bg);
   font-family: var(--mono);
   font-size: 12px;
   color: var(--ink);
+}
+/* 범위 확인 경로 = 이름 버튼(누르면 오른쪽 상세) + 오른쪽 네모칸(체크 = 점검에 포함, 사용자 11/25) */
+.pp .ppb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
   cursor: pointer;
+}
+.pp .ppb:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.pp .pcb {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0 0 0 4px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.pp .pcb:disabled {
+  cursor: not-allowed;
 }
 .pp:hover {
   border-color: var(--ink-2);
@@ -3231,77 +3313,24 @@ button.lr.on {
   font-style: normal;
   color: var(--accent-ink);
 }
-/* 범위 확인: 점검에 넣은 경로는 강조 테두리 한 겹 + 채운 체크 동그라미(사용자 11/24: 포함 표시가 약했다 · 테두리 겹은
-   싫다). 바탕색은 승인 · 로그인 경로가 쓰므로 건드리지 않는다 */
+/* 범위 확인: 점검에 넣은 경로는 강조 테두리 한 겹 + 오른쪽 네모칸 체크(사용자 11/24 · 11/25). 바탕색은 승인 · 로그인
+   경로가 쓰므로 건드리지 않는다 */
 .pp.inc {
   border-color: var(--accent);
 }
-.pp .pk {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  margin-left: 2px;
-  padding: 2px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: var(--bg);
-}
 /* 지금 오른쪽 상세에 보이는 경로: 테두리를 더 두르지 않는다(사용자 11/24: 포함 테두리와 겹이 두 개로 보였다). 회색 바탕 +
    굵은 경로 글자만. 승인 · 로그인 경로는 제 바탕을 두고 글자만 굵게 */
-.pp[aria-current="true"] {
+.pp.cur {
   background: var(--well);
 }
-.pp.ap[aria-current="true"] {
+.pp.ap.cur {
   background: var(--warn-bg);
 }
-.pp.login[aria-current="true"] {
+.pp.login.cur {
   background: var(--accent-bg);
 }
-.pp[aria-current="true"] .pt {
+.pp.cur .pt {
   font-weight: 700;
-}
-/* 여러 개 고르기(삭제)의 고르기 네모칸: 알약 전체를 칠하지 않고 메서드 옆 네모칸에만 체크한다 */
-.pp .pck {
-  width: 13px;
-  height: 13px;
-  flex: none;
-  margin-left: 3px;
-  display: inline-grid;
-  place-items: center;
-  border: 1.5px solid var(--ink-3);
-  border-radius: 3px;
-  background: var(--bg);
-}
-.pp .pck.on {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--bg);
-}
-.pp .pck .ic {
-  width: 10px;
-  height: 10px;
-}
-/* 고른 경로 한 번에 넣기 · 빼기 줄: 카드가 길어도 보이게 가운데 칸 위에 붙는다 */
-.pickbar {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 0;
-  min-inline-size: 0;
-  padding: 8px 10px;
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  background: var(--well);
-}
-.pickbar legend {
-  float: left;
-  padding: 0;
-  margin-right: 4px;
-  font-size: 12.5px;
 }
 .pp .pf {
   font-family: var(--sans);
@@ -5591,6 +5620,42 @@ button.smm:hover {
 .app .vb.solo,
 .app.insp-min .vb.solo {
   grid-template-columns: minmax(0, 1fr);
+}
+
+/*
+ * 전송 통제 정책 화면 두 단(사용자 11/25, 새 점검 .fgrid 처럼 스크롤 없이 한눈에): 왼쪽 요약 · 승인 · 감사 · 상한, 오른쪽 범위.
+ * 단 안의 섹션은 위 구분 줄 · 여백을 줄여 붙이고, 가운데 칸이 좁으면 한 줄로 이어진다.
+ */
+.polgrid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.polcol {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.polcol > .isec {
+  margin-top: 0;
+}
+.polcol:first-child > .isec:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+@container (min-width: 900px) {
+  .polgrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 32px;
+    align-items: start;
+  }
+  .polcol > .isec:first-child {
+    border-top: 0;
+    padding-top: 0;
+  }
 }
 /* 대시보드 원형 게이지 줄(사용자 11/24): 카드 4개(넓으면 한 줄, 좁으면 2 · 1 줄). 카드 = 제목 · 원 + 범례 · 작은 글 */
 .drings {

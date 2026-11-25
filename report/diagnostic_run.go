@@ -15,6 +15,9 @@ const (
 	DiagnosticRunFailed        = "failed"
 	DiagnosticRunClosureFailed = "closure_failed"
 	DiagnosticRunRunning       = "running"
+	// DiagnosticRunInterrupted는 종료 기록이 없고, 준비 서비스가 실행 도중 끝나 다음 점검이 그 작업을 마감 상태로
+	// 돌리며 고정 사유 표지를 남긴 경우다(#927). 결과는 확인하지 못했다.
+	DiagnosticRunInterrupted = "interrupted"
 )
 
 // DiagnosticRun은 저장된 실행 종료 기록의 상태와 실행 결과다(실행 결과 상태 값 계약 §5-5). 저장 보고서만 보는
@@ -63,6 +66,8 @@ func DiagnosticRunText(run *DiagnosticRun) string {
 		return "실패(정상 마감되지 않음)"
 	case DiagnosticRunClosureFailed:
 		return "실행 마감 확인 실패(실행 결과를 확인하지 못함)"
+	case DiagnosticRunInterrupted:
+		return "준비 서비스 종료로 중단됨(실행 결과를 확인하지 못함)"
 	case DiagnosticRunCompleted:
 		if r == nil {
 			return "완료(작업별 실행 결과 기록 없음)"

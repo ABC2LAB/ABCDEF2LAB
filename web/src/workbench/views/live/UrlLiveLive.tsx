@@ -73,6 +73,7 @@ import s from "../../workbench.module.css";
 import { ApprovalQueue, useRequestApprovals } from "./approvals";
 import { CoverageGraphSection } from "./coverageGraphView";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
+import { AccountAuthWarning, LoginMethodMissingWarning } from "./liveAccountWarnings";
 import { PriceCapsNotice } from "./PriceCapsNotice";
 import { ProductVerdictReport, productConfirmationSummary, useProductVerdicts } from "./productVerdictViews";
 import { ReportAssetGraph } from "./ReportAssetGraph";
@@ -207,7 +208,7 @@ export function candidateIdle(job: URLDiagnosisJob | null | undefined, verified:
   return live ? null : "prestart";
 }
 
-/** 후보 등급 딱지. 추정 등급은 '예상 …', 없으면 '위험도 미평가'(낮음 · 정보성으로 바꾸지 않는다). */
+/** 후보 등급 딱지. Worker 가 붙인 등급 그대로(확정이 아님은 '검토 필요'가 말한다, 11/24), 없으면 '위험도 미평가'(낮음 · 정보성으로 바꾸지 않는다). */
 function CandidateSev({ sev }: { sev: SeverityLevel | null }) {
   const k = sev ? sevKey(sev) : null;
   // 등급이 없으면 '위험도 미평가' 회색 딱지(사용자 11/23)
@@ -415,6 +416,8 @@ function LiveCandidates({
       </div>
       {list.length ? (
         <div className={s.vbar}>
+          {/* 확정 분포처럼 읽히지 않게 앞에 '검토 필요'(계약 diagnostic-candidate-severity: 후보 분포는 별도 문구, #917 리뷰 P3) */}
+          <span>검토 필요</span>
           {bySev.map(([v, n]) => (
             <span key={v}>
               {`${candidateSeverityText(v)} `}
@@ -616,13 +619,46 @@ function SavedFindings({
   );
 }
 
+/** 흐름 일시정지 상태를 알약에 어떻게 보일지. */
+export type FlowPause = "paused" | "running" | "unknown" | "none";
+
 /**
- * 점검 진행 화면의 상태 알약 (시안 lState: 진행 중 · 일시정지됨). 실행 중이 아니거나 확인하지 못한 상태는
- * 공통 알약(서버 상태 글) 그대로. 일시정지됨은 탐색 흐름이 있는 점검의 흐름 스냅숏일 때만이다.
+ * 흐름 스냅숏 → 일시정지 상태(11/24 화면 VAmPI 발견 10). 확인된(verified · 결과 불명 아님) 스냅숏일 때만 paused/running 이고,
+ * 탐색 흐름이 있는데 다시 읽지 못했으면 'unknown' — 마지막으로 읽은 스냅숏으로 '진행 중'을 단정하지 않는다(절대 규칙 5).
+ * 흐름이 없는 점검은 'none'.
  */
-function LivePill({ job, verified, paused }: { job: { state: UrlState }; verified: boolean; paused: boolean }) {
+export function flowPauseOf(
+  workflow: boolean,
+  flow: Pick<WorkflowSnapshot, "paused"> | null,
+  flowVerified: boolean,
+  flowUncertain: boolean,
+): FlowPause {
+  if (!workflow || !flow) return "none";
+  if (!flowVerified || flowUncertain) return "unknown";
+  return flow.paused ? "paused" : "running";
+}
+
+/**
+ * 점검 진행 화면의 상태 알약 (시안 lState: 진행 중 · 일시정지됨). 일시정지됨은 확인된 흐름 스냅숏이 일시정지일 때, 점검이 아직
+ * 움직이는 상태(준비 · 실행 중)면 보인다 — 일시정지 버튼이 있는 탐색(preparing)에서도 뜬다(전에는 running 만이라 탐색 중
+ * 일시정지가 안 보였다). 실행 중인데 흐름 상태를 다시 읽지 못했으면 '일시정지 여부 확인 중'. 그 밖은 공통 알약(서버 상태 글).
+ */
+function LivePill({ job, verified, pause }: { job: { state: UrlState }; verified: boolean; pause: FlowPause }) {
+  const moving = job.state === "running" || job.state === "preparing";
+  if (moving && pause === "paused")
+    return (
+      <span className={cx(s.pill, s.wait)} data-flow-pause="paused">
+        일시정지됨
+      </span>
+    );
   if (!verified || job.state !== "running") return <UrlPill job={job} verified={verified} />;
-  return paused ? <span className={s.pill}>일시정지됨</span> : <span className={cx(s.pill, s.run)}>진행 중</span>;
+  if (pause === "unknown")
+    return (
+      <span className={cx(s.pill, s.wait)} data-flow-pause="unknown">
+        일시정지 여부 확인 중
+      </span>
+    );
+  return <span className={cx(s.pill, s.run)}>진행 중</span>;
 }
 
 /** live 점검 진행 (URL 진단, 시안 data-view="live"). */
@@ -634,6 +670,8 @@ export function UrlLiveLive() {
   const verified = useUrl((st) => st.verified);
   const busy = useUrl((st) => st.busy);
   const flow = useUrl((st) => st.flow);
+  const flowVerified = useUrl((st) => st.flowVerified);
+  const flowUncertain = useUrl((st) => st.flowUncertain);
   const g = useUrlGates();
   const host = useUrlHost();
   const stop = useStopConfirm("종료");
@@ -741,7 +779,8 @@ export function UrlLiveLive() {
 
   const ended = URL_ENDED_STATES.includes(job.state);
   // 서버가 보고한 흐름 상태만 표시한다. 일시정지 · 다시 시작은 흐름 API(PauseButton), 점검 제어 API 는 부르지 않는다.
-  const pausedNow = flow ? !!flow.paused : false;
+  const pause = flowPauseOf(!!job.input.workflow_mode, flow, flowVerified, flowUncertain);
+  const pausedNow = pause === "paused";
   const run = a.poll.data?.run;
   const ap = approvalCounts(run, a.poll.data?.approvals);
   const known = (n: number) => (ap.known ? fmtCount(n) : "—");
@@ -871,7 +910,7 @@ export function UrlLiveLive() {
         crumb="점검 진행"
         host={host}
         phase="live"
-        pill={<LivePill job={job} verified={verified} paused={pausedNow} />}
+        pill={<LivePill job={job} verified={verified} pause={pause} />}
         acts={
           <>
             <PauseButton />
@@ -886,6 +925,13 @@ export function UrlLiveLive() {
           {stop.box}
           <UrlNotices />
           <WorkflowNotice />
+          {/* 시험 계정 인증 경고(#936 account_auth, 2초 조회로 갱신) · 로그인 방식 없음(#914). 알림만, 회차는 멈추지 않는다 */}
+          <AccountAuthWarning auth={job.account_auth} at={job.account_auth_updated_at} />
+          <LoginMethodMissingWarning
+            targetUrl={handle.input.target_url}
+            active={visible && !ended}
+            authTried={!!job.account_auth}
+          />
           {job.reason_code ? <p className={s.help}>{`서버 사유: ${reasonText(job.reason_code)}`}</p> : null}
           {job.diagnostic_log_incomplete ? (
             <p className={s.help}>{reasonText("diagnostic_logging_incomplete")}</p>
@@ -1911,21 +1957,26 @@ export function UrlReportLive() {
   const usage = job?.model_usage;
   const startText = runStartText(job);
   const durationSec = runDurationSec(job);
-  const meta = [
-    <span key="start">시작 {startText ? <b>{startText}</b> : <NotYet why={runStartMissingWhy(job)} />}</span>,
-    <span key="dur">
-      소요 {durationSec !== null ? <b>{fmtDur(durationSec)}</b> : <NotYet why={runDurationMissingWhy(job)} />}
-    </span>,
-    profile ? (
-      <span key="model">
-        모델 <b>{`${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}`}</b>
+  // 두 줄(사용자 11/25): 위 시작 · 소요, 아래 모델 · 토큰
+  const meta = (
+    <>
+      <span className={s["vh-meta-ln"]}>
+        <span>시작 {startText ? <b>{startText}</b> : <NotYet why={runStartMissingWhy(job)} />}</span>
+        <span>
+          소요 {durationSec !== null ? <b>{fmtDur(durationSec)}</b> : <NotYet why={runDurationMissingWhy(job)} />}
+        </span>
       </span>
-    ) : null,
-    // 머리 줄은 토큰(입 · 출)에서 끝낸다(사용자 11/19 — 길어서 '모델 사용량' → '토큰', 요청 수는 두지 않음)
-    <span key="use" title={usage ? tokenExact(usage) : undefined}>
-      토큰 {usage ? <TokenChips u={usage} /> : <b>—</b>}
-    </span>,
-  ].filter(Boolean);
+      <span className={s["vh-meta-ln"]}>
+        {profile ? (
+          <span>
+            모델 <b>{`${profile.model_label} · ${profile.model?.external_transfer ? "외부" : "로컬"}`}</b>
+          </span>
+        ) : null}
+        {/* 머리 줄은 토큰(입 · 출)에서 끝낸다(사용자 11/19 — 길어서 '모델 사용량' → '토큰', 요청 수는 두지 않음) */}
+        <span title={usage ? tokenExact(usage) : undefined}>토큰 {usage ? <TokenChips u={usage} /> : <b>—</b>}</span>
+      </span>
+    </>
+  );
 
   return (
     <>

@@ -91,6 +91,23 @@
 
 `X-Jindo-E2-Model-Writes: 1` 헤더를 보낸 클라이언트에는 검증된 응답에 `model_writes`를 추가한다. 운영자가 다음 점검 전 대상을 확인할 때 쓰는 읽기 전용 요약으로, 모델 단계 POST·PUT·PATCH·DELETE만 시도 ID로 센다. `responded_2xx`는 2xx 응답을 받은 수이며 객체 생성 여부는 알 수 없다. `unverified`는 송신했을 수 있으나 2xx 응답이 확인되지 않은 수다. 송신 전 거부, 송신하지 못한 연결 실패, 인증 준비·갱신, E③ 쓰기는 포함하지 않는다. 기존 E③ 리셋 기록이나 운영자 확인의 효력을 이 요약으로 바꾸지 않는다.
 
+검증된 응답에는 `target_requests`가 늘 붙는다(2026-11-25 사용자 지시). 작업대 '보낸 요청' 총계와 마우스 올림 내역에 쓰는 대상 요청 수다. 기존 `counts`·화면의 진단 흐름 `counts.sent`는 그대로 둔다.
+
+| 칸 | 뜻 | 출처 |
+|---|---|---|
+| `model` | 모델이 진단 단계에서 보낸 요청 | 검증한 E② 저널의 결과 행 중 `request_written`이고 프로그램 호출이 아닌 시도 수 |
+| `login` | 프로그램 로그인(인증 준비 `auth_prep` + 세션 다시 받기 `refresh_session`) | 같은 저널, 같은 기준 |
+| `confirmation` | 확정 단계(E③) 요청 | 같은 저널, 같은 기준. E③ 확정 호출 행(E③ 감사 칸 또는 E③ 프로그램 호출)이 이 저널에 있을 때만 센다 |
+| `unclassified` | 이 판이 모르는 프로그램 호출 종류가 보낸 요청 | 같은 저널. 0이 아니면 `total`은 `null`이다(모르는 종류를 다른 내역에 넣지 않는다) |
+| `exploration` | 탐색 단계에서 탐색 경계를 지난 대상 요청 | 회차 상태 디렉터리의 `exploration-requests.json`(탐색 경계가 세션 마감 때 확정한 `target_requests`, 진단 E② 예산에서 빼는 그 몫). 탐색 중이면 경계가 지금 보고하는 수 |
+| `exploration_state` | `none`(탐색 단계 없음을 기록함, 0) · `running`(탐색 중) · `closed`(경계 확정) · `not_run`(열지 않음, 0) · `unknown`(경계가 확정하지 못함, 기록이 없거나 못 읽음) | 탐색 단계가 없는 회차도 `none`을 기록한다. 기록이 없으면 탐색 시작 전·쓰기 실패·이 칸 이전 회차라 `unknown`이다 |
+| `total` | `model + login + confirmation + exploration` | 탐색 수를 모르거나 `unclassified`가 0이 아니면 `null` |
+
+- 세 갈래는 이 응답 하나에서 같은 시점에 읽는다(저널 검증·탐색 기록·경계 조회를 한 요청 안에서). 시도마다 결과 행 하나만 센다(`counts`와 같은 규칙).
+- 모르는 수는 0으로 바꾸지 않는다: `running`인데 경계가 이 회차 세션을 보고하지 않거나, `unknown`이면 `exploration`·`total`은 `null`이다.
+- `exploration-requests.json`은 감사 기록이 아니라 표시용이다. 기록을 쓰지 못해도 진단은 멈추지 않고 화면 총계만 모름으로 보인다. 바뀔 수 있는 기록(`running`)에는 수를 담지 않는다. 끝 기록을 쓰지도 지우지도 못해 `running`이 남아도 확정 수로 읽히지 않는다(시험 `TestExplorationStageWriteFailureNeverReadsKnownCount`).
+- 시험: `TestE2FlowTargetRequestsMatchJournalAndExplorationRecord`(내역이 저널에서 따로 센 수·탐색 기록과 같고 합이 맞음), `TestE2FlowTargetRequestsExplorationStates`.
+
 그 task의 전송 통제 감사 기록(실행 결속 디렉터리의 저널, HMAC 체인 검증 뒤)을 호출(call) 단위로 묶은 투영이다. 저널 검증이 실패하면 사건을 하나도 보이지 않고 `journal: "invalid"`로 답한다(일부만 보이고 "정상"으로 보이게 하지 않는다).
 
 현재 [제품 조회](../../cmd/first-controlled-diagnosis/url_live_views.go)는 감사 키 pin과 읽은 저널의 HMAC 체인을 검증한다. `VerifyJournalEvents`에 신뢰 체크포인트를 전달하지 않아 끝 행이 삭제된 유효 접두부도 `journal: "verified"`로 표시될 수 있다.
@@ -151,6 +168,33 @@
 intent 행의 `complete`는 송신 전 감사의 초기 값이며 응답 성공이 아니다. 결과 사건이 없으면 송신·쓰기·응답 여부를 미확인으로 표시하고, 응답 받음/송신 없음으로 단정하지 않는다.
 
 분류 규칙(fail-closed): "차단"은 `forward_attempted`가 false일 때만이다. 송신을 시도한 뒤의 거부·실패는 불명으로 보인다. 모르는 `reason`·`stage` 값은 불명이다. `transport_failed`는 대상에 닿지 않은 송신 실패이고 결과 불명과 따로 보인다(C02). 이 사유의 `forward_attempted=true`는 연결 시도를 포함하며 요청 송신의 증거가 아니다. `request_written=false && response_received=false`이면 연결 시도 여부와 관계없이 송신 실패로 표시한다. 연결 뒤 끊김은 서버가 `unknown`으로 남긴다.
+
+### 4.1 요청 전체 기록과 요청 상세 (2026-11-25)
+
+e2-flow와 같은 결속·정책 확인을 지나, 검증한 E② 저널만 읽는 두 경로다. 끝난 점검도 회차 디렉터리가 남아 있는 동안 읽힌다(작업 권한 확인은 점검 상태와 무관하다). 그 운영자·그 작업만 받는다(브리지 작업 권한 → 실행 쪽 작업 결속 확인). 저널 형식은 바꾸지 않는다(합성 확인의 저널 대조 기준선·동결, 사용자 결정). 크기·헤더 이름은 측정 뒤 후보다([개발 계획](../development-plan.md) '측정 뒤 다음 단계').
+
+**전체 기록** `GET /api/tasks/{id}/e2-flow/requests?cursor=&limit=` (형식 `abc2lab.e2-flow-requests/v1`)
+
+- 줄: 대상에 요청을 보낸 시도(결과 행이 `request_written`)만, 시도마다 마지막 결과 행 하나, 저널 순서. 모양은 흐름 이벤트 줄과 같다: `at`·`kind`·`method`·`path`(시도별 화면용 경로 틀, 가린 값)·`status`·`call_ref`·`attempt_id`, 그리고 쪽 넘김용 `index`.
+- `kind`: `request`(모델 진단 요청) · `auth_prep` · `refresh_session`(프로그램 로그인) · `confirmation`(E③ 확정) · `unclassified`(이 판이 모르는 프로그램 호출 종류).
+- `total`: 보낸 시도 전체 수다. e2-flow `target_requests`의 `model + login + confirmation + unclassified`와 같다(시험 `TestE2RequestsPagesMatchFlowTargetRequests`). 탐색 요청은 E② 저널에 없어 여기 없다.
+- `limit` 기본 100·최대 200, `cursor`는 앞 쪽 마지막 줄의 `index`다. 다음 쪽이 있으면 `next_cursor`가 붙는다. 그 밖의 조회 조건·중복·형식이 틀린 값은 400이다.
+
+**요청 상세** `GET /api/tasks/{id}/e2-flow/requests/{call_ref}/{attempt_id}` (형식 `abc2lab.e2-flow-request/v1`, 조회 조건 없음)
+
+- 칸: `kind`·`index`·`at`·`method`·`path_pattern`·`rule_ref`·`decision`·`reason`·`status_code`·`forward_attempted`·`request_written`·`response_received`·`response_complete`·`response_truncated`. 그 시도의 마지막 결과 행(없으면 의도 행)이다. 보내지 않은 시도도 저널에 있으면 열린다.
+- `request_headers`·`request_body`·`response_headers`·`response_body`: 늘 `{"state":"not_stored"}`다. E② 저널은 헤더·본문·크기·경로 원문을 저장하지 않는다. 저장 기록 가림(시험 계정 비밀번호 정확값·세션 토큰·쿠키)이 걸릴 값 자체가 응답에 없다.
+
+**못 읽는 경우의 이유 코드** (JSON `{"reason": ...}`)
+
+| 상태 | `reason` | 뜻 |
+|---|---|---|
+| 404 | `not_found` | 이 회차 저널에 그 호출·시도가 없다 |
+| 404 | `not_journaled` | 이 회차에 E② 저널이 아직 없다(실행 전이거나 전송 통제를 거치지 않은 회차) |
+| 409 | `journal_invalid` | 저널이 있지만 실행 감사 키로 검증하지 못했다(내용을 보이지 않는다) |
+| 403 | (브리지·실행 쪽 권한 응답) | 권한 없음: 다른 운영자·결속되지 않은 작업 |
+
+탐색 단계 줄(탐색 경계를 지난 요청)은 E② 저널에 없다. 화면은 그 줄을 '탐색 단계 · 탐색 경계 통과 · 요청 원문 기록 없음'으로 보인다(상세를 열지 않는다).
 
 ## 5. 커버리지 — 1단계는 기존 워크플로 snapshot
 
