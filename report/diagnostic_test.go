@@ -27,7 +27,7 @@ func TestDiagnosticReportMixedSyntheticComposition(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(body)
-	for _, want := range []string{"<td>3</td><td>1</td><td>1</td><td>0</td><td>0</td>", "SQL injection candidate", "SSRF policy block", "finding-3", "1. 합성 요청", "스크린샷 부재", "출력이 잘렸습니다"} {
+	for _, want := range []string{"<td>1</td><td>3</td><td>0</td><td>0</td><td>1</td><td>0</td><td>0</td>", "SQL injection candidate", "SSRF policy block", "finding-3", "1. 합성 요청", "스크린샷 부재", "출력이 잘렸습니다"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %q", want)
 		}
@@ -37,6 +37,26 @@ func TestDiagnosticReportMixedSyntheticComposition(t *testing.T) {
 	}
 	if in.Entries[0].Title != "XSS" {
 		t.Fatal("mutated source")
+	}
+}
+
+func TestDiagnosticReportRejectsContradictoryAssessment(t *testing.T) {
+	for _, tc := range []struct{ status, reason, outcome string }{
+		{"confirmed", "html_nosniff_missing_twice", "review"},
+		{"negative", "html_nosniff_present_twice", "confirmed"},
+		{"unsupported", "type_not_supported", "negative"},
+		{"insufficient", "independent_observation_missing", "confirmed"},
+	} {
+		in := diagnosticFixture()
+		in.Entries[3].AssessmentStatus = tc.status
+		in.Entries[3].AssessmentReason = tc.reason
+		in.Entries[3].Outcome = tc.outcome
+		if _, err := DiagnosticHTML(in); err != ErrExportBlocked {
+			t.Fatalf("status=%s outcome=%s err=%v", tc.status, tc.outcome, err)
+		}
+		if _, err := DiagnosticDOCX(in); err != ErrExportBlocked {
+			t.Fatalf("docx status=%s outcome=%s err=%v", tc.status, tc.outcome, err)
+		}
 	}
 }
 func TestDiagnosticReportInternalSharedAndEscaping(t *testing.T) {
@@ -64,7 +84,7 @@ func TestDiagnosticReportInternalSharedAndEscaping(t *testing.T) {
 	if strings.Contains(string(shared), "SQL injection candidate") || strings.Contains(string(shared), "&lt;script&gt;") {
 		t.Fatal("shared free text leaked")
 	}
-	if !strings.Contains(string(shared), "<td>3</td><td>1</td><td>1</td>") {
+	if !strings.Contains(string(shared), "<td>1</td><td>3</td><td>0</td><td>0</td><td>1</td>") {
 		t.Fatal("shared counts changed")
 	}
 }

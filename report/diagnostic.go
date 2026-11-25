@@ -75,6 +75,7 @@ type DiagnosticReport struct {
 	ProductUnreadable                                 int
 	ProductSealUnconfirmed                            int
 	Confirmed, Review, NotExecuted, Unknown, Negative int
+	Suspected, Inconclusive, Unsupported              int
 	BySeverity, ByType                                map[string]int
 }
 
@@ -95,6 +96,7 @@ type DiagnosticEntry struct {
 	ID, Kind, Run                                             string
 	IntentID                                                  int64
 	Title, VulnClass, Severity, Status, Verification, Outcome string
+	AssessmentStatus, AssessmentReason                        string
 	SeveritySource, SeverityRationale                         string
 	Summary, Remediation, Evidence                            string
 	EvidenceVersion                                           int64
@@ -207,6 +209,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		in.ModelAccounting = nil
 	}
 	in.Confirmed, in.Review, in.NotExecuted, in.Unknown, in.Negative = 0, 0, 0, 0, 0
+	in.Suspected, in.Inconclusive, in.Unsupported = 0, 0, 0
 	in.SourceFailures = 0
 	in.BySeverity = map[string]int{}
 	in.ByType = map[string]int{}
@@ -231,11 +234,42 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		if (e.Verification == "passive_observation_v1" || e.Verification == "passive_observation_v2") && e.Outcome != "confirmed" {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
+		if e.AssessmentStatus != "" {
+			if e.Kind != "candidate" || e.AssessmentReason == "" {
+				return DiagnosticReport{}, ErrExportBlocked
+			}
+			switch e.AssessmentStatus {
+			case "confirmed":
+				if e.Outcome != "confirmed" {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
+			case "negative":
+				if e.Outcome != "negative" {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
+			case "insufficient":
+				if e.Outcome != "review" && !(e.Outcome == "unknown" && e.AssessmentReason == "source_unavailable") {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
+			case "unsupported":
+				if e.Outcome != "review" {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
+			default:
+				return DiagnosticReport{}, ErrExportBlocked
+			}
+		} else if e.AssessmentReason != "" {
+			return DiagnosticReport{}, ErrExportBlocked
+		}
 		switch e.Outcome {
 		case "confirmed":
 			legacyFinding := e.Kind == "finding" && e.Verification == "stored_verification"
+			verificationReason := e.Status
+			if e.AssessmentStatus != "" {
+				verificationReason = e.AssessmentReason
+			}
 			passiveCandidate := e.Kind == "candidate" && in.Run != nil && ((e.Verification == "passive_observation_v1" && in.Run.VerificationVersion == "passive/v1") || (e.Verification == "passive_observation_v2" && in.Run.VerificationVersion == "passive/v2")) &&
-				((e.Status == "html_nosniff_missing_twice" && e.VulnClass == "security_headers") || (e.Status == "server_version_banner_twice" && e.VulnClass == "information_disclosure"))
+				((verificationReason == "html_nosniff_missing_twice" && e.VulnClass == "security_headers") || (verificationReason == "server_version_banner_twice" && e.VulnClass == "information_disclosure"))
 			if !legacyFinding && !passiveCandidate || e.Stale {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
@@ -248,6 +282,14 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			in.Confirmed++
 		case "review":
 			in.Review++
+			if e.AssessmentStatus == "insufficient" {
+				in.Inconclusive++
+			} else {
+				in.Suspected++
+				if e.AssessmentStatus == "unsupported" {
+					in.Unsupported++
+				}
+			}
 		case "not_executed":
 			in.NotExecuted++
 		case "unknown":
@@ -257,7 +299,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		default:
 			return DiagnosticReport{}, ErrExportBlocked
 		}
-		for _, p := range []*string{&e.ID, &e.Kind, &e.Run, &e.Title, &e.VulnClass, &e.Severity, &e.SeverityRationale, &e.Status, &e.Verification, &e.Summary, &e.Remediation, &e.Evidence, &e.Digest, &e.Report} {
+		for _, p := range []*string{&e.ID, &e.Kind, &e.Run, &e.Title, &e.VulnClass, &e.Severity, &e.SeverityRationale, &e.Status, &e.Verification, &e.AssessmentStatus, &e.AssessmentReason, &e.Summary, &e.Remediation, &e.Evidence, &e.Digest, &e.Report} {
 			if !utf8.ValidString(*p) || strings.ContainsRune(*p, 0) {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
@@ -570,8 +612,9 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 <h2>2장. 진단 방법 및 수행 현황</h2><p>아래 내용은 실제 저장한 실행·탐색 기록입니다. 목록에 없는 검사나 환경·모델은 수행·확인한 것으로 추정하지 않습니다.</p>{{with .Workflow}}<h3>실제 탐색·선택 기록</h3><p>모드 {{.Mode}} · 저장 단계 {{.Stage}} · 마지막 저장 {{.UpdatedAt}}. 이 기록은 재실행 권한 또는 현재 실행 중임의 증거가 아닙니다.</p><p>발견 {{.Counts.Found}} · 응답 관찰 {{.Counts.Visited}} · 요청 쓰기 {{.Counts.Sent}} · 전송 시도 {{.Counts.Attempted}} · 차단 {{.Counts.Blocked}} · 불명 {{.Counts.Unknown}}</p><table><thead><tr><th>메서드</th><th>경로</th><th>실제 방문</th><th>선택</th><th>응답</th><th>증거 call</th></tr></thead><tbody>{{range .Endpoints}}<tr><td>{{.Method}}</td><td>{{.Path}}</td><td>{{.Visited}}</td><td>{{.Selected}}</td><td>{{.Status}}</td><td>{{.CallRef}}</td></tr>{{end}}</tbody></table><p>제한된 정적 탐색입니다. 미방문·미선택 항목을 검사 완료로 표시하지 않습니다. 엔드포인트 선택과 개별 송신 승인은 별개입니다.</p>{{end}}
 {{if .WorkflowApprovals}}<h3>저장된 요청 승인 이력</h3>{{with .WorkflowApprovalSummary}}<p>{{.}}</p>{{end}}<table><thead><tr><th>메서드</th><th>경로</th><th>결정</th><th>전송 결과</th><th>attempt</th></tr></thead><tbody>{{range .WorkflowApprovals}}<tr><td>{{.Method}}</td><td>{{if $.Shared}}[공유용 경로 비공개]{{else}}{{.Path}}{{end}}</td><td>{{.State}}</td><td>{{.ExecutionState}}</td><td>{{.Attempt}}</td></tr>{{end}}</tbody></table>{{end}}
 <h2>3장. 진단 결과 요약</h2><h3>관리자 요약</h3><p>실행 결과: {{.RunText}}. 실행 결과는 취약점이 없다는 뜻이 아닙니다.</p>{{if .SourceFailures}}<p>근거 불러오기 실패: {{.SourceFailures}}건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.</p>{{end}}{{if .ExposedCredentialValues}}<p>대상이 노출한 자격 값: 노출됨 {{.ExposedCredentialValues}}건. 보고서에서는 값을 가렸습니다.</p>{{end}}
-<table><thead><tr><th>확정</th><th>검토 필요</th><th>미실행</th><th>오류·결과 불명</th><th>비취약 판정</th></tr></thead>
-<tbody><tr><td>{{.Confirmed}}</td><td>{{.Review}}</td><td>{{.NotExecuted}}</td><td>{{.Unknown}}</td><td>{{.Negative}}</td></tr></tbody></table>
+<p>원본 발견 항목 {{len .Entries}}건 · 별도 E③ 확정 {{len .ProductConfirmed}}건. 발견 0건은 검사 범위 전체의 안전을 뜻하지 않습니다.</p>
+<table><thead><tr><th>의심</th><th>확정</th><th>판단 불가</th><th>검증 미지원(의심에 포함)</th><th>미실행</th><th>확인 실패·결과 불명</th><th>부정</th></tr></thead>
+<tbody><tr><td>{{.Suspected}}</td><td>{{.Confirmed}}</td><td>{{.Inconclusive}}</td><td>{{.Unsupported}}</td><td>{{.NotExecuted}}</td><td>{{.Unknown}}</td><td>{{.Negative}}</td></tr></tbody></table>
 {{if or .ProductConfirmed .ProductSuspected .ProductUndecidable .ProductUnverified .ProductSourceUnavailable .ProductUnreadable}}<h3>제품 E③ 확정 단계</h3>
 <p>독립 확정 {{len .ProductConfirmed}}건{{if .ProductSealUnconfirmed}} · 그중 근거 봉인 미확인 {{.ProductSealUnconfirmed}}건{{end}}{{if or .ProductSuspected .ProductUndecidable}} · 의심 {{.ProductSuspected}}건 · 판정 불가 {{.ProductUndecidable}}건(확정에 세지 않음){{end}}{{if .ProductUnverified}} · 확인 실패 {{.ProductUnverified}}건(확정에 안 셈){{end}}{{if .ProductSourceUnavailable}} · 당시 원본 미확인 {{.ProductSourceUnavailable}}건(확정에 세지 않음){{end}}{{if .ProductUnreadable}} · 제품 확정 단계 판정을 읽지 못함({{.ProductUnreadable}}건, 확정에 세지 않음){{end}}</p>
 <ul>{{range .ProductConfirmed}}<li>제품 판정 {{.VerdictID}} · 자원 종류 {{.ResourceType}} · 근거 호출 {{.EvidenceCalls}}건{{if .SealUnconfirmedReason}} · 근거 봉인 미확인({{.SealUnconfirmedReason}}){{end}}</li>{{end}}</ul>{{end}}
@@ -581,8 +624,8 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 <h3>확정 결과 유형별 집계</h3><ul>{{range $key, $count := .ByType}}<li>{{$key}}: {{$count}}</li>{{end}}</ul>
 <h2>4장. 취약점별 상세 결과</h2><p>확정 항목과 검토 필요·미실행·불명·비취약 항목은 결과 구분을 기준으로 분리해서 검토하세요.</p>
 {{range .Entries}}<article id="{{.ID}}"><h3>{{.ID}} · {{.Title}}</h3>
-<dl><dt>유형</dt><dd>{{.VulnClass}}</dd><dt>결과 구분</dt><dd>{{.Outcome}}</dd>
-<dt>검증 방법</dt><dd>{{.Verification}}</dd><dt>심각도</dt><dd>{{.SeverityText}}</dd>{{if .SeverityRationale}}<dt>예상 심각도 근거 · 모델 제안</dt><dd>{{.SeverityRationale}}</dd>{{end}}<dt>처리/실행 상태</dt><dd>{{.Status}}</dd>
+<dl><dt>유형</dt><dd>{{.VulnClass}}</dd><dt>현재 판정</dt><dd>{{.VerdictText}}</dd><dt>원본 결과 구분</dt><dd>{{.Outcome}}</dd>
+<dt>검증 방법</dt><dd>{{.Verification}}</dd><dt>검증 결과·사유</dt><dd>{{if .AssessmentStatus}}{{.AssessmentStatus}} / {{.AssessmentReason}}{{else}}추가 검증 기록 없음{{end}}</dd><dt>심각도</dt><dd>{{.SeverityText}}</dd>{{if .SeverityRationale}}<dt>예상 심각도 근거 · 모델 제안</dt><dd>{{.SeverityRationale}}</dd>{{end}}<dt>원본 처리/실행 상태</dt><dd>{{.Status}}</dd>
 <dt>회차 / intent</dt><dd>{{if .Run}}{{.Run}}{{else}}회차 미기록{{end}} / {{if .IntentID}}{{.IntentID}}{{else}}intent 미기록{{end}}</dd><dt>관찰 시각</dt><dd>{{if .ObservedAt.IsZero}}미기록{{else}}{{.ObservedAt}}{{end}}</dd>
 <dt>증거 버전 / digest</dt><dd>{{.EvidenceVersion}} / {{.Digest}}</dd></dl>
 {{if .LanguageMixed}}<p>다른 언어 섞임: 모델이 쓴 이름·설명·조치·근거에 한자·가나가 섞여 있습니다. 섞인 부분을 짚어 한국어로 다시 쓰게 했지만 남았습니다.</p>{{end}}
@@ -642,6 +685,30 @@ func captureStatusLabel(status string) string {
 		return "현재 결속·이미지 검증 실패"
 	default:
 		return status
+	}
+}
+
+// VerdictText는 원본 처리 상태와 검증 판정을 혼합하지 않는 보고서용 표현이다.
+func (e DiagnosticEntry) VerdictText() string {
+	switch e.Outcome {
+	case "confirmed":
+		return "확정"
+	case "negative":
+		return "부정"
+	case "unknown":
+		return "판단 불가(확인 실패·결과 불명)"
+	case "not_executed":
+		return "의심(미실행)"
+	case "review":
+		if e.AssessmentStatus == "insufficient" {
+			return "판단 불가"
+		}
+		if e.AssessmentStatus == "unsupported" {
+			return "의심(검증 미지원)"
+		}
+		return "의심"
+	default:
+		return "판정 확인 불가"
 	}
 }
 

@@ -78,17 +78,20 @@ func TestPassiveV2ProductPostSaveAndRunningReportPostgres(t *testing.T) {
 		name, first, second          string
 		status                       int
 		confirmed, negative, pending int
+		verdictText, reason          string
 		sourceUnavailable            bool
 		cancelled                    bool
 		mixed                        bool
+		unsupported                  bool
 	}{
-		{"confirmed", "nosniff_missing", "nosniff_missing", 200, 1, 0, 0, false, false, false},
-		{"mixed", "nosniff_missing", "nosniff_missing", 200, 1, 0, 1, false, false, true},
-		{"normal", "nosniff_present", "nosniff_present", 404, 0, 1, 0, false, false, false},
-		{"conflict", "nosniff_missing", "nosniff_present", 404, 0, 0, 1, false, false, false},
-		{"missing", "nosniff_missing", "", 404, 0, 0, 1, false, false, false},
-		{"source-unavailable", "nosniff_missing", "nosniff_missing", 503, 0, 0, 1, true, false, false},
-		{"cancelled", "nosniff_missing", "nosniff_missing", 404, 0, 0, 1, false, true, false},
+		{"confirmed", "nosniff_missing", "nosniff_missing", 200, 1, 0, 0, "확정", "html_nosniff_missing_twice", false, false, false, false},
+		{"mixed", "nosniff_missing", "nosniff_missing", 200, 1, 0, 1, "확정", "html_nosniff_missing_twice", false, false, true, false},
+		{"normal", "nosniff_present", "nosniff_present", 200, 0, 1, 0, "부정", "html_nosniff_present_twice", false, false, false, false},
+		{"conflict", "nosniff_missing", "nosniff_present", 200, 0, 0, 1, "판단 불가", "observations_inconsistent", false, false, false, false},
+		{"missing", "nosniff_missing", "", 200, 0, 0, 1, "판단 불가", "independent_observation_missing", false, false, false, false},
+		{"source-unavailable", "nosniff_missing", "nosniff_missing", 200, 0, 0, 1, "판단 불가", "source_unavailable", true, false, false, false},
+		{"unsupported", "nosniff_missing", "nosniff_missing", 200, 0, 0, 1, "의심(검증 미지원)", "type_not_supported", false, false, false, true},
+		{"cancelled", "nosniff_missing", "nosniff_missing", 404, 0, 0, 1, "", "", false, true, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, f, request := trafficEvidenceServer(t)
@@ -100,9 +103,14 @@ func TestPassiveV2ProductPostSaveAndRunningReportPostgres(t *testing.T) {
 			if err := saveDiagnosisVerificationPolicy(t.Context(), s.m.pg.DB, taskID, passiveRunRef); err != nil {
 				t.Fatal(err)
 			}
-			candidateID := storePassiveCandidate(t, s, taskID, "html_nosniff_missing", tc.first, "")
+			claim := "html_nosniff_missing"
+			if tc.unsupported {
+				claim = ""
+			}
+			candidateID := storePassiveCandidate(t, s, taskID, claim, tc.first, "")
+			var otherCandidateID int64
 			if tc.mixed {
-				storePassiveCandidate(t, s, taskID, "server_version_banner", "2.8", "")
+				otherCandidateID = storePassiveCandidate(t, s, taskID, "server_version_banner", "2.8", "")
 			}
 			rows, err := s.m.ResolveTask(fmt.Sprint(taskID)).Store.ListDiagnosticCandidates(taskID, passiveRunRef, 2)
 			wantCandidates := 1
@@ -205,16 +213,28 @@ func TestPassiveV2ProductPostSaveAndRunningReportPostgres(t *testing.T) {
 			if got.Code != tc.status {
 				t.Fatalf("closed report %d: %s", got.Code, got.Body.String())
 			}
-			if tc.confirmed > 0 {
-				if !strings.Contains(got.Body.String(), "HTML 문서 보안 헤더 누락") {
-					t.Fatal("missing confirmed entry")
+			if tc.status == 200 {
+				if !strings.Contains(got.Body.String(), tc.verdictText) || !strings.Contains(got.Body.String(), tc.reason) {
+					t.Fatalf("missing verdict or reason: %s", tc.name)
 				}
-				if tc.mixed && strings.Contains(got.Body.String(), "Server 응답 헤더의 버전 노출") {
-					t.Fatal("unconfirmed candidate exported")
+				if !strings.Contains(got.Body.String(), "HTML 문서 보안 헤더 누락") {
+					if tc.confirmed > 0 {
+						t.Fatal("missing confirmed entry")
+					}
+				}
+				if !strings.Contains(got.Body.String(), fmt.Sprintf("candidate-%d", candidateID)) {
+					t.Fatal("original candidate omitted")
+				}
+				if tc.mixed && !strings.Contains(got.Body.String(), fmt.Sprintf("candidate-%d", otherCandidateID)) {
+					t.Fatal("unconfirmed candidate omitted")
 				}
 				word := request("GET", path+"&audience=internal&format=docx", "")
 				if word.Code != 200 {
 					t.Fatalf("docx %d", word.Code)
+				}
+				wordText := diagnosticWordText(t, wordParts(t, word.Body.Bytes())["word/document.xml"])
+				if !strings.Contains(wordText, tc.verdictText) || !strings.Contains(wordText, tc.reason) {
+					t.Fatalf("docx missing verdict or reason: %s", tc.name)
 				}
 				shared := request("GET", path+"&audience=shared", "")
 				if shared.Code != 200 || strings.Contains(shared.Body.String(), "모델 주장") {
@@ -260,6 +280,39 @@ func TestConfirmedReportProjectionKeepsE3Once(t *testing.T) {
 				t.Fatalf("projected=%t entries=%d E3=%d", got, len(data.Entries), len(data.ProductConfirmed))
 			}
 		})
+	}
+}
+
+func TestPassiveV2CompletedZeroFindingsReportPostgres(t *testing.T) {
+	s, f, request := trafficEvidenceServer(t)
+	stored, err := s.m.pg.GetFinding(f.FindingID)
+	if err != nil || stored.TaskID == nil {
+		t.Fatal(err)
+	}
+	taskID := *stored.TaskID
+	if _, err := s.m.pg.ExecContext(t.Context(), `DELETE FROM findings WHERE id=$1 AND task_id=$2`, f.FindingID, taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveDiagnosisVerificationPolicy(t.Context(), s.m.pg.DB, taskID, passiveRunRef); err != nil {
+		t.Fatal(err)
+	}
+	state := requestApprovalRunState{RunRef: passiveRunRef, Phase: "closed", Outcome: "completed", DrainComplete: true}
+	if err := saveDiagnosisRunRecordGoal(t.Context(), s.m.pg.DB, taskID, state, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	path := fmt.Sprintf("/api/report/diagnostic?task=%d", taskID)
+	for _, query := range []string{"&audience=internal", "&audience=shared", "&audience=internal&format=docx", "&audience=shared&format=docx"} {
+		got := request("GET", path+query, "")
+		if got.Code != 200 {
+			t.Fatalf("zero findings report %s: %d", query, got.Code)
+		}
+		body := got.Body.String()
+		if strings.Contains(query, "docx") {
+			body = diagnosticWordText(t, wordParts(t, got.Body.Bytes())["word/document.xml"])
+		}
+		if !strings.Contains(body, "원본 발견 항목 0건") || !strings.Contains(body, "안전을 뜻하지 않습니다") {
+			t.Fatalf("zero findings scope disclaimer absent: %s", query)
+		}
 	}
 }
 

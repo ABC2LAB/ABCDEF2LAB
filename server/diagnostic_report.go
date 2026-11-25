@@ -79,20 +79,27 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 		writeDiagnosticBusinessRuleReviews(w, data)
 		return
 	}
-	// 새 완료 회차의 취약점 보고서에는 확정 항목만 싣는다.
-	// 종료 기록과 이행점검이 읽는 원본 스냅샷은 그대로 둔다.
+	// v2의 정상 완료 보고서는 원본 후보와 검증 결과를 함께 싣는다. 조회 전에
+	// 종료 기록·정책·후보 근거를 검증했으며 원본 스냅샷은 변경하지 않는다.
 	if data.Run != nil && (data.Run.VerificationVersion == "passive/v1" || data.Run.VerificationVersion == diagnosisVerificationV2) {
-		if !projectConfirmedReport(&data) {
-			if data.Run.State == report.DiagnosticRunRunning {
-				writeErr(w, http.StatusConflict, "점검 진행 중이며 확정된 취약점 보고서는 아직 없습니다. 내부 검토 기록을 확인하세요.")
-				return
-			}
-			if data.Run.VerificationSourceUnavailable {
-				writeErr(w, http.StatusServiceUnavailable, "검증 원천을 확인할 수 없어 취약점 보고서를 생성하지 않았습니다.")
-				return
-			}
-			writeErr(w, http.StatusNotFound, "확정된 취약점이 없어 보고서를 생성하지 않았습니다. 점검 완료 기록에서 미완료 후보를 확인하세요.")
+		if data.Run.VerificationVersion == diagnosisVerificationV2 && data.Run.State == report.DiagnosticRunRunning {
+			writeErr(w, http.StatusConflict, "점검 진행 중이며 최종 보고서는 아직 없습니다. 내부 검토 기록을 확인하세요.")
 			return
+		}
+		if data.Run.VerificationVersion != diagnosisVerificationV2 || data.Run.State != report.DiagnosticRunCompleted {
+			// 기존 v1 및 정상 완료가 아닌 v2 회차의 출력 의미는 유지한다.
+			if !projectConfirmedReport(&data) {
+				if data.Run.State == report.DiagnosticRunRunning {
+					writeErr(w, http.StatusConflict, "점검 진행 중이며 확정된 취약점 보고서는 아직 없습니다. 내부 검토 기록을 확인하세요.")
+					return
+				}
+				if data.Run.VerificationSourceUnavailable {
+					writeErr(w, http.StatusServiceUnavailable, "검증 원천을 확인할 수 없어 취약점 보고서를 생성하지 않았습니다.")
+					return
+				}
+				writeErr(w, http.StatusNotFound, "확정된 취약점이 없어 보고서를 생성하지 않았습니다. 점검 완료 기록에서 미완료 후보를 확인하세요.")
+				return
+			}
 		}
 	}
 	data.Shared = audience != "internal"
@@ -252,7 +259,7 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 			severity = c.SuggestedSeverity
 		}
 		entry := report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", LanguageMixed: c.LanguageMixed, Run: c.RunRef, IntentID: c.IntentID, Title: c.Name, VulnClass: c.VulnClass, Severity: severity, SeveritySource: c.SeveritySource, SeverityRationale: c.SeverityRationale, Status: c.Classification, Verification: c.Verification, Outcome: outcome, Summary: c.Summary, Remediation: c.Remediation, Evidence: c.Evidence, EvidenceVersion: c.EvidenceVersion, Digest: c.EvidenceDigest, ObservedAt: c.ObservedAt, Truncated: c.OutputTruncated}
-		if out.Run != nil && (out.Run.VerificationVersion == "passive/v1" || out.Run.VerificationVersion == diagnosisVerificationV2) && out.Run.State != report.DiagnosticRunRunning && !out.Run.VerificationSourceUnavailable && c.RunRef == out.Run.RunRef {
+		if out.Run != nil && (out.Run.VerificationVersion == "passive/v1" || out.Run.VerificationVersion == diagnosisVerificationV2) && out.Run.State != report.DiagnosticRunRunning && c.RunRef == out.Run.RunRef {
 			a, found := assessments[c.ID]
 			if !found || a.EvidenceDigest != c.EvidenceDigest {
 				return out, errDiagnosticReportScope
@@ -267,7 +274,10 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 			if check.Status != a.Status || check.Reason != a.Reason || !equalStringSlices(check.Attempts, a.AttemptRefs) {
 				return out, errDiagnosticReportScope
 			}
-			entry.Status = check.Reason
+			entry.AssessmentStatus, entry.AssessmentReason = check.Status, check.Reason
+			if out.Run.VerificationVersion == "passive/v1" {
+				entry.Status = check.Reason // 기존 v1 출력 표현 유지
+			}
 			switch check.Status {
 			case candidateverify.Confirmed:
 				entry.Outcome, entry.Verification = "confirmed", "passive_observation_v1"
@@ -288,7 +298,13 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 				}
 			case candidateverify.Negative:
 				entry.Outcome = "negative"
-			case candidateverify.Insufficient, candidateverify.Unsupported:
+			case candidateverify.Insufficient:
+				if check.Reason == "source_unavailable" {
+					entry.Outcome = "unknown"
+				} else {
+					entry.Outcome = "review"
+				}
+			case candidateverify.Unsupported:
 				entry.Outcome = "review"
 			default:
 				return out, errDiagnosticReportScope
