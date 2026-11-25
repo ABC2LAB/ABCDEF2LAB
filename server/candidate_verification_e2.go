@@ -6,6 +6,7 @@ import (
 	"log"
 	"regexp"
 	"strconv"
+	"time"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2host"
@@ -124,6 +125,19 @@ func (r *E2HTTPRuntime) runSelectedCandidateActions(ctx context.Context, task *T
 			matched := err == nil && selectedVerifiedResult(result.Trusted, verified)
 			if !matched {
 				log.Printf("[candidate-e2] host verification unavailable: proof=%t matched=%t", err == nil, matched)
+				if err == nil {
+					e, c := verified.Event, verified.Checkpoint
+					log.Printf("[candidate-e2] proof comparison: stage=%t sequence=%t version=%t scope=%t policy=%t intent=%t ordinary=%t references=%t method=%t rule=%t decision=%t reason=%t status=%t forward=%t written=%t response=%t complete=%t audit=%t untruncated=%t sent=%t time=%t",
+						e.Stage == "result", e.Index > 0 && e.Index <= c.Sequence, e.Version == e2proxy.JournalVersionV3 && c.Version == e2proxy.JournalVersionV3,
+						e.Scope == result.Trusted.Execution.Scope && c.Scope == e.Scope, e.PolicyRevision == result.Trusted.Execution.PolicyRevision,
+						e.IntentID == result.Trusted.Call.IntentID, e.Program == "" && e.E3Audit == nil,
+						e.CallRef == result.Trusted.Call.CallRef && e.AttemptID == observation.AttemptRef && e.Sequence == observation.Sequence,
+						e.Method == observation.Method, e.RuleRef == observation.RuleRef, e.Decision == observation.Decision,
+						e.Reason == observation.Reason, e.StatusCode == observation.StatusCode,
+						e.ForwardAttempted == observation.ForwardAttempted, e.RequestWritten,
+						e.ResponseReceived, e.ResponseComplete == observation.ResponseComplete, e.AuditComplete == observation.AuditComplete,
+						!e.ResponseTruncated, !e.NotSent, selectedAuditTimeFollowsReceipt(e.At, observation.ObservedAt))
+				}
 				return nil, errCandidateE2Execution
 			}
 			result.Trusted.SelectedProof = &e2runner.SelectedAuditProof{Event: verified.Event, Checkpoint: verified.Checkpoint}
@@ -145,5 +159,17 @@ func selectedVerifiedResult(trusted e2runner.TrustedResult, verified e2host.Veri
 		e.Method == o.Method && e.RuleRef == o.RuleRef && e.Decision == o.Decision && e.Reason == o.Reason &&
 		e.StatusCode == o.StatusCode && e.ForwardAttempted == o.ForwardAttempted && e.RequestWritten && e.ResponseReceived &&
 		e.ResponseComplete == o.ResponseComplete && e.AuditComplete == o.AuditComplete && !e.ResponseTruncated && !e.NotSent &&
-		e.At.Equal(o.ObservedAt)
+		selectedAuditTimeFollowsReceipt(e.At, o.ObservedAt)
+}
+
+// The receipt is timestamped before it is appended; the v3 Host journal
+// stamps the authenticated event when it records it. Exact equality is not
+// valid even for the same call. A bounded, forward-only interval retains the
+// time consistency check without conflating those two clocks.
+func selectedAuditTimeFollowsReceipt(journalAt, receiptAt time.Time) bool {
+	if journalAt.IsZero() || receiptAt.IsZero() {
+		return false
+	}
+	delta := journalAt.Sub(receiptAt)
+	return delta >= 0 && delta <= 15*time.Second
 }

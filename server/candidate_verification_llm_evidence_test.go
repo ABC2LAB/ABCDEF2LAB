@@ -21,7 +21,7 @@ func TestSelectedObservationRequiresExactHostSealCheck(t *testing.T) {
 		Version: e2proxy.JournalVersionV3, Scope: scope, IntentID: 7, PolicyRevision: "revision-selected",
 		CallRef: "call-selected", AttemptID: "attempt-selected", Sequence: 1, Method: "GET", RuleRef: "rule-selected",
 		Decision: "allowed", Reason: e2proxy.Complete, ForwardAttempted: true, RequestWritten: true,
-		ResponseReceived: true, ResponseComplete: true, AuditComplete: true, StatusCode: 200, At: at,
+		ResponseReceived: true, ResponseComplete: true, AuditComplete: true, StatusCode: 200, At: at.Add(25 * time.Millisecond),
 	}}
 	cp := e2proxy.JournalCheckpoint{Version: e2proxy.JournalVersionV3, JournalID: "journal-selected", Sequence: 2,
 		MAC: strings.Repeat("a", 64), Scope: scope}
@@ -73,6 +73,12 @@ func TestSelectedObservationRequiresExactHostSealCheck(t *testing.T) {
 		},
 		"excluded":      func(_ *candidateverify.StoredObservationV2, s *db.SealCheckRecord) { s.Checks[0].Included = false },
 		"wrong journal": func(_ *candidateverify.StoredObservationV2, s *db.SealCheckRecord) { s.Head.JournalID = "other" },
+		"journal before receipt": func(r *candidateverify.StoredObservationV2, _ *db.SealCheckRecord) {
+			r.SelectedProof.Event.At = at.Add(-time.Millisecond)
+		},
+		"journal too late": func(r *candidateverify.StoredObservationV2, _ *db.SealCheckRecord) {
+			r.SelectedProof.Event.At = at.Add(16 * time.Second)
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			copyRow, copySeal := row, seal

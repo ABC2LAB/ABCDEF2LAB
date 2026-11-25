@@ -128,7 +128,7 @@ func selectedObservationSealed(row candidateverify.StoredObservationV2, seal db.
 		e.RuleRef != o.RuleRef || e.Decision != o.Decision || e.Reason != o.Reason ||
 		e.StatusCode != o.StatusCode || e.ForwardAttempted != o.ForwardAttempted ||
 		!e.RequestWritten || !e.ResponseReceived || e.ResponseComplete != o.ResponseComplete ||
-		e.AuditComplete != o.AuditComplete || e.ResponseTruncated || e.NotSent || !e.At.Equal(o.ObservedAt) ||
+		e.AuditComplete != o.AuditComplete || e.ResponseTruncated || e.NotSent || !selectedAuditTimeFollowsReceipt(e.At, o.ObservedAt) ||
 		cp.Version != e2proxy.JournalVersionV3 || cp.Scope != e.Scope ||
 		cp.JournalID != seal.Head.JournalID || cp.Sequence == 0 || cp.Sequence > seal.Head.Sequence {
 		return false
