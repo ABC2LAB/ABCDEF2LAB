@@ -875,4 +875,87 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 			t.Fatal("작업 없이 자산을 등록함")
 		}
 	})
+	// #912 러너 재현(11/25): 준비 서비스가 점검 도중 죽어 drainTask를 못 하면 그 작업이 paused=false로 남고, 새로 만든 준비
+	// 서버는 "다른 실행을 자동 복원하지 않는다" 검사로 시작을 거부했다. 새 작업을 결속하기 전에 그런 작업만 일시정지로 돌린다.
+	t.Run("interrupted-task-release", func(t *testing.T) {
+		create := func(goal string) int64 {
+			t.Helper()
+			made, err := PrepareFirstDiagnosisTask(ctx, pool, description, goal, profileID, 60)
+			if err != nil {
+				t.Fatal("끊김 시험 task 생성 실패")
+			}
+			return made.TaskID
+		}
+		state := func(id int64) (status string, paused, queued bool) {
+			t.Helper()
+			if err := installer.QueryRowContext(ctx, `SELECT status,paused,queued FROM tasks WHERE id=$1`, id).Scan(&status, &paused, &queued); err != nil {
+				t.Fatal("끊김 시험 task 조회 실패", err)
+			}
+			return status, paused, queued
+		}
+		// 강제 종료된 실행(감독자가 풀어 둔 채 죽음), 대기열에 남은 작업, 이미 끝난 작업.
+		killed, waiting, finished := create("Interrupted run."), create("Queued leftover."), create("Finished run.")
+		for _, q := range []struct {
+			query string
+			id    int64
+		}{
+			{`UPDATE tasks SET paused=false WHERE id=$1`, killed},
+			{`UPDATE tasks SET queued=true WHERE id=$1`, waiting},
+			{`UPDATE tasks SET paused=false,status='done' WHERE id=$1`, finished},
+		} {
+			if _, err := installer.ExecContext(ctx, q.query, q.id); err != nil {
+				t.Fatal("끊김 상태 준비 실패", err)
+			}
+		}
+		current := create("Prepare after the interrupted run.")
+		newServer := func() (*Server, error) {
+			t.Helper()
+			// 실제 준비 실행처럼 점검마다 새 관리자다(빈 목록이라 PG의 작업을 모두 읽는다). Close는 공유 pool을 닫으므로 하지 않는다.
+			fresh, err := NewFirstDiagnosisManager(ctx, dataDir, pool)
+			if err != nil {
+				t.Fatal("끊김 시험 관리자 생성 실패")
+			}
+			return NewFirstDiagnosisPreparationServerWithModel(ctx, fresh, skillDir, dataDir, keyDir, FirstDiagnosisModelOptions{LocalManifestPath: manifest, PlannerLimits: agent.E2HTTPPlannerLimits{MaxTurns: 2}})
+		}
+		if _, err := newServer(); err == nil {
+			t.Fatal("끊긴 작업이 남았는데 준비 서버가 시작됨(재현 조건이 안 맞음)")
+		}
+		if _, err := ReleaseInterruptedFirstDiagnosisTasks(ctx, pool, 0); err == nil {
+			t.Fatal("현재 작업 없이 정리함")
+		}
+		released, err := ReleaseInterruptedFirstDiagnosisTasks(ctx, pool, current)
+		if err != nil || released != 2 {
+			t.Fatalf("끊긴 작업 정리 released=%d err=%v", released, err)
+		}
+		for _, c := range []struct {
+			id             int64
+			status         string
+			paused, queued bool
+		}{
+			{killed, "created", true, false}, {waiting, "created", true, false}, {finished, "done", false, false}, {current, "created", true, false},
+		} {
+			if status, paused, queued := state(c.id); status != c.status || paused != c.paused || queued != c.queued {
+				t.Fatalf("task %d 정리 뒤 status=%s paused=%t queued=%t", c.id, status, paused, queued)
+			}
+		}
+		if again, err := ReleaseInterruptedFirstDiagnosisTasks(ctx, pool, current); err != nil || again != 0 {
+			t.Fatalf("두 번째 정리 released=%d err=%v", again, err)
+		}
+		server, err := newServer()
+		if err != nil {
+			t.Fatal("끊긴 작업 정리 뒤에도 준비 서버 시작 실패", err)
+		}
+		fresh, err := NewFirstDiagnosisSupervisor(ctx, server.m)
+		if err != nil || fresh.Attach(server) != nil {
+			t.Fatal("끊김 시험 준비 감독자 결속 실패")
+		}
+		cleanup, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		shutdown := fresh.Shutdown()
+		for _, finish := range []func(context.Context, *Server) error{shutdown.BlockAdmission, shutdown.CancelAndDrain, shutdown.CheckResults} {
+			if finish(cleanup, server) != nil {
+				t.Fatal("끊김 시험 준비 writer 정리 실패")
+			}
+		}
+	})
 }

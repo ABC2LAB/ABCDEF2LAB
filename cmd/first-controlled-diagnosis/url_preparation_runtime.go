@@ -349,6 +349,16 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		log.Print("첫 진단 대상 자산 등록 실패, 진단은 계속한다")
 	}
 	diagnostics.next("task_binding", "task_binding_failed")
+	// 재시작 정리: 강제 종료로 drain을 못 한 이전 실행의 작업이 남아 있으면 아래 준비 서버가 시작을 거부한다(#912 재현).
+	released, releaseErr := server.ReleaseInterruptedFirstDiagnosisTasks(ctx, pool, actual.TaskID)
+	if releaseErr != nil {
+		diagnostics.reason = "preparation_interrupted_task_release_failed"
+		_ = pool.Close()
+		return knownFailure("preparation_host_failed", true)
+	}
+	if released > 0 {
+		log.Printf("재시작 정리: 이전 실행이 마감하지 못한 작업 %d개를 일시정지 상태로 돌림", released)
+	}
 	taskID := strconv.FormatInt(actual.TaskID, 10)
 	flow, flowPool, err = b.createWorkflow(ctx, l, execution, taskID, check)
 	if err != nil {
