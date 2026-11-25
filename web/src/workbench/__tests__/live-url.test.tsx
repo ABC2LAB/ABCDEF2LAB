@@ -85,6 +85,7 @@ import {
   recheckUrl,
   resetUrl,
   runUrlAction,
+  STALE_BINDING_TEXT,
   URL_POLL_MS,
   UrlFeeds,
   urlGates,
@@ -3740,5 +3741,61 @@ describe("새 점검의 시작 확인 (제외 경로 검토 · 복사본/백업)
     expect(screen.getByText("시작 전 확인").nextElementSibling).toHaveTextContent(/^복사본\/백업 있음$/);
     view.rerender(<UrlFacts job={running} />);
     expect(screen.queryByText("시작 전 확인")).toBeNull();
+  });
+});
+
+describe("앞 설치 때 열린 탭의 저장 핸들(11/24 화면 VAmPI 발견 5)", () => {
+  // 소유 문맥은 사용자 이름의 해시라 재설치 · DB 초기화 뒤에도 같다 — 앞 설치 때 저장한 핸들이 그대로 통과하고 서버는 404 다
+  it("저장 핸들이 404 면 이어 보기를 풀고 안내한다 — 결과 불명으로 멈추지 않고 새 점검 · 범위 확인을 막지 않는다", async () => {
+    saveHandle();
+    u.readURLStatus.mockRejectedValue(new ApiError(404, "not_found"));
+    mount("new");
+    expect(await screen.findByText(STALE_BINDING_TEXT)).toBeInTheDocument();
+    const st = useUrl.getState();
+    expect(st.handle).toBeNull();
+    expect(st.uncertain).toBe(false);
+    expect(url.readURLHandle(owner)).toBeNull();
+    const gates = urlGates(st);
+    expect(gates.inputLocked).toBe(false);
+    expect(gates.canValidate).toBe(true);
+    // 다시 보내지 않는다(GET 만)
+    expect(u.createURLDraft).not.toHaveBeenCalled();
+    expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
+    // 풀린 뒤 새 초안을 만들 수 있다
+    u.readURLStatus.mockResolvedValue(ready);
+    await act(async () => {
+      await runUrlAction("validate", draft.input);
+    });
+    expect(u.createURLDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it("조회 선택만 404 면 선택만 풀고, 이 브라우저가 만든 다른 점검의 핸들은 남긴다", async () => {
+    saveHandle();
+    url.storeURLHandle({
+      kind: "recovered",
+      ownerContext: owner,
+      input: handle.input,
+      id: "prep-gone",
+      revision: 1,
+      sourceDigest: "d".repeat(64),
+      bindingLocked: true,
+    });
+    u.readURLStatus.mockRejectedValue(new ApiError(404, "not_found"));
+    mount("new");
+    expect(await screen.findByText(STALE_BINDING_TEXT)).toBeInTheDocument();
+    expect(u.readURLStatus).toHaveBeenCalledWith("prep-gone", owner, expect.any(AbortSignal));
+    expect(url.readURLSelection(owner)).toBeNull();
+    expect(url.readURLHandle(owner)).toMatchObject({ id: handle.id, creationKey: handle.creationKey });
+    expect(useUrl.getState().uncertain).toBe(false);
+  });
+
+  it("404 가 아닌 실패(503 · 연결)는 지금처럼 결과 불명으로 두고 핸들을 지우지 않는다", async () => {
+    saveHandle();
+    u.readURLStatus.mockRejectedValue(new ApiError(503, "preparation_service_unavailable"));
+    mount("new");
+    await waitFor(() => expect(useUrl.getState().busy).toBe(false));
+    expect(screen.queryByText(STALE_BINDING_TEXT)).toBeNull();
+    expect(useUrl.getState().uncertain).toBe(true);
+    expect(url.readURLHandle(owner)).not.toBeNull();
   });
 });
