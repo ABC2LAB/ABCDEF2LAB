@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
+	"github.com/Autumn-27/artex/report"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 	"golang.org/x/crypto/bcrypt"
@@ -876,15 +878,16 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 		}
 	})
 	// #912 러너 재현(11/25): 준비 서비스가 점검 도중 죽어 drainTask를 못 하면 그 작업이 paused=false로 남고, 새로 만든 준비
-	// 서버는 "다른 실행을 자동 복원하지 않는다" 검사로 시작을 거부했다. 새 작업을 결속하기 전에 그런 작업만 일시정지로 돌린다.
+	// 서버는 "다른 실행을 자동 복원하지 않는다" 검사로 시작을 거부했다. 이전 회차가 결속했다고 기록된 작업만 마감 상태로
+	// 돌리고 끊김 표지를 남긴다. 기록에 없는 작업은 그대로 두어 준비 서버가 계속 거부한다(#927 이동찬 P1).
 	t.Run("interrupted-task-release", func(t *testing.T) {
-		create := func(goal string) int64 {
+		create := func(goal string) FirstDiagnosisPreparedTask {
 			t.Helper()
 			made, err := PrepareFirstDiagnosisTask(ctx, pool, description, goal, profileID, 60)
 			if err != nil {
 				t.Fatal("끊김 시험 task 생성 실패")
 			}
-			return made.TaskID
+			return made
 		}
 		state := func(id int64) (status string, paused, queued bool) {
 			t.Helper()
@@ -893,22 +896,43 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 			}
 			return status, paused, queued
 		}
-		// 강제 종료된 실행(감독자가 풀어 둔 채 죽음), 대기열에 남은 작업, 이미 끝난 작업, 지운 작업.
-		killed, waiting, finished, deleted := create("Interrupted run."), create("Queued leftover."), create("Finished run."), create("Deleted run.")
+		markers := func(task FirstDiagnosisPreparedTask) int {
+			t.Helper()
+			var n int
+			if err := installer.QueryRowContext(ctx, `SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND kind='fact' AND origin=$2`, task.ExplorationID, FirstDiagnosisInterruptedOrigin).Scan(&n); err != nil {
+				t.Fatal("끊김 표지 조회 실패", err)
+			}
+			return n
+		}
+		// 결속 기록에 있는 것: 강제 종료된 회차(감독자가 풀어 둔 채 죽음)·대기열 잔여·이미 끝난 작업·지운 작업·탐색 ID가
+		// 다른 기록. 결속 기록에 없는 것: 다른 실행·대기 작업.
+		killed, waiting, finished, deleted, mismatched := create("Interrupted run."), create("Queued leftover."), create("Finished run."), create("Deleted run."), create("Mismatched record.")
+		otherRun, otherQueued := create("Unrelated running task."), create("Unrelated queued task.")
 		for _, q := range []struct {
 			query string
 			id    int64
 		}{
-			{`UPDATE tasks SET paused=false WHERE id=$1`, killed},
-			{`UPDATE tasks SET queued=true WHERE id=$1`, waiting},
-			{`UPDATE tasks SET paused=false,status='done' WHERE id=$1`, finished},
-			{`UPDATE tasks SET paused=false,deleted_at=now() WHERE id=$1`, deleted},
+			{`UPDATE tasks SET paused=false WHERE id=$1`, killed.TaskID},
+			{`UPDATE tasks SET queued=true WHERE id=$1`, waiting.TaskID},
+			{`UPDATE tasks SET paused=false,status='done' WHERE id=$1`, finished.TaskID},
+			{`UPDATE tasks SET paused=false,deleted_at=now() WHERE id=$1`, deleted.TaskID},
+			{`UPDATE tasks SET paused=false WHERE id=$1`, mismatched.TaskID},
+			{`UPDATE tasks SET paused=false WHERE id=$1`, otherRun.TaskID},
+			{`UPDATE tasks SET queued=true WHERE id=$1`, otherQueued.TaskID},
 		} {
 			if _, err := installer.ExecContext(ctx, q.query, q.id); err != nil {
 				t.Fatal("끊김 상태 준비 실패", err)
 			}
 		}
 		current := create("Prepare after the interrupted run.")
+		bound := func(tasks ...FirstDiagnosisPreparedTask) []FirstDiagnosisBoundTask {
+			out := make([]FirstDiagnosisBoundTask, 0, len(tasks))
+			for _, task := range tasks {
+				out = append(out, FirstDiagnosisBoundTask{TaskID: task.TaskID, ExplorationID: task.ExplorationID})
+			}
+			return out
+		}
+		previous := append(bound(killed, waiting, finished, deleted), FirstDiagnosisBoundTask{TaskID: mismatched.TaskID, ExplorationID: otherRun.ExplorationID})
 		newServer := func() (*Server, error) {
 			t.Helper()
 			// 실제 준비 실행처럼 점검마다 새 관리자다(빈 목록이라 PG의 작업을 모두 읽는다). Close는 공유 pool을 닫으므로 하지 않는다.
@@ -921,26 +945,66 @@ func TestFirstDiagnosisPreparationOwnedPostgres(t *testing.T) {
 		if _, err := newServer(); err == nil {
 			t.Fatal("끊긴 작업이 남았는데 준비 서버가 시작됨(재현 조건이 안 맞음)")
 		}
-		if _, err := ReleaseInterruptedFirstDiagnosisTasks(ctx, pool, 0); err == nil {
-			t.Fatal("현재 작업 없이 정리함")
+		for name, args := range map[string]struct {
+			current  int64
+			previous []FirstDiagnosisBoundTask
+		}{
+			"no-current":       {0, previous},
+			"current-in-list":  {current.TaskID, bound(current)},
+			"invalid-previous": {current.TaskID, []FirstDiagnosisBoundTask{{TaskID: killed.TaskID}}},
+		} {
+			if _, err := ReleaseInterruptedFirstDiagnosisTasks(ctx, pool, args.current, args.previous); err == nil {
+				t.Fatalf("%s: 잘못된 입력으로 정리함", name)
+			}
 		}
-		released, err := ReleaseInterruptedFirstDiagnosisTasks(ctx, pool, current)
+		if released, err := ReleaseInterruptedFirstDiagnosisTasks(ctx, pool, current.TaskID, nil); err != nil || released != 0 {
+			t.Fatalf("결속 기록 없이 정리 released=%d err=%v", released, err)
+		}
+		released, err := ReleaseInterruptedFirstDiagnosisTasks(ctx, pool, current.TaskID, previous)
 		if err != nil || released != 2 {
 			t.Fatalf("끊긴 작업 정리 released=%d err=%v", released, err)
 		}
 		for _, c := range []struct {
-			id             int64
+			task           FirstDiagnosisPreparedTask
 			status         string
 			paused, queued bool
+			markers        int
 		}{
-			{killed, "created", true, false}, {waiting, "created", true, false}, {finished, "done", false, false}, {deleted, "created", false, false}, {current, "created", true, false},
+			{killed, "created", true, false, 1}, {waiting, "created", true, false, 1}, {finished, "done", false, false, 0},
+			{deleted, "created", false, false, 0}, {mismatched, "created", false, false, 0},
+			{otherRun, "created", false, false, 0}, {otherQueued, "created", true, true, 0}, {current, "created", true, false, 0},
 		} {
-			if status, paused, queued := state(c.id); status != c.status || paused != c.paused || queued != c.queued {
-				t.Fatalf("task %d 정리 뒤 status=%s paused=%t queued=%t", c.id, status, paused, queued)
+			if status, paused, queued := state(c.task.TaskID); status != c.status || paused != c.paused || queued != c.queued {
+				t.Fatalf("task %d 정리 뒤 status=%s paused=%t queued=%t", c.task.TaskID, status, paused, queued)
+			}
+			if got := markers(c.task); got != c.markers {
+				t.Fatalf("task %d 끊김 표지 %d개, 기대 %d", c.task.TaskID, got, c.markers)
 			}
 		}
-		if again, err := ReleaseInterruptedFirstDiagnosisTasks(ctx, pool, current); err != nil || again != 0 {
+		// 결속 기록에 없는 작업이 남았으므로 준비 서버는 계속 거부한다.
+		if _, err := newServer(); err == nil {
+			t.Fatal("결속 기록에 없는 실행·대기 작업이 남았는데 준비 서버가 시작됨")
+		}
+		// 보고서는 끊긴 작업을 진행 중·완료가 아니라 고정 사유로 보인다. 표지 없는 작업은 종료 기록 없음 그대로다.
+		tx, err := pool.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		interrupted, errA := readDiagnosticRun(ctx, tx, killed.TaskID)
+		untouched, errB := readDiagnosticRun(ctx, tx, otherRun.TaskID)
+		_ = tx.Rollback()
+		if errA != nil || errB != nil || interrupted == nil || interrupted.State != report.DiagnosticRunInterrupted || untouched != nil ||
+			report.DiagnosticRunText(interrupted) != "준비 서비스 종료로 중단됨(실행 결과를 확인하지 못함)" {
+			t.Fatalf("끊김 표지 보고서 읽기 interrupted=%+v untouched=%+v", interrupted, untouched)
+		}
+		if again, err := ReleaseInterruptedFirstDiagnosisTasks(ctx, pool, current.TaskID, previous); err != nil || again != 0 || markers(killed) != 1 {
 			t.Fatalf("두 번째 정리 released=%d err=%v", again, err)
+		}
+		// 다른 실행의 주인이 그 작업을 마감한 뒤에는 준비 서버가 시작된다.
+		for _, id := range []int64{otherRun.TaskID, otherQueued.TaskID, mismatched.TaskID} {
+			if _, err := installer.ExecContext(ctx, `UPDATE tasks SET paused=true,queued=false WHERE id=$1`, id); err != nil {
+				t.Fatal("다른 작업 마감 실패", err)
+			}
 		}
 		server, err := newServer()
 		if err != nil {
