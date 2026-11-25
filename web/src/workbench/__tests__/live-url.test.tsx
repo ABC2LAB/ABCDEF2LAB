@@ -4058,7 +4058,8 @@ describe("진행 화면 계정 경고(최민준 요청 11/25 — #936 account_au
     const rows = within(box).getAllByRole("listitem");
     expect(rows).toHaveLength(1);
     expect(rows[0].textContent).toMatch(/^B\(rh_tester_b\) 로그인 실패 — 세션을 받지 못함 \(\d{2}:\d{2}\)$/);
-    expect(box).toHaveTextContent("인증 안 된 계정의 요청은 익명으로 나갑니다");
+    expect(box).toHaveTextContent("인증 안 된 계정은 세션이 없어 그 계정으로는 요청하지 못합니다");
+    expect(box).not.toHaveTextContent("익명으로 나갑니다");
     expect(box).toHaveTextContent("test_accounts_unavailable");
     expect(box).not.toHaveTextContent("rh_tester_a");
   });
@@ -4073,6 +4074,18 @@ describe("진행 화면 계정 경고(최민준 요청 11/25 — #936 account_au
     fireEvent.click(within(box).getByRole("button", { name: "로그인 방식 등록" }));
     expect(goTo).toHaveBeenCalledWith("classify");
     expect(useWb.getState().focusTarget?.id).toBe("t1");
+  });
+
+  it("이미 로그인을 시도한 점검(account_auth 있음)은 로그인 방식 경고를 띄우지 않는다(#941 최민준 P3)", async () => {
+    saveHandle();
+    serveAccounts(true);
+    u.readURLStatus.mockResolvedValue(withAuth({ rh_tester_a: "authenticated", rh_tester_b: "not_sent" }));
+    mount("live");
+    expect(await screen.findByTestId("account-auth-warning")).toBeInTheDocument();
+    expect(screen.queryByTestId("login-method-warning")).toBeNull();
+    expect(
+      vi.mocked(teamApi.apiFetch).mock.calls.some(([p]) => String(p).startsWith("/api/product/targets/resolve")),
+    ).toBe(false);
   });
 
   it("account_auth 칸 없음 → 아무것도 안 띄움", async () => {
