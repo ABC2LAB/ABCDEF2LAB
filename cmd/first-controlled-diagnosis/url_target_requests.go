@@ -33,7 +33,6 @@ const (
 // 탐색 요청 수 상태.
 const (
 	explorationNone    = "none"    // 이 회차에 탐색 단계가 없다고 기록했다(0건). 기록이 없으면 이 값이 아니라 모름이다.
-	explorationPending = "pending" // 탐색 단계가 있지만 아직 시작 전이다(지금까지 0건).
 	explorationRunning = "running" // 탐색 중이다. 경계가 지금 수를 보고하면 그 값, 못 하면 모름.
 	explorationClosed  = "closed"  // 경계가 세션 마감을 확정한 수다.
 	explorationNotRun  = "not_run" // 탐색을 열지 않고 끝났다(0건).
@@ -53,7 +52,7 @@ func (r explorationRequestsRecord) valid() bool {
 	switch r.State {
 	case explorationRunning, explorationUnknown:
 		return r.TargetRequests == nil
-	case explorationNone, explorationPending, explorationNotRun:
+	case explorationNone, explorationNotRun:
 		return r.TargetRequests != nil && *r.TargetRequests == 0
 	case explorationClosed:
 		return r.TargetRequests != nil
@@ -180,7 +179,9 @@ func explorationNow(ctx context.Context, record explorationRequestsRecord, jobID
 }
 
 // recordExplorationStage는 탐색 단계 시작·끝을 기록한다. 기록 실패는 화면 총계만 모르게 하므로 진단을 멈추지 않는다.
-// 쓰지 못하면 앞 단계 기록을 지운다. 그래야 지난 pending(0건)이 탐색 중·뒤에 확정 0으로 읽히지 않고 모름이 된다(#929 P2).
+// 바뀔 수 있는 기록(running)에는 수를 담지 않는다: 시작 전에는 기록이 없고(모름), 시작 때 running, 끝날 때 확정 상태를 쓴다.
+// 끝 기록을 쓰지도 지우지도 못하면 running이 남아 경계 조회나 모름이 되므로, 지난 단계가 확정 수로 읽히는 길이 없다(#929 이동찬
+// P2 두 번). none은 탐색 단계가 없는 회차가 한 번만 쓰고 바뀌지 않는다. 쓰지 못하면 앞 기록을 지워 본다(지우기 실패는 로그).
 func recordExplorationStage(stateDir string, r explorationRequestsRecord) {
 	err := writeExplorationRequests(stateDir, r)
 	if err == nil {

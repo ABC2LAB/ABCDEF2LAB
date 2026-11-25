@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -108,7 +106,7 @@ func TestE2FlowTargetRequestsMatchJournalAndExplorationRecord(t *testing.T) {
 func TestE2FlowTargetRequestsExplorationStates(t *testing.T) {
 	model, login := writtenAttempts(targetRequestEvents())
 	written := uint64(model + login)
-	pending, notRun, unknown := explorationKnown(explorationPending, 0), explorationKnown(explorationNotRun, 0), explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationUnknown}
+	notRun, unknown := explorationKnown(explorationNotRun, 0), explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationUnknown}
 	none := explorationKnown(explorationNone, 0)
 	running := explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationRunning}
 	liveThree := func(ctx context.Context, job string) (uint64, bool) { return 3, job == liveJob && ctx.Err() == nil }
@@ -123,7 +121,6 @@ func TestE2FlowTargetRequestsExplorationStates(t *testing.T) {
 		"no-exploration-stage": {record: &none, state: explorationNone, exploration: 0},
 		// 기록이 없으면(쓰기 실패·이 칸 이전 회차) 탐색 단계 없음이 아니라 모름이다(#929 이동찬 P2).
 		"no-record":            {state: explorationUnknown, exploration: -1},
-		"pending":              {record: &pending, state: explorationPending, exploration: 0},
 		"not-run":              {record: &notRun, state: explorationNotRun, exploration: 0},
 		"running-live":         {record: &running, live: liveThree, state: explorationRunning, exploration: 3},
 		"running-no-boundary":  {record: &running, live: noLive, state: explorationRunning, exploration: -1},
@@ -169,7 +166,8 @@ func TestExplorationResultRecordKeepsOnlyBoundaryConfirmedCounts(t *testing.T) {
 	for _, bad := range []explorationRequestsRecord{
 		{Format: "other", State: explorationClosed, TargetRequests: &three},
 		{Format: explorationRequestsFormat, State: explorationRunning, TargetRequests: &three},
-		{Format: explorationRequestsFormat, State: explorationPending, TargetRequests: &three},
+		{Format: explorationRequestsFormat, State: "pending", TargetRequests: &three},
+		{Format: explorationRequestsFormat, State: "pending", TargetRequests: new(uint64)},
 		{Format: explorationRequestsFormat, State: explorationClosed},
 		{Format: explorationRequestsFormat, State: explorationNone},
 		{Format: explorationRequestsFormat, State: explorationNone, TargetRequests: &three},
@@ -199,31 +197,45 @@ func TestTargetRequestsKeepUnknownProgramOutOfBreakdown(t *testing.T) {
 	}
 }
 
-// 단계 기록을 쓰지 못하면 앞 단계 기록을 지워, 탐색 중·뒤에 지난 pending(0건)이 확정 0으로 읽히지 않게 한다(#929 이동찬 P2).
-func TestExplorationStageWriteFailureReadsUnknown(t *testing.T) {
+// 단계 기록을 쓰지 못하면 수를 확정으로 보이지 않는다(#929 이동찬 P2 두 번). 시작 전에는 기록이 없어 모름이고, 탐색 중
+// 기록(running)에는 수가 없다. 끝 기록을 쓰지도 지우지도 못해 running이 남아도 확정 0이 되지 않는다.
+func TestExplorationStageWriteFailureNeverReadsKnownCount(t *testing.T) {
 	runsDir, policy := liveRunFixture(t, func(add func(e2proxy.Event)) {
 		for _, e := range targetRequestEvents() {
 			add(e)
 		}
 	})
-	recordExplorationStage(policy.StateDir, explorationKnown(explorationPending, 0))
-	if got := targetRequestsGet(t, runsDir, nil); got.ExplorationState != explorationPending || got.Exploration == nil || *got.Exploration != 0 {
-		t.Fatalf("시작 전 기록 %+v", got)
+	unknownTotal := func(state string) {
+		t.Helper()
+		got := targetRequestsGet(t, runsDir, nil)
+		if got.ExplorationState != state || got.Exploration != nil || got.Total != nil {
+			t.Fatalf("탐색 수를 숫자로 보임(기대 %s) %+v", state, got)
+		}
 	}
-	// 임시 파일 자리를 디렉터리로 막아 다음 단계 기록 쓰기를 실패시킨다.
-	if err := os.Mkdir(filepath.Join(policy.StateDir, explorationRequestsFile+".tmp"), 0o700); err != nil {
+	unknownTotal(explorationUnknown) // 시작 전: 기록 없음
+	// 시작 기록을 못 쓰면(임시 파일 자리를 막음) 기록이 없고 모름이다.
+	block := filepath.Join(policy.StateDir, explorationRequestsFile+".tmp")
+	if err := os.Mkdir(block, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	recordExplorationStage(policy.StateDir, explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationRunning})
-	if _, err := os.Stat(filepath.Join(policy.StateDir, explorationRequestsFile)); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("쓰기 실패 뒤 지난 기록이 남음 err=%v", err)
+	unknownTotal(explorationUnknown)
+	if err := os.Remove(block); err != nil {
+		t.Fatal(err)
 	}
-	got := targetRequestsGet(t, runsDir, nil)
-	if got.ExplorationState != explorationUnknown || got.Exploration != nil || got.Total != nil {
-		t.Fatalf("쓰기 실패 뒤 탐색 수를 숫자로 보임 %+v", got)
+	recordExplorationStage(policy.StateDir, explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationRunning})
+	unknownTotal(explorationRunning)
+	if os.Geteuid() == 0 {
+		t.Skip("root는 디렉터리 권한을 무시해 쓰기·지우기 실패를 만들 수 없음")
 	}
+	// 상태 디렉터리를 읽기만 가능하게 해 끝 기록 쓰기와 지우기를 둘 다 실패시킨다. 남은 running은 확정 수가 아니다.
+	if err := os.Chmod(policy.StateDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(policy.StateDir, 0o700) })
 	recordExplorationStage(policy.StateDir, explorationKnown(explorationClosed, 4))
-	if got := targetRequestsGet(t, runsDir, nil); got.ExplorationState != explorationUnknown || got.Total != nil {
-		t.Fatalf("끝 기록도 실패하면 모름 %+v", got)
+	if _, err := os.Stat(filepath.Join(policy.StateDir, explorationRequestsFile)); err != nil {
+		t.Fatalf("읽기 전용인데 기록이 사라짐 err=%v", err)
 	}
+	unknownTotal(explorationRunning)
 }

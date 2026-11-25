@@ -88,7 +88,6 @@ func (b *urlPreparationRuntime) productExplorationStage(l *urlLoadedProfile, e d
 		recordExplorationStage(stateDir, explorationKnown(explorationNone, 0))
 		return nil
 	}
-	recordExplorationStage(stateDir, explorationKnown(explorationPending, 0))
 	return func(host *server.Server) server.E2HTTPExplorationStage {
 		return func(ctx context.Context, task *server.Task) (server.ExplorationCharge, error) {
 			if task == nil || task.ID != taskID {
