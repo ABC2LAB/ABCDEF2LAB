@@ -216,6 +216,12 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 				verdict = "판정 없음"
 			}
 			w.paragraph("Normal", fmt.Sprintf("최근 선택 검증: %s · %s · %s · %s · 요청 %s", v.State, verdict, v.Reason, v.Method, v.RequestedAt.UTC().Format(time.RFC3339)))
+			if v.InitialVerdict != "" {
+				w.paragraph("Normal", "최초 자동 검증: "+v.InitialVerdict+" · "+v.InitialReason)
+			}
+			for _, source := range v.Sources {
+				w.paragraph("Normal", "추가 감사 관찰: 호출 "+source.CallRef+" · 시도 "+source.AttemptRef+" · digest "+source.ObservationDigest)
+			}
 		}
 		if review := e.BusinessRuleReview; review != nil {
 			w.paragraph("Heading2", "업무 규칙 미확인 · 판정 보류")

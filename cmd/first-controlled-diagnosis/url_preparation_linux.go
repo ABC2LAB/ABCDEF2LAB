@@ -170,7 +170,7 @@ func runURLPreparationService(ctx context.Context, args []string, stdout, stderr
 	backend.endpoint = service
 	var ipcEndpoint diagnosisprep.Endpoint = service
 	if backend.product != nil {
-		ipcEndpoint = productPreparationEndpoint{base: service, product: backend.product}
+		ipcEndpoint = productPreparationEndpoint{base: service, product: backend.product, backend: backend}
 		defer backend.product.targets.Close()
 	}
 	ipc, err := diagnosisprep.ListenUnix(ctx, backend.config.SocketPath, ipcEndpoint)
@@ -192,6 +192,9 @@ func runURLPreparationService(ctx context.Context, args []string, stdout, stderr
 	httpServer := &http.Server{Handler: backend, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32 << 10}
 	serving := make(chan error, 1)
 	go func() { serving <- httpServer.Serve(listener) }()
+	if backend.product != nil && backend.recoverCandidateVerifications(ctx) != nil {
+		log.Print("[candidate-verification] recovery state unavailable; no execution replayed")
+	}
 	outputErr := json.NewEncoder(stdout).Encode(map[string]any{"service_ready": true, "mode": "url_preparation", "execution": "EXPLICIT_START_REQUIRED", "storage": "durable"})
 	var serveErr error
 	restart := false
@@ -212,6 +215,7 @@ func runURLPreparationService(ctx context.Context, args []string, stdout, stderr
 	closeErr = errors.Join(closeErr, service.Shutdown(cleanup))
 	httpErr := httpServer.Shutdown(cleanup)
 	if httpErr == nil {
+		closeErr = errors.Join(closeErr, backend.waitCandidateWorkers(cleanup))
 		closeErr = errors.Join(closeErr, backend.closeReports())
 	}
 	if restart {

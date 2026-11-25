@@ -118,7 +118,13 @@ type DiagnosticEntry struct {
 // 처리 상태다. 최초 판정과 종료 기록의 수치를 변경하지 않는다.
 type DiagnosticLatestVerification struct {
 	State, Verdict, Reason, Method, EvidenceDigest string
+	InitialVerdict, InitialReason                  string
+	Sources                                        []DiagnosticVerificationSourceRef
 	RequestedAt                                    time.Time
+}
+
+type DiagnosticVerificationSourceRef struct {
+	CallRef, AttemptRef, ObservationDigest string
 }
 
 // 자격정보 형식·연락처를 보수적으로 제거한다. 공유 사본은 자유문장 전체를 가린다.
@@ -236,10 +242,10 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		seen[e.ID] = true
-		if (e.Kind != "candidate" && e.Kind != "finding" && e.Kind != "verdict") || !strings.HasPrefix(e.ID, e.Kind+"-") || (e.Verification != "stored_verification" && e.Verification != "manual_review_required" && e.Verification != "passive_observation_v1" && e.Verification != "passive_observation_v2") {
+		if (e.Kind != "candidate" && e.Kind != "finding" && e.Kind != "verdict") || !strings.HasPrefix(e.ID, e.Kind+"-") || (e.Verification != "stored_verification" && e.Verification != "manual_review_required" && e.Verification != "passive_observation_v1" && e.Verification != "passive_observation_v2" && e.Verification != "active_observation_v1") {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
-		if (e.Verification == "passive_observation_v1" || e.Verification == "passive_observation_v2") && e.Outcome != "confirmed" {
+		if (e.Verification == "passive_observation_v1" || e.Verification == "passive_observation_v2" || e.Verification == "active_observation_v1") && e.Outcome != "confirmed" {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		if e.AssessmentStatus != "" {
@@ -271,10 +277,41 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		}
 		if e.LatestVerification != nil {
 			latest := *e.LatestVerification
-			if e.Kind != "candidate" || in.Run == nil || in.Run.VerificationVersion != "passive/v2" || latest.Method != "stored/v1" || latest.EvidenceDigest != e.Digest || latest.RequestedAt.IsZero() || latest.Reason == "" || latest.State != "completed" || latest.Verdict != e.AssessmentStatus {
+			if e.Kind != "candidate" || in.Run == nil || in.Run.VerificationVersion != "passive/v2" || latest.EvidenceDigest != e.Digest || latest.RequestedAt.IsZero() || latest.Reason == "" {
+				return DiagnosticReport{}, ErrExportBlocked
+			}
+			switch latest.Method {
+			case "stored/v1":
+				if latest.State != "completed" || latest.Verdict != e.AssessmentStatus || latest.InitialVerdict != "" || latest.InitialReason != "" || len(latest.Sources) != 0 {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
+			case "active/v1":
+				if latest.InitialVerdict == "" || latest.InitialReason == "" || len(latest.Sources) > 2 {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
+				if latest.State == "completed" {
+					if latest.Verdict != e.AssessmentStatus ||
+						((latest.Verdict == "confirmed" || latest.Verdict == "negative") && len(latest.Sources) != 2) ||
+						(latest.Verdict == "confirmed" && (e.Verification != "active_observation_v1" || e.Outcome != "confirmed")) ||
+						(latest.Verdict == "negative" && e.Outcome != "negative") ||
+						(latest.Verdict == "insufficient" && e.Outcome != "review") {
+						return DiagnosticReport{}, ErrExportBlocked
+					}
+				} else if latest.Verdict != "" || len(latest.Sources) != 0 || e.Outcome == "confirmed" && e.Verification == "active_observation_v1" {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
+				seenCalls, seenAttempts := map[string]bool{}, map[string]bool{}
+				for _, source := range latest.Sources {
+					if source.CallRef == "" || source.AttemptRef == "" || len(source.ObservationDigest) != 64 || seenCalls[source.CallRef] || seenAttempts[source.AttemptRef] {
+						return DiagnosticReport{}, ErrExportBlocked
+					}
+					seenCalls[source.CallRef], seenAttempts[source.AttemptRef] = true, true
+				}
+			default:
 				return DiagnosticReport{}, ErrExportBlocked
 			}
 			latest.Reason = DiagnosticText(latest.Reason)
+			latest.InitialReason = DiagnosticText(latest.InitialReason)
 			e.LatestVerification = &latest
 		}
 		switch e.Outcome {
@@ -284,8 +321,15 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			if e.AssessmentStatus != "" {
 				verificationReason = e.AssessmentReason
 			}
-			passiveCandidate := e.Kind == "candidate" && in.Run != nil && ((e.Verification == "passive_observation_v1" && in.Run.VerificationVersion == "passive/v1") || (e.Verification == "passive_observation_v2" && in.Run.VerificationVersion == "passive/v2")) &&
-				((verificationReason == "html_nosniff_missing_twice" && e.VulnClass == "security_headers") || (verificationReason == "server_version_banner_twice" && e.VulnClass == "information_disclosure"))
+			legacyPassiveCandidate := ((e.Verification == "passive_observation_v1" && in.Run != nil && in.Run.VerificationVersion == "passive/v1") ||
+				(e.Verification == "passive_observation_v2" && in.Run != nil && in.Run.VerificationVersion == "passive/v2")) &&
+				((verificationReason == "html_nosniff_missing_twice" && e.VulnClass == "security_headers") ||
+					(verificationReason == "server_version_banner_twice" && e.VulnClass == "information_disclosure"))
+			activeCandidate := e.Verification == "active_observation_v1" && in.Run != nil && in.Run.VerificationVersion == "passive/v2" &&
+				e.LatestVerification != nil && e.LatestVerification.State == "completed" && e.LatestVerification.Verdict == "confirmed" &&
+				((verificationReason == "html_nosniff_missing_followup_twice" && e.VulnClass == "security_headers") ||
+					(verificationReason == "server_version_banner_followup_twice" && e.VulnClass == "information_disclosure"))
+			passiveCandidate := e.Kind == "candidate" && (legacyPassiveCandidate || activeCandidate)
 			if !legacyFinding && !passiveCandidate || e.Stale {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
@@ -642,7 +686,7 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 {{range .Entries}}<article id="{{.ID}}"><h3>{{.ID}} · {{.Title}}</h3>
 <dl><dt>유형</dt><dd>{{.VulnClass}}</dd><dt>현재 판정</dt><dd>{{.VerdictText}}</dd><dt>원본 결과 구분</dt><dd>{{.Outcome}}</dd>
 <dt>검증 방법</dt><dd>{{.Verification}}</dd><dt>검증 결과·사유</dt><dd>{{if .AssessmentStatus}}{{.AssessmentStatus}} / {{.AssessmentReason}}{{else}}추가 검증 기록 없음{{end}}</dd><dt>심각도</dt><dd>{{.SeverityText}}</dd>{{if .SeverityRationale}}<dt>예상 심각도 근거 · 모델 제안</dt><dd>{{.SeverityRationale}}</dd>{{end}}<dt>원본 처리/실행 상태</dt><dd>{{.Status}}</dd>
-{{with .LatestVerification}}<dt>최근 선택 검증</dt><dd>{{.State}} · {{if .Verdict}}{{.Verdict}}{{else}}판정 없음{{end}} · {{.Reason}} · {{.Method}} · 요청 {{.RequestedAt}}</dd>{{end}}
+{{with .LatestVerification}}<dt>최근 선택 검증</dt><dd>{{.State}} · {{if .Verdict}}{{.Verdict}}{{else}}판정 없음{{end}} · {{.Reason}} · {{.Method}} · 요청 {{.RequestedAt}}</dd>{{if .InitialVerdict}}<dt>최초 자동 검증</dt><dd>{{.InitialVerdict}} · {{.InitialReason}}</dd>{{end}}{{range .Sources}}<dt>추가 감사 관찰</dt><dd>호출 {{.CallRef}} · 시도 {{.AttemptRef}} · digest {{.ObservationDigest}}</dd>{{end}}{{end}}
 <dt>회차 / intent</dt><dd>{{if .Run}}{{.Run}}{{else}}회차 미기록{{end}} / {{if .IntentID}}{{.IntentID}}{{else}}intent 미기록{{end}}</dd><dt>관찰 시각</dt><dd>{{if .ObservedAt.IsZero}}미기록{{else}}{{.ObservedAt}}{{end}}</dd>
 <dt>증거 버전 / digest</dt><dd>{{.EvidenceVersion}} / {{.Digest}}</dd></dl>
 {{if .LanguageMixed}}<p>다른 언어 섞임: 모델이 쓴 이름·설명·조치·근거에 한자·가나가 섞여 있습니다. 섞인 부분을 짚어 한국어로 다시 쓰게 했지만 남았습니다.</p>{{end}}
