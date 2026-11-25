@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/pathmask"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -32,8 +33,19 @@ func requestsFixture(t *testing.T) string {
 		}
 	})
 	// 시도별 화면용 경로 틀(가린 값)을 붙인다. 원문 경로는 상세에 나오지 않는다.
-	line, _ := json.Marshal(server.E2AttemptPatternRow{AttemptID: strings.Repeat("a", 32), PathPattern: "/api/users/{id}", DisplayVersion: 2})
-	if err := os.WriteFile(filepath.Join(policy.StateDir, server.E2AttemptPatternsFile), append(line, '\n'), 0o600); err != nil {
+	rows := []server.E2AttemptPatternRow{
+		{AttemptID: strings.Repeat("a", 32), PathPattern: "/api/users/{id}", DisplayVersion: 2},
+		{AttemptID: strings.Repeat("b", 32), PathPattern: pathmask.LongPath, DisplayVersion: 2},
+	}
+	var raw []byte
+	for _, row := range rows {
+		line, err := json.Marshal(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw = append(append(raw, line...), '\n')
+	}
+	if err := os.WriteFile(filepath.Join(policy.StateDir, server.E2AttemptPatternsFile), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return runsDir
@@ -74,12 +86,15 @@ func TestE2RequestsPagesMatchFlowTargetRequests(t *testing.T) {
 			t.Fatalf("줄 %d 모양 %+v", i, row)
 		}
 		seen[row.AttemptID] = true
+		if (row.Path == "" || row.Path == pathmask.LongPath) && row.PathDetailState != server.PathDetailUnavailable {
+			t.Fatalf("경로 기록이 없는 줄의 상태: %+v", row)
+		}
 		kinds[row.Kind]++
 	}
 	if kinds[e2RequestKindModel] != flow.Model || kinds[string(e2proxy.ProgramAuthPrep)]+kinds[string(e2proxy.ProgramRefreshSession)] != flow.Login || kinds[string(e2proxy.ProgramAuthPrep)] != 1 {
 		t.Fatalf("줄 종류 %+v, e2-flow %+v", kinds, flow)
 	}
-	if rows[1].Path != "/api/users/{id}" || rows[1].Kind != e2RequestKindModel || rows[1].Status != 200 {
+	if rows[1].Path != "/api/users/{id}" || rows[1].PathDetailState != server.PathDetailPatternOnly || rows[1].Kind != e2RequestKindModel || rows[1].Status != 200 {
 		t.Fatalf("모델 줄 경로 틀·코드 %+v", rows[1])
 	}
 	for _, bad := range []string{"?limit=0", "?limit=201", "?cursor=x", "?after=1", "?cursor=1&cursor=2", "?limit=01"} {
@@ -105,15 +120,23 @@ func TestE2RequestDetailShowsJournalFieldsAndReasons(t *testing.T) {
 		t.Fatalf("상세 %d: %s", w.Code, w.Body.String())
 	}
 	notStored := e2RequestField{State: e2FieldNotStored}
-	if detail.Format != e2RequestViewFormat || detail.Kind != e2RequestKindModel || detail.Method != "POST" || detail.PathPattern != "/api/users/{id}" || detail.RuleRef != "target-path-a" ||
+	if detail.Format != e2RequestViewFormat || detail.Kind != e2RequestKindModel || detail.Method != "POST" || detail.PathPattern != "/api/users/{id}" || detail.PathDetailState != server.PathDetailPatternOnly || detail.RuleRef != "target-path-a" ||
 		detail.Decision != "allowed" || detail.Reason != string(e2proxy.Complete) || detail.StatusCode != 200 || !detail.RequestWritten || !detail.ResponseReceived || !detail.ResponseComplete ||
 		detail.RequestHeaders != notStored || detail.RequestBody != notStored || detail.ResponseHeaders != notStored || detail.ResponseBody != notStored {
 		t.Fatalf("상세 칸 %+v", detail)
 	}
 	// 거부된 로그인 시도도 저널에 있으면 상세가 열린다(보내지 않았음이 칸에 보인다).
+	detail = e2RequestDetail{}
 	w = requestDetailsGet(t, runsDir, "/api/tasks/9/e2-flow/requests/call-login-denied/"+strings.Repeat("2", 32))
-	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &detail) != nil || detail.Kind != string(e2proxy.ProgramAuthPrep) || detail.RequestWritten || detail.Decision != "denied" {
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &detail) != nil || detail.Kind != string(e2proxy.ProgramAuthPrep) || detail.RequestWritten || detail.Decision != "denied" ||
+		detail.PathPattern != "" || detail.PathDetailState != server.PathDetailUnavailable {
 		t.Fatalf("거부 시도 상세 %d %+v", w.Code, detail)
+	}
+	detail = e2RequestDetail{}
+	w = requestDetailsGet(t, runsDir, "/api/tasks/9/e2-flow/requests/call-model-b/"+strings.Repeat("b", 32))
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &detail) != nil ||
+		detail.PathPattern != pathmask.LongPath || detail.PathDetailState != server.PathDetailUnavailable {
+		t.Fatalf("길이 상한 시도 상세 %d %+v", w.Code, detail)
 	}
 	reason := func(w *httptest.ResponseRecorder) string {
 		var out map[string]string

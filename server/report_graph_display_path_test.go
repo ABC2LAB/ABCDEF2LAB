@@ -15,27 +15,28 @@ func TestReportGraphDisplayPathProjection(t *testing.T) {
 	const origin = "https://api.example.test"
 	for _, tc := range []struct {
 		name, raw, want string
+		state           PathDetailState
 	}{
-		{"escaped slash stays in one segment", origin + "/api/al%2Fice/%2574oken", "/{id}/{id}/{id}"},
-		{"free text and IDs", origin + "/sam/42/00000000-0000-4000-8000-000000000001/alice%40example.test/", "/{id}/{id}/{id}/{id}/"},
-		{"URL credentials and query", "https://synthetic-user:synthetic-password@api.example.test/a/short-secret?synthetic-key=synthetic-value#synthetic-fragment", "/{id}/{id}"},
-		{"untrusted template", origin + "/books/v1/{title}", "/{id}/{id}/{id}"},
-		{"malformed escape", origin + "/%xx", ""},
-		{"no authority", "https:///api/sam", ""},
-		{"unsupported scheme", "file://api.example.test/a/b", ""},
-		{"no path", origin + "?synthetic-key=synthetic-value", ""},
-		{"root path", origin + "/#synthetic-fragment", "/"},
-		{"ambiguous slashes", origin + "/api//name", ""},
-		{"maximum", origin + strings.Repeat("/x", pathmask.MaxSegments) + "/", strings.Repeat("/{id}", pathmask.MaxSegments) + "/"},
-		{"too many segments", origin + strings.Repeat("/x", pathmask.MaxSegments+1), ""},
+		{"escaped slash stays in one segment", origin + "/api/al%2Fice/%2574oken", "/{id}/{id}/{id}", PathDetailPatternOnly},
+		{"free text and IDs", origin + "/sam/42/00000000-0000-4000-8000-000000000001/alice%40example.test/", "/{id}/{id}/{id}/{id}/", PathDetailPatternOnly},
+		{"URL credentials and query", "https://synthetic-user:synthetic-password@api.example.test/a/short-secret?synthetic-key=synthetic-value#synthetic-fragment", "/{id}/{id}", PathDetailPatternOnly},
+		{"untrusted template", origin + "/books/v1/{title}", "/{id}/{id}/{id}", PathDetailPatternOnly},
+		{"malformed escape", origin + "/%xx", "", PathDetailUnavailable},
+		{"no authority", "https:///api/sam", "", PathDetailUnavailable},
+		{"unsupported scheme", "file://api.example.test/a/b", "", PathDetailUnavailable},
+		{"no path", origin + "?synthetic-key=synthetic-value", "", PathDetailUnavailable},
+		{"root path", origin + "/#synthetic-fragment", "/", PathDetailExact},
+		{"ambiguous slashes", origin + "/api//name", "", PathDetailUnavailable},
+		{"maximum", origin + strings.Repeat("/x", pathmask.MaxSegments) + "/", strings.Repeat("/{id}", pathmask.MaxSegments) + "/", PathDetailPatternOnly},
+		{"too many segments", origin + strings.Repeat("/x", pathmask.MaxSegments+1), "", PathDetailUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := &db.CoverageGraphData{Nodes: []db.CoverageGraphNode{
 				{Key: "a:1", Kind: "endpoint", AssetID: 1, URL: tc.raw},
 			}}
 			node := publicCoverageGraph(g).Nodes[0]
-			if node.DisplayPath != tc.want {
-				t.Fatalf("표시 경로 = %q, 기대값 %q", node.DisplayPath, tc.want)
+			if node.DisplayPath != tc.want || node.PathDetailState != tc.state {
+				t.Fatalf("표시 경로와 상태 = %q / %q, 기대값 %q / %q", node.DisplayPath, node.PathDetailState, tc.want, tc.state)
 			}
 			if g.Nodes[0].URL != tc.raw {
 				t.Fatal("저장 그래프가 변경됨")
@@ -96,7 +97,7 @@ func TestReportGraphDisplayPathHandoffFixtures(t *testing.T) {
 	}
 	var newReader coverageGraphPublic
 	if err := json.Unmarshal(read("coverage-graph-legacy"), &newReader); err != nil || len(newReader.Nodes) != 2 ||
-		newReader.Nodes[1].DisplayPath != "" || newReader.Nodes[1].URL != "https://api.example.test" {
+		newReader.Nodes[1].DisplayPath != "" || newReader.Nodes[1].PathDetailState != "" || newReader.Nodes[1].URL != "https://api.example.test" {
 		t.Fatal("새 DTO가 기존 응답을 읽지 못함", err)
 	}
 }
