@@ -2629,6 +2629,49 @@ describe("레일 (URL 진단)", () => {
 });
 
 describe("대시보드 · 인증 (URL 진단)", () => {
+  it("점검 정보 '보낸 요청'은 대상에 나간 요청 총계(e2-flow target_requests), 마우스 올리면 내역(사용자 11/25)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    const prev = vi.mocked(teamApi.apiFetch).getMockImplementation();
+    vi.mocked(teamApi.apiFetch).mockImplementation(async (path, ...rest) => {
+      if (String(path).startsWith(`/api/tasks/${running.task_id}/e2-flow`))
+        return {
+          format: "abc2lab.e2-flow-view/v1",
+          journal: "verified",
+          last_index: 0,
+          more: false,
+          omitted_calls: 0,
+          counts: {
+            attempts: 56,
+            allowed: 56,
+            denied: 0,
+            unsupported: 0,
+            forward_attempted: 56,
+            responses: 56,
+            unknown: 0,
+            transient: 0,
+            withheld: 0,
+            calls: 0,
+          },
+          calls: [],
+          target_requests: {
+            model: 50,
+            login: 6,
+            confirmation: 0,
+            unclassified: 0,
+            exploration: 0,
+            exploration_state: "none",
+            total: 56,
+          },
+        } as never;
+      if (prev) return prev(path, ...rest);
+      throw new ApiError(404, "not found");
+    });
+    mount("dashboard");
+    const sent = await screen.findByTitle("모델 50 · 로그인 6");
+    expect(sent).toHaveTextContent(/^56건/);
+  });
+
   it("대시보드: 이어 보는 진단은 진행 중인 점검에 한 줄, 상세에서 알맞은 화면으로 간다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
@@ -2718,6 +2761,73 @@ describe("대시보드 · 인증 (URL 진단)", () => {
       expect(within(detail).getByText(k).nextElementSibling).toHaveTextContent("연결 전");
     expect(within(detail).getByText("결정 대기").nextElementSibling).toHaveTextContent("없음");
     expect(within(detail).queryByText("소요")).toBeNull();
+  });
+
+  // #917 리뷰 P2: 서버는 결정(허용 · 거부 · 미지원)과 사유(결과 불명 · 송신 실패)를 따로 센다 — 보내다 결과를 모르게 된 시도는
+  // 허용이면서 결과 불명이라, 허용을 그대로 쓰면 조각 합이 시도 수를 넘어 원이 겹친다
+  const e2View = (journal: "verified" | "invalid", counts: Partial<Record<string, number>>) => ({
+    format: "abc2lab.e2-flow-view/v1",
+    journal,
+    last_index: 0,
+    more: false,
+    omitted_calls: 0,
+    counts: {
+      attempts: 0,
+      allowed: 0,
+      denied: 0,
+      unsupported: 0,
+      forward_attempted: 0,
+      responses: 0,
+      unknown: 0,
+      transient: 0,
+      withheld: 0,
+      calls: 0,
+      ...counts,
+    },
+    calls: [],
+  });
+  const mountE2Ring = async (view: ReturnType<typeof e2View>) => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    vi.mocked(teamApi.apiFetch).mockImplementation(
+      async (path) => (String(path) === "/api/tasks/42/e2-flow" ? view : {}) as never,
+    );
+    mount("dashboard");
+    const rings = await screen.findByRole("region", { name: "분포" });
+    return within(rings).getByRole("region", { name: "전송 통제" });
+  };
+  it("대시보드 전송 통제 원: 허용이면서 결과 불명인 시도를 두 번 세지 않는다(조각 합 = 진단 요청)", async () => {
+    // 시도 5 = 허용 4 + 거부 1, 허용 4 중 1은 결과 불명 · 1은 송신 실패 → 허용(응답까지) 2 · 막음 1 · 결과 불명 · 실패 2
+    const ring = await mountE2Ring(
+      e2View("verified", {
+        attempts: 5,
+        allowed: 4,
+        denied: 1,
+        forward_attempted: 4,
+        responses: 2,
+        unknown: 1,
+        transient: 1,
+        calls: 5,
+      }),
+    );
+    await waitFor(() =>
+      expect(within(ring).getByRole("img")).toHaveAccessibleName("진단 요청 5 · 허용 2 · 막음 1 · 결과 불명 · 실패 2"),
+    );
+    const legend = [...ring.querySelectorAll("li")].map((li) => li.textContent);
+    expect(legend).toEqual(["허용2", "막음1", "결과 불명 · 실패2"]);
+  });
+  it("대시보드 전송 통제 원: 전송 기록 검증 실패(journal invalid)는 0건으로 그리지 않는다", async () => {
+    // 검증 실패면 서버가 수를 전부 0으로 보낸다 — '진단 요청 0 · 허용 0'은 아무것도 안 보낸 것처럼 읽힌다(절대 규칙 5)
+    const ring = await mountE2Ring(e2View("invalid", {}));
+    await waitFor(() => expect(within(ring).getByRole("img")).toHaveAccessibleName("전송 기록 검증 실패"));
+    expect(ring).toHaveTextContent("전송 기록 검증 실패");
+    expect(ring).not.toHaveTextContent("E② 가 받은 진단 요청");
+    expect(ring.querySelectorAll("li")).toHaveLength(0);
+  });
+  it("대시보드 전송 통제 원: 막음 + 결과 불명 · 실패가 진단 요청보다 많은 기록은 나누어 그리지 않는다", async () => {
+    const ring = await mountE2Ring(e2View("verified", { attempts: 1, allowed: 1, unknown: 1, transient: 1, calls: 1 }));
+    await waitFor(() => expect(ring).toHaveTextContent("전송 기록의 수가 맞지 않아 나누어 보이지 않습니다"));
+    expect(ring.querySelectorAll("li")).toHaveLength(0);
   });
 
   it("대시보드: 저장된 결과에서 정상 대조를 빼고 위험도 순으로 보이며, 위험도 칩으로 거른다", async () => {

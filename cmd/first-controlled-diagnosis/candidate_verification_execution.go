@@ -120,24 +120,25 @@ func (b *urlPreparationRuntime) recoverCandidateVerifications(ctx context.Contex
 		return errPreparation
 	}
 	defer pool.Close()
-	rows, err := pool.QueryContext(ctx, `SELECT q.id,p.plan_digest,e.process_state,x.followup_task_id
+	rows, err := pool.QueryContext(ctx, `SELECT q.id,q.task_id,p.plan_digest,e.process_state,x.followup_task_id,t.exploration_id
 FROM diagnostic_candidate_verification_requests q
 JOIN diagnostic_candidate_verification_plans p ON p.request_id=q.id
 JOIN LATERAL (SELECT process_state FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON true
 LEFT JOIN diagnostic_candidate_verification_executions x ON x.request_id=q.id AND x.plan_digest=p.plan_digest
+LEFT JOIN tasks t ON t.id=x.followup_task_id AND t.deleted_at IS NULL
 WHERE q.method='active/v1' AND e.process_state IN ('approved','running') ORDER BY q.id LIMIT 1025`)
 	if err != nil {
 		return errPreparation
 	}
 	type pending struct {
-		id            int64
-		digest, state string
-		task          sql.NullInt64
+		id, originalTask  int64
+		digest, state     string
+		task, exploration sql.NullInt64
 	}
 	var items []pending
 	for rows.Next() {
 		var item pending
-		if rows.Scan(&item.id, &item.digest, &item.state, &item.task) != nil {
+		if rows.Scan(&item.id, &item.originalTask, &item.digest, &item.state, &item.task, &item.exploration) != nil {
 			rows.Close()
 			return errPreparation
 		}
@@ -149,10 +150,15 @@ WHERE q.method='active/v1' AND e.process_state IN ('approved','running') ORDER B
 		return errPreparation
 	}
 	for _, item := range items {
-		if item.state == "running" && !item.task.Valid {
+		if item.state == "running" && (!item.task.Valid || !item.exploration.Valid || item.exploration.Int64 <= 0) {
 			return errPreparation
 		}
 		if item.state == "running" || item.task.Valid {
+			if item.task.Valid && item.exploration.Valid {
+				if _, err := server.ReleaseInterruptedFirstDiagnosisTasks(ctx, pool, item.originalTask, []server.FirstDiagnosisBoundTask{{TaskID: item.task.Int64, ExplorationID: item.exploration.Int64}}); err != nil {
+					return errPreparation
+				}
+			}
 			if candidateTerminalEvent(ctx, pool, item.id, "failed", "execution_interrupted") != nil {
 				return errPreparation
 			}

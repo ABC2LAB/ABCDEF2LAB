@@ -31,6 +31,11 @@ function utcInstant(value: unknown): string | undefined {
   return instant === "00010101000000000000000" ? undefined : instant;
 }
 
+/** 서버 RFC3339Nano UTC 시각인가(날짜 보정 · 0 시각 없음). 실행 시각과 같은 규칙. */
+export function validUTCInstant(value: unknown): value is string {
+  return utcInstant(value) !== undefined;
+}
+
 /** 구 기록의 생략은 허용하되, 시각은 확인된 사실에 결속하고 나노초 순서까지 검사한다. */
 export function validURLRunTiming(value: Record<string, unknown>): boolean {
   const start = Object.hasOwn(value, "started_at") ? utcInstant(value.started_at) : undefined;

@@ -46,7 +46,7 @@
 | 시간 예산 | 1500초 | 같음 |
 | 먼저 걸릴 상한 | 러너 요청 예산. 엔진 끝 신호는 기록만 한다 | 프로토콜 §5.1 |
 | 계측기 하드 상한 | 요청 예산과 같은 값. R번째 전달 뒤 새 요청은 503으로 거부하고(`rejected_over_cap`), 대상에는 정확히 R건 이하만 닿는다 | #734 |
-| 모델 호출 사후 검증 | 조회 40번 × 3초, 조회 한 번 상한 10초, 러너 대기 300초 | 고정 초안 §15, #732 |
+| 모델 호출 사후 검증 | 조회 60번 × 10초(계측기 조회 시한 610초), 조회 한 번 상한 10초, 러너 대기 700초 | 고정 초안 §15, #732, [러너](runner.md) 11/25 근거 |
 | 경계 원자료 상한 | 4 MiB(4,194,304바이트) | 고정 초안 §16 |
 | 멈춤 무효 T | **180초** — 4절 7번 `runner.json`의 `run.fault_stall_seconds` | 고정 초안 §16·§19 |
 | 멈춤 무효 비율 | 쪽별 `provider_fault_stall` + `provider_fault_end` 무효가 그 쪽 시도 중 2회 이상이면 측정 전체 실패 | 고정 초안 §16·§26 |
@@ -216,7 +216,7 @@ install -d -m 700 /srv/abc2lab-eval /srv/abc2lab-eval-keys "$SESSION" "$SESSION/
    - **선택(O 회차를 화면으로 지켜볼 때)**: `split.observer_password_file`에 회차 관리자 로그인 파일 경로를 적는다(예: `/srv/abc2lab-eval-keys/observer/admin.txt`, 부모 디렉터리는 0700으로 미리 만든다). 러너가 O 회차마다 그 회차의 아이디·비밀번호를 0600으로 쓰고 회차가 끝나면 지운다([평가 러너](runner.md)). 화면은 Windows 브라우저에서 `http://localhost:<split.product_port>`(예시 28787)이다. 로그인은 O 회차가 시작된 뒤(러너가 제품 작업을 시작한 뒤) 한다. 로그인 실패 제한은 접속 주소별이라 러너와 같은 주소로 잡히므로, 실패하면 파일을 다시 열어 확인하고 되풀이하지 않는다. **공식 O 3회는 모두 관찰하거나 모두 관찰하지 않는다**(2026-11-20 사용자). 세션 중에 이 칸을 넣거나 빼지 않는다. 회차 결과(`runner-result.json`)의 `observer_login_file`(예/아니오만, 경로·값 없음)로 확인한다.
    - **넣지 않는 것**: API 키, 관리자·DB 비밀번호, 경로 가림 키·러너 서명 키의 값, 승인 manifest 내용. 이것들은 회차 시작 때 따로 만드는 파일(3번·4번·5번)이고, `runner.json`에는 그 **경로만** 둔다.
    - `preservation`의 0으로 채운 지문 셋(`mcp_tools_sha256`·`exploration_policy_sha256`·`declared_model_budget_sha256`, 64자리 `0`)은 그대로 둔다. 앞의 둘은 분리 배치(v3) 기록에서 쓰지 않고 측정값(도구 면 측정)과 B `null`로 대신한다. `declared_model_budget_sha256`은 B 기록에 그대로 옮겨지며, 원본 엔진과 평가 게이트웨이에는 모델 예산이 없어서 0×64는 **B 모델 예산 선언 없음**을 뜻한다(O는 제품 설치 예산 값에서 러너가 계산한다).
-   - 예시에 이미 들어 있는 공식 값: `purpose: official`, E③ 비활성 요구(`split.e3_disabled_required: true`, 공식 회차는 켜야만 설정 검사를 통과한다), 검증 창(`llm_gateway.verify_attempts` 40·`verify_interval_seconds` 3, `run.llm_verify_timeout_seconds` 300), 멈춤 무효 T(`run.fault_stall_seconds` 180), 분리 배치 포트(`split.product_port` 28787·`dns_control_port` 29083)와 그 밖의 `split`·`preservation` 칸.
+   - 예시에 이미 들어 있는 공식 값: `purpose: official`, E③ 비활성 요구(`split.e3_disabled_required: true`, 공식 회차는 켜야만 설정 검사를 통과한다), 검증 창(`llm_gateway.verify_attempts` 60·`verify_interval_seconds` 10, `run.llm_verify_timeout_seconds` 700 — 2026-11-25 사용자 결정), 멈춤 무효 T(`run.fault_stall_seconds` 180), 분리 배치 포트(`split.product_port` 28787·`dns_control_port` 29083)와 그 밖의 `split`·`preservation` 칸.
    - 채운 뒤 3절 환경 점검을 이 파일로 다시 돌린다. 엔진 직접 배치 예시(`runner.example.json`)로 돌리면 분리 배치 포트가 없어 `ports`가 `SKIP`(종료 코드 2)이다.
 
 ## 5. 사전 점검 (첫 유료 회차 전)

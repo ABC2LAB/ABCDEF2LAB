@@ -76,7 +76,20 @@ export type E2Flow = {
   omitted_calls: number;
   counts: E2Counts;
   model_writes?: { responded_2xx: number; unverified: number };
+  /** 대상에 나간 요청 내역(#929, 계약 workbench-live-data §4). 검증된 응답에만 있다(그 전 서버는 없음). */
+  target_requests?: E2TargetRequests;
   calls: E2Call[];
+};
+export const EXPLORATION_STATES = ["none", "running", "closed", "not_run", "unknown"] as const;
+/** 대상 요청 내역. 모르는 수는 0 이 아니라 null 이다(탐색 수 · 총계). */
+export type E2TargetRequests = {
+  model: number;
+  login: number;
+  confirmation: number;
+  unclassified: number;
+  exploration: number | null;
+  exploration_state: (typeof EXPLORATION_STATES)[number];
+  total: number | null;
 };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const natural = (v: unknown): v is number => Number.isSafeInteger(v) && Number(v) >= 0;
@@ -162,7 +175,17 @@ function attempt(v: unknown): E2Attempt {
 export function parseE2Flow(v: unknown): E2Flow {
   if (!object(v) || v.format !== "abc2lab.e2-flow-view/v1" || !["verified", "invalid"].includes(String(v.journal)))
     return invalid();
-  exact(v, ["format", "journal", "last_index", "more", "omitted_calls", "counts", "calls", "model_writes"]);
+  exact(v, [
+    "format",
+    "journal",
+    "last_index",
+    "more",
+    "omitted_calls",
+    "counts",
+    "calls",
+    "model_writes",
+    "target_requests",
+  ]);
   if (
     !natural(v.last_index) ||
     typeof v.more !== "boolean" ||
@@ -187,6 +210,7 @@ export function parseE2Flow(v: unknown): E2Flow {
     exact(raw, ["responded_2xx", "unverified"]);
     modelWrites = { responded_2xx: raw.responded_2xx, unverified: raw.unverified };
   }
+  const targetRequests = v.target_requests === undefined ? undefined : targetRequestsOf(v.target_requests);
   const ids = new Set<string>();
   const calls: E2Call[] = [];
   for (const row of v.calls) {
@@ -226,7 +250,45 @@ export function parseE2Flow(v: unknown): E2Flow {
     omitted_calls: v.omitted_calls,
     counts,
     ...(modelWrites ? { model_writes: modelWrites } : {}),
+    ...(targetRequests ? { target_requests: targetRequests } : {}),
     calls,
+  };
+}
+
+/**
+ * target_requests 를 서버 규칙(cmd/first-controlled-diagnosis/url_target_requests.go, 계약 workbench-live-data §4)대로 닫는다.
+ * 탐색 수: none · not_run 은 0, closed 는 수, running 은 수 또는 null(경계가 보고하지 않음), unknown 은 null.
+ * 총계: 탐색 수를 알고 unclassified 가 0 이면 model + login + confirmation + exploration, 아니면 null — 모르는 수를 0 으로 채우지 않는다.
+ */
+function targetRequestsOf(raw: unknown): E2TargetRequests {
+  if (
+    !object(raw) ||
+    !natural(raw.model) ||
+    !natural(raw.login) ||
+    !natural(raw.confirmation) ||
+    !natural(raw.unclassified) ||
+    !(EXPLORATION_STATES as readonly string[]).includes(String(raw.exploration_state)) ||
+    (raw.exploration !== null && !natural(raw.exploration)) ||
+    (raw.total !== null && !natural(raw.total))
+  )
+    return invalid();
+  exact(raw, ["model", "login", "confirmation", "unclassified", "exploration", "exploration_state", "total"]);
+  const state = raw.exploration_state as E2TargetRequests["exploration_state"];
+  const exploration = raw.exploration as number | null;
+  if ((state === "none" || state === "not_run") && exploration !== 0) return invalid();
+  if (state === "closed" && exploration === null) return invalid();
+  if (state === "unknown" && exploration !== null) return invalid();
+  const sum =
+    exploration === null || raw.unclassified !== 0 ? null : raw.model + raw.login + raw.confirmation + exploration;
+  if (raw.total !== sum) return invalid();
+  return {
+    model: raw.model,
+    login: raw.login,
+    confirmation: raw.confirmation,
+    unclassified: raw.unclassified,
+    exploration,
+    exploration_state: state,
+    total: sum,
   };
 }
 const BLOCKED = new Set<E2Reason>([
@@ -307,4 +369,32 @@ export async function getE2Flow(task: string | null, after?: number, signal?: Ab
       false,
     ),
   );
+}
+
+/** 화면 '보낸 요청' 칸: 큰 글(총계)과 마우스를 올리면 보일 내역(사용자 2026-11-25 결정 — 숫자는 대상에 나간 요청 전부). */
+export type SentRequests = { value: string; detail: string };
+
+/**
+ * e2-flow 응답 → '보낸 요청' 칸. 숫자는 대상에 나간 요청 총계(target_requests.total)이고, 내역은 '모델 50 · 로그인 6'처럼
+ * 0 이 아닌 갈래만(모델은 늘) 적는다. 검증 실패는 '검증 실패', 총계를 모르면 '—'와 모르는 까닭 — 0 이나 모델 수로 대신하지
+ * 않는다(절대 규칙 5). 응답이 없거나 내역 칸이 없는 서버(#929 이전)면 null(호출부가 '—'로 둔다).
+ */
+export function sentRequestsOf(flow: E2Flow | null | undefined): SentRequests | null {
+  if (!flow) return null;
+  if (flow.journal === "invalid")
+    return { value: "검증 실패", detail: "전송 기록(E②) 검증에 실패해 보낸 요청을 셀 수 없습니다" };
+  const t = flow.target_requests;
+  if (!t) return null;
+  const parts = [`모델 ${t.model}`];
+  if (t.login) parts.push(`로그인 ${t.login}`);
+  if (t.confirmation) parts.push(`확정 ${t.confirmation}`);
+  if (t.exploration === null) parts.push("탐색 모름");
+  else if (t.exploration) parts.push(`탐색 ${t.exploration}`);
+  if (t.unclassified) parts.push(`분류 안 된 프로그램 요청 ${t.unclassified}`);
+  const detail = parts.join(" · ");
+  if (t.total === null) {
+    const why = t.unclassified ? "분류 안 된 프로그램 요청이 있어" : "탐색 요청 수를 확인하지 못해";
+    return { value: "—", detail: `${why} 총계를 모릅니다 · ${detail}` };
+  }
+  return { value: `${t.total}건`, detail };
 }
