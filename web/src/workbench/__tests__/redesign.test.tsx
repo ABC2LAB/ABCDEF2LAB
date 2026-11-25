@@ -795,6 +795,34 @@ describe("보고서 탐색 · 선택 범위 (사용자 11/19)", () => {
     expect(box.querySelector("[class*='meters']")).toBeNull();
     expect(box).toHaveTextContent(/발견한 API 6 · 방문 4/);
   });
+
+  // 고른 경로 목록이 길어 앞 5줄만 보이고, 밑의 [나머지 n개 더 보기]를 누르면 그 밑으로 펼친다(사용자 11/25)
+  it("고른 경로는 앞 5줄만 보이고 [나머지 n개 더 보기]로 밑에 펼치며, 다시 누르면 접는다", () => {
+    const base = flow.endpoints[0];
+    const many: WorkflowSnapshot = {
+      ...flow,
+      endpoints: Array.from({ length: 7 }, (_, i) => ({ ...base, id: `p${i}`, path: `/p/${i}`, selected: true })),
+    };
+    useUrl.setState({ flow: many });
+    render(<WorkflowReport />);
+    const box = screen.getByRole("heading", { name: "탐색 · 선택 범위" }).closest("section") as HTMLElement;
+    expect(box).toHaveTextContent(/고른 경로 7/);
+    const paths = () => [...box.querySelectorAll("[class*='r-t'] [class*='p']")].map((p) => p.textContent);
+    expect(paths()).toEqual(["/p/0", "/p/1", "/p/2", "/p/3", "/p/4"]);
+    const more = within(box).getByRole("button", { name: "나머지 2개 더 보기" });
+    expect(more).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(more);
+    expect(paths()).toHaveLength(7);
+    expect(within(box).getByRole("button", { name: "접기" })).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(within(box).getByRole("button", { name: "접기" }));
+    expect(paths()).toHaveLength(5);
+  });
+
+  it("고른 경로가 5줄 이하면 [더 보기]가 없다", () => {
+    useUrl.setState({ flow: { ...flow, endpoints: flow.endpoints.map((e) => ({ ...e, selected: true })) } });
+    render(<WorkflowReport />);
+    expect(screen.queryByRole("button", { name: /더 보기|접기/ })).toBeNull();
+  });
 });
 
 describe("탐색 막대 색은 점검 진행 게이지와 같게 (#765 리뷰)", () => {

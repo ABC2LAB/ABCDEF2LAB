@@ -1528,10 +1528,20 @@ export function WorkflowScopeLive() {
   );
 }
 
-/** 탐색 · 선택 요약 (보고서 증거 · 요청 기록 탭). */
+/** 보고서 '탐색 · 선택 범위'에서 늘 보이는 고른 경로 줄 수. 나머지는 [더 보기]로 그 밑에 펼친다(사용자 11/25) */
+const REPORT_PICKED_PREVIEW = 5;
+
+/**
+ * 탐색 · 선택 요약 (보고서 탭 아래). 고른 경로 목록이 길어(사용자 11/25) 앞 몇 줄만 보이고, 밑의 [나머지 n개 더 보기]를 누르면
+ * 그 밑으로 나머지를 펼친다(다시 누르면 접기). 제목 옆 글(방식 · 단계 · 발견한 API · 방문 · 고른 경로 수)은 늘 보인다.
+ */
 export function WorkflowReport() {
   const flow = useUrl((st) => st.flow);
+  const [open, setOpen] = useState(false);
   if (!flow) return null;
+  const picked = flow.endpoints.filter((e) => e.selected);
+  const more = picked.length - REPORT_PICKED_PREVIEW;
+  const shown = open || more <= 0 ? picked : picked.slice(0, REPORT_PICKED_PREVIEW);
   return (
     <section className={s.sec} aria-labelledby="rWorkflowH">
       <div className={s.sh}>
@@ -1539,24 +1549,34 @@ export function WorkflowReport() {
         {/* 탐색 수(발견한 API · 방문)는 보고서 머리 줄이 길어 여기 옆 글로(사용자 11/19) */}
         <span
           className={s.aside}
-        >{`${flow.mode === "ai_auto_v1" ? "AI 자동" : "사용자 승인"} · ${flowStageText[flow.stage]} · 발견한 API ${flow.counts.found} · 방문 ${flow.counts.visited}`}</span>
+        >{`${flow.mode === "ai_auto_v1" ? "AI 자동" : "사용자 승인"} · ${flowStageText[flow.stage]} · 발견한 API ${flow.counts.found} · 방문 ${flow.counts.visited} · 고른 경로 ${picked.length}`}</span>
       </div>
-      <div className={s.list}>
-        {flow.endpoints
-          .filter((e) => e.selected)
-          .map((e) => (
-            <div className={s.row} key={e.id}>
-              <span className={s["r-main"]}>
-                <span className={s["r-t"]}>
-                  <span className={cx(s.m, s[e.method])}>{e.method}</span> <span className={s.p}>{e.path}</span>
-                </span>
+      <div className={s.list} id="rWorkflowList">
+        {shown.map((e) => (
+          <div className={s.row} key={e.id}>
+            <span className={s["r-main"]}>
+              <span className={s["r-t"]}>
+                <span className={cx(s.m, s[e.method])}>{e.method}</span> <span className={s.p}>{e.path}</span>
               </span>
-              <span className={s["r-side"]}>
-                <span className={s.tag}>심화 점검</span>
-              </span>
-            </div>
-          ))}
+            </span>
+            <span className={s["r-side"]}>
+              <span className={s.tag}>심화 점검</span>
+            </span>
+          </div>
+        ))}
       </div>
+      {more > 0 ? (
+        <button
+          className={s["sec-fold"]}
+          type="button"
+          aria-expanded={open}
+          aria-controls="rWorkflowList"
+          onClick={() => setOpen(!open)}
+        >
+          <Icon name="chev" />
+          {open ? "접기" : `나머지 ${more}개 더 보기`}
+        </button>
+      ) : null}
     </section>
   );
 }
