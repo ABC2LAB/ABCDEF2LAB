@@ -207,7 +207,7 @@ export function candidateIdle(job: URLDiagnosisJob | null | undefined, verified:
   return live ? null : "prestart";
 }
 
-/** 후보 등급 딱지. 추정 등급은 '예상 …', 없으면 '위험도 미평가'(낮음 · 정보성으로 바꾸지 않는다). */
+/** 후보 등급 딱지. Worker 가 붙인 등급 그대로(확정이 아님은 '검토 필요'가 말한다, 11/24), 없으면 '위험도 미평가'(낮음 · 정보성으로 바꾸지 않는다). */
 function CandidateSev({ sev }: { sev: SeverityLevel | null }) {
   const k = sev ? sevKey(sev) : null;
   // 등급이 없으면 '위험도 미평가' 회색 딱지(사용자 11/23)
@@ -415,6 +415,8 @@ function LiveCandidates({
       </div>
       {list.length ? (
         <div className={s.vbar}>
+          {/* 확정 분포처럼 읽히지 않게 앞에 '검토 필요'(계약 diagnostic-candidate-severity: 후보 분포는 별도 문구, #917 리뷰 P3) */}
+          <span>검토 필요</span>
           {bySev.map(([v, n]) => (
             <span key={v}>
               {`${candidateSeverityText(v)} `}

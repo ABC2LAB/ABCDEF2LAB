@@ -1675,9 +1675,12 @@ describe("점검 진행", () => {
     expect(within(decide).queryByRole("button", { name: "승인하고 보내기" })).toBeNull();
     // '확인 필요' 글은 숫자 칸 이름 한 군데
     expect(screen.getAllByText("확인 필요")).toHaveLength(1);
-    // 발견 후보 목록: 최근 순, 줄마다 예상 등급(없으면 미평가) · 후보 번호 / 관측 시각 · 검토 필요, 첫 목록엔 '새로' 없음
+    // 발견 후보 목록: 최근 순, 줄마다 Worker 등급(없으면 미평가) · 번호 / 관측 시각 · 검토 필요, 첫 목록엔 '새로' 없음
     const finds = screen.getByRole("region", { name: "발견한 취약점" });
-    expect(finds.querySelector("[class*=vbar]")).toHaveTextContent(/^심각 0높음 1중간 0낮음 0정보성 1위험도 미평가 1$/);
+    // 후보 분포는 확정 분포처럼 읽히지 않게 앞에 '검토 필요'(#917 리뷰 P3)
+    expect(finds.querySelector("[class*=vbar]")).toHaveTextContent(
+      /^검토 필요심각 0높음 1중간 0낮음 0정보성 1위험도 미평가 1$/,
+    );
     expect(within(finds).getByText("3건 · 최근 순")).toBeInTheDocument();
     expect(within(finds).getByText(/검증 전 취약점입니다/)).toBeInTheDocument();
     const rows = [...(document.getElementById("lFinds") as HTMLElement).children] as HTMLElement[];
