@@ -173,3 +173,22 @@ func TestExplorationResultRecordKeepsOnlyBoundaryConfirmedCounts(t *testing.T) {
 		}
 	}
 }
+
+// 프로그램 호출 종류는 알려진 것만 내역에 넣는다. 모르는 종류가 보낸 요청은 따로 세고 합은 모름이다(#929 재상 봇 P3).
+func TestTargetRequestsKeepUnknownProgramOutOfBreakdown(t *testing.T) {
+	sent := func(attempt string, program e2proxy.ProgramCallKind) e2proxy.Event {
+		e := liveEvent("result", "call-"+attempt[:4], attempt, 1, "allowed", e2proxy.Complete)
+		e.IntentID, e.Program = 0, program
+		return e
+	}
+	five := uint64(5)
+	closed := explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationClosed, TargetRequests: &five}
+	known := targetRequestsOf([]e2proxy.Event{sent(strings.Repeat("1", 32), e2proxy.ProgramAuthPrep), sent(strings.Repeat("2", 32), e2proxy.ProgramE3Read)}, closed)
+	if known.Login != 1 || known.Confirmation != 1 || known.Unclassified != 0 || known.Total == nil || *known.Total != 7 {
+		t.Fatalf("알려진 종류 내역 %+v", known)
+	}
+	unknown := targetRequestsOf([]e2proxy.Event{sent(strings.Repeat("1", 32), e2proxy.ProgramAuthPrep), sent(strings.Repeat("3", 32), e2proxy.ProgramCallKind("future_kind"))}, closed)
+	if unknown.Login != 1 || unknown.Confirmation != 0 || unknown.Unclassified != 1 || unknown.Total != nil || unknown.Exploration == nil || *unknown.Exploration != 5 {
+		t.Fatalf("모르는 종류 내역 %+v", unknown)
+	}
+}

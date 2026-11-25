@@ -98,6 +98,8 @@ type e2FlowTargetRequests struct {
 	Model        int `json:"model"`
 	Login        int `json:"login"`
 	Confirmation int `json:"confirmation"`
+	// Unclassified는 이 판이 모르는 프로그램 호출 종류의 보낸 요청 수다. 0이 아니면 total은 null이다.
+	Unclassified int `json:"unclassified"`
 	// Exploration·Total은 모르면 null이다(ExplorationState가 사유).
 	Exploration      *uint64 `json:"exploration"`
 	ExplorationState string  `json:"exploration_state"`
@@ -141,14 +143,20 @@ func targetRequestsOf(events []e2proxy.Event, exploration explorationRequestsRec
 			}
 		case e2proxy.ProgramAuthPrep, e2proxy.ProgramRefreshSession:
 			out.Login++
-		default:
+		case e2proxy.ProgramE3Identity, e2proxy.ProgramE3Create, e2proxy.ProgramE3Read:
 			out.Confirmation++
+		default:
+			// 모르는 프로그램 호출 종류는 어느 내역에도 넣지 않고 따로 센다. 합은 모름으로 둔다(#929 재상 봇 P3).
+			out.Unclassified++
 		}
 	}
 	if exploration.TargetRequests != nil {
 		n := *exploration.TargetRequests
-		total := uint64(out.Model+out.Login+out.Confirmation) + n
-		out.Exploration, out.Total = &n, &total
+		out.Exploration = &n
+		if out.Unclassified == 0 {
+			total := uint64(out.Model+out.Login+out.Confirmation) + n
+			out.Total = &total
+		}
 	}
 	return out
 }

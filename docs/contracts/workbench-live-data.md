@@ -98,9 +98,10 @@
 | `model` | 모델이 진단 단계에서 보낸 요청 | 검증한 E② 저널의 결과 행 중 `request_written`이고 프로그램 호출이 아닌 시도 수 |
 | `login` | 프로그램 로그인(인증 준비 `auth_prep` + 세션 다시 받기 `refresh_session`) | 같은 저널, 같은 기준 |
 | `confirmation` | 확정 단계(E③) 요청 | 같은 저널, 같은 기준. E③ 확정 호출 행(E③ 감사 칸 또는 E③ 프로그램 호출)이 이 저널에 있을 때만 센다 |
+| `unclassified` | 이 판이 모르는 프로그램 호출 종류가 보낸 요청 | 같은 저널. 0이 아니면 `total`은 `null`이다(모르는 종류를 다른 내역에 넣지 않는다) |
 | `exploration` | 탐색 단계에서 탐색 경계를 지난 대상 요청 | 회차 상태 디렉터리의 `exploration-requests.json`(탐색 경계가 세션 마감 때 확정한 `target_requests`, 진단 E② 예산에서 빼는 그 몫). 탐색 중이면 경계가 지금 보고하는 수 |
 | `exploration_state` | `none`(탐색 단계 없음, 0) · `pending`(시작 전, 0) · `running`(탐색 중) · `closed`(경계 확정) · `not_run`(열지 않음, 0) · `unknown`(경계가 확정하지 못했거나 기록을 못 읽음) | |
-| `total` | `model + login + confirmation + exploration` | 탐색 수를 모르면 `null` |
+| `total` | `model + login + confirmation + exploration` | 탐색 수를 모르거나 `unclassified`가 0이 아니면 `null` |
 
 - 세 갈래는 이 응답 하나에서 같은 시점에 읽는다(저널 검증·탐색 기록·경계 조회를 한 요청 안에서). 시도마다 결과 행 하나만 센다(`counts`와 같은 규칙).
 - 모르는 수는 0으로 바꾸지 않는다: `running`인데 경계가 이 회차 세션을 보고하지 않거나, `unknown`이면 `exploration`·`total`은 `null`이다.
