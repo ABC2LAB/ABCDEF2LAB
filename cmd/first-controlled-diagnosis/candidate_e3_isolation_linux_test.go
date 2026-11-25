@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/server"
@@ -41,6 +42,7 @@ func selectedCandidateE3Fixture(t *testing.T) (*urlPreparationRuntime, *urlLoade
 	l.policy.Rules[0].Ref = "candidate-exact"
 	l.policy.Rules[0].PathMatch = "exact"
 	l.policy.Rules[0].PathScopeRef = "candidate-exact"
+	l.policy.Rules[0].ApprovalDisplay = server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}}
 	l.policy.HeaderMode = e2proxy.HeaderPreserve
 	l.policy.MaxRequests = 1
 	l.profile = urlPreparationProfile{ValidFrom: time.Now().Add(-time.Minute), ValidUntil: time.Now().Add(time.Hour), Budget: diagnosisprep.Budget{DurationSeconds: 30}}
@@ -71,7 +73,7 @@ func TestIssueSelectedCandidateExcludesActiveE3Declaration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var issued server.E2HTTPFilePolicy
-	if json.Unmarshal(raw, &issued) != nil || issued.RunRef != "run-"+job || len(issued.Rules) != 1 ||
+	if e2config.StrictJSON(raw, &issued) != nil || issued.RunRef != "run-"+job || len(issued.Rules) != 1 ||
 		issued.Rules[0].PathMatch != "exact" || issued.Rules[0].Methods[0] != "GET" || issued.Rules[0].Purpose != "" ||
 		issued.E3WriteConsent || issued.E3Resettable || issued.Auth != nil || issued.Limits.E3ConfirmationRequests == nil ||
 		*issued.Limits.E3ConfirmationRequests != 0 {
@@ -89,6 +91,21 @@ func TestIssueSelectedCandidateExcludesActiveE3Declaration(t *testing.T) {
 	var authority server.FirstDiagnosisHTTPApproval
 	if json.Unmarshal(a, &authority) != nil || authority.TaskID != 91 || authority.ExplorationID != 92 || authority.PolicySHA256 != urlSHA(raw) {
 		t.Fatal("candidate authority did not bind fresh task and exact policy")
+	}
+}
+
+func TestCandidateLLMReadRuleStrictJSON(t *testing.T) {
+	rule := candidateLLMReadRule("candidate-llm-1", "https://owned.example", "10.200.1.20", strings.Repeat("a", 64),
+		server.CandidateLLMPlanAction{Method: "GET", ExactPath: "/read", Purpose: "compare observed public response"})
+	raw, err := json.Marshal(rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded server.E2HTTPFileRule
+	if e2config.StrictJSON(raw, &decoded) != nil || len(decoded.ApprovalDisplay.QueryKeys) != 0 ||
+		decoded.ApprovalDisplay.QueryKeys == nil || decoded.ApprovalDisplay.JSONFields == nil ||
+		decoded.PathMatch != "exact" || decoded.Purpose != "" || decoded.Credentials != nil {
+		t.Fatal("candidate read rule cannot be strictly decoded as an isolated exact E2 rule")
 	}
 }
 

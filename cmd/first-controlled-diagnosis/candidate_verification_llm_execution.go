@@ -31,6 +31,13 @@ func candidateLLMRuntimeSeconds(planSeconds int, installedSeconds, workerTimeout
 	return seconds
 }
 
+func candidateLLMReadRule(ref, origin, connectIP, spki string, action server.CandidateLLMPlanAction) server.E2HTTPFileRule {
+	return server.E2HTTPFileRule{Ref: ref, Origin: origin, ConnectIP: connectIP,
+		PathPrefix: action.ExactPath, PathMatch: "exact", PathScopeRef: ref, Methods: []string{action.Method},
+		ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}},
+		TLSSPKISHA256:   spki}
+}
+
 func (b *urlPreparationRuntime) scheduleCandidateLLMExecution(ctx context.Context, idText, digest string) (string, error) {
 	id, err := strconv.ParseInt(idText, 10, 64)
 	if b == nil || b.ctx == nil || b.ctx.Err() != nil || err != nil || id <= 0 || strconv.FormatInt(id, 10) != idText {
@@ -161,9 +168,8 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 	l.policy.Rules = nil
 	for i, action := range plan.Actions {
 		ref := fmt.Sprintf("candidate-llm-%d", i+1)
-		l.policy.Rules = append(l.policy.Rules, server.E2HTTPFileRule{Ref: ref, Origin: plan.Origin, ConnectIP: l.productTarget.SelectedIP,
-			PathPrefix: action.ExactPath, PathMatch: "exact", PathScopeRef: ref, Methods: []string{action.Method},
-			TLSSPKISHA256: l.productTarget.Target.TLSSPKISHA256})
+		l.policy.Rules = append(l.policy.Rules, candidateLLMReadRule(ref, plan.Origin, l.productTarget.SelectedIP,
+			l.productTarget.Target.TLSSPKISHA256, action))
 	}
 	count := len(plan.Actions)
 	if l.profile.Budget.Requests < int64(count) || l.profile.Budget.DurationSeconds < 1 ||
