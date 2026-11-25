@@ -149,8 +149,16 @@ func TestRequestClockPauseRestartAndParent(t *testing.T) {
 			t.Fatalf("부모 취소 오류 %v", c.Err())
 		}
 		c.restart()
-		if !errors.Is(c.Err(), context.Canceled) {
+		if _, ok := c.Deadline(); ok || !errors.Is(c.Err(), context.Canceled) {
 			t.Fatal("끝난 시계가 다시 열림")
+		}
+	})
+	t.Run("멈춘 뒤 늦게 불린 타이머는 기한이 아님", func(t *testing.T) {
+		c, _ := newClock(context.Background())
+		c.pause()
+		c.expire() // 멈춤과 경합해 이미 떠난 타이머
+		if c.Err() != nil {
+			t.Fatalf("멈춘 시계가 끝남: %v", c.Err())
 		}
 	})
 	t.Run("값과 프록시 밖 요청", func(t *testing.T) {

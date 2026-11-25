@@ -79,8 +79,8 @@ func (c *requestClock) cancel() {
 	c.stopParent()
 }
 
-// pause는 승인 대기 동안 요청 상한을 멈춘다. 연결의 절대 기한(serveConn)도 함께 푼다. 승인 대기 중에는 연결에서
-// 읽거나 쓰지 않는다(본문은 승인 전에 다 읽었다). 이미 끝났으면 아무것도 하지 않는다.
+// pause는 승인 대기 동안 요청 상한을 멈춘다. 승인 대기 중에는 연결에서 읽거나 쓰지 않으므로(본문은 승인 전에 다
+// 읽었다) 연결의 절대 기한(serveConn)은 그대로 두고, restart가 새 기한으로 바꾼다. 이미 끝났으면 아무것도 하지 않는다.
 func (c *requestClock) pause() {
 	if c == nil {
 		return
@@ -92,11 +92,10 @@ func (c *requestClock) pause() {
 	}
 	c.paused = true
 	c.timer.Stop()
-	// 닫힌 연결이면 기한을 못 바꾸지만, 그때는 이 요청이 이미 끝나 쓸 일이 없다.
-	_ = c.conn.SetDeadline(time.Time{})
 }
 
 // restart는 승인 대기가 끝난 뒤 요청 상한을 처음부터 다시 잰다(사용자 결정: 모델 단계는 승인이 난 뒤부터 요청 시간을 잰다).
+// 멈춘 동안 지난 연결 기한도 새 기한으로 바꾼다. 안 바꾸면 승인 뒤 응답을 쓰지 못한다.
 func (c *requestClock) restart() {
 	if c == nil {
 		return
