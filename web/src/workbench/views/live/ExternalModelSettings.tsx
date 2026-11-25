@@ -105,11 +105,11 @@ export function ExternalModelSettings({
       {/* tipline: (?) 메모가 이 줄 바로 아래에 뜨는 기준(없으면 화면 칸 맨 아래로 가서 안 보였다) */}
       <div className={cx(s["fsec-ht"], s.tipline)}>
         {asking ? (
-          <label className={s.lbl} htmlFor="externalModelKey">
+          <label className={cx(s.lbl, s.must)} htmlFor="externalModelKey">
             API 키
           </label>
         ) : (
-          <span className={s.lbl}>API 키</span>
+          <span className={cx(s.lbl, s.must)}>API 키</span>
         )}
         <HelpTip label="API 키 설명">
           키는 서버에만 등록하고 키 값은 브라우저로 읽어오지 않습니다. 외부 전송 · USD 상한 동의는 다음 범위 확인
@@ -121,6 +121,7 @@ export function ExternalModelSettings({
           <input
             ref={secret}
             id="externalModelKey"
+            required
             className={s.inp}
             type="password"
             autoComplete="off"
