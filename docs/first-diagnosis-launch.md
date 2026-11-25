@@ -349,6 +349,18 @@ owned loopback·synthetic provider·실제 PostgreSQL race 시험은 각각 검�
 - `phase:failed`: 실행 또는 마감 실패. `closure_failed`로 자원 마감 실패를 별도 표시한다. `context_cancelled`만 보고 성공·실패를 추정하지 않는다.
 - `execution.state:active|blocked`는 전송 경계 상태이며 감독 실행의 phase와 다르다. counts의 `forward_attempted`·`responses`·`unknown`도 각각 따로 표시한다.
 
+승인행의 `closed_reason`(2026-11-25)은 승인 대기가 결정 없이 닫힌 까닭이다. `state`가 `cancelled`·`expired`일 때만 있고 `pending`·`allowed`·`denied`에는 없다. `reason`(E② 전송 결과)과 다른 칸이다. 고정 코드는 다음 다섯이다.
+
+| `closed_reason` | 뜻 |
+|---|---|
+| `model_stage_closed` | 모델 단계가 마감돼(확정 단계로 넘어감 등) 그 요청의 call 문맥이 끊겼다 |
+| `request_timeout` | 요청·call·회차 기한에 닿았다 |
+| `operator_stopped` | 운영자 종료로 실행 결속이 끝났다 |
+| `run_closed` | 그 밖에 실행이 닫혔다(실행 실패·재시작 뒤 대기자가 없는 기록, 이 칸 이전의 취소 기록 포함) |
+| `approval_expired` | 승인 기한이 지났다(`state:expired`와 늘 같이) |
+
+판정 순서는 승인 기한 → 운영자 종료 → 승인 대기 문맥의 원인(E② `Call.do`가 싣는 모델 단계 마감·기한) → 실행 결속의 기한 → 그 밖이다. 서버가 대기를 닫을 때 저장 기록에 남긴다. 읽는 순간 대기 건이 취소로 투영되는 경우(대기자가 없음)만 그때의 결속을 보고 운영자 종료면 `operator_stopped`, 아니면 `run_closed`다. 이미 `cancelled`로 저장된 기록은 저장한 까닭을 쓰고, 까닭이 없는 이 칸 이전 기록은 실제 원인을 모르므로 `run_closed`다(나중의 운영자 종료를 덧씌우지 않는다). 종료 회차 이력 투영(`saved-request-approvals`)에는 아직 싣지 않는다.
+
 저장 종료 조회는 다음 구조다. 숫자·참조·시각은 실제 응답값을 사용한다.
 
 ```json
