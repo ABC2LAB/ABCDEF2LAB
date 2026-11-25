@@ -171,16 +171,15 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 	return nil
 }
 
-// Keep the last decisive result as history, but also count intervening active
-// requests before filtering out failed, cancelled or inconclusive attempts.
-const priorCandidateVerdictSQL = `WITH prior_active AS (
-	SELECT *, max(id) OVER () AS last_active_id FROM diagnostic_candidate_verification_requests
-	WHERE task_id=$1 AND candidate_id=$2 AND id<$3 AND method='active/v1'
-)
-SELECT q.id,q.candidate_id,q.request_key,q.method,q.original_evidence_digest,q.original_evidence_version,q.original_run_ref,q.requested_at,e.step,e.process_state,e.verdict,e.reason,e.sources,e.sources_digest,e.rule_version,e.execution_ref,e.approval_ref,e.event_at,p.plan,p.plan_digest,d.decision,d.plan_digest,x.followup_task_id,x.run_ref,q.id<>q.last_active_id
-FROM prior_active q
+// Return the last decisive verdict and whether a newer active request
+// supersedes it. A failed or inconclusive request can only set the latter.
+const priorCandidateVerdictSQL = `SELECT q.id,q.candidate_id,q.request_key,q.method,q.original_evidence_digest,q.original_evidence_version,q.original_run_ref,q.requested_at,e.step,e.process_state,e.verdict,e.reason,e.sources,e.sources_digest,e.rule_version,e.execution_ref,e.approval_ref,e.event_at,p.plan,p.plan_digest,d.decision,d.plan_digest,x.followup_task_id,x.run_ref,
+EXISTS (SELECT 1 FROM diagnostic_candidate_verification_requests newer
+        WHERE newer.task_id=q.task_id AND newer.candidate_id=q.candidate_id AND newer.method='active/v1' AND newer.id>q.id AND newer.id<$3)
+FROM diagnostic_candidate_verification_requests q
 JOIN LATERAL (SELECT * FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON e.process_state='completed' AND e.verdict IN ('confirmed','negative')
 JOIN diagnostic_candidate_verification_plans p ON p.request_id=q.id
 JOIN diagnostic_candidate_verification_decisions d ON d.request_id=q.id
 JOIN diagnostic_candidate_verification_executions x ON x.request_id=q.id AND x.plan_digest=p.plan_digest
+WHERE q.task_id=$1 AND q.candidate_id=$2 AND q.id<$3 AND q.method='active/v1'
 ORDER BY q.id DESC LIMIT 1`
