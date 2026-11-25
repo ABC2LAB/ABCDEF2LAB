@@ -4007,3 +4007,115 @@ describe("flowPauseOf — 흐름 일시정지 상태", () => {
     expect(flowPauseOf(false, { paused: true }, true, false)).toBe("none");
   });
 });
+
+describe("진행 화면 계정 경고(최민준 요청 11/25 — #936 account_auth · #914 login_method_missing)", () => {
+  const now = new Date().toISOString();
+  const withAuth = (auth: url.URLAccountAuth | undefined, at?: Record<string, string>) => ({
+    ...running,
+    ...(auth
+      ? {
+          account_auth: auth,
+          account_auth_updated_at: at ?? Object.fromEntries(Object.keys(auth).map((k) => [k, now])),
+        }
+      : {}),
+  });
+  const origin = new URL(running.input.target_url).origin;
+  function serveAccounts(loginMissing: boolean) {
+    vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
+      const p = String(path);
+      if (p.startsWith("/api/product/targets/resolve"))
+        return { target: { id: "t1", origin, state: "approved" } } as never;
+      if (p === "/api/product/targets/t1/accounts")
+        return {
+          accounts: [
+            {
+              label: "rh_tester_a",
+              classification: "test",
+              credential_configured: true,
+              ...(loginMissing ? { login_method_missing: true } : {}),
+            },
+          ],
+        } as never;
+      throw new ApiError(404, "not found");
+    });
+  }
+
+  it("모두 authenticated → 경고 없음", async () => {
+    saveHandle();
+    serveAccounts(false);
+    u.readURLStatus.mockResolvedValue(withAuth({ rh_tester_a: "authenticated", rh_tester_b: "authenticated" }));
+    mount("live");
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
+    expect(screen.queryByTestId("account-auth-warning")).toBeNull();
+    expect(screen.queryByTestId("login-method-warning")).toBeNull();
+  });
+
+  it("한 계정 session_not_found → 그 계정만 경고(라벨 · 한국어 결과 · 바뀐 시각) + 결과 한 줄, 값은 없음", async () => {
+    saveHandle();
+    serveAccounts(false);
+    u.readURLStatus.mockResolvedValue(withAuth({ rh_tester_a: "authenticated", rh_tester_b: "session_not_found" }));
+    mount("live");
+    const box = await screen.findByTestId("account-auth-warning");
+    const rows = within(box).getAllByRole("listitem");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toMatch(/^B\(rh_tester_b\) — 세션을 받지 못함 \(\d{2}:\d{2}\)$/);
+    expect(box).toHaveTextContent("인증 안 된 계정은 세션이 없어 그 계정으로는 요청하지 못합니다");
+    expect(box).not.toHaveTextContent("익명으로 나갑니다");
+    expect(box).toHaveTextContent("test_accounts_unavailable");
+    expect(box).not.toHaveTextContent("rh_tester_a");
+  });
+
+  it("login_method_missing: true → 로그인 방식 경고 + 계정 분류(그 대상 미리 고름)로 가는 버튼", async () => {
+    saveHandle();
+    serveAccounts(true);
+    u.readURLStatus.mockResolvedValue(running);
+    const { goTo } = mount("live");
+    const box = await screen.findByTestId("login-method-warning");
+    expect(box).toHaveTextContent("로그인 방식이 없어 시험 계정으로 로그인하지 않고 점검합니다");
+    fireEvent.click(within(box).getByRole("button", { name: "로그인 방식 등록" }));
+    expect(goTo).toHaveBeenCalledWith("classify");
+    expect(useWb.getState().focusTarget?.id).toBe("t1");
+  });
+
+  it("이미 로그인을 시도한 점검(account_auth 있음)은 로그인 방식 경고를 띄우지 않는다(#941 최민준 P3)", async () => {
+    saveHandle();
+    serveAccounts(true);
+    u.readURLStatus.mockResolvedValue(withAuth({ rh_tester_a: "authenticated", rh_tester_b: "not_sent" }));
+    mount("live");
+    expect(await screen.findByTestId("account-auth-warning")).toBeInTheDocument();
+    expect(screen.queryByTestId("login-method-warning")).toBeNull();
+    expect(
+      vi.mocked(teamApi.apiFetch).mock.calls.some(([p]) => String(p).startsWith("/api/product/targets/resolve")),
+    ).toBe(false);
+  });
+
+  it("account_auth 칸 없음 → 아무것도 안 띄움", async () => {
+    saveHandle();
+    serveAccounts(false);
+    u.readURLStatus.mockResolvedValue(running);
+    mount("live");
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
+    expect(screen.queryByTestId("account-auth-warning")).toBeNull();
+  });
+
+  it("다시 로그인으로 값이 바뀌면 갱신된다(경고 생김 → 다른 결과 → 사라짐)", async () => {
+    saveHandle();
+    serveAccounts(false);
+    u.readURLStatus.mockResolvedValue(withAuth({ rh_tester_a: "authenticated", rh_tester_b: "authenticated" }));
+    mount("live");
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
+    expect(screen.queryByTestId("account-auth-warning")).toBeNull();
+    u.readURLStatus.mockResolvedValue({
+      ...withAuth({ rh_tester_a: "authenticated", rh_tester_b: "login_failed" }),
+      revision: running.revision + 1,
+    });
+    const box = await screen.findByTestId("account-auth-warning", {}, { timeout: 5000 });
+    expect(box).toHaveTextContent("B(rh_tester_b) — 로그인 거절");
+    expect(box).not.toHaveTextContent("로그인 실패");
+    u.readURLStatus.mockResolvedValue({
+      ...withAuth({ rh_tester_a: "authenticated", rh_tester_b: "authenticated" }),
+      revision: running.revision + 2,
+    });
+    await waitFor(() => expect(screen.queryByTestId("account-auth-warning")).toBeNull(), { timeout: 5000 });
+  }, 15000);
+});
