@@ -1340,6 +1340,42 @@ class TestProductFaultStall(unittest.TestCase):
         self.assertEqual((result["status"], result["reasons"]), ("invalid", ["fault_stall_unjudgeable"]))
         self.assertEqual(evidence.files["fault-stall.json"]["stall_seconds"], 180)
 
+    def goal_met_round(self, ports, *, late_end=None):
+        """제품이 진행 중 → 목표 달성 마감(#894 이후 completed, intent_outcomes.goal_met, 정리 끝)으로 가는 O 회차. 호출 기록 두 줄은
+        시작 직후 정상 호출이라 멈춤이 없다. late_end를 주면 두 번째 호출이 그 초(시작 기준)에 끝난다(유예 종료 뒤에 끝난 호출)."""
+        start_round = ports.start_round
+
+        def start(prepared):
+            base = START + timedelta(seconds=ports.clock.t)
+            at = lambda seconds: (base + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")  # noqa: E731
+            ports.calls_file = self.calls(
+                {"seq": 1, "decision": "forwarded", "status": 200, "started_at": at(0.5), "completed_at": at(1.0)},
+                {"seq": 2, "decision": "forwarded", "status": 200, "started_at": at(1.5),
+                 "completed_at": at(2.0 if late_end is None else late_end)})
+            return start_round(prepared)
+        ports.start_round = start
+        done = {"id": "draft-1", "state": "completed", "phase": "report", "outcome": "complete", "closing_reason": "complete",
+                "reason_code": None, "drain_complete": True, "result_ready": True,
+                "intent_outcomes": {"done": 1, "policy_limited": 0, "incomplete": 0, "unknown": 0, "stopped": 0, "goal_met": 2}}
+        ports.statuses = [{"id": "draft-1", "state": "running", "phase": "execution"}] * 3 + [done]
+
+    def test_goal_met_o_ends_by_the_end_idle_grace(self):
+        # 사용자 2026-11-25: 목표 달성으로 끝난 O(#894 이후 completed)도 끝 신호 뒤 무활동 유예로 끝난다.
+        result, ports, evidence = run(self.goal_met_round, fault_stall_seconds=5)
+        self.assertEqual(result["status"], "complete", result)
+        self.assertEqual(result["stop_reason"], "engine_completed")
+        self.assertEqual((result["first_limit"]["value"], result["first_limit"]["runner_limit"]),
+                         ("engine_completed", "runner_engine_idle"))
+        idle = evidence.files["end-idle.json"]
+        self.assertEqual((idle["stopped"], idle["drain_required"], idle["model_calls_watched"], idle["inflight_at_stop"]),
+                         (True, True, False, 0))
+        self.assertEqual(round(idle["stopped_elapsed_seconds"] - idle["end_signal_elapsed_seconds"], 3), 5.0)
+
+    def test_o_call_still_running_at_the_grace_stop_invalidates(self):
+        result, _, evidence = run(lambda ports: self.goal_met_round(ports, late_end=3600), fault_stall_seconds=5)
+        self.assertEqual((result["status"], result["reasons"][0]), ("invalid", "end_idle_inflight_model_call"))
+        self.assertEqual(evidence.files["end-idle.json"]["inflight_at_stop"], 1)
+
     def test_o_stall_is_the_first_reason_with_llm_reasons_after(self):
         def both(ports):
             self.stall_calls(ports)

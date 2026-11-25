@@ -3419,6 +3419,62 @@ class TestFaultStallRecord(unittest.TestCase):
         self.assertNotIn("secret", json.dumps(evidence.files["fault-stall.json"]))
 
 
+class TestEndIdleRun(unittest.TestCase):
+    """끝 신호 뒤 무활동 유예(고정 초안 §4 (다), 2026-11-25 사용자)가 B 회차 흐름에서 회차를 끝내고 근거를 남긴다."""
+
+    def setup_done(self, ports, meter, clock):
+        meter.per_poll = 0
+        ports.task_views = [task_view("running"), task_view("done", goals_met=1, completed_at="2026-11-02T00:00:02Z")]
+
+    def test_done_engine_without_activity_ends_after_the_grace(self):
+        result, _, _, evidence = run(self.setup_done, spec=dataclasses.replace(make_spec(), fault_stall_seconds=5))
+        self.assertEqual(result["status"], COMPLETE)
+        self.assertEqual(result["meter"]["stop_reason"], "engine_completed")
+        self.assertEqual((result["first_limit"]["value"], result["first_limit"]["runner_limit"]),
+                         ("engine_completed", "runner_engine_idle"))
+        idle = evidence.files["end-idle.json"]
+        self.assertEqual((idle["stopped"], idle["inflight_at_stop"], idle["model_calls_watched"], idle["drain_required"]),
+                         (True, 0, True, False))
+        self.assertEqual(round(idle["stopped_elapsed_seconds"] - idle["end_signal_elapsed_seconds"], 3), 5.0)
+        self.assertEqual(result["first_limit"]["engine_terminal_elapsed_seconds"], idle["end_signal_elapsed_seconds"])
+        self.assertLess(result["first_limit"]["runner_limit_elapsed_seconds"], result["meter"]["time_budget_seconds"])
+
+    def test_without_t_the_round_runs_to_the_time_budget(self):
+        result, _, _, evidence = run(self.setup_done)
+        self.assertEqual((result["meter"]["stop_reason"], result["first_limit"]["runner_limit"]), ("time_budget", "runner_time_budget"))
+        self.assertEqual(result["first_limit"]["value"], "engine_completed")
+        self.assertNotIn("end-idle.json", evidence.files)
+
+    def test_failed_engine_is_not_ended_by_the_grace(self):
+        def setup(ports, meter, clock):
+            meter.per_poll = 0
+            ports.task_views = [task_view("running"), task_view("failed")]
+        result, _, _, evidence = run(setup, spec=dataclasses.replace(make_spec(), fault_stall_seconds=5))
+        self.assertEqual(result["meter"]["stop_reason"], "time_budget")
+        self.assertEqual(result["first_limit"]["value"], "engine_ended:failed")
+        self.assertFalse(evidence.files["end-idle.json"]["stopped"])
+
+    def test_model_call_running_at_the_stop_invalidates(self):
+        # 유예로 끝낸 시각에 시작해 있던 호출이 그 뒤에 끝났다(창 동안에는 게이트웨이 행이 안 보이는 경우) → 무효.
+        def keep(gateway):
+            gateway.llm_rows = [{"seq": 1, "decision": "forwarded", "method": "POST", "status": 200,
+                                 "started_at": "2026-11-02T00:00:03Z", "completed_at": "2026-11-03T00:00:00Z",
+                                 "request_bytes": 10, "response_bytes": 5, "generation_id": "gen-1"}]
+        result, _, _, evidence = run(self.setup_done, mutate_gateway=keep,
+                                     spec=dataclasses.replace(make_spec(), fault_stall_seconds=5))
+        self.assertEqual((result["status"], result["reasons"][0]), (INVALID, "end_idle_inflight_model_call"))
+        self.assertEqual(evidence.files["end-idle.json"]["inflight_at_stop"], 1)
+
+    def test_unreadable_call_records_never_end_by_the_grace(self):
+        result, _, _, evidence = run(self.setup_done, mutate_gateway=lambda g: setattr(g, "llm_rows", runner.EvidenceError("llm_row_invalid")),
+                                     spec=dataclasses.replace(make_spec(), fault_stall_seconds=5))
+        # 창 동안 행을 못 읽으면 활동으로 봐서 유예로 끝내지 않는다(시간 예산까지). 회차는 원래 규칙대로 멈춤 판정 불가로 무효다.
+        idle = evidence.files["end-idle.json"]
+        self.assertEqual((idle["stopped"], idle["stopped_elapsed_seconds"], idle["inflight_at_stop"]), (False, None, None))
+        self.assertGreater(idle["model_read_failures"], 0)
+        self.assertEqual((result["status"], result["reasons"]), (INVALID, ["fault_stall_unjudgeable"]))
+
+
 class TestEngineEndSignal(unittest.TestCase):
     """엔진 끝 신호(결정안 §3.1): 창 동안 작업 상태를 읽어 첫 끝 상태를 남기고, down 전에 마지막 상태를 읽어 서명 근거로 둔다."""
 

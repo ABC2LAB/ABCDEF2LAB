@@ -147,10 +147,28 @@ def synthetic_local_model(model: str, context_window_k: int, max_tokens: int) ->
             "context_window_k": context_window_k, "max_tokens": max_tokens}
 
 
+# O 제품 회차 실행 시간 = 러너 시간 예산 + 이 여유(초). 제품 시계는 시작 뒤 탐색·준비부터 흐르므로, 제품 기본값(1800초)을
+# 그대로 두면 러너 시간 예산(1800초, 고정 초안 §10)보다 O가 먼저 닫힌다(2026-11-25 사용자 결정: 설치 run_seconds 2100).
+PRODUCT_RUN_MARGIN_SECONDS = 300
+# 제품 설치가 받는 회차 실행 시간 상한(server.MaxFirstDiagnosisTaskSeconds와 같다). 넘으면 설치가 거부하므로 여기서 먼저 막는다.
+PRODUCT_MAX_RUN_SECONDS = 3600
+
+
+def product_run_seconds(time_budget_seconds: int) -> int:
+    """O 설치 runtime_limits.workflow.run_seconds. 러너 시간 예산 + 여유이고, 제품 상한을 넘으면 설정 오류다."""
+    if type(time_budget_seconds) is not int or time_budget_seconds < 1:
+        raise SplitInputError("split_run_seconds_invalid")
+    seconds = time_budget_seconds + PRODUCT_RUN_MARGIN_SECONDS
+    if seconds > PRODUCT_MAX_RUN_SECONDS:
+        raise SplitInputError("split_run_seconds_invalid")
+    return seconds
+
+
 def install_input(*, admin_password: str, manifest: dict | None, meter_port: int, workflow_defaults: dict, wide_writes: bool,
-                  valid_for_hours: int, max_runs: int, local_model: dict | None = None) -> dict:
+                  valid_for_hours: int, max_runs: int, run_seconds: int, local_model: dict | None = None) -> dict:
     """평가 O 회차의 제품 설치 입력(v2). 결정안 B(a): 상한 칸(max_requests·max_targets·runtime_limits)은 넣지 않아 제품
-    기본값을 쓴다. 워크플로 블록은 제품 기본값 파일 그대로이고, 쓰기 허용만 회차 설정(wide_writes)을 따른다. 대상 망은
+    기본값을 쓴다. 예외 하나: 워크플로 회차 실행 시간(runtime_limits.workflow.run_seconds)은 run_seconds로 넣는다
+    (product_run_seconds, 2026-11-25 사용자). 워크플로 블록은 제품 기본값 파일 그대로이고, 쓰기 허용만 회차 설정(wide_writes)을 따른다. 대상 망은
     평가 대역이고 http 대상(C22)이라 허용 포트는 계측기 본 입구 포트 하나, DNS 증명은 overlay의 fixture DNS로 한다.
     모델 키는 여기 넣지 않는다(설치 뒤 제품 API로 넣는다). 관리자 비밀번호는 호출자가 회차마다 만든 값이다."""
     # 모델은 둘 중 하나다: 승인 OpenRouter manifest(실제 모델) 또는 합성 모드의 local_model(스크립트 모델 주소 하나).
@@ -165,7 +183,8 @@ def install_input(*, admin_password: str, manifest: dict | None, meter_port: int
     if (not isinstance(admin_password, str) or len(admin_password) < 12 or not (real or synthetic)
             or type(meter_port) is not int or not 0 < meter_port < 65536
             or type(wide_writes) is not bool or type(valid_for_hours) is not int or valid_for_hours < 1
-            or type(max_runs) is not int or max_runs < 1):
+            or type(max_runs) is not int or max_runs < 1
+            or type(run_seconds) is not int or not 1 <= run_seconds <= PRODUCT_MAX_RUN_SECONDS):
         raise SplitInputError("split_install_input_invalid")
     if not isinstance(workflow_defaults, dict) or set(workflow_defaults) != WORKFLOW_FIELDS:
         raise SplitInputError("split_workflow_defaults_invalid")
@@ -176,6 +195,7 @@ def install_input(*, admin_password: str, manifest: dict | None, meter_port: int
             "target_policy": {"format": TARGET_POLICY_FORMAT, "allowed_ports": [meter_port], "private_cidrs": [TARGET_CIDR],
                               "resolver_address": f"{FIXTURE_DNS_IP}:{FIXTURE_DNS_PORT}", "workflow": workflow,
                               "exploration": dict(EXPLORATION_BLOCK)},
+            "runtime_limits": {"workflow": {"run_seconds": run_seconds}},
             **({"openrouter_manifest": manifest} if real else {"local_model": dict(local_model)})}
 
 
