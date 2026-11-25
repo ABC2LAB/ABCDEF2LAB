@@ -158,7 +158,7 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 		"related_call_refs":  map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": 256}},
 		"call_ref":           map[string]any{"type": "string", "maxLength": 256},
 		"vulnclass":          map[string]any{"type": "string", "maxLength": 128},
-		"verification_claim": map[string]any{"type": "string", "enum": []string{"html_nosniff_missing", "server_version_banner"}, "description": "Only for security_headers/html_nosniff_missing or information_disclosure/server_version_banner. Include a separately recorded approved GET related_call_ref for independent comparison. A software banner does not establish a vulnerable version. This is not confirmation."},
+		"verification_claim": map[string]any{"type": "string", "enum": []string{"html_nosniff_missing", "server_version_banner"}, "description": "Optional legacy metadata for historical passive/v2 records. It does not confirm a new candidate and does not require additional target calls."},
 		"name":               map[string]any{"type": "string", "maxLength": 512},
 		"summary":            map[string]any{"type": "string", "maxLength": 8192},
 		"remediation":        map[string]any{"type": "string", "maxLength": 8192},
@@ -174,7 +174,7 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 	coreSchema := map[string]any{"type": "object", "properties": coreProperties, "required": []any{"call_ref", "vulnclass", "name", "summary"}}
 	return actool.Build(actool.Spec{
 		Name:        "submit_diagnostic_candidate",
-		Description: "Preserve a potential vulnerability for manual review using an actual Bash call_ref from this intent. This tool cannot confirm a vulnerability, change approval, send requests, or invent evidence. For security_headers/html_nosniff_missing or information_disclosure/server_version_banner, compare the observed response with a normal alternative and include only separately recorded approved GET related_call_refs already available. A banner is not proof of a vulnerable software version. Display text must be Korean. Optionally suggest severity only from observed impact, resource sensitivity and known prerequisites in a completed HTTP observation; never infer a rating from the vulnerability class alone. Omit the estimate when evidence is insufficient. Estimates never confirm a finding.",
+		Description: "Preserve a potential vulnerability for review using an actual Bash call_ref from this intent. This tool cannot confirm a vulnerability, change approval, send requests, or invent evidence. Include related_call_refs only for separately recorded calls already available; do not make requests to satisfy a fixed verification claim or count. Explain plausible normal behavior in the summary. Display text must be Korean. Optionally suggest severity only from observed impact, resource sensitivity and known prerequisites in a completed HTTP observation; never infer a rating from the vulnerability class alone. Omit the estimate when evidence is insufficient. Estimates never confirm a finding.",
 		Schema:      schema,
 		RawInput:    true,
 		Concurrent:  func(json.RawMessage) bool { return false },
