@@ -1,0 +1,59 @@
+{
+  "fixture_version": "selected-candidate-verification/stored-v1",
+  "synthetic_only": true,
+  "implemented_responses": {
+    "before_request": {
+      "task_id": "41",
+      "candidate_id": "902",
+      "evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "automatic": { "status": "insufficient", "reason": "independent_observation_missing" },
+      "verifications": [],
+      "truncated": false
+    },
+    "stored_review_insufficient": {
+      "task_id": "41",
+      "candidate_id": "902",
+      "evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "automatic": { "status": "insufficient", "reason": "independent_observation_missing" },
+      "verifications": [
+        {
+          "id": "1201",
+          "candidate_id": "902",
+          "request_id": "synthetic-review-001",
+          "method": "stored/v1",
+          "original_evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "original_evidence_version": 1,
+          "original_run_ref": "synthetic-run-41",
+          "requested_at": "2026-11-25T00:00:00Z",
+          "latest": {
+            "process_state": "completed",
+            "verdict": "insufficient",
+            "reason": "independent_observation_missing",
+            "rule_version": "passive/v2",
+            "sources": [],
+            "sources_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+            "at": "2026-11-25T00:00:01Z"
+          }
+        }
+      ],
+      "truncated": false
+    }
+  },
+  "report_examples_not_api_responses": {
+    "suspected_two_confirmed_zero": { "found": 2, "suspected": 2, "confirmed": 0, "html_status": 200, "docx_status": 200 },
+    "mixed": { "found": 8, "suspected": 5, "confirmed": 3, "html_status": 200, "docx_status": 200 },
+    "zero_findings": { "found": 0, "suspected": 0, "confirmed": 0, "html_status": 200, "docx_status": 200 },
+    "all_inconclusive": { "found": 2, "inconclusive": 2, "confirmed": 0, "html_status": 200, "docx_status": 200 },
+    "all_negative": { "found": 2, "negative": 2, "confirmed": 0, "html_status": 200, "docx_status": 200 }
+  },
+  "future_states_not_implemented": [
+    "awaiting_approval",
+    "running",
+    "failed",
+    "cancelled",
+    "expired",
+    "new_e2_execution_confirmed",
+    "new_e2_execution_negative",
+    "prior_confirmed_latest_inconclusive"
+  ]
+}

@@ -106,6 +106,15 @@ func TestProductRuntimeE3VerdictInsertOnly(t *testing.T) {
 				runtimeInsert, runtimeUpdate, runtimeDelete, runtimeTruncate, apiSelect, apiInsert)
 		}
 	}
+	for _, table := range []string{"diagnostic_candidate_verification_requests", "diagnostic_candidate_verification_events"} {
+		var apiSelect, apiInsert, apiUpdate, apiDelete, apiTruncate, runtimeInsert bool
+		if err := installer.QueryRowContext(t.Context(), `SELECT has_table_privilege('product_api',$1,'SELECT'),has_table_privilege('product_api',$1,'INSERT'),has_table_privilege('product_api',$1,'UPDATE'),has_table_privilege('product_api',$1,'DELETE'),has_table_privilege('product_api',$1,'TRUNCATE'),has_table_privilege('product_runtime',$1,'INSERT')`, table).Scan(&apiSelect, &apiInsert, &apiUpdate, &apiDelete, &apiTruncate, &runtimeInsert); err != nil {
+			t.Fatal(err)
+		}
+		if !apiSelect || !apiInsert || apiUpdate || apiDelete || apiTruncate || runtimeInsert {
+			t.Fatalf("%s must be append-only for product_api and unavailable to runtime", table)
+		}
+	}
 	// 실제 실행 역할 연결로 저장하고, 같은 연결로 바꾸기·지우기를 시도한다.
 	task, err := installer.CreateTask("synthetic product verdict store", "synthetic only", nil, 0, 0)
 	if err != nil {

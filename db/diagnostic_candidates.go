@@ -299,6 +299,32 @@ func ReadDiagnosticCandidate(ctx context.Context, q DiagnosticCandidateQueryer, 
 	return c, true, nil
 }
 
+// ReadDiagnosticCandidateWithFence는 후보의 원본과 최초 저장 뒤 E② 시도
+// 상한을 같은 트랜잭션에서 확인한다. 없는 표식을 추정하거나 채우지 않는다.
+func ReadDiagnosticCandidateWithFence(ctx context.Context, q DiagnosticCandidateQueryer, explorationID, taskID, id int64) (DiagnosticCandidate, bool, error) {
+	c, ok, err := ReadDiagnosticCandidate(ctx, q, explorationID, taskID, id)
+	if err != nil || !ok {
+		return c, ok, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT EXISTS (SELECT 1 FROM exploration_nodes n JOIN exploration_edges e ON e.dst_id=n.id AND e.exploration_id=n.exploration_id AND e.rel='yields' JOIN exploration_nodes src ON src.id=e.src_id AND src.exploration_id=n.exploration_id AND src.kind='intent' WHERE n.id=$1 AND n.exploration_id=$2 AND n.state='confirmed' AND src.id=$3)`, id, explorationID, c.IntentID)
+	if err != nil {
+		return DiagnosticCandidate{}, false, err
+	}
+	defer rows.Close()
+	var bound bool
+	if !rows.Next() || rows.Scan(&bound) != nil || rows.Next() || rows.Err() != nil || !bound {
+		return DiagnosticCandidate{}, false, ErrDiagnosticCandidate
+	}
+	if err := rows.Close(); err != nil {
+		return DiagnosticCandidate{}, false, err
+	}
+	items := []DiagnosticCandidate{c}
+	if err := attachDiagnosticCandidateSaveFences(ctx, q, explorationID, taskID, items); err != nil {
+		return DiagnosticCandidate{}, false, err
+	}
+	return items[0], true, nil
+}
+
 // ListDiagnosticCandidatesQuery는 보고서의 동일 repeatable-read 트랜잭션에 참여한다.
 func ListDiagnosticCandidatesQuery(ctx context.Context, q DiagnosticCandidateQueryer, explorationID, taskID int64, runRef string, limit int) ([]DiagnosticCandidate, error) {
 	if taskID <= 0 || limit <= 0 || limit > MaxDiagnosticCandidates+1 {

@@ -312,6 +312,11 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 		}
 		out.Entries = append(out.Entries, entry)
 	}
+	if out.Run != nil && out.Run.VerificationVersion == diagnosisVerificationV2 && out.Run.State == report.DiagnosticRunCompleted {
+		if err := attachLatestCandidateVerifications(ctx, tx, taskID, candidates, assessments, &out); err != nil {
+			return out, err
+		}
+	}
 	if len(out.Entries) > report.MaxFindings {
 		return out, report.ErrExportBlocked
 	}

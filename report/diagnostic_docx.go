@@ -210,6 +210,13 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 			assessment = e.AssessmentStatus + " / " + e.AssessmentReason
 		}
 		w.table([][]string{{"항목", "값"}, {"고유 ID / 유형", e.ID + " / " + e.VulnClass}, {"현재 판정", e.VerdictText()}, {"원본 결과 / 검증", e.Outcome + " / " + e.Verification}, {"검증 결과·사유", assessment}, {"위험도 / 원본 상태", e.SeverityText() + " / " + e.Status}, {"실행 / intent", e.Run + " / " + strconv.FormatInt(e.IntentID, 10)}, {"증거 버전 / digest", strconv.FormatInt(e.EvidenceVersion, 10) + " / " + e.Digest}})
+		if v := e.LatestVerification; v != nil {
+			verdict := v.Verdict
+			if verdict == "" {
+				verdict = "판정 없음"
+			}
+			w.paragraph("Normal", fmt.Sprintf("최근 선택 검증: %s · %s · %s · %s · 요청 %s", v.State, verdict, v.Reason, v.Method, v.RequestedAt.UTC().Format(time.RFC3339)))
+		}
 		if review := e.BusinessRuleReview; review != nil {
 			w.paragraph("Heading2", "업무 규칙 미확인 · 판정 보류")
 			w.paragraph("Normal", review.Observation)

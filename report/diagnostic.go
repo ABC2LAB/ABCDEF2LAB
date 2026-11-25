@@ -89,6 +89,7 @@ type BusinessRuleReview struct {
 
 type DiagnosticEntry struct {
 	BusinessRuleReview                                        *BusinessRuleReview
+	LatestVerification                                        *DiagnosticLatestVerification
 	Steps                                                     []reproduction.Step
 	StepsTruncated                                            bool
 	SourceLoadFailed                                          bool
@@ -111,6 +112,13 @@ type DiagnosticEntry struct {
 	Stale, Truncated                                          bool
 	// LanguageMixed는 모델이 쓴 이름·설명·조치·근거에 한자·가나가 섞인 채 저장된 후보다(다시 쓰게 했지만 남음, 2026-11-24).
 	LanguageMixed bool
+}
+
+// DiagnosticLatestVerification은 원본 자동 판정과 구별되는 최근 사용자 요청의
+// 처리 상태다. 최초 판정과 종료 기록의 수치를 변경하지 않는다.
+type DiagnosticLatestVerification struct {
+	State, Verdict, Reason, Method, EvidenceDigest string
+	RequestedAt                                    time.Time
 }
 
 // 자격정보 형식·연락처를 보수적으로 제거한다. 공유 사본은 자유문장 전체를 가린다.
@@ -260,6 +268,14 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			}
 		} else if e.AssessmentReason != "" {
 			return DiagnosticReport{}, ErrExportBlocked
+		}
+		if e.LatestVerification != nil {
+			latest := *e.LatestVerification
+			if e.Kind != "candidate" || in.Run == nil || in.Run.VerificationVersion != "passive/v2" || latest.Method != "stored/v1" || latest.EvidenceDigest != e.Digest || latest.RequestedAt.IsZero() || latest.Reason == "" || latest.State != "completed" || latest.Verdict != e.AssessmentStatus {
+				return DiagnosticReport{}, ErrExportBlocked
+			}
+			latest.Reason = DiagnosticText(latest.Reason)
+			e.LatestVerification = &latest
 		}
 		switch e.Outcome {
 		case "confirmed":
@@ -626,6 +642,7 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 {{range .Entries}}<article id="{{.ID}}"><h3>{{.ID}} · {{.Title}}</h3>
 <dl><dt>유형</dt><dd>{{.VulnClass}}</dd><dt>현재 판정</dt><dd>{{.VerdictText}}</dd><dt>원본 결과 구분</dt><dd>{{.Outcome}}</dd>
 <dt>검증 방법</dt><dd>{{.Verification}}</dd><dt>검증 결과·사유</dt><dd>{{if .AssessmentStatus}}{{.AssessmentStatus}} / {{.AssessmentReason}}{{else}}추가 검증 기록 없음{{end}}</dd><dt>심각도</dt><dd>{{.SeverityText}}</dd>{{if .SeverityRationale}}<dt>예상 심각도 근거 · 모델 제안</dt><dd>{{.SeverityRationale}}</dd>{{end}}<dt>원본 처리/실행 상태</dt><dd>{{.Status}}</dd>
+{{with .LatestVerification}}<dt>최근 선택 검증</dt><dd>{{.State}} · {{if .Verdict}}{{.Verdict}}{{else}}판정 없음{{end}} · {{.Reason}} · {{.Method}} · 요청 {{.RequestedAt}}</dd>{{end}}
 <dt>회차 / intent</dt><dd>{{if .Run}}{{.Run}}{{else}}회차 미기록{{end}} / {{if .IntentID}}{{.IntentID}}{{else}}intent 미기록{{end}}</dd><dt>관찰 시각</dt><dd>{{if .ObservedAt.IsZero}}미기록{{else}}{{.ObservedAt}}{{end}}</dd>
 <dt>증거 버전 / digest</dt><dd>{{.EvidenceVersion}} / {{.Digest}}</dd></dl>
 {{if .LanguageMixed}}<p>다른 언어 섞임: 모델이 쓴 이름·설명·조치·근거에 한자·가나가 섞여 있습니다. 섞인 부분을 짚어 한국어로 다시 쓰게 했지만 남았습니다.</p>{{end}}
