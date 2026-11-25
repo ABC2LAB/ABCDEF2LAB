@@ -45,6 +45,7 @@ func TestCandidateVerificationStoredOnlyProductAPIPostgres(t *testing.T) {
 		name, claim, first, second, state, verdict string
 	}{
 		{"stored-confirmed", "html_nosniff_missing", "nosniff_missing", "nosniff_missing", "completed", "confirmed"},
+		{"mixed-context", "html_nosniff_missing", "nosniff_missing", "nosniff_missing", "completed", "confirmed"},
 		{"stored-negative", "html_nosniff_missing", "nosniff_present", "nosniff_present", "completed", "negative"},
 		{"needs-new-evidence", "html_nosniff_missing", "nosniff_missing", "", "completed", "insufficient"},
 		{"duplicate-attempt", "html_nosniff_missing", "nosniff_missing", "nosniff_missing", "completed", "insufficient"},
@@ -86,6 +87,16 @@ func TestCandidateVerificationStoredOnlyProductAPIPostgres(t *testing.T) {
 				other.Call.Observations[0].HTMLSecurity = tc.second
 				calls = append(calls, other)
 			}
+			if tc.name == "mixed-context" {
+				unrelated := primary
+				unrelated.Call = e2proxy.CloneCallResult(primary.Call)
+				unrelated.Call.CallRef = "another-call"
+				unrelated.Call.Observations[0].AttemptRef = "another-attempt"
+				unrelated.Call.Observations[0].Sequence = 3
+				unrelated.Call.Observations[0].Endpoint = "/another"
+				unrelated.Execution.HeaderMode = e2proxy.HeaderTestAccountPassthrough
+				calls = append(calls, unrelated)
+			}
 			state := requestApprovalRunState{RunRef: passiveRunRef, Phase: "closed", Outcome: "completed", DrainComplete: true}
 			if err := saveDiagnosisRunRecordGoal(t.Context(), s.m.pg.DB, taskID, state, nil, nil, nil, calls); err != nil {
 				t.Fatal(err)
@@ -123,6 +134,9 @@ func TestCandidateVerificationStoredOnlyProductAPIPostgres(t *testing.T) {
 				wantCount := 1
 				if tc.second != "" {
 					wantCount = 2
+				}
+				if tc.name == "mixed-context" {
+					wantCount = 3
 				}
 				if page.StoredEvidence.State != "checked" || page.StoredEvidence.Count != wantCount || page.StoredEvidence.Verdict != tc.verdict {
 					t.Fatalf("durable stored observations not rechecked: %+v", page.StoredEvidence)
@@ -438,5 +452,80 @@ func TestCandidateVerificationProductRoutePostgres(t *testing.T) {
 	}
 	if owner.calls.Load() == 0 {
 		t.Fatal("product route skipped owner receipt")
+	}
+}
+
+func TestCandidateSourceErrorSurvivesSuccessfulProjectionPostgres(t *testing.T) {
+	s, finding, _ := trafficEvidenceServer(t)
+	stored, err := s.m.pg.GetFinding(finding.FindingID)
+	if err != nil || stored.TaskID == nil {
+		t.Fatal(err)
+	}
+	task := *stored.TaskID
+	if err := saveDiagnosisVerificationPolicy(t.Context(), s.m.pg.DB, task, passiveRunRef); err != nil {
+		t.Fatal(err)
+	}
+	id := storePassiveCandidate(t, s, task, "html_nosniff_missing", "nosniff_missing", "")
+	_, err = s.m.pg.ExecContext(t.Context(), `UPDATE exploration_nodes SET payload=jsonb_set(payload,'{fence,attempt_high_water}','0') WHERE exploration_id=(SELECT exploration_id FROM tasks WHERE id=$1) AND origin='diagnostic_candidate_save_fence_v2' AND payload->>'candidate_id'=$2`, task, fmt.Sprint(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := requestApprovalRunState{RunRef: passiveRunRef, Phase: "closed", Outcome: "completed", DrainComplete: true}
+	if err := saveDiagnosisRunRecordGoal(t.Context(), s.m.pg.DB, task, state, nil, nil, nil, []e2runner.TrustedResult{}); err != nil {
+		t.Fatal(err)
+	}
+	var raw []byte
+	if err := s.m.pg.QueryRowContext(t.Context(), `SELECT n.payload FROM exploration_nodes n JOIN tasks t ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND n.origin=$2`, task, diagnosisRunOrigin).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var record diagnosisRunRecord
+	if err := json.Unmarshal(raw, &record); err != nil || record.Verification == nil || !record.Verification.SourceUnavailable || record.Verification.ObservationsStored {
+		t.Fatalf("unreadable candidates presented as an empty run: %+v, %v", record.Verification, err)
+	}
+}
+
+func TestStoredReviewUnavailableIsLocalToCandidatePostgres(t *testing.T) {
+	s, finding, _ := trafficEvidenceServer(t)
+	stored, err := s.m.pg.GetFinding(finding.FindingID)
+	if err != nil || stored.TaskID == nil {
+		t.Fatal(err)
+	}
+	task := *stored.TaskID
+	if err := saveDiagnosisVerificationPolicy(t.Context(), s.m.pg.DB, task, passiveRunRef); err != nil {
+		t.Fatal(err)
+	}
+	good := storePassiveCandidate(t, s, task, "html_nosniff_missing", "nosniff_missing", "")
+	partial := storePassiveCandidateForCall(t, s, task, "html_nosniff_missing", "", "", "partial-call", "partial-attempt")
+	rows, err := s.m.ResolveTask(fmt.Sprint(task)).Store.ListDiagnosticCandidates(task, passiveRunRef, 2)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("candidate fixture: %d %v", len(rows), err)
+	}
+	var calls []e2runner.TrustedResult
+	for _, row := range rows {
+		var envelope struct {
+			Trusted e2runner.TrustedResult `json:"trusted"`
+		}
+		if err := json.Unmarshal([]byte(row.Evidence), &envelope); err != nil {
+			t.Fatal(err)
+		}
+		call := envelope.Trusted
+		call.ProcessDrained, call.ProxyDrained, call.Execution.AuditComplete = true, true, true
+		calls = append(calls, call)
+	}
+	state := requestApprovalRunState{RunRef: passiveRunRef, Phase: "closed", Outcome: "completed", DrainComplete: true}
+	if err := saveDiagnosisRunRecordGoal(t.Context(), s.m.pg.DB, task, state, nil, nil, nil, calls); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id   int64
+		want string
+	}{{good, "checked"}, {partial, "not_stored"}} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/product/tasks/%d/candidates/%d/verifications", task, tc.id), nil)
+		candidateVerificationHTTP(rec, req, s.m.pg.DB, func(*http.Request) (string, error) { return "ARTEX", nil }, &verificationOwnerEndpoint{task: fmt.Sprint(task)})
+		var page candidateVerificationPage
+		if rec.Code != 200 || json.Unmarshal(rec.Body.Bytes(), &page) != nil || page.StoredEvidence.State != tc.want || page.Automatic.Status != "insufficient" {
+			t.Fatalf("candidate %d: %d %s", tc.id, rec.Code, rec.Body)
+		}
 	}
 }

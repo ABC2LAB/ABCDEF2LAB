@@ -37,12 +37,13 @@ type DiagnosticRun struct {
 }
 
 type CandidateAssessment struct {
-	CandidateID    int64
-	EvidenceDigest string
-	Status         string
-	Reason         string
-	AttemptRefs    []string
-	Sources        []candidateverify.SourceV2
+	StoredReviewUnavailable bool
+	CandidateID             int64
+	EvidenceDigest          string
+	Status                  string
+	Reason                  string
+	AttemptRefs             []string
+	Sources                 []candidateverify.SourceV2
 }
 
 // DiagnosticRunText는 실행 결과 한 줄이다. 화면(web urlOutcomeText)과 같은 문구를 쓴다. 기록이 없거나 형식이 맞지

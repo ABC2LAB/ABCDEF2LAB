@@ -49,7 +49,7 @@ func AssessActiveStoredV1(candidate db.DiagnosticCandidate, binding ActiveBindin
 	var scopeDigest, policyRevision, ruleRef string
 	for _, row := range stored {
 		s := row.Source
-		if !validStoredObservationV2(row) || row.HeaderMode != e2proxy.HeaderPreserve || s.TaskRef != strconv.FormatInt(binding.TaskID, 10) ||
+		if !validStoredObservationV2(row) || row.Revision != stored[0].Revision || row.HeaderMode != e2proxy.HeaderPreserve || s.TaskRef != strconv.FormatInt(binding.TaskID, 10) ||
 			s.RunRef != binding.RunRef || s.Observation.Endpoint != binding.ExactPath || s.Observation.Method != "GET" ||
 			seenCalls[s.CallRef] || seenAttempts[s.Observation.AttemptRef] || s.CallRef == candidate.CallRef ||
 			s.Observation.AttemptRef == original.Trusted.Call.Observations[0].AttemptRef {
@@ -65,7 +65,7 @@ func AssessActiveStoredV1(candidate db.DiagnosticCandidate, binding ActiveBindin
 		virtual := e2runner.TrustedResult{Final: true, ProcessDrained: true, ProxyDrained: true, Classification: "completed",
 			Call: e2proxy.CallResult{Final: true, AuditComplete: true, Observations: []e2proxy.HTTPObservation{s.Observation}}}
 		virtual.Execution.AuditComplete = true
-		_, state, ok := v2Observation(virtual, candidate.VerificationClaim)
+		_, state, ok := storedObservation(row.Revision, virtual, candidate.VerificationClaim)
 		if !ok {
 			return Result{Status: Insufficient, Reason: "followup_observation_invalid"}
 		}

@@ -69,10 +69,13 @@ func readDiagnosticRun(ctx context.Context, tx *sql.Tx, task int64) (*report.Dia
 		run.VerificationObservationsCount = record.Verification.ObservationsCount
 		run.VerificationObservationsDigest = record.Verification.ObservationsDigest
 		for _, row := range record.Verification.Candidates {
+			if row.StoredReviewUnavailable && !record.Verification.ObservationsStored {
+				return nil, ErrFirstDiagnosisOutcome
+			}
 			if record.Verification.Version == diagnosisVerificationV2 && !candidateverify.ValidSourcesV2(row.Result) {
 				return nil, ErrFirstDiagnosisOutcome
 			}
-			run.CandidateAssessments = append(run.CandidateAssessments, report.CandidateAssessment{CandidateID: row.CandidateID, EvidenceDigest: row.EvidenceDigest, Status: row.Result.Status, Reason: row.Result.Reason, AttemptRefs: append([]string(nil), row.Result.Attempts...), Sources: append([]candidateverify.SourceV2(nil), row.Result.Sources...)})
+			run.CandidateAssessments = append(run.CandidateAssessments, report.CandidateAssessment{StoredReviewUnavailable: row.StoredReviewUnavailable, CandidateID: row.CandidateID, EvidenceDigest: row.EvidenceDigest, Status: row.Result.Status, Reason: row.Result.Reason, AttemptRefs: append([]string(nil), row.Result.Attempts...), Sources: append([]candidateverify.SourceV2(nil), row.Result.Sources...)})
 		}
 	}
 	return run, nil

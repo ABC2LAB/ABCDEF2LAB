@@ -276,11 +276,11 @@ func candidateVerificationHTTP(w http.ResponseWriter, r *http.Request, pool *sql
 			candidateVerificationError(w, 503, "verification_evidence_invalid")
 			return
 		}
-		page.StoredEvidence.Count = len(observations)
-		if len(observations) != 0 {
+		if !automatic.StoredReviewUnavailable {
+			page.StoredEvidence.Count = len(observations)
 			page.StoredEvidence.State = "stored"
 		}
-		if len(observations) != 0 && candidateverify.SupportedV2(candidate) {
+		if !automatic.StoredReviewUnavailable && candidateverify.SupportedV2(candidate) {
 			review := candidateverify.AssessStoredV2(candidate, observations)
 			page.StoredEvidence.State, page.StoredEvidence.Verdict, page.StoredEvidence.Reason = "checked", review.Status, review.Reason
 			// The same closed run cannot gain a new confirmation by rereading its

@@ -38,6 +38,8 @@
 
 정상 완료 v2 HTML·DOCX의 항목별 **최근 선택 검증**은 원본 자동 판정과 별도의 처리 상태로 표시한다. `stored/v1`은 자동 판정을 재확인하며, 그보다 앞선 유효한 `active/v1` 판정을 지우지 않는다. 이전의 봉인된 활성 판정은 보고서에 별도로 보이고 그 뒤 새 활성 검증이 없을 때만 저장 재검토 후에도 해당 판정이 현재 집계에 남는다. 활성 검증이 실패·취소·만료되거나 근거 부족으로 끝난 뒤 저장 자료를 다시 열어도 이전 확정·정상 건수가 되살아나지 않는다. `active/v1`이 완료되면 새 회차에서 봉인된 독립 관찰 두 건을 읽을 때마다 재검증하고 최신 집계에 반영한다. 최근 활성 실행이 실패·취소·만료되면 과거 확정은 이전 이력으로 보존하되 현재 확정 건수에는 넣지 않는다. 같은 PostgreSQL 조회 snapshot으로 원본과 최근 이력을 읽고 검증한다. 이미 다운로드된 파일은 변경하지 않는다. 기존 저장 보고서에 이력이 없으면 추가 칸이 없다.
 
+같은 회차에 서로 다른 범위·정책·인증 방식의 관찰이 있으면 후보와 일치하는 관찰만 그 후보의 판정에 사용한다. 원래 판정을 저장된 관찰로 재구성할 수 없는 후보만 `stored_evidence.state=not_stored`로 표시한다. 이전 형식의 근거는 기록 당시 규칙으로 확인한다.
+
 ## 추가 승인과 실행 API
 
 - `POST /api/product/tasks/{task_id}/candidates/{candidate_id}/verifications/{verification_id}/decision`에는 `{"plan_digest":"<64 lowercase hex>","decision":"approved"}` 또는 `"rejected"`를 보낸다. 계획 digest가 다르거나 범위·승인이 달라지면 409다. 응답 `process_state`는 결정, `execution_start`는 `scheduled`/`unavailable`/`not_requested`다. `scheduled`는 완료를 뜻하지 않으며, 이력 GET으로 최종 상태를 조회한다.
