@@ -16,6 +16,7 @@ import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { CloseInspButton, CodeCard, InspOpenButton, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
+import { SentRequestsValue, useE2FlowFor } from "./sentRequests";
 import { reasonText, UrlHead, UrlNotices, UrlRefreshButton, useUrlHost } from "./urlParts";
 
 /** 경로 규칙 묶음 전체 (group 이 돌려줄 수 있는 이름). 자산 탐색 묶음 카드 순서 (시안 GORD + 정적 자원). */
@@ -1030,6 +1031,7 @@ export function WorkflowCrawlLive() {
   const [logKey, setLogKey] = useState<string | null>(null);
   const stop = useStopConfirm("점검 취소");
   const found = useLatestFound(flow);
+  const e2 = useE2FlowFor(job?.started && job.task_id ? job.task_id : null, true, false);
   const endpoints = flow?.endpoints ?? [];
   const events = flow?.events ?? [];
   const count = (k: Kind) => endpoints.filter((e) => kindOf(e) === k).length;
@@ -1156,7 +1158,8 @@ export function WorkflowCrawlLive() {
                     [
                       "cSent",
                       "보낸 요청",
-                      flow.counts.sent,
+                      // 대상에 나간 요청 총계(탐색 경계 + E② 모델 · 로그인 · 확정), 마우스 올리면 내역(사용자 11/25)
+                      <SentRequestsValue key="sent" flow={e2.data} />,
                       `${readOnly ? "조회만" : "심화 점검 포함"}${flow.counts.unknown ? ` · 결과 불명 ${flow.counts.unknown}` : ""}`,
                     ],
                     // 서버 counts.blocked 는 경로 수가 아니라 전송 통제가 거부 · 미지원으로 막은 요청 수
