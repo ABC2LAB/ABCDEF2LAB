@@ -32,7 +32,7 @@ const (
 
 // 탐색 요청 수 상태.
 const (
-	explorationNone    = "none"    // 이 회차에 탐색 단계가 없다(0건).
+	explorationNone    = "none"    // 이 회차에 탐색 단계가 없다고 기록했다(0건). 기록이 없으면 이 값이 아니라 모름이다.
 	explorationPending = "pending" // 탐색 단계가 있지만 아직 시작 전이다(지금까지 0건).
 	explorationRunning = "running" // 탐색 중이다. 경계가 지금 수를 보고하면 그 값, 못 하면 모름.
 	explorationClosed  = "closed"  // 경계가 세션 마감을 확정한 수다.
@@ -53,7 +53,7 @@ func (r explorationRequestsRecord) valid() bool {
 	switch r.State {
 	case explorationRunning, explorationUnknown:
 		return r.TargetRequests == nil
-	case explorationPending, explorationNotRun:
+	case explorationNone, explorationPending, explorationNotRun:
 		return r.TargetRequests != nil && *r.TargetRequests == 0
 	case explorationClosed:
 		return r.TargetRequests != nil
@@ -109,11 +109,12 @@ type e2FlowTargetRequests struct {
 // liveExploration은 탐색 중인 이 회차의 경계 세션이 지금 보고하는 대상 요청 수다. 없으면 ok가 거짓이다.
 type liveExploration func(ctx context.Context, jobID string) (requests uint64, ok bool)
 
-// readExplorationRequests는 회차 상태 디렉터리의 기록을 읽는다. 파일이 없으면 탐색 단계가 없는 회차다.
+// readExplorationRequests는 회차 상태 디렉터리의 기록을 읽는다. 기록이 없으면 모름이다: 탐색 단계가 없는 회차도 none을
+// 기록하므로, 없는 것은 기록 쓰기 실패이거나 이 칸 이전 회차다(#929 이동찬 P2, 0으로 보이지 않게).
 func readExplorationRequests(b *runBinding) (explorationRequestsRecord, error) {
 	raw, err := readRunFile(b.root, "state/"+explorationRequestsFile, maxExplorationRequests)
 	if errors.Is(err, fs.ErrNotExist) {
-		return explorationKnown(explorationNone, 0), nil
+		return explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationUnknown}, nil
 	}
 	var r explorationRequestsRecord
 	if err != nil || e2config.StrictJSON(raw, &r) != nil || !r.valid() {
@@ -179,9 +180,18 @@ func explorationNow(ctx context.Context, record explorationRequestsRecord, jobID
 }
 
 // recordExplorationStage는 탐색 단계 시작·끝을 기록한다. 기록 실패는 화면 총계만 모르게 하므로 진단을 멈추지 않는다.
+// 쓰지 못하면 앞 단계 기록을 지운다. 그래야 지난 pending(0건)이 탐색 중·뒤에 확정 0으로 읽히지 않고 모름이 된다(#929 P2).
 func recordExplorationStage(stateDir string, r explorationRequestsRecord) {
-	if err := writeExplorationRequests(stateDir, r); err != nil {
-		log.Print("[first-diagnosis] 탐색 요청 수 기록 실패(화면 총계는 모름으로 보임)")
+	err := writeExplorationRequests(stateDir, r)
+	if err == nil {
+		return
+	}
+	log.Print("[first-diagnosis] 탐색 요청 수 기록 실패(화면 총계는 모름으로 보임)")
+	if stateDir == "" {
+		return
+	}
+	if rmErr := os.Remove(filepath.Join(stateDir, explorationRequestsFile)); rmErr != nil && !errors.Is(rmErr, fs.ErrNotExist) {
+		log.Print("[first-diagnosis] 지난 탐색 요청 수 기록을 지우지 못함(화면 총계가 지난 단계로 보일 수 있음)")
 	}
 }
 
