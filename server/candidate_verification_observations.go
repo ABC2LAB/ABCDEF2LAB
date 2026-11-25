@@ -62,6 +62,9 @@ func readCandidateObservations(ctx context.Context, tx *sql.Tx, taskID int64, ru
 			observation.Source.TaskRef != strconv.FormatInt(taskID, 10) || observation.Source.RunRef != runRef || seenCalls[callRef] || seenAttempts[attemptRef] {
 			return nil, errCandidateStoredObservations
 		}
+		if observation.Revision == 2 && !candidateverify.ValidSelectedStoredObservation(taskID, runRef, observation) {
+			return nil, errCandidateStoredObservations
+		}
 		canonical, _ := json.Marshal(observation)
 		sum := sha256.Sum256(canonical)
 		if hex.EncodeToString(sum[:]) != digest {

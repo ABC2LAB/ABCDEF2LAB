@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +94,14 @@ func TestSelectedVerificationKeepsCandidateWithoutAutomaticVerdictPostgres(t *te
 		page.Verifications[0].Latest.Verdict != nil {
 		t.Fatalf("selected request not stored as unassessed: status=%d", selected.Code)
 	}
+	selectedID, err := strconv.ParseInt(page.Verifications[0].ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	context, err := ReadCandidateSelectedContext(t.Context(), s.m.pg.DB, selectedID)
+	if err != nil || context.Candidate.ID != id || len(context.Observations) != 2 || context.RunRef != passiveRunRef {
+		t.Fatalf("selected context did not bind original evidence: count=%d err=%v", len(context.Observations), err)
+	}
 	if retry := invoke("POST", selectedBody); retry.Code != 200 {
 		t.Fatalf("idempotent retry status=%d", retry.Code)
 	}
@@ -123,8 +132,27 @@ func TestSelectedVerificationKeepsCandidateWithoutAutomaticVerdictPostgres(t *te
 	if cancelResponse.Code != 200 || !strings.Contains(cancelResponse.Body.String(), `"process_state":"cancelled"`) {
 		t.Fatalf("selected request cancellation status=%d", cancelResponse.Code)
 	}
-	if next := invoke("POST", fmt.Sprintf(`{"request_id":"selected-test-3","evidence_digest":"%s"}`, rows[0].EvidenceDigest)); next.Code != 200 {
+	if _, err := ReadCandidateSelectedContext(t.Context(), s.m.pg.DB, selectedID); err == nil {
+		t.Fatal("cancelled selection still readable as pending work")
+	}
+	next := invoke("POST", fmt.Sprintf(`{"request_id":"selected-test-3","evidence_digest":"%s"}`, rows[0].EvidenceDigest))
+	if next.Code != 200 {
 		t.Fatalf("new selection after cancellation status=%d", next.Code)
+	}
+	var nextPage candidateVerificationPage
+	if json.Unmarshal(next.Body.Bytes(), &nextPage) != nil || len(nextPage.Verifications) != 2 {
+		t.Fatal("new selection history missing")
+	}
+	nextID, err := strconv.ParseInt(nextPage.Verifications[0].ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.m.pg.ExecContext(t.Context(), `UPDATE diagnostic_candidate_observations_v2 SET source_digest=repeat('0',64)
+WHERE id=(SELECT id FROM diagnostic_candidate_observations_v2 WHERE task_id=$1 AND run_ref=$2 ORDER BY id LIMIT 1)`, taskID, passiveRunRef); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadCandidateSelectedContext(t.Context(), s.m.pg.DB, nextID); err == nil {
+		t.Fatal("damaged stored observation accepted as LLM context")
 	}
 }
 
@@ -147,5 +175,50 @@ func TestSelectedVerificationPublishesZeroCandidateReportPostgres(t *testing.T) 
 		if response.Code != 200 {
 			t.Fatalf("zero-candidate report %s: status=%d", suffix, response.Code)
 		}
+	}
+	if _, err := s.m.pg.ExecContext(t.Context(), `UPDATE exploration_nodes SET payload=jsonb_set(payload,'{verification,non_idor_confirmed}','1'::jsonb)
+WHERE exploration_id=(SELECT exploration_id FROM tasks WHERE id=$1) AND origin=$2`, taskID, diagnosisRunOrigin); err != nil {
+		t.Fatal(err)
+	}
+	if damaged := request("GET", fmt.Sprintf("/api/report/diagnostic?task=%d&audience=internal", taskID), ""); damaged.Code == 200 {
+		t.Fatal("corrupt selected verification count exported")
+	}
+}
+
+func TestSelectedContextMarksUnavailableOriginalObservationPostgres(t *testing.T) {
+	s, finding, _ := trafficEvidenceServer(t)
+	stored, err := s.m.pg.GetFinding(finding.FindingID)
+	if err != nil || stored.TaskID == nil {
+		t.Fatal(err)
+	}
+	taskID := *stored.TaskID
+	if err := saveDiagnosisSelectedVerificationPolicy(t.Context(), s.m.pg.DB, taskID, passiveRunRef); err != nil {
+		t.Fatal(err)
+	}
+	id := storePassiveCandidate(t, s, taskID, "html_nosniff_missing", "nosniff_missing", "")
+	state := requestApprovalRunState{RunRef: passiveRunRef, Phase: "closed", Outcome: "completed", DrainComplete: true}
+	if err := saveDiagnosisRunRecordGoal(t.Context(), s.m.pg.DB, taskID, state, nil, nil, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.m.ResolveTask(fmt.Sprint(taskID)).Store.ListDiagnosticCandidates(taskID, passiveRunRef, 2)
+	if err != nil || len(rows) != 1 {
+		t.Fatal(err)
+	}
+	path := fmt.Sprintf("/api/product/tasks/%d/candidates/%d/verifications", taskID, id)
+	req := httptest.NewRequest("POST", path, strings.NewReader(fmt.Sprintf(`{"request_id":"selected-unavailable-1","evidence_digest":"%s"}`, rows[0].EvidenceDigest)))
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	candidateVerificationHTTP(response, req, s.m.pg.DB, func(*http.Request) (string, error) { return "ARTEX", nil }, &verificationOwnerEndpoint{task: fmt.Sprint(taskID)})
+	var page candidateVerificationPage
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &page) != nil || len(page.Verifications) != 1 {
+		t.Fatalf("source-unavailable selection status=%d", response.Code)
+	}
+	selectedID, err := strconv.ParseInt(page.Verifications[0].ID, 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	context, err := ReadCandidateSelectedContext(t.Context(), s.m.pg.DB, selectedID)
+	if err != nil || !context.SourceUnavailable || len(context.Observations) != 0 {
+		t.Fatalf("unavailable original observation misrepresented: count=%d err=%v", len(context.Observations), err)
 	}
 }

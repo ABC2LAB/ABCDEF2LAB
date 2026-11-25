@@ -19,9 +19,19 @@ func TestProjectTrustedSelectedDoesNotRequireTypeSpecificHeader(t *testing.T) {
 		t.Fatalf("generic projection: count=%d err=%v", len(rows), err)
 	}
 	for _, row := range rows {
-		if row.Revision != 2 || row.Source.Digest == "" || row.Source.RunRef != candidate.RunRef {
+		if !ValidSelectedStoredObservation(candidate.TaskID, candidate.RunRef, row) {
 			t.Fatalf("invalid generic projection: %+v", row)
 		}
+	}
+	corrupt := rows[0]
+	corrupt.Source.Digest = "wrong"
+	if ValidSelectedStoredObservation(candidate.TaskID, candidate.RunRef, corrupt) {
+		t.Fatal("corrupt observation digest accepted")
+	}
+	corrupt = rows[0]
+	corrupt.Source.Observation.Decision = "denied"
+	if ValidSelectedStoredObservation(candidate.TaskID, candidate.RunRef, corrupt) {
+		t.Fatal("unsent observation accepted")
 	}
 	if rows, err := ProjectTrustedSelected(candidate.TaskID+1, candidate.RunRef, calls); err != nil || len(rows) != 0 {
 		t.Fatalf("foreign task projected: count=%d err=%v", len(rows), err)

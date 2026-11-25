@@ -20,4 +20,6 @@
 
 새 회차의 관찰 projection은 `StoredObservationV2`의 revision 2 저장 봉투를 사용한다. 최종 E② 호출, 동일 작업·회차, 응답 및 감사 완료를 확인하고, 본문·쿠키·자격정보·원문 URL은 복제하지 않는다. `nosniff` 또는 `Server` 헤더가 있어야 저장하는 유형별 조건은 적용하지 않는다. 중복 호출·시도 참조가 있으면 부분 projection을 저장하지 않는다.
 
+보호 실행기용 `ReadCandidateSelectedContext`는 접수 상태의 선택 요청과 원본 후보·종료 기록·저장 관찰을 한 PostgreSQL snapshot에서 읽고 원본 digest 및 관찰 digest를 재검사한다. 취소된 요청이나 손상된 관찰은 읽지 않는다. 이 함수는 요청자 권한 검사 및 실제 실행 직전 상태 검사 자체를 대신하지 않으며, 모델이나 E②를 호출하지 않는다.
+
 정상 완료 보고서의 HTML·DOCX에는 의심 후보와 `selected_verification_required`가 남고, 후보 선택 요청이 있으면 최근 처리 상태를 별도로 투영한다. 모델이 주장한 문장만으로 확정 수를 늘리지 않는다. 기존 보고서와 이행점검의 원본 근거는 수정하지 않는다.

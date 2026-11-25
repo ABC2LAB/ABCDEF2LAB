@@ -59,6 +59,11 @@ func readDiagnosticRun(ctx context.Context, tx *sql.Tx, task int64) (*report.Dia
 		return nil, ErrFirstDiagnosisOutcome
 	}
 	if record.Verification != nil && (record.Verification.Version == "passive/v1" || record.Verification.Version == diagnosisVerificationV2 || record.Verification.Version == diagnosisVerificationSelected) {
+		if record.Verification.Version == diagnosisVerificationSelected &&
+			(record.Verification.NonIDORConfirmed != 0 || record.Verification.NonIDORNegative != 0 ||
+				record.Verification.VerificationPending != len(record.Verification.Candidates)) {
+			return nil, ErrFirstDiagnosisOutcome
+		}
 		if record.Verification.ObservationsStored && (record.Verification.ObservationsCount <= 0 || record.Verification.ObservationsCount > candidateverify.MaxStoredObservationsV2 || !candidateVerificationDigest.MatchString(record.Verification.ObservationsDigest)) ||
 			!record.Verification.ObservationsStored && (record.Verification.ObservationsCount != 0 || record.Verification.ObservationsDigest != "") {
 			return nil, ErrFirstDiagnosisOutcome

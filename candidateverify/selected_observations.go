@@ -56,3 +56,19 @@ func ProjectTrustedSelected(taskID int64, runRef string, calls []e2runner.Truste
 	}
 	return out, nil
 }
+
+// ValidSelectedStoredObservation checks a saved projection's shape and
+// provenance without turning its content into a vulnerability verdict.
+func ValidSelectedStoredObservation(taskID int64, runRef string, row StoredObservationV2) bool {
+	s, obs := row.Source, row.Source.Observation
+	return taskID > 0 && runRef != "" && row.Revision == 2 &&
+		s.TaskRef == strconv.FormatInt(taskID, 10) && s.RunRef == runRef &&
+		s.CallRef != "" && len(s.CallRef) <= 128 && s.IntentID > 0 &&
+		s.ScopeDigest != "" && s.PolicyRevision != "" &&
+		obs.Sequence > 0 && !obs.ObservedAt.IsZero() && obs.AttemptRef != "" && len(obs.AttemptRef) <= 128 &&
+		obs.Method != "" && obs.Endpoint != "" && obs.RuleRef != "" && obs.Decision == "allowed" &&
+		obs.ForwardAttempted && obs.ResponseComplete && !obs.ResponseTruncated && obs.AuditComplete &&
+		s.Digest == sourceDigest(obs) &&
+		(row.HeaderMode == e2proxy.HeaderPreserve || row.HeaderMode == e2proxy.HeaderProtectedSessionProposal ||
+			row.HeaderMode == e2proxy.HeaderTestAccountPassthrough)
+}
