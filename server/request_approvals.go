@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/url"
 	"strconv"
 	"strings"
@@ -445,6 +446,32 @@ func (s *RequestApprovalService) decide(ctx context.Context, task int64, owner, 
 	return s.decorate(a), nil
 }
 func (s *RequestApprovalService) observe(ctx context.Context, event e2proxy.Event) error {
+	return s.observeAttempt(ctx, event, false)
+}
+
+// observeE3는 확정 단계 요청(E③ 프로그램 요청)의 승인 이력을 그 시도의 결과로 갱신한다. 앞 기록기(Host ACK·화면 사본)가
+// 성공한 사건만 오고, 승인 기록이 같은 회차·시도에 결속돼 있을 때만 바꾼다. 내보내기 단계(dispatch_pending)와 결과(응답
+// 완료 completed·결과 불명 unknown·미송신 not_sent)는 일반 요청과 같다. 일반 observe와 달리 실패를 감사 실패로 올리지
+// 않는다: 확정 사건의 정본은 Host 저널이고, 갱신하지 못한 승인 기록은 화면에서 결과 불명으로 보인다(decorate). 전에는
+// 확정 사건을 받지 않아 보낸 확정 생성 요청의 승인 기록이 awaiting_dispatch로 남았다(2026-11-25 화면 회차).
+func (s *RequestApprovalService) observeE3(ctx context.Context, event e2proxy.Event) {
+	if err := s.observeAttempt(ctx, event, true); err != nil {
+		log.Printf(logT("[request-approval] 확정 단계 요청 승인 이력을 갱신하지 못함(화면은 결과 불명): 단계=%s"), event.Stage)
+	}
+}
+
+// unknownAfterStoreFailureLocked는 확정 사건(confirmation)의 승인 이력을 읽거나 저장하지 못했을 때 그 시도를 바로 결과
+// 불명으로 보이게 한다. 일반 관찰은 저장 실패가 감사 실패로 실행을 래치해 decorate가 결과 불명으로 투영하지만, 확정 사건은
+// 감사 실패로 올리지 않으므로 대기자를 실패로 표시해야 실행 중 조회에서도 decorate가 소비된 승인의 awaiting_dispatch·
+// dispatch_pending을 unknown으로 바꾼다(#952 이동찬 P2). 승인 대기는 이미 끝난 뒤라 대기 결과에는 영향이 없다. s.mu를 쥐고 부른다.
+func (s *RequestApprovalService) unknownAfterStoreFailureLocked(id string, confirmation bool) {
+	if w := s.waiters[id]; confirmation && w != nil {
+		w.failed = true
+	}
+}
+
+// observeAttempt는 시도 사건 하나로 그 승인 기록을 갱신한다. sameRun이면 승인 기록의 회차가 사건의 회차와 같아야 한다.
+func (s *RequestApprovalService) observeAttempt(ctx context.Context, event e2proxy.Event, sameRun bool) error {
 	ctx, cancel := context.WithTimeout(ctx, requestApprovalStoreTimeout)
 	defer cancel()
 	if event.AttemptID == "" || event.Stage != "intent" && event.Stage != "result" {
@@ -461,6 +488,10 @@ func (s *RequestApprovalService) observe(ctx context.Context, event e2proxy.Even
 	}
 	a, err := s.store.GetRequestApproval(ctx, task, "ARTEX", event.AttemptID)
 	if err != nil {
+		s.unknownAfterStoreFailureLocked(event.AttemptID, sameRun)
+		return errRequestApproval
+	}
+	if sameRun && a.RunRef != event.Scope.RunRef {
 		return errRequestApproval
 	}
 	if event.Stage == "intent" {
@@ -480,6 +511,7 @@ func (s *RequestApprovalService) observe(ctx context.Context, event e2proxy.Even
 		}
 	}
 	if err = s.store.SwapRequestApproval(ctx, a, false); err != nil {
+		s.unknownAfterStoreFailureLocked(event.AttemptID, sameRun)
 		return errRequestApproval
 	}
 	// 결과의 영속화 뒤에는 이 시도의 대기 문맥을 보존할 필요가 없다.

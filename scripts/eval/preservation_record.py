@@ -48,9 +48,11 @@ SIDE_FIELDS_V3 = frozenset({"layout", "driver_sha256", "driver_settings_sha256",
                             "mcp_exposed_tools_sha256"})
 RUN_FIELDS_V3 = frozenset({"stop_reason", "first_limit", "end_signal", "rate_limited"})
 FIRST_LIMIT_FIELDS = frozenset({"value", "runner_limit", "runner_limit_elapsed_seconds", "engine_terminal_elapsed_seconds"})
-RUNNER_LIMITS = frozenset({"runner_request_budget", "runner_time_budget"})
+# runner_engine_idle: 끝 신호 뒤 무활동 유예로 러너가 끝냄(stop_reason engine_completed, 고정 초안 §4 (다), 2026-11-25 사용자)
+RUNNER_LIMITS = frozenset({"runner_request_budget", "runner_time_budget", "runner_engine_idle"})
 # runner.first_limit과 같은 규칙(시험이 격자로 대조한다). 러너 종료 사유 → 러너 상한 이름.
-_LIMIT_BY_STOP = {"request_budget": "runner_request_budget", "time_budget": "runner_time_budget"}
+_LIMIT_BY_STOP = {"request_budget": "runner_request_budget", "time_budget": "runner_time_budget",
+                  "engine_completed": "runner_engine_idle"}
 PRODUCT_FIELDS_V3 = frozenset({"source_sha", "image_ids", "file_sha256", "split_conditions", "sampling_overwrites", "call_records",
                                "llm_verification"})
 # O 모델 호출 검증 상태(2026-11-18 사용자 결정). verified = OpenRouter 장부·호출 기록 대조와 사후 검증을 지났다.
@@ -264,6 +266,10 @@ def expected_first_limit(stop_reason: str, runner_elapsed: float, time_budget_se
     if _LIMIT_BY_STOP.get(stop_reason) != runner_limit:
         return None
     if stop_reason == "time_budget" and runner_elapsed != round(time_budget_seconds, 3):
+        return None
+    # 유예 종료는 정상 완료 끝 신호를 읽은 뒤에만 일어난다. 끝 신호가 없거나, 늦거나, 정상 완료가 아니면 모순이다.
+    if stop_reason == "engine_completed" and (engine_elapsed is None or engine_elapsed > runner_elapsed
+                                              or end_status not in _ENGINE_SUCCESS):
         return None
     if engine_elapsed is not None and engine_elapsed <= runner_elapsed:
         if end_status not in _ENGINE_SUCCESS:

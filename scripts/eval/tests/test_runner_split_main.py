@@ -166,6 +166,9 @@ class TestSyntheticDeclared(SyntheticFixture):
         self.assertEqual((prepared.call_args.kwargs["manifest"], local["addresses"], local["base_url"], local["context_window_k"]),
                          (None, ["10.252.2.30"], "http://eval-scripted-model:8080/v1",
                           synthetic_preflight(self.config)["ours"]["context_window_k"]))
+        # O 설치 회차 실행 시간은 선언된 러너 시간 예산 + 300초다(2026-11-25 사용자, 고정 초안 §10).
+        self.assertEqual(prepared.call_args.kwargs["run_seconds"],
+                         synthetic_preflight(self.config)["ours"]["time_budget_seconds"] + 300)
         self.assertEqual(list(self.config.runs_root.iterdir()), [])  # 띄우기 전 실패는 회차 디렉터리를 남기지 않는다
 
 

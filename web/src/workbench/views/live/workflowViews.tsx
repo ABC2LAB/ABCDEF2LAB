@@ -7,6 +7,8 @@
 
 import { Fragment, type ReactElement, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 
+import type { E2Flow } from "@/lib/diagnosis/e2flow";
+
 import { cx } from "../../lib/cx";
 import { clockOf } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
@@ -668,6 +670,48 @@ export function logRawOf(events: readonly FlowEvent[], i: number, endpoint: Work
  */
 const LOG_SYSTEM_KINDS: ReadonlySet<string> = new Set(["created", "completed", "stopped", "failed"]);
 
+/**
+ * 자산 탐색 숫자 칸 3개(발견한 API · 보낸 요청 · 막은 요청). 자산 탐색 화면과 보고서가 같이 쓴다(사용자 11/25 — 보고서에도).
+ * 보고서 판정 집계 · 점검 진행 전송 통제와 같은 모양: 이름 · 수 · 설명. 발견한 API 설명은 경로 종류(조회 · 데이터 변경 · 제외)로
+ * 나눠 합이 발견 수와 맞게 적는다. '승인 후 전송'은 데이터 변경과 같은 경로를 다시 센 수라 두지 않는다
+ */
+export function CrawlMeters({ flow, e2 }: { flow: WorkflowSnapshot; e2: E2Flow | null | undefined }) {
+  const count = (k: Kind) => flow.endpoints.filter((e) => kindOf(e) === k).length;
+  // 탐색 단계에서는 GET 만 보낸다(서버 Controller.Before). 심화 점검이 시작되면 보낸 요청에 그 요청도 들어간다
+  const readOnly = flow.deep_runs === 0 && (flow.stage === "crawling" || flow.stage === "awaiting_selection");
+  return (
+    <div className={cx(s.meters, s.m3)}>
+      {(
+        [
+          [
+            "cFound",
+            "발견한 API",
+            flow.counts.found,
+            `조회 ${count("get")} · 데이터 변경 ${count("ap")} · 제외 ${count("ex")}`,
+          ],
+          [
+            "cSent",
+            "보낸 요청",
+            // 대상에 나간 요청 총계(탐색 경계 + E② 모델 · 로그인 · 확정), 마우스 올리면 내역(사용자 11/25)
+            <SentRequestsValue key="sent" flow={e2} />,
+            `${readOnly ? "조회만" : "심화 점검 포함"}${flow.counts.unknown ? ` · 결과 불명 ${flow.counts.unknown}` : ""}`,
+          ],
+          // 서버 counts.blocked 는 경로 수가 아니라 전송 통제가 거부 · 미지원으로 막은 요청 수
+          ["cSkip", "막은 요청", flow.counts.blocked, "범위 밖 · 안전 규칙"],
+        ] as const
+      ).map(([id, label, value, sub]) => (
+        <div className={s.cell} key={id}>
+          <div className={s.k}>{label}</div>
+          <div className={s.v} id={id}>
+            {value}
+          </div>
+          <div className={s.sub}>{sub}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** 탐색 기록 줄을 가리키는 키. 서버 기록에 id 가 없어 시각 · 종류 · 메서드 · 경로로 가리킨다. */
 const logKeyOf = (ev: FlowEvent) => `${ev.at}:${ev.kind}:${ev.method}:${ev.path}`;
 
@@ -1040,7 +1084,6 @@ export function WorkflowCrawlLive() {
   );
   const endpoints = flow?.endpoints ?? [];
   const events = flow?.events ?? [];
-  const count = (k: Kind) => endpoints.filter((e) => kindOf(e) === k).length;
   const logAt = logKey ? events.findIndex((ev) => logKeyOf(ev) === logKey) : -1;
   const logEvent = logAt >= 0 ? events[logAt] : undefined;
   const logEndpoint = logEvent
@@ -1061,8 +1104,6 @@ export function WorkflowCrawlLive() {
   const explore = flow ? exploreState(flow) : null;
   // 막대는 아래 flow 가 있을 때만 그린다(없을 때 값은 쓰이지 않음)
   const bar = flow ? crawlBar(flow) : { fill: 0, pct: 0, tone: "run" as const, text: "" };
-  // 탐색 단계에서는 GET 만 보낸다(서버 Controller.Before). 심화 점검이 시작되면 보낸 요청에 그 요청도 들어간다
-  const readOnly = !!flow && flow.deep_runs === 0 && (crawling || flow.stage === "awaiting_selection");
   // 탐색 줄: 탐색 중이면 새로 찾은 경로('… 찾음', 같은 조회에서 여럿이면 '외 N개'), 끝났으면 '탐색을 마쳤습니다'
   // (다 돌지 못했으면 같은 줄에 그 사실까지, crawlEndText). AI 자동 모드는 끝나자마자 심화 진단으로 넘어가고(서버
   // diagnosisflow crawl.go) 그 요청도 아래 기록에 이어서 쌓여, 끝 글만 두면 탐색이 계속되는 것처럼 보여 지금 하는 일을 같이 적는다
@@ -1149,38 +1190,8 @@ export function WorkflowCrawlLive() {
                 {/* 다 돌지 못한 끝(부분 완료 · 중지 · 탐색 안 함 · 상태 없음)은 막대 아래 따로 두지 않고 위 탐색 줄에 붙인다
                     (crawlEndText, 사용자 11/19) */}
               </div>
-              {/* 숫자 칸 상자 (보고서 판정 집계 · 점검 진행 전송 통제와 같은 모양): 이름 · 수 · 설명.
-                  발견한 API 설명은 경로 종류(조회 · 데이터 변경 · 제외)로 나눠 합이 발견 수와 맞게 적는다.
-                  '승인 후 전송'은 데이터 변경과 같은 경로를 다시 센 수라 두지 않는다(탐색 중엔 승인 대기 요청도 없음) */}
-              <div className={cx(s.meters, s.m3)}>
-                {(
-                  [
-                    [
-                      "cFound",
-                      "발견한 API",
-                      flow.counts.found,
-                      `조회 ${count("get")} · 데이터 변경 ${count("ap")} · 제외 ${count("ex")}`,
-                    ],
-                    [
-                      "cSent",
-                      "보낸 요청",
-                      // 대상에 나간 요청 총계(탐색 경계 + E② 모델 · 로그인 · 확정), 마우스 올리면 내역(사용자 11/25)
-                      <SentRequestsValue key="sent" flow={e2.data} />,
-                      `${readOnly ? "조회만" : "심화 점검 포함"}${flow.counts.unknown ? ` · 결과 불명 ${flow.counts.unknown}` : ""}`,
-                    ],
-                    // 서버 counts.blocked 는 경로 수가 아니라 전송 통제가 거부 · 미지원으로 막은 요청 수
-                    ["cSkip", "막은 요청", flow.counts.blocked, "범위 밖 · 안전 규칙"],
-                  ] as const
-                ).map(([id, label, value, sub]) => (
-                  <div className={s.cell} key={id}>
-                    <div className={s.k}>{label}</div>
-                    <div className={s.v} id={id}>
-                      {value}
-                    </div>
-                    <div className={s.sub}>{sub}</div>
-                  </div>
-                ))}
-              </div>
+              {/* 숫자 칸 3개(발견한 API · 보낸 요청 · 막은 요청) — 보고서도 같은 부품을 쓴다 */}
+              <CrawlMeters flow={flow} e2={e2.data} />
               <section className={s.sec} aria-labelledby="cLogH">
                 <div className={s.sh}>
                   <h2 id="cLogH">탐색 기록</h2>
@@ -1274,7 +1285,10 @@ function ScopeSelection({ flow, head }: { flow: WorkflowSnapshot; head: (start: 
     .split("\n")
     .map((p) => p.trim())
     .filter(Boolean);
-  const eligible = (e: WorkflowEndpoint) => e.in_scope && (e.change === "attested_read" || flow.reversible_writes);
+  // 고를 수 있는 경로 = 서버 선택 검사와 같다(diagnosisflow controller.go 선택: 범위 밖 · 막힘(blocked) · 쓰기 미승인은 거부).
+  // 막힘을 빼먹으면 그 경로를 넣었을 때 서버가 선택 전체를 거절했다(11/25 목업에서 /logout · DELETE)
+  const eligible = (e: WorkflowEndpoint) =>
+    e.in_scope && e.change !== "blocked" && (e.change === "attested_read" || flow.reversible_writes);
   const waiting = flow.stage === "awaiting_selection";
   // 사전 확인한 읽기 경로는 기본 포함, 데이터를 바꿀 수 있는 경로는 직접 고른다
   const [selected, setSelected] = useState<Set<string>>(() => {
@@ -1514,10 +1528,20 @@ export function WorkflowScopeLive() {
   );
 }
 
-/** 탐색 · 선택 요약 (보고서 증거 · 요청 기록 탭). */
+/** 보고서 '탐색 · 선택 범위'에서 늘 보이는 고른 경로 줄 수. 나머지는 [더 보기]로 그 밑에 펼친다(사용자 11/25) */
+const REPORT_PICKED_PREVIEW = 5;
+
+/**
+ * 탐색 · 선택 요약 (보고서 탭 아래). 고른 경로 목록이 길어(사용자 11/25) 앞 몇 줄만 보이고, 밑의 [나머지 n개 더 보기]를 누르면
+ * 그 밑으로 나머지를 펼친다(다시 누르면 접기). 제목 옆 글(방식 · 단계 · 발견한 API · 방문 · 고른 경로 수)은 늘 보인다.
+ */
 export function WorkflowReport() {
   const flow = useUrl((st) => st.flow);
+  const [open, setOpen] = useState(false);
   if (!flow) return null;
+  const picked = flow.endpoints.filter((e) => e.selected);
+  const more = picked.length - REPORT_PICKED_PREVIEW;
+  const shown = open || more <= 0 ? picked : picked.slice(0, REPORT_PICKED_PREVIEW);
   return (
     <section className={s.sec} aria-labelledby="rWorkflowH">
       <div className={s.sh}>
@@ -1525,24 +1549,34 @@ export function WorkflowReport() {
         {/* 탐색 수(발견한 API · 방문)는 보고서 머리 줄이 길어 여기 옆 글로(사용자 11/19) */}
         <span
           className={s.aside}
-        >{`${flow.mode === "ai_auto_v1" ? "AI 자동" : "사용자 승인"} · ${flowStageText[flow.stage]} · 발견한 API ${flow.counts.found} · 방문 ${flow.counts.visited}`}</span>
+        >{`${flow.mode === "ai_auto_v1" ? "AI 자동" : "사용자 승인"} · ${flowStageText[flow.stage]} · 발견한 API ${flow.counts.found} · 방문 ${flow.counts.visited} · 고른 경로 ${picked.length}`}</span>
       </div>
-      <div className={s.list}>
-        {flow.endpoints
-          .filter((e) => e.selected)
-          .map((e) => (
-            <div className={s.row} key={e.id}>
-              <span className={s["r-main"]}>
-                <span className={s["r-t"]}>
-                  <span className={cx(s.m, s[e.method])}>{e.method}</span> <span className={s.p}>{e.path}</span>
-                </span>
+      <div className={s.list} id="rWorkflowList">
+        {shown.map((e) => (
+          <div className={s.row} key={e.id}>
+            <span className={s["r-main"]}>
+              <span className={s["r-t"]}>
+                <span className={cx(s.m, s[e.method])}>{e.method}</span> <span className={s.p}>{e.path}</span>
               </span>
-              <span className={s["r-side"]}>
-                <span className={s.tag}>심화 점검</span>
-              </span>
-            </div>
-          ))}
+            </span>
+            <span className={s["r-side"]}>
+              <span className={s.tag}>심화 점검</span>
+            </span>
+          </div>
+        ))}
       </div>
+      {more > 0 ? (
+        <button
+          className={s["sec-fold"]}
+          type="button"
+          aria-expanded={open}
+          aria-controls="rWorkflowList"
+          onClick={() => setOpen(!open)}
+        >
+          <Icon name="chev" />
+          {open ? "접기" : `나머지 ${more}개 더 보기`}
+        </button>
+      ) : null}
     </section>
   );
 }

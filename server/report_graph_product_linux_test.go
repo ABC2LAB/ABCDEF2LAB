@@ -487,7 +487,8 @@ func TestProductReportGraphsOwnedPostgres(t *testing.T) {
 				t.Fatal("실제 그래프 조회 실패", code, string(raw))
 			}
 			for _, n := range g.Nodes {
-				if (n.AssetID == endpointID && n.DisplayPath != "/{id}") || (n.AssetID != endpointID && n.DisplayPath != "") || n.URL != target.URL || n.Label != target.URL {
+				if (n.AssetID == endpointID && (n.DisplayPath != "/{id}" || n.PathDetailState != PathDetailPatternOnly)) ||
+					(n.AssetID != endpointID && (n.DisplayPath != "" || n.PathDetailState != "")) || n.URL != target.URL || n.Label != target.URL {
 					t.Fatal("엔드포인트의 표시 경로 또는 기존 origin 계약 불일치")
 				}
 				if n.AssetID == foreignID {
@@ -528,7 +529,7 @@ func TestProductReportGraphsOwnedPostgres(t *testing.T) {
 			if !ids[fmt.Sprintf("a:%d", serviceID)] || !ids[fmt.Sprintf("a:%d", endpointID)] || ids[fmt.Sprintf("a:%d", foreignID)] || len(tasks) != 1 {
 				t.Fatal("KG v1 자산 집합", string(raw))
 			}
-			if strings.Contains(string(raw), "private-token") || strings.Contains(string(raw), strings.TrimPrefix(target.URL, "http://")) || strings.Contains(string(raw), "display_path") {
+			if strings.Contains(string(raw), "private-token") || strings.Contains(string(raw), strings.TrimPrefix(target.URL, "http://")) || strings.Contains(string(raw), "display_path") || strings.Contains(string(raw), "path_detail_state") {
 				t.Fatal("KG v1 응답에 URL 원문")
 			}
 		})

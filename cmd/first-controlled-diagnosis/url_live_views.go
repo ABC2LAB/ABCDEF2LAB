@@ -268,7 +268,7 @@ func e2FlowEvents(r *http.Request, b *runBinding) ([]e2proxy.Event, bool, error)
 	if hex.EncodeToString(sum[:]) != p.AuditKey.SHA256 {
 		return nil, false, nil
 	}
-	events, _, err := e2proxy.VerifyJournalEvents(r.Context(), journal, key)
+	events, _, err := e2proxy.VerifyScreenJournalEvents(r.Context(), journal, key)
 	if err != nil {
 		return nil, false, nil
 	}

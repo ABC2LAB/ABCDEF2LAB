@@ -113,6 +113,8 @@ type Journal struct {
 	failed   bool
 	closed   bool
 	closeErr error
+	// screen은 화면 사본(CreateScreenJournal)이다. 일반 v2 행에 더해 확정 단계 사건의 화면 투영(E3ScreenProjection)을 받는다.
+	screen bool
 }
 
 // CreateJournal creates a Linux durable journal in an existing trusted 0700
@@ -121,6 +123,21 @@ type Journal struct {
 func CreateJournal(directory, name string, key []byte) (*Journal, error) {
 	return createJournal(directory, name, key, journalHeader{Version: JournalVersion})
 }
+
+// CreateScreenJournal은 Host 모드 실행의 화면 사본(v2) 저널을 만든다. CreateJournal과 같고, 확정 단계 사건의 화면
+// 투영(E3ScreenProjection)도 기록한다. 확정 사건의 정본은 Host v3 저널이고, 이 사본은 작업대 e2-flow·요청 목록이
+// VerifyScreenJournalEvents로만 읽는다. 일반 v2·v3·평가 저널 검증은 확정 행을 계속 거부한다(2026-11-25 사용자·이동찬 결정).
+func CreateScreenJournal(directory, name string, key []byte) (*Journal, error) {
+	j, err := createJournal(directory, name, key, journalHeader{Version: JournalVersion})
+	if err != nil {
+		return nil, err
+	}
+	j.screen = true
+	return j, nil
+}
+
+// ScreenCopy는 이 저널이 화면 사본(CreateScreenJournal)인지 알려 준다.
+func (j *Journal) ScreenCopy() bool { return j != nil && j.screen }
 
 // CreateJournalV3는 실행 범위와 서버가 발급한 비민감 키 참조가 헤더에 결속된 일반 E② 저널을 만든다.
 // Checkpoint는 로컬 Sync 지점이다. 외부 정본 게시와 현재성 검증은 별도 권한 경계의 책임이다.
@@ -219,7 +236,7 @@ func (j *Journal) Record(ctx context.Context, event Event) error {
 	if failed {
 		return ErrJournalFailed
 	}
-	if !validJournalRecordEvent(event, head.Version) || head.Sequence == math.MaxUint64 ||
+	if !validJournalRecordEventFor(event, head.Version, j.screen) || head.Sequence == math.MaxUint64 ||
 		head.Sequence >= journalMaxEvents || event.Index != head.Sequence+1 || head.scopeMismatch(event.Scope) {
 		return ErrJournalEvent
 	}
@@ -333,7 +350,22 @@ func VerifyJournalEvents(ctx context.Context, source io.Reader, key []byte, expe
 	return events, summary, nil
 }
 
+// VerifyScreenJournalEvents는 VerifyJournalEvents와 같고, 화면 사본(CreateScreenJournal)의 확정 단계 투영 행도 받는다.
+// 작업대 e2-flow·요청 목록만 쓴다.
+func VerifyScreenJournalEvents(ctx context.Context, source io.Reader, key []byte, expected ...JournalCheckpoint) ([]Event, JournalSummary, error) {
+	var events []Event
+	summary, err := verifyJournalMode(ctx, source, key, func(e Event) { events = append(events, e) }, nil, true, expected...)
+	if err != nil {
+		return nil, JournalSummary{}, err
+	}
+	return events, summary, nil
+}
+
 func verifyJournal(ctx context.Context, source io.Reader, key []byte, visit func(Event), prior *JournalCheckpoint, expected ...JournalCheckpoint) (JournalSummary, error) {
+	return verifyJournalMode(ctx, source, key, visit, prior, false, expected...)
+}
+
+func verifyJournalMode(ctx context.Context, source io.Reader, key []byte, visit func(Event), prior *JournalCheckpoint, screen bool, expected ...JournalCheckpoint) (JournalSummary, error) {
 	if ctx == nil || source == nil || len(key) < journalMinKeyBytes || len(key) > journalMaxKeyBytes || len(expected) > 1 {
 		return JournalSummary{}, ErrJournalConfig
 	}
@@ -414,7 +446,7 @@ func verifyJournal(ctx context.Context, source io.Reader, key []byte, visit func
 		}
 		if line.Kind != "event" || line.Header != nil || line.Record == nil ||
 			line.Record.Index != head.Sequence+1 || line.Record.Event.Index != line.Record.Index || line.Record.Previous != head.MAC ||
-			!validJournalHex(line.MAC, sha256.Size) || !validJournalRecordEvent(line.Record.Event, version) ||
+			!validJournalHex(line.MAC, sha256.Size) || !validJournalRecordEventFor(line.Record.Event, version, screen) ||
 			head.scopeMismatch(line.Record.Event.Scope) {
 			return JournalSummary{}, ErrJournalIntegrity
 		}
@@ -508,6 +540,21 @@ func validJournalRecordEvent(event Event, version string) bool {
 		return false
 	}
 	return validJournalEvent(event, version)
+}
+
+// validJournalRecordEventFor는 저널 종류에 맞춘 행 검사다. 화면 사본(screen)의 v2 행만 확정 단계 투영을 더 받는다.
+// 투영은 메서드·명령 참조·자른 응답 표시가 없어야 하고, 나머지는 일반 프로그램 호출 행과 같은 v2 규칙으로 본다. E3Audit이
+// 있거나 Worker intent에 귀속된 행은 그 v2 규칙(E3Audit 거부·호출 귀속 검사)이 거부한다.
+func validJournalRecordEventFor(event Event, version string, screen bool) bool {
+	if !screen || version == JournalVersionV3 || !event.Program.isE3() {
+		return validJournalRecordEvent(event, version)
+	}
+	if event.Method != "" || event.CommandRef != "" || event.ResponseTruncated {
+		return false
+	}
+	// 일반 v2 귀속 검사는 지원되는 프로그램 호출과 같은 형태만 허용한다(v3 검사와 같은 방식). 원본 Program은 행과 MAC에 남는다.
+	event.Program = ProgramAuthPrep
+	return validJournalRecordEvent(event, version)
 }
 
 // knownJournalVersion은 기존 행 검증기가 담당하는 판이다.

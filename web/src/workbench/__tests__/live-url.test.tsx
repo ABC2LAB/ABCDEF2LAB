@@ -4059,9 +4059,9 @@ describe("진행 화면 계정 경고(최민준 요청 11/25 — #936 account_au
     const rows = within(box).getAllByRole("listitem");
     expect(rows).toHaveLength(1);
     expect(rows[0].textContent).toMatch(/^B\(rh_tester_b\) — 세션을 받지 못함 \(\d{2}:\d{2}\)$/);
-    expect(box).toHaveTextContent("인증 안 된 계정은 세션이 없어 그 계정으로는 요청하지 못합니다");
+    expect(box).toHaveTextContent("해당 계정으로는 요청하지 못하고, 계정 간 비교와 확정 단계가 빠질 수 있습니다");
+    expect(box).not.toHaveTextContent("test_accounts_unavailable");
     expect(box).not.toHaveTextContent("익명으로 나갑니다");
-    expect(box).toHaveTextContent("test_accounts_unavailable");
     expect(box).not.toHaveTextContent("rh_tester_a");
   });
 

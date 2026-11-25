@@ -510,6 +510,8 @@ class _EngineEndWatch:
         self.terminal_extra, self.fmt, self.errors = terminal_extra, fmt, errors
         self.reads = self.failures = 0
         self.first_terminal: dict | None = None
+        # 마지막으로 읽은 상태(끝 신호 칸만). 끝 신호 뒤 무활동 유예가 O의 정리 끝(drain_complete)을 볼 때 쓴다.
+        self.last_view: dict | None = None
         self.last_error: str | None = None
         self._results: queue.Queue = queue.Queue()
         self._inflight = False
@@ -542,6 +544,7 @@ class _EngineEndWatch:
             self.failures, self.last_error = self.failures + 1, error
             return True
         self.reads += 1
+        self.last_view = view
         if self.first_terminal is None and view[self.status_field] in self.terminal:
             self.first_terminal = {"status": view[self.status_field], "at": at, "elapsed_seconds": elapsed,
                                    **{name: view[name] for name in self.terminal_extra}}
@@ -578,7 +581,18 @@ FIRST_LIMIT_PRODUCT = "product_limit:"
 FIRST_LIMIT_ENGINE_ENDED = "engine_ended:"
 ENGINE_SUCCESS_STATUSES = frozenset({"done", "completed"})  # B 엔진 작업 done, O 제품 초안 completed
 PRODUCT_BUDGET_CLOSING = "budget_limited"
-_FIRST_LIMIT_BY_STOP = {"request_budget": "runner_request_budget", "time_budget": "runner_time_budget"}
+# 끝 신호 뒤 무활동 유예(고정 초안 §4 (다), 2026-11-25 사용자). 엔진의 정상 완료(B done·O completed, O 목표 달성 마감도
+# completed다)를 읽은 뒤 T초 동안 모델 호출·대상 요청이 없으면 러너가 회차를 끝낸다. T는 멈춤 판정 T(run.fault_stall_seconds)와
+# 같은 값이고, 설정에 T가 없으면 유예 종료도 하지 않는다. 종료 사유는 이미 있던 engine_completed, 러너 상한 이름은
+# runner_engine_idle이다. 정상 완료가 아닌 끝 상태는 지금처럼 러너 상한까지 기다린다(engine_completed로 적지 않게).
+STOP_ENGINE_IDLE = "engine_completed"
+FIRST_LIMIT_ENGINE_IDLE = "runner_engine_idle"
+_FIRST_LIMIT_BY_STOP = {"request_budget": "runner_request_budget", "time_budget": "runner_time_budget",
+                        STOP_ENGINE_IDLE: FIRST_LIMIT_ENGINE_IDLE}
+END_IDLE_FORMAT = "abc2lab-eval-runner-end-idle-v1"
+END_IDLE_NAME = "end-idle.json"
+# 유예로 끝낸 시각에 진행 중이던 모델 호출이 창 뒤 호출 기록에 있으면 무효다(엔진이 아직 일하던 회차를 끊었다).
+END_IDLE_INFLIGHT_REASON = "end_idle_inflight_model_call"
 
 
 def first_limit(stop_reason: str, stop_elapsed: float, time_budget_seconds: float, first_terminal: dict | None) -> dict:
@@ -605,8 +619,98 @@ def first_limit(stop_reason: str, stop_elapsed: float, time_budget_seconds: floa
             "engine_terminal_elapsed_seconds": engine_at}
 
 
+class _EndIdle:
+    """끝 신호 뒤 무활동 유예 판정(STOP_ENGINE_IDLE 위 설명). 예산 감시 고리가 매번 부른다. 읽는 것은 계측기·게이트웨이
+    bind 파일과 이미 돌고 있는 상태 읽기의 마지막 값뿐이라 회차 컨테이너에 손대지 않는다.
+
+    활동은 폴링 사이의 수 변화로 본다: 대상 요청(계측기 전달 수)과 모델 호출(model_calls, B 게이트웨이 행 수). 바뀐 것을
+    본 시각을 활동 시각으로 잡으므로 실제보다 늦게 잡을 수는 있어도 이르게 잡지 않는다(유예가 짧아지지 않는다). 세기 시작은
+    끝 신호를 본 뒤 첫 표본 시각이다(끝 신호와 첫 표본 사이 활동은 수로 가를 수 없다). 모델 호출
+    수를 못 읽으면 그 폴링을 활동으로 본다. ready가 있으면(O: 제품 정리 끝 drain_complete) 그것이 참일 때만 끝낸다.
+
+    진행 중인 모델 호출은 창 동안 보이지 않는다(게이트웨이는 호출이 끝나야 행을 쓰고, O 호출 기록은 창 뒤에 복사한다).
+    그래서 창 뒤에 호출 기록으로 '끝낸 시각에 진행 중이던 호출'을 세고(inflight_at_stop), 하나라도 있으면 회차를 무효로 한다."""
+
+    def __init__(self, seconds: int, clock: Clock, started: float, *, model_calls: Callable[[], int] | None = None,
+                 ready: Callable[[dict | None], bool] | None = None):
+        self.seconds, self.clock, self.started = seconds, clock, started
+        self.model_calls, self.ready = model_calls, ready
+        self.end_at: float | None = None
+        self.last_activity_at: float | None = None
+        self.stopped_at: float | None = None
+        self.forwarded: int | None = None
+        self.calls: int | None = None
+        self.model_read_failures = 0
+
+    def _read_calls(self) -> int | None:
+        if self.model_calls is None:
+            return 0  # 창 동안 모델 호출을 읽을 수 없는 쪽(O)은 0으로 두고 ready와 창 뒤 확인에 맡긴다
+        try:
+            return self.model_calls()
+        except Exception:
+            self.model_read_failures += 1
+            return None
+
+    def due(self, watch: "_EngineEndWatch", forwarded: int) -> bool:
+        terminal = watch.first_terminal
+        if terminal is None or terminal["status"] not in ENGINE_SUCCESS_STATUSES:
+            return False
+        now = round(self.clock.monotonic() - self.started, 3)
+        calls = self._read_calls()
+        if self.end_at is None:
+            # 끝 신호 시각과 이 첫 표본 사이에 생긴 활동은 첫 표본 값에 묻혀 보이지 않는다(#951 이동찬 P2: 끝 신호 100초·요청
+            # 103초·첫 표본 105초면 끝 신호부터 세면 마지막 요청 뒤 177초에 끝난다). 그 구간의 무활동은 입증할 수 없으므로
+            # 첫 표본 시각부터 센다. 끝 신호를 거둔 바로 그 폴링이면 차이는 상태 읽기 한 번 늦음 정도다.
+            self.end_at = terminal["elapsed_seconds"]
+            self.last_activity_at = max(self.end_at, now)
+            self.forwarded, self.calls = forwarded, calls
+        if (forwarded != self.forwarded or calls is None or calls != self.calls
+                or self.ready is not None and not self.ready(watch.last_view)):
+            self.last_activity_at = now
+        self.forwarded, self.calls = forwarded, calls
+        if now - self.last_activity_at >= self.seconds:
+            self.stopped_at = now
+            return True
+        return False
+
+    def record(self, inflight_at_stop: int | None) -> dict:
+        return {"format": END_IDLE_FORMAT, "seconds": self.seconds, "stopped": self.stopped_at is not None,
+                "end_signal_elapsed_seconds": self.end_at, "last_activity_elapsed_seconds": self.last_activity_at,
+                "stopped_elapsed_seconds": self.stopped_at, "model_calls_watched": self.model_calls is not None,
+                "model_read_failures": self.model_read_failures, "drain_required": self.ready is not None,
+                "inflight_at_stop": inflight_at_stop}
+
+
+def inflight_at_stop(rows: list[dict] | None, stopped_at: str) -> int | None:
+    """유예로 끝낸 시각(stopped_at)에 진행 중이던 모델 호출 수. 시작이 그 시각 이전이고, 끝이 그 뒤이거나 봉인으로 끊긴
+    호출이다(게이트웨이·제품 호출 기록 같은 칸). 기록을 못 읽었거나 시각을 못 읽으면 None(모름)이다."""
+    if rows is None:
+        return None
+    try:
+        stop = datetime.fromisoformat(stopped_at.replace("Z", "+00:00"))
+        count = 0
+        for row in rows:
+            begun = datetime.fromisoformat(str(row["started_at"]).replace("Z", "+00:00"))
+            ended = datetime.fromisoformat(str(row["completed_at"]).replace("Z", "+00:00"))
+            if begun <= stop and (ended > stop or row.get("decision") == "cancelled_by_seal"):
+                count += 1
+        return count
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def end_idle_reason(stop_reason: str, inflight: int | None, *, records_expected: bool = True) -> str | None:
+    """유예로 끝낸 회차에서 진행 중이던 호출이 있었으면 무효 사유다(엔진이 끝났다는 근거가 깨진다). 호출 기록이 있어야
+    하는 회차(records_expected)에서 셀 수 없었어도 같은 사유다. 호출 기록이 없는 합성 O 회차는 제품 정리 끝만 근거다."""
+    if stop_reason != STOP_ENGINE_IDLE:
+        return None
+    if inflight is None:
+        return END_IDLE_INFLIGHT_REASON if records_expected else None
+    return END_IDLE_INFLIGHT_REASON if inflight > 0 else None
+
+
 def _wait_budget(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State, started: float,
-                 watch: _EngineEndWatch | None = None) -> tuple[str, int]:
+                 watch: _EngineEndWatch | None = None, idle: _EndIdle | None = None) -> tuple[str, int]:
     while True:
         if watch is not None:
             watch.poll()
@@ -615,6 +719,8 @@ def _wait_budget(spec: RunSpec, meter: MeterFiles, clock: Clock, state: _State, 
             return "request_budget", forwarded
         if clock.monotonic() - started >= spec.time_budget_seconds:
             return "time_budget", forwarded
+        if idle is not None and watch is not None and idle.due(watch, forwarded):
+            return STOP_ENGINE_IDLE, forwarded
         clock.sleep(spec.poll_seconds)
 
 
@@ -836,7 +942,10 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
         "requested_at": requested_at, "created_at": created_at, "task_origin": spec.task_origin,
         "goal_common_sha256": spec.goal_common_sha256}))
     watch = _EngineEndWatch(ports, task_id, clock, started, spec.task_status_wait_seconds)
-    stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started, watch)
+    # 끝 신호 뒤 무활동 유예. 모델 호출은 게이트웨이 bind 파일의 행 수로 본다(창 동안 컨테이너에 손대지 않는다).
+    idle = None if spec.fault_stall_seconds is None else _EndIdle(
+        spec.fault_stall_seconds, clock, started, model_calls=lambda: len(gateway.rows()))
+    stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started, watch, idle)
     stopped_at, stop_elapsed = _stamp(clock), clock.monotonic() - started
     # E²가 허용한 진행 요청이 봉인된 계측기에서 끊기지 않도록 E²를 먼저 닫는다(연결 제안 §4.3). 시한이 있고 실패해도 넘어간다.
     e2_close = None if spec.e2_mode != E2_PRODUCT else _step(state, "e2_close_failed", ports.e2_close)
@@ -966,6 +1075,11 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     state.early_end = _step(state, "early_end_failed", lambda: early_end_record(
         spec.side, state.first_limit, state.engine_end["first_terminal"], llm_rows, rows_error=rows_error))
     _step(state, "evidence_write_failed", lambda: evidence.write_json(EARLY_END_NAME, state.early_end))
+    # 유예로 끝낸 회차면 그 시각에 진행 중이던 모델 호출을 게이트웨이 행으로 센다(창 동안에는 안 보인다).
+    idle_inflight = inflight_at_stop(llm_rows, stopped_at) if stop_reason == STOP_ENGINE_IDLE else None
+    if idle is not None:
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(END_IDLE_NAME, idle.record(idle_inflight)))
+    idle_reason = end_idle_reason(stop_reason, idle_inflight)
     if state.early_end["reason"] == CONFIG_END_REASON:
         # 설정 오류는 세션이 시도로 세지 않고 멈춘다. 그래서 멈춤·검증 사유보다 앞에 둔다(그 사유들은 뒤에 남는다).
         raise RunFailure(CONFIG_END_REASON, tuple(reason for reason in (stall_reason, *llm_reasons) if reason))
@@ -975,6 +1089,8 @@ def _run_steps(spec: RunSpec, ports: RunPorts, meter: MeterFiles, gateway: Gatew
     if state.early_end["reason"] == PROVIDER_FAULT_END_REASON:
         # 제공자 장애로 끝남은 멈춤과 같은 부류라 첫 사유로 둔다(세션이 쪽별 상한에 같이 센다).
         raise RunFailure(PROVIDER_FAULT_END_REASON, tuple(llm_reasons))
+    if idle_reason:
+        raise RunFailure(idle_reason, tuple(llm_reasons))
     if llm_reasons:
         # 사유가 여럿이면 정렬 첫째를 회차 사유로, 전부는 llm-summary.json에 남는다.
         raise RunFailure(llm_reasons[0])

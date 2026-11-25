@@ -102,7 +102,7 @@ class PortsCase(unittest.TestCase):
         defaults, _ = read_workflow_defaults()
         self.inputs = prepare_split_inputs(root / "run", manifest=MANIFEST, meter_port=8080, explore_port=8082,
                                            evidence_max_bytes=4 << 20, workflow_defaults=defaults, wide_writes=True,
-                                           valid_for_hours=4, max_runs=2, path_key=bytes(32), openssl=FakeOpenssl(),
+                                           valid_for_hours=4, max_runs=2, run_seconds=2100, path_key=bytes(32), openssl=FakeOpenssl(),
                                            random_bytes=counter_bytes())
         self.directory = RunDirectory(run=root / "run", meter=root / "run" / "meter", llm=root / "run" / "llm", e2=root / "e2",
                                       state=root / "s", e2_config=root / "a", e2_control=root / "b", e2_copy=root / "c",
@@ -248,7 +248,7 @@ class TestE2V3Export(PortsCase):
         (self.directory.run / "v3").mkdir(mode=0o700)
         self.inputs = prepare_split_inputs(self.directory.run / "v3", manifest=MANIFEST, meter_port=8080, explore_port=8082,
                                            evidence_max_bytes=4 << 20, workflow_defaults=read_workflow_defaults()[0],
-                                           wide_writes=True, valid_for_hours=4, max_runs=2, path_key=bytes(32),
+                                           wide_writes=True, valid_for_hours=4, max_runs=2, run_seconds=2100, path_key=bytes(32),
                                            openssl=FakeOpenssl(), random_bytes=counter_bytes(),
                                            e2_audit_key_variable="PRODUCT_E2_AUDIT_KEY_FILE")
         self.ports.inputs = self.inputs

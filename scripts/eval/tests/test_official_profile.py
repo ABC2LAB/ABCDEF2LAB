@@ -24,10 +24,11 @@ class TestOfficialProfile(unittest.TestCase):
         self.evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
 
     def test_split_profile_differs_only_in_budget_and_methods(self):
-        # 공식 분리 배치 프로파일(2026-11-18·19 확정): 공식 프로파일과 같고 예산 300·1500초와 개선 후 승인 메서드 5개만 다르다
+        # 공식 분리 배치 프로파일(2026-11-18·19 확정, 시간 예산은 2026-11-25 사용자 결정으로 1500→1800초): 공식 프로파일과
+        # 같고 예산 300·1800초와 개선 후 승인 메서드 5개만 다르다
         split = json.loads((PROFILES / "official-split-35b.json").read_text(encoding="utf-8"))
         official = json.loads(OFFICIAL.read_text(encoding="utf-8"))
-        self.assertEqual((split["environment"]["request_budget"], split["environment"]["time_budget_seconds"]), (300, 1500))
+        self.assertEqual((split["environment"]["request_budget"], split["environment"]["time_budget_seconds"]), (300, 1800))
         self.assertEqual(split["scope"]["methods"], ["GET", "HEAD", "POST", "PUT", "PATCH"])
         for profile in (split, official):
             for key in ("request_budget", "time_budget_seconds"):

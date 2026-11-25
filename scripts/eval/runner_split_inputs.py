@@ -97,7 +97,8 @@ def _private_regular(path: Path) -> bool:
 
 
 def prepare_split_inputs(run_directory: Path, *, manifest: dict | None, meter_port: int, explore_port: int, evidence_max_bytes: int,
-                         workflow_defaults: dict, wide_writes: bool, valid_for_hours: int, max_runs: int, path_key: bytes,
+                         workflow_defaults: dict, wide_writes: bool, valid_for_hours: int, max_runs: int, run_seconds: int,
+                         path_key: bytes,
                          openssl: Openssl, random_bytes: Callable[[int], bytes] = os.urandom,
                          local_model: dict | None = None, e2_audit_key_variable: str | None = None) -> SplitInputs:
     """회차 디렉터리 안에 보호 입력을 만든다. 실패하면 만든 것을 지우고 고정 code로 멈춘다.
@@ -125,7 +126,8 @@ def prepare_split_inputs(run_directory: Path, *, manifest: dict | None, meter_po
         admin = AdminSecret(_secret_text(random_bytes, PASSWORD_BYTES))
         install = install_input(admin_password=admin.reveal(), manifest=manifest, meter_port=meter_port,
                                 workflow_defaults=workflow_defaults, wide_writes=wide_writes,
-                                valid_for_hours=valid_for_hours, max_runs=max_runs, local_model=local_model)
+                                valid_for_hours=valid_for_hours, max_runs=max_runs, run_seconds=run_seconds,
+                                local_model=local_model)
         boundary = boundary_config(read_boundary_template(), explore_port, evidence_max_bytes)
         _write_new(files["install"], json.dumps(install, ensure_ascii=False, sort_keys=True).encode("utf-8"))
         _write_new(files["postgres_password"], _secret_text(random_bytes, PASSWORD_BYTES).encode("ascii"))
