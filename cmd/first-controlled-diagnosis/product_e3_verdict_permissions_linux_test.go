@@ -122,7 +122,9 @@ func TestProductRuntimeE3VerdictInsertOnly(t *testing.T) {
 			Scan(&apiSelect, &apiInsert, &apiUpdate, &apiDelete, &runtimeSelect, &runtimeInsert, &runtimeUpdate, &runtimeDelete); err != nil {
 			t.Fatal(err)
 		}
-		if !apiSelect || apiInsert || apiUpdate || apiDelete || runtimeSelect || !runtimeInsert || runtimeUpdate || runtimeDelete {
+		// The protected selected-verification worker reads the sealed observation
+		// projection through product_runtime. Both roles remain unable to edit it.
+		if !apiSelect || apiInsert || apiUpdate || apiDelete || !runtimeSelect || !runtimeInsert || runtimeUpdate || runtimeDelete {
 			t.Fatalf("%s grants violate writer/read-only split", table)
 		}
 	}

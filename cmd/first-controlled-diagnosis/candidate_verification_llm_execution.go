@@ -123,9 +123,6 @@ WHERE id=$1 AND method='llm/v1'`, requestID).Scan(&originalTaskID, &evidenceDige
 		len(l.productAccounts) != 0 || l.externalTestAccounts {
 		return errPreparation
 	}
-	if _, active := l.productRegistry.activeDeclaration(*l.productTarget); active {
-		return errPreparation
-	}
 	ledger, ok := b.endpoint.(interface {
 		ReserveCandidateBudget(context.Context, string, int64, string) error
 		FinishCandidateBudget(int64)
@@ -240,7 +237,7 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 		runtimePool.Close()
 		return errPreparation
 	}
-	launch, err := b.issue(l, jobID, prepared)
+	launch, err := b.issueSelectedCandidate(l, jobID, prepared)
 	if err != nil {
 		runtimePool.Close()
 		return errPreparation
@@ -249,13 +246,14 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 	var issued server.E2HTTPFilePolicy
 	if err != nil || e2config.StrictJSON(rawPolicy, &issued) != nil || len(issued.Rules) != len(plan.Actions) ||
 		issued.CaseRef != digest || issued.RunRef != issuedScope.RunRef || issued.ResetRef != issuedScope.ResetRef ||
-		issued.PolicyRef != issuedScope.PolicyRef || issued.Auth != nil {
+		issued.PolicyRef != issuedScope.PolicyRef || issued.Auth != nil || issued.E3WriteConsent || issued.E3Resettable ||
+		issued.Limits.E3ConfirmationRequests == nil || *issued.Limits.E3ConfirmationRequests != 0 {
 		clear(rawPolicy)
 		runtimePool.Close()
 		return errPreparation
 	}
 	for i, action := range plan.Actions {
-		if issued.Rules[i].PathMatch != "exact" || issued.Rules[i].PathPrefix != action.ExactPath ||
+		if issued.Rules[i].Purpose != "" || issued.Rules[i].Credentials != nil || issued.Rules[i].PathMatch != "exact" || issued.Rules[i].PathPrefix != action.ExactPath ||
 			len(issued.Rules[i].Methods) != 1 || issued.Rules[i].Methods[0] != action.Method {
 			clear(rawPolicy)
 			runtimePool.Close()

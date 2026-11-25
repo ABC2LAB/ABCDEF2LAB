@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/server"
 )
@@ -26,6 +27,31 @@ import (
 func urlOperatorUID() uint32 { return uint32(os.Geteuid()) }
 
 func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask) (launchConfig, error) {
+	return b.issueForPurpose(l, jobID, actual, false)
+}
+
+// issueSelectedCandidate mints a fresh E② authority for an approved non-IDOR
+// follow-up. An active declaration on the original target must never grant
+// E③ capabilities to this separate task.
+func (b *urlPreparationRuntime) issueSelectedCandidate(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask) (launchConfig, error) {
+	if l == nil || l.productTarget == nil || l.productRegistry == nil || l.productConnection == nil || l.policy.Auth != nil ||
+		l.policy.Workflow != nil || l.policy.E3WriteConsent || l.policy.E3Resettable ||
+		l.policy.HeaderMode != e2proxy.HeaderPreserve || len(l.productAccounts) != 0 || l.externalTestAccounts ||
+		len(l.policy.Rules) < 1 || len(l.policy.Rules) > 3 {
+		return launchConfig{}, errPreparation
+	}
+	for _, rule := range l.policy.Rules {
+		if rule.Ref == "" || rule.PathScopeRef == "" || rule.Purpose != "" || rule.Credentials != nil ||
+			rule.PathMatch != "exact" || len(rule.Methods) != 1 || rule.Methods[0] != "GET" && rule.Methods[0] != "HEAD" ||
+			rule.Origin != l.productTarget.Target.Origin || rule.ConnectIP != l.productConnection.IP ||
+			rule.TLSSPKISHA256 != l.productConnection.SPKI {
+			return launchConfig{}, errPreparation
+		}
+	}
+	return b.issueForPurpose(l, jobID, actual, true)
+}
+
+func (b *urlPreparationRuntime) issueForPurpose(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask, selectedCandidate bool) (launchConfig, error) {
 	c := l.launch
 	if l.productTarget != nil && (l.productConnection == nil || l.productConnection.jobID != jobID) {
 		return c, errPreparation
@@ -72,7 +98,7 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 	// 쓴다. 선언이 없으면 쓰지 않고, 그 회차의 확정 단계는 꺼진다.
 	var e3Declaration e3contract.Declaration
 	var e3Declared bool
-	if l.productTarget != nil && l.productRegistry != nil {
+	if !selectedCandidate && l.productTarget != nil && l.productRegistry != nil {
 		if declaration, active := l.productRegistry.activeDeclaration(*l.productTarget); active {
 			e3Declaration, e3Declared = declaration, true
 			frozen, frozenPolicy, err := freezeDeclaration(declaration, jobID, policy.ValidFrom, policy.ValidUntil,
@@ -95,7 +121,7 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 	}
 	// 목적 규칙은 동결한 선언과 승인 대상에서만 파생한다. 몫은 실행 정책과 권위 digest에 함께 결속한다.
 	e3Types := 0
-	if e3Declared && c.E2HostSocket != "" {
+	if !selectedCandidate && e3Declared && c.E2HostSocket != "" {
 		// 회차 시작 때 재확인한 pin을 써서 모델 규칙과 E③ 규칙의 연결 주소가 정확히 같다.
 		e3Target := *l.productTarget
 		e3Target.SelectedIP = l.productConnection.IP
