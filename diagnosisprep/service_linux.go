@@ -693,9 +693,10 @@ func (s *Service) publish(id string, u Update) error {
 	next.Job.ModelUsage = u.ModelUsage
 	next.Job.Outcome, next.Job.ClosingReason, next.Job.IntentOutcomes = "", "", nil
 	next.Job.DiagnosticLogIncomplete = u.DiagnosticLogIncomplete
-	next.Job.AccountAuth = nil
-	if u.State == Completed || u.State == Cancelled || u.State == Failed {
+	next.Job.AccountAuth, next.Job.AccountAuthAt = nil, nil
+	if accountAuthState(u.State) {
 		next.Job.AccountAuth = diagnosis.CloneAccountAuth(u.AccountAuth)
+		next.Job.AccountAuthAt = accountAuthTimes(old.Job, next.Job.AccountAuth, s.now().UTC())
 	}
 	if u.Result != nil {
 		counts := u.Result.IntentOutcomes
@@ -885,4 +886,21 @@ func replayPreparationReceipts(ctx context.Context, records []json.RawMessage, s
 	}
 
 	return jobs, nil
+}
+
+// accountAuthTimes는 계정별 값이 마지막으로 바뀐 시각이다. 앞 판과 값이 같은 계정은 앞 시각을 그대로 두고, 새로 생기거나
+// 값이 바뀐 계정만 now를 찍는다. 값이 없으면 nil이다.
+func accountAuthTimes(old Job, auth map[string]string, now time.Time) map[string]time.Time {
+	if auth == nil {
+		return nil
+	}
+	out := make(map[string]time.Time, len(auth))
+	for label, value := range auth {
+		if at, ok := old.AccountAuthAt[label]; ok && old.AccountAuth[label] == value {
+			out[label] = at
+			continue
+		}
+		out[label] = now
+	}
+	return out
 }

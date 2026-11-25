@@ -751,3 +751,65 @@ func TestAccountAuthDroppedOutsideTerminalStates(t *testing.T) {
 		t.Fatalf("preparing job: phase=%s account_auth=%v", got.Phase, got.AccountAuth)
 	}
 }
+
+// 실행 중에도 계정별 인증 상태가 작업에 실리고(인증 준비 뒤), 값이 바뀐 계정만 마지막 변경 시각이 새로 찍힌다. 결과 불명에는
+// 싣지 않는다(계약 §3.4, 2026-11-25 사용자 지시).
+func TestAccountAuthWhileRunningTracksChangeTimes(t *testing.T) {
+	s, b, _ := newFixture(t)
+	t0 := time.Date(2026, 11, 25, 3, 0, 0, 0, time.UTC)
+	var nanos atomic.Int64
+	nanos.Store(t0.UnixNano())
+	s.now = func() time.Time { return time.Unix(0, nanos.Load()).UTC() }
+	step := make(chan struct{})
+	done := make(chan error, 4)
+	running := Update{State: Running, Phase: ExecutionPhase, TaskID: "42", PreparationStarted: true, AuthorityState: AuthorityConsumed, Started: true}
+	b.run = func(ctx context.Context, _ Execution, p Publish) error {
+		for _, auth := range []map[string]string{
+			nil, // 인증 준비 전
+			{"tester-a": "authenticated", "tester-b": "session_not_found"},
+			{"tester-a": "authenticated", "tester-b": "authenticated"}, // 세션 다시 받기로 b가 살아남
+		} {
+			u := running
+			u.AccountAuth = auth
+			done <- p(u)
+			<-step
+		}
+		u := running
+		u.State, u.Phase, u.ReasonCode = Unknown, Closure, "execution_closure_unconfirmed"
+		u.AccountAuth = map[string]string{"tester-a": "authenticated", "tester-b": "authenticated"}
+		done <- p(u)
+		return nil
+	}
+	j := create(t, s, "create")
+	start(t, s, j, "start")
+	next := func(advance time.Duration) Job {
+		t.Helper()
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+		got := status(t, s, j.ID)
+		nanos.Add(int64(advance))
+		return got
+	}
+	before := next(time.Minute)
+	if before.State != Running || before.AccountAuth != nil || before.AccountAuthAt != nil {
+		t.Fatalf("인증 준비 전 %+v", before)
+	}
+	step <- struct{}{}
+	first := next(time.Minute)
+	t1 := t0.Add(time.Minute)
+	if first.AccountAuth["tester-b"] != "session_not_found" || !first.AccountAuthAt["tester-a"].Equal(t1) || !first.AccountAuthAt["tester-b"].Equal(t1) {
+		t.Fatalf("실행 중 첫 인증 상태 %+v %+v", first.AccountAuth, first.AccountAuthAt)
+	}
+	step <- struct{}{}
+	second := next(0)
+	t2 := t1.Add(time.Minute)
+	if second.AccountAuth["tester-b"] != "authenticated" || !second.AccountAuthAt["tester-a"].Equal(t1) || !second.AccountAuthAt["tester-b"].Equal(t2) {
+		t.Fatalf("바뀐 계정만 새 시각이어야 함 %+v %+v", second.AccountAuth, second.AccountAuthAt)
+	}
+	step <- struct{}{}
+	final := awaitState(t, s, j.ID, Unknown)
+	if final.AccountAuth != nil || final.AccountAuthAt != nil {
+		t.Fatalf("결과 불명에 계정 인증 상태가 남음 %+v", final)
+	}
+}

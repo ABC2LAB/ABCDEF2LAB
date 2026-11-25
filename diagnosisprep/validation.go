@@ -345,7 +345,10 @@ func validJobResult(j Job) bool {
 	if j.DiagnosticLogIncomplete && j.State != Completed {
 		return false
 	}
-	if j.AccountAuth != nil && (j.State != Completed && j.State != Cancelled && j.State != Failed || !diagnosis.ValidAccountAuth(j.AccountAuth)) {
+	if j.AccountAuth != nil && (!accountAuthState(j.State) || !diagnosis.ValidAccountAuth(j.AccountAuth)) {
+		return false
+	}
+	if !validAccountAuthTimes(j.AccountAuth, j.AccountAuthAt) {
 		return false
 	}
 	if j.IntentOutcomes != nil && (!j.IntentOutcomes.Valid() || j.State != Completed && j.State != Cancelled) {
@@ -616,4 +619,27 @@ func SourceDigest(input Input, installation string) string {
 	}{input, installation})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
+}
+
+// accountAuthState는 account_auth를 실을 수 있는 상태다(계약 §2·§3.4). 인증 준비는 실행 단계에서 하므로 준비 중에는 없고,
+// 결과 불명에는 싣지 않는다.
+func accountAuthState(s State) bool {
+	return s == Running || s == Stopping || s == Completed || s == Cancelled || s == Failed
+}
+
+// validAccountAuthTimes는 계정별 마지막 변경 시각의 형식이다: account_auth와 키가 같고 시각이 유효해야 한다.
+func validAccountAuthTimes(auth map[string]string, at map[string]time.Time) bool {
+	if auth == nil || at == nil {
+		return auth == nil && at == nil
+	}
+	if len(at) != len(auth) {
+		return false
+	}
+	for label := range auth {
+		t, ok := at[label]
+		if !ok || !validRunTime(&t) {
+			return false
+		}
+	}
+	return true
 }

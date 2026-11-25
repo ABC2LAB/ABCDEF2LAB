@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -639,6 +640,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	defer ticker.Stop()
 	statusReads := urlStatusReads{retries: launch.StatusReadRetries}
 	statusLost := false
+	var accountAuth accountAuthProgress
 	for {
 		select {
 		case <-ctx.Done():
@@ -650,8 +652,21 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			if state == nil {
 				return unknown("execution_closure_unconfirmed", false)
 			}
-			return p.set(urlStoppedUpdate(ctx, state, usage, statusLost))
+			stopped := urlStoppedUpdate(ctx, state, usage, statusLost)
+			return p.set(func(u *diagnosisprep.Update) {
+				stopped(u)
+				u.AccountAuth = accountAuth.final(u.AccountAuth)
+			})
 		case <-ticker.C:
+			// 실행 중 계정별 인증 상태(인증 준비 뒤, 세션 갱신으로 바뀌면 다시). 싣지 못하면 다른 갱신 실패처럼 실행을 멈춘다
+			// (Publish 계약: 실패는 실행 허가가 아니다).
+			if auth, changed := accountAuth.next(d.runtime); changed {
+				if p.set(func(u *diagnosisprep.Update) { u.AccountAuth = auth }) != nil {
+					cancel()
+					continue
+				}
+				accountAuth.published = auth
+			}
 			status, e := gateway.Call(ctx, diagnosis.Request{Version: diagnosis.Version, RequestID: "url-status", Command: diagnosis.Status, TaskID: taskID, PreparationRef: execution.Job.ID})
 			if e != nil || status.Snapshot == nil {
 				// 정한 횟수까지는 다시 묻는다(C10). 다 쓰면 실행을 멈추고 결과를 unknown으로 둔다.
@@ -673,7 +688,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 					u.ResultReady = s.ResultReady
 					u.ModelUsage = &usage
 					u.Result = s.Result
-					u.AccountAuth = s.AccountAuth
+					u.AccountAuth = accountAuth.final(s.AccountAuth)
 					if !usage.UsageKnown {
 						u.State = diagnosisprep.Unknown
 						u.ReasonCode = "model_usage_unknown"
@@ -787,8 +802,11 @@ func urlClosingResult(u diagnosisprep.Update) diagnosisprep.Update {
 		u.Result = nil
 		u.DiagnosticLogIncomplete = false
 	}
-	// 계정별 인증 결과는 completed·cancelled·failed에 싣는다(계약 §3.4). 결과 불명 등에는 싣지 않는다.
-	if u.State != diagnosisprep.Completed && u.State != diagnosisprep.Cancelled && u.State != diagnosisprep.Failed {
+	// 계정별 인증 상태는 인증 준비 뒤의 running·stopping과 completed·cancelled·failed에 싣는다(계약 §2·§3.4). 준비 중·
+	// 결과 불명 등에는 싣지 않는다.
+	switch u.State {
+	case diagnosisprep.Running, diagnosisprep.Stopping, diagnosisprep.Completed, diagnosisprep.Cancelled, diagnosisprep.Failed:
+	default:
 		u.AccountAuth = nil
 	}
 	return u
@@ -800,6 +818,43 @@ func launchAccountAuth(runtime any) map[string]string {
 		return diagnosis.CloneAccountAuth(a.AccountAuth())
 	}
 	return nil
+}
+
+// launchAccountAuthNow는 실행 중 상태 응답용 계정별 인증 상태다(확정 단계와 같은 기준). 인증 준비 전이거나 지금 세션을
+// 볼 수 없으면 ok가 거짓이다(앞에 실은 값을 유지한다).
+func launchAccountAuthNow(runtime any) (map[string]string, bool) {
+	a, ok := runtime.(interface {
+		AccountAuthNow() (map[string]string, bool)
+	})
+	if !ok {
+		return nil, false
+	}
+	auth, known := a.AccountAuthNow()
+	auth = diagnosis.CloneAccountAuth(auth)
+	return auth, known && auth != nil
+}
+
+// accountAuthProgress는 실행 중에 실은 계정별 인증 상태다. 바뀐 때만 다시 싣고, 마감 갱신은 마지막으로 실은 값을 잇는다
+// (끝나는 순간 최초 인증 결과로 되돌아가 화면 값이 뒤집히지 않게, 2026-11-25 사용자 지시).
+type accountAuthProgress struct {
+	published map[string]string
+}
+
+// next는 지금 상태가 앞에 실은 값과 다르면 실을 값을 돌려준다.
+func (a *accountAuthProgress) next(runtime any) (map[string]string, bool) {
+	auth, ok := launchAccountAuthNow(runtime)
+	if !ok || maps.Equal(auth, a.published) {
+		return nil, false
+	}
+	return auth, true
+}
+
+// final은 마감 갱신에 실을 값이다. 실행 중에 실은 값이 있으면 그 값, 없으면 마감 결과의 값이다.
+func (a *accountAuthProgress) final(closing map[string]string) map[string]string {
+	if a.published != nil {
+		return diagnosis.CloneAccountAuth(a.published)
+	}
+	return closing
 }
 
 // E③ 시작 검사는 최초 준비 기록 대신 같은 회차에 지금 결속된 세션을 본다. 뒤이어 E③가 재로그인·신원을 확인한다.
