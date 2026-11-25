@@ -19,7 +19,7 @@ from runner_split import (  # noqa: E402
     PRODUCT_MODEL_API, SCRIPTED_MODEL_BASE_URL, SCRIPTED_MODEL_IP, synthetic_local_model,
     BOUNDARY_EVIDENCE_DIR, EXPLORATION_BLOCK, METER_EXPLORE_IP, REGISTRATION_BASIS, WIDE_METHODS, WORKFLOW_DEFAULTS,
     SplitInputError, boundary_config, install_input, split_conditions, read_boundary_template, read_workflow_defaults, target_registration,
-    to_eval_address,
+    to_eval_address, product_run_seconds,
 )
 
 
@@ -83,7 +83,7 @@ class TestInstallInput(unittest.TestCase):
 
     def build(self, **changes):
         options = dict(admin_password="x" * 24, manifest=MANIFEST, meter_port=8080, workflow_defaults=self.defaults,
-                       wide_writes=True, valid_for_hours=4, max_runs=2)
+                       wide_writes=True, valid_for_hours=4, max_runs=2, run_seconds=2100)
         options.update(changes)
         return install_input(**options)
 
@@ -107,8 +107,10 @@ class TestInstallInput(unittest.TestCase):
         # B(a): 상한 칸은 넣지 않아 제품 기본값을 쓴다. 모델 키 칸도 없다(설치 뒤 API로 넣음).
         for name in ("max_requests", "max_targets"):
             self.assertNotIn(name, policy)
-        for name in ("runtime_limits", "api_key_file", "local_model", "upstream_ca_file"):
+        for name in ("api_key_file", "local_model", "upstream_ca_file"):
             self.assertNotIn(name, value)
+        # B(a)의 예외 하나(2026-11-25 사용자): 워크플로 회차 실행 시간만 넣고, 다른 상한 칸은 없다.
+        self.assertEqual(value["runtime_limits"], {"workflow": {"run_seconds": 2100}})
         # 워크플로는 기본값 파일 그대로, 쓰기 허용만 회차 설정을 따른다.
         self.assertEqual(policy["workflow"], dict(self.defaults, allow_reversible_writes=True))
         self.assertEqual(self.build(wide_writes=False)["target_policy"]["workflow"], self.defaults)
@@ -119,9 +121,20 @@ class TestInstallInput(unittest.TestCase):
     def test_install_inputs_are_checked(self):
         for change in ({"admin_password": "short"}, {"manifest": dict(MANIFEST, version=2)}, {"manifest": []},
                        {"meter_port": 0}, {"meter_port": True}, {"wide_writes": 1}, {"valid_for_hours": 0}, {"max_runs": 0},
-                       {"workflow_defaults": dict(self.defaults, extra=1)}):
+                       {"workflow_defaults": dict(self.defaults, extra=1)},
+                       {"run_seconds": 0}, {"run_seconds": 3601}, {"run_seconds": True}, {"run_seconds": 2100.0}):
             with self.subTest(change=change), self.assertRaises(SplitInputError):
                 self.build(**change)
+        self.assertEqual(self.build(run_seconds=3600)["runtime_limits"], {"workflow": {"run_seconds": 3600}})
+
+    def test_product_run_seconds_is_the_time_budget_plus_margin(self):
+        # 러너 시간 예산 1800초(고정 초안 §10) → O 설치 2100초. 제품 상한 3600을 넘으면 설정 오류다.
+        self.assertEqual(product_run_seconds(1800), 2100)
+        self.assertEqual(product_run_seconds(3300), 3600)
+        for budget in (3301, 0, -1, True, 1800.0):
+            with self.subTest(budget=budget), self.assertRaises(SplitInputError) as caught:
+                product_run_seconds(budget)
+            self.assertEqual(str(caught.exception), "split_run_seconds_invalid")
 
     def test_exploration_block_matches_the_product_readme(self):
         text = (REPO_ROOT / "deploy/product/README.md").read_text(encoding="utf-8")
@@ -138,7 +151,7 @@ class TestSyntheticInstall(unittest.TestCase):
 
     def build(self, **changes):
         options = dict(admin_password="x" * 24, manifest=None, meter_port=8080, workflow_defaults=self.defaults,
-                       wide_writes=True, valid_for_hours=4, max_runs=2, local_model=synthetic_local_model("scripted/m:v1", 32, 1024))
+                       wide_writes=True, valid_for_hours=4, max_runs=2, run_seconds=2100, local_model=synthetic_local_model("scripted/m:v1", 32, 1024))
         options.update(changes)
         return install_input(**options)
 
@@ -206,7 +219,7 @@ class TestSplitConditions(unittest.TestCase):
 
     def pair(self, wide_install, wide_registration):
         install = install_input(admin_password="x" * 24, manifest=MANIFEST, meter_port=8080, workflow_defaults=self.defaults,
-                                wide_writes=wide_install, valid_for_hours=4, max_runs=2)
+                                wide_writes=wide_install, valid_for_hours=4, max_runs=2, run_seconds=2100)
         registration = target_registration(target_name="app.eval.test", meter_port=8080, requests=400, valid_hours=2,
                                            wide_writes=wide_registration)
         return install, registration
