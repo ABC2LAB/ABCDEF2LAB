@@ -247,20 +247,23 @@ describe("ProductVerdictReport", () => {
     serve(cases.mixed_integrity);
     render(<ProductVerdictReport taskId="2" active />);
     const sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
-    await waitFor(() => expect(within(sec).getByText("2건")).toBeInTheDocument());
+    await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
     expect(vi.mocked(apiFetch).mock.calls[0][0]).toBe("/api/tasks/2/product-verdicts");
-    // 목록은 짧게(사용자 11/23): 출처 딱지만, 확정 단계가 정상으로 마쳤으면 그 말은 두지 않는다
-    expect(sec).toHaveTextContent("제품 정책 선언 declaration-job-synthetic");
+    // 목록은 짧게(사용자 11/23): 확정 단계가 정상으로 마쳤으면 그 말은 두지 않는다. 출처는 머리 오른쪽 'n건 · 정책 선언 기준',
+    // 긴 참조는 마우스를 올렸을 때만(사용자 11/25)
+    expect(sec.querySelector("[class*='sh']")).toHaveTextContent(/2건 · 정책 선언 기준/);
+    expect(within(sec).getByTitle("정책 선언 declaration-job-synthetic")).toHaveTextContent(/^정책 선언 기준/);
     expect(sec).not.toHaveTextContent("대상 승인 판");
     expect(sec).not.toHaveTextContent("섞지 않습니다");
     expect(sec).not.toHaveTextContent("확정 단계 마침");
     const [ok, failed] = within(sec).getAllByRole("listitem");
     expect(ok).toHaveTextContent("확정");
     expect(ok).toHaveTextContent("document");
-    // 검사가 다 '예'면 검사 줄과 판정 번호는 두지 않고 관찰 시각만
+    // 검사가 다 '예'면 검사 줄과 판정 번호는 두지 않고, 사유는 ✓ 칩 · 관찰 시각은 오른쪽(사용자 11/25)
     expect(ok).not.toHaveTextContent("검사:");
     expect(ok).not.toHaveTextContent("판정 #");
-    expect(ok).toHaveTextContent(`관찰 ${clockOf("2026-11-18T09:00:00.000000Z")}`);
+    expect(ok.querySelector("time")).toHaveTextContent(clockOf("2026-11-18T09:00:00.000000Z"));
+    for (const chip of ok.querySelectorAll("[data-reason]")) expect(chip.className).toMatch(/\bok\b|_ok_/);
     expect(ok).toHaveTextContent("확정 판정 · 검토 대상 취약점 1건");
     expect(ok).not.toHaveTextContent("수동 검토 필요 그대로");
     expect(failed).toHaveTextContent("값 숨김");
@@ -315,8 +318,13 @@ describe("ProductVerdictReport", () => {
     const sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
     await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
     const second = within(sec).getAllByRole("listitem")[1];
-    expect(second).toHaveTextContent("판정 사유 정책상 교차 계정 접근 금지 · 데이터를 확인할 수 없음");
-    expect(second).toHaveTextContent("세부 사유 요청 시간 초과 · 서버 사유 있음");
+    // 사유는 칩으로(사용자 11/25): 판정 사유 다음 세부 사유, 표에 없는 코드는 '서버 사유 있음'
+    expect([...second.querySelectorAll("[data-reason]")].map((c) => c.textContent)).toEqual([
+      "정책상 교차 계정 접근 금지",
+      "데이터를 확인할 수 없음",
+      "요청 시간 초과",
+      "서버 사유 있음",
+    ]);
     for (const code of [
       "policy_deny_resolved",
       "data_unverifiable",
@@ -326,6 +334,29 @@ describe("ProductVerdictReport", () => {
       expect(second).not.toHaveTextContent(code);
       expect(within(second).getByTitle(code)).toBeInTheDocument();
     }
+  });
+
+  // 연결이 0건이면 '0건'이 확정이 없다는 말처럼 읽혀 따로 쓰고, 검사가 '아니오 · 모름'이면 그 검사를 칩으로(사용자 11/25)
+  it("연결 없는 확정은 '위 취약점 목록과 연결된 항목 없음', 실패한 검사는 빨강 · 모름은 점선 칩", async () => {
+    const raw = clone(cases.verified);
+    (raw.items[0] as Json).candidate_refs = [];
+    const second = raw.items[1] as Json;
+    second.oracle_value = "undecidable";
+    second.checks = { policy: "yes", identity: "no", data: "unknown" };
+    second.oracle_reason_codes = ["policy_deny_resolved", "data_unverifiable"];
+    serve(raw);
+    render(<ProductVerdictReport taskId={raw.task_id} active />);
+    const sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
+    await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
+    const [first, other] = within(sec).getAllByRole("listitem");
+    expect(first).toHaveTextContent("위 취약점 목록과 연결된 항목 없음");
+    expect(first).not.toHaveTextContent("0건");
+    const bad = within(other).getByText("신원 검사 아니오");
+    const unk = within(other).getByText("데이터 검사 모름");
+    expect(bad.className).toMatch(/bad/);
+    expect(unk.className).toMatch(/unk/);
+    // 검사가 다 '예'가 아니면 사유 칩에 ✓ 를 붙이지 않는다
+    for (const chip of other.querySelectorAll("[data-reason]")) expect(chip.className).not.toMatch(/\bok\b|_ok_/);
   });
 
   it("빈 목록은 '취약점 없음'으로 읽히지 않고, 확정 단계 결과가 없으면 꺼졌다고 하지 않는다", async () => {
@@ -351,7 +382,7 @@ describe("ProductVerdictReport", () => {
     render(<ProductVerdictReport taskId="2" active />);
     const sec = await screen.findByRole("region", { name: "제품 확정 단계 판정" });
     await waitFor(() => expect(within(sec).getAllByRole("listitem")).toHaveLength(2));
-    expect(sec).toHaveTextContent("제품 정책 선언 동결본 미확인");
+    expect(sec.querySelector("[class*='sh']")).toHaveTextContent(/2건 · 정책 선언 동결본 미확인/);
     expect(within(sec).getAllByText(/당시 원본 미확인 · 당시 정책 동결본을 읽지 못해/)).toHaveLength(2);
   });
 

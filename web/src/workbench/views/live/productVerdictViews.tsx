@@ -120,11 +120,18 @@ function NoVerdicts({ list }: { list: ProductVerdictList }) {
   );
 }
 
-/** 출처 딱지: '제품' 딱지 뒤 정책 선언 참조 (계약 §3 `제품 · 정책 선언 declaration-<job>`). 대상 승인 판은 목록에서 뺐다(사용자 11/23). */
-function sourceText(list: ProductVerdictList): string {
+/**
+ * 출처 글(계약 §3 `제품 · 정책 선언 declaration-<job>`): 머리 오른쪽에 짧게 '정책 선언 기준', 긴 참조(declaration-…)는 마우스를
+ * 올리면 보인다(사용자 11/25: 긴 ID 가 지저분함). 동결본을 못 읽었으면 그대로 '정책 선언 동결본 미확인'.
+ */
+function SourceText({ list }: { list: ProductVerdictList }) {
   const p = list.policySource;
-  if (!p) return "정책 선언 동결본 미확인";
-  return `정책 선언 ${p.ref}`;
+  if (!p) return <>정책 선언 동결본 미확인</>;
+  return (
+    <span className={s["pv-src"]} title={`정책 선언 ${p.ref}`}>
+      정책 선언 기준<span className={s["sr-only"]}>{` (${p.ref})`}</span>
+    </span>
+  );
 }
 
 /** 읽기 상태(불러오는 중 · 실패 · 미설치)를 공통으로. 그릴 목록이 있으면 null. */
@@ -209,10 +216,71 @@ export function VerdictBody({ r, compact = false }: { r: ProductVerdictShown; co
   );
 }
 
+/** 검사 이름(판정 사유 칩에서 '아니오 · 모름'인 검사만 따로 칩으로) */
+const CHECK_NAME: Readonly<Record<keyof ProductVerdictShown["checks"], string>> = {
+  policy: "정책",
+  identity: "신원",
+  data: "데이터",
+};
+
+/**
+ * 보고서 목록의 판정 한 줄(사용자 11/25 '글만 있어 지저분'): 취약점 목록처럼 상자 안 줄 — 왼쪽 판정 딱지, 가운데 자원 종류 ·
+ * 판정 사유 칩(검사가 다 '예'면 ✓ 칩) · 연결된 취약점, 오른쪽 관찰 시각. 판정 상세(VerdictBody)는 그대로 다 보인다.
+ */
 function ShownRow({ r }: { r: ProductVerdictShown }) {
+  const allYes = r.checks.policy === "yes" && r.checks.identity === "yes" && r.checks.data === "yes";
+  const failed = (Object.keys(CHECK_NAME) as (keyof ProductVerdictShown["checks"])[]).filter(
+    (k) => r.checks[k] !== "yes",
+  );
+  const n = r.candidateRefs.length;
+  // 확정도 finding 이 아니라 계약 §3 그대로 '검토 대상'. 연결이 없으면 '0건'이 확정이 없다는 말처럼 읽혀 따로 쓴다(사용자 11/25)
+  let link = "위 취약점 목록과 연결된 항목 없음";
+  if (n) link = r.oracleValue === "confirmed" ? `확정 판정 · 검토 대상 취약점 ${n}건` : `연결된 취약점 ${n}건`;
   return (
-    <li data-verdict={r.verdictId}>
-      <VerdictBody r={r} compact />
+    <li className={s["pv-row"]} data-verdict={r.verdictId}>
+      <Value v={r.oracleValue} />
+      <div className={s["pv-main"]}>
+        <div className={s["pv-t"]}>
+          <b className={s.mono}>{r.resourceType}</b> · 교차 계정 조회
+        </div>
+        {r.oracleReasonCodes.length || failed.length || r.productReasonCodes.length ? (
+          <div className={s["pv-chips"]}>
+            <span className={s["sr-only"]}>판정 사유 </span>
+            {r.oracleReasonCodes.map((c) => (
+              <span key={c} className={cx(s["pv-chip"], allYes && s.ok)} title={c} data-reason={c}>
+                {allYes ? <Icon name="check" /> : null}
+                {verdictReasonText(c)}
+              </span>
+            ))}
+            {failed.map((k) => (
+              <span key={k} className={cx(s["pv-chip"], r.checks[k] === "no" ? s.bad : s.unk)}>
+                {`${CHECK_NAME[k]} 검사 ${CHECK_TEXT[r.checks[k]]}`}
+              </span>
+            ))}
+            {r.productReasonCodes.length ? <span className={s["sr-only"]}>세부 사유 </span> : null}
+            {r.productReasonCodes.map((c) => (
+              <span key={c} className={cx(s["pv-chip"], s.sub)} title={c} data-reason={c}>
+                {verdictReasonText(c)}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        <div className={s["pv-link"]}>{link}</div>
+        {r.recordStatus === "policy_source_unavailable" ? (
+          <div className={cx(s.note, s.warn)} role="note">
+            <Icon name="alert" />
+            <span>{`${RECORD_STATUS_TEXT.policy_source_unavailable} · 당시 정책 동결본을 읽지 못해 대조하지 못했습니다(값은 저장된 그대로)`}</span>
+          </div>
+        ) : null}
+        {r.evidenceSeal && r.evidenceSeal.status !== "confirmed" ? (
+          <div className={cx(s.note, s.warn)} data-seal={r.evidenceSeal.status}>
+            {evidenceSealText(r.evidenceSeal)}
+          </div>
+        ) : null}
+      </div>
+      <time className={s["pv-at"]} dateTime={r.observedAt} title={`관찰 ${dateTimeOf(r.observedAt) || r.observedAt}`}>
+        {clockOf(r.observedAt) || r.observedAt}
+      </time>
     </li>
   );
 }
@@ -229,8 +297,13 @@ export function HiddenVerdict({ id, seal }: { id: string | null; seal: EvidenceS
 
 function HiddenRow({ id, seal }: { id: string | null; seal: EvidenceSeal | null }) {
   return (
-    <li>
-      <HiddenVerdict id={id} seal={seal} />
+    <li className={s["pv-row"]}>
+      <span className={cx(s.vd, s.und)}>값 숨김</span>
+      <div className={s["pv-main"]}>
+        <span
+          className={s["pv-link"]}
+        >{`${id ? `판정 #${id} · ` : ""}${seal ? EVIDENCE_SEAL_TEXT[seal.status] : RECORD_STATUS_TEXT.record_integrity_failed}`}</span>
+      </div>
     </li>
   );
 }
@@ -263,7 +336,12 @@ export function ProductVerdictReport({
     <section className={s.sec} aria-label="제품 확정 단계 판정">
       <div className={s.sh}>
         <h2>제품 확정 단계 판정</h2>
-        {list && !state ? <span className={s.n}>{`${list.items.length}건`}</span> : null}
+        {list && !state ? (
+          <span className={s.n}>
+            {`${list.items.length}건 · `}
+            <SourceText list={list} />
+          </span>
+        ) : null}
       </div>
       {state ?? (list ? <ReportBody list={list} /> : null)}
     </section>
@@ -273,25 +351,24 @@ export function ProductVerdictReport({
 function ReportBody({ list }: { list: ProductVerdictList }) {
   return (
     <>
-      {/* 덧붙인 안내 문장('위 목록과 섞지 않습니다 …')은 뺐다(사용자 11/23: 글이 이상함). 섞지 않는 건 구획을 따로 둔 것으로 보인다 */}
-      {/* 확정 단계가 정상으로 마쳤으면 '확정 단계 마침'은 두지 않는다(사용자 11/23). 미확인 · 중단 · 거절 등만 붙인다 */}
-      <p className={s.help}>
-        <span className={s.pill}>제품</span> {sourceText(list)}
-        {list.confirmation?.status === "completed" ? null : (
-          <>
-            {" · "}
-            <Confirmation list={list} />
-          </>
-        )}
-      </p>
+      {/* 덧붙인 안내 문장('위 목록과 섞지 않습니다 …')은 뺐다(사용자 11/23: 글이 이상함). 섞지 않는 건 구획을 따로 둔 것으로 보인다.
+          출처(정책 선언)는 머리 오른쪽에 짧게. 확정 단계가 정상으로 마쳤으면 '확정 단계 마침'은 두지 않고, 미확인 · 중단 · 거절 등만
+          목록 위에 한 줄로(판정이 없으면 상자 안 '판정 없음' 줄이 말한다) */}
+      {list.items.length && list.confirmation?.status !== "completed" ? (
+        <p className={s.help}>
+          <Confirmation list={list} />
+        </p>
+      ) : null}
       {list.items.length ? (
-        <ul className={s["verdict-list"]}>
+        <ul className={cx(s["verdict-list"], s["pv-box"])}>
           {list.items.map((r, i) => (
             <Row key={r.verdictId ?? `hidden-${i}`} r={r} />
           ))}
         </ul>
       ) : (
-        <NoVerdicts list={list} />
+        <div className={s["pv-box"]}>
+          <NoVerdicts list={list} />
+        </div>
       )}
     </>
   );

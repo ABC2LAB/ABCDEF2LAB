@@ -5009,6 +5009,94 @@ button.smm:hover {
 .verdict-list > li:first-child {
   border-top: 0;
 }
+/*
+ * 보고서 제품 확정 단계 판정을 취약점 목록처럼 상자 안 줄로(사용자 11/25 '글만 있어 지저분'): 왼쪽 판정 딱지(취약점 목록 위험도
+ * 칸과 같은 104px) · 가운데 자원 종류 · 사유 칩 · 연결 · 오른쪽 관찰 시각
+ */
+.pv-box {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+.pv-box > .pv-row {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px 14px;
+  padding: 12px 16px;
+}
+.pv-row > .vd {
+  justify-content: center;
+}
+.pv-main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.pv-t {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.pv-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.pv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--well);
+  color: var(--ink-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.pv-chip .ic {
+  width: 12px;
+  height: 12px;
+  stroke-width: 2.4;
+}
+.pv-chip.ok {
+  border-color: transparent;
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+.pv-chip.bad {
+  border-color: transparent;
+  background: var(--hi-bg);
+  color: var(--hi);
+}
+.pv-chip.unk {
+  border-style: dashed;
+  color: var(--ink-3);
+}
+.pv-chip.sub {
+  color: var(--ink-3);
+}
+.pv-link {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.pv-at {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-3);
+  padding-top: 3px;
+}
+.pv-src {
+  font-family: var(--sans);
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: help;
+}
+.pv-box > .empty {
+  margin: 0;
+  padding: 12px 16px;
+}
 .feed li.fresh {
   animation: fresh 1.4s ease-out;
 }
