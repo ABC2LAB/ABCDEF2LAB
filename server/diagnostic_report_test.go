@@ -150,7 +150,7 @@ func TestDiagnosticReportDatabaseScopeAndNoFalseConfirmation(t *testing.T) {
 		t.Fatalf("shared export=%d", shared.Code)
 	}
 	internal := req("GET", path+"&audience=internal&download=1", "")
-	if internal.Code != 200 || !strings.Contains(internal.Body.String(), "합성 XSS 후보") || !strings.Contains(internal.Body.String(), "<td>0</td><td>2</td><td>1</td>") {
+	if internal.Code != 200 || !strings.Contains(internal.Body.String(), "합성 XSS 후보") || !strings.Contains(internal.Body.String(), "<td>2</td><td>0</td><td>0</td><td>0</td><td>1</td>") {
 		t.Fatalf("internal export=%d body=%s", internal.Code, internal.Body.String())
 	}
 	if internal.Header().Get("Content-Disposition") == "" || internal.Header().Get("Content-Security-Policy") == "" || strings.Contains(internal.Body.String(), "<script>not executable") {

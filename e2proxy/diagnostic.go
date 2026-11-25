@@ -2,6 +2,7 @@ package e2proxy
 
 import (
 	"fmt"
+	"mime"
 	"net/http"
 	"regexp"
 	"sort"
@@ -14,10 +15,13 @@ import (
 // HTTPObservation은 실제 통제 경로의 제한된 비민감 projection이다. 본문·쿠키·계정 값은 없다.
 // 응답 코드·제품 헤더의 관찰은 취약점 확정이나 실제 백엔드 구현의 증명이 아니다.
 type HTTPObservation struct {
-	Sequence         uint64 `json:"sequence"`
-	AttemptRef       string `json:"attempt_ref"`
-	Method           string `json:"method"`
-	Endpoint         string `json:"endpoint"`
+	Sequence   uint64 `json:"sequence"`
+	AttemptRef string `json:"attempt_ref"`
+	Method     string `json:"method"`
+	Endpoint   string `json:"endpoint"`
+	// ExactFunction is true only for the exact approved path without a query.
+	// Masked resource paths cannot establish same-function identity.
+	ExactFunction    bool   `json:"exact_function,omitempty"`
 	RuleRef          string `json:"rule_ref"`
 	Decision         string `json:"decision"`
 	Reason           Reason `json:"reason"`
@@ -29,6 +33,8 @@ type HTTPObservation struct {
 	AuditComplete     bool             `json:"audit_complete"`
 	ObservedAt        time.Time        `json:"observed_at"`
 	Technologies      []HTTPTechnology `json:"technologies,omitempty"`
+	// HTMLSecurity는 성공한 HTML 응답의 비밀 없는 헤더 속성만 담는다.
+	HTMLSecurity string `json:"html_security,omitempty"`
 }
 type HTTPTechnology struct {
 	Name    string `json:"name"`
@@ -81,9 +87,24 @@ func (c *Call) observeHTTP(req *http.Request, resp *http.Response, r Receipt) {
 	if !supportedMethod(method) {
 		method = "UNSUPPORTED"
 	}
-	obs := HTTPObservation{Sequence: r.Sequence, AttemptRef: r.AttemptID, Method: method, Endpoint: endpoint, RuleRef: r.RuleRef, Decision: r.Decision, Reason: r.Reason, StatusCode: r.StatusCode, ResponseComplete: r.ResponseComplete, ResponseTruncated: r.ResponseTruncated, ForwardAttempted: r.ForwardAttempted, AuditComplete: r.AuditComplete, ObservedAt: r.At}
+	obs := HTTPObservation{Sequence: r.Sequence, AttemptRef: r.AttemptID, Method: method, Endpoint: endpoint, ExactFunction: prefix != "" && req.URL.EscapedPath() == prefix && req.URL.RawQuery == "" && !strings.Contains(endpoint, "{"), RuleRef: r.RuleRef, Decision: r.Decision, Reason: r.Reason, StatusCode: r.StatusCode, ResponseComplete: r.ResponseComplete, ResponseTruncated: r.ResponseTruncated, ForwardAttempted: r.ForwardAttempted, AuditComplete: r.AuditComplete, ObservedAt: r.At}
 	if resp != nil && r.ResponseReceived && r.ResponseComplete {
+		if (method == http.MethodGet || method == http.MethodHead) && r.StatusCode == http.StatusOK {
+			mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+			if err == nil && strings.EqualFold(mediaType, "text/html") {
+				values := resp.Header.Values("X-Content-Type-Options")
+				if len(values) == 0 {
+					obs.HTMLSecurity = "nosniff_missing"
+				} else if len(values) == 1 && strings.EqualFold(strings.TrimSpace(values[0]), "nosniff") {
+					obs.HTMLSecurity = "nosniff_present"
+				}
+			}
+		}
 		for _, header := range []string{"Server", "X-Powered-By"} {
+			// 값이 여럿이면 하나를 골라 확인된 배너로 쓰지 않는다.
+			if len(resp.Header.Values(header)) != 1 {
+				continue
+			}
 			value := strings.TrimSpace(resp.Header.Get(header))
 			if string(c.e.RedactRecord([]byte(value))) != value || dlp.DiagnosticText(value) != value {
 				continue

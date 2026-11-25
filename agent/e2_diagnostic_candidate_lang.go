@@ -51,7 +51,7 @@ type candidateLanguageField struct {
 // candidateLanguageKey는 저장소가 같은 후보로 보는 기준(실행·호출·유형·이름·증거 digest, db.RecordDiagnosticCandidate)이다.
 // 저장이 끝난 후보의 다시 쓰기 횟수를 기억할 때 쓴다.
 func candidateLanguageKey(c db.DiagnosticCandidate) string {
-	return strings.Join([]string{c.RunRef, c.CallRef, c.VulnClass, c.Name, c.EvidenceDigest}, "\x00")
+	return strings.Join([]string{c.RunRef, c.CallRef, c.VulnClass, c.VerificationClaim, c.Name, c.EvidenceDigest}, "\x00")
 }
 
 // candidateLanguagePendingKey는 다시 쓰기를 기다리는 동안의 후보 식별자다(2026-11-24 사용자 결정). 이름도 다시 쓰게

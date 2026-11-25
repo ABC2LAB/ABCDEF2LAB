@@ -157,7 +157,8 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 	if in.SourceFailures > 0 {
 		w.paragraph("Normal", fmt.Sprintf("근거 불러오기 실패: %d건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.", in.SourceFailures))
 	}
-	w.table([][]string{{"확정", "검토 필요", "미실행", "판단 불가·결과 불명", "비취약"}, {strconv.Itoa(in.Confirmed), strconv.Itoa(in.Review), strconv.Itoa(in.NotExecuted), strconv.Itoa(in.Unknown), strconv.Itoa(in.Negative)}})
+	w.paragraph("Normal", fmt.Sprintf("원본 발견 항목 %d건 · 별도 E③ 확정 %d건. 발견 0건은 검사 범위 전체의 안전을 뜻하지 않습니다.", len(in.Entries), len(in.ProductConfirmed)))
+	w.table([][]string{{"의심", "확정", "판단 불가", "검증 미지원(의심에 포함)", "미실행", "확인 실패·결과 불명", "부정"}, {strconv.Itoa(in.Suspected), strconv.Itoa(in.Confirmed), strconv.Itoa(in.Inconclusive), strconv.Itoa(in.Unsupported), strconv.Itoa(in.NotExecuted), strconv.Itoa(in.Unknown), strconv.Itoa(in.Negative)}})
 	if len(in.ProductConfirmed) > 0 || in.ProductSuspected > 0 || in.ProductUndecidable > 0 || in.ProductUnverified > 0 || in.ProductSourceUnavailable > 0 || in.ProductUnreadable > 0 {
 		w.paragraph("Heading2", "제품 E③ 확정 단계")
 		summary := fmt.Sprintf("독립 확정 %d건", len(in.ProductConfirmed))
@@ -204,7 +205,33 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		}
 		w.paragraph(style, e.ID+" · "+e.Title)
 		w.paragraph("Heading2", "① 판정과 영향")
-		w.table([][]string{{"항목", "값"}, {"고유 ID / 유형", e.ID + " / " + e.VulnClass}, {"판정 / 검증", e.Outcome + " / " + e.Verification}, {"위험도 / 상태", e.SeverityText() + " / " + e.Status}, {"실행 / intent", e.Run + " / " + strconv.FormatInt(e.IntentID, 10)}, {"증거 버전 / digest", strconv.FormatInt(e.EvidenceVersion, 10) + " / " + e.Digest}})
+		assessment := "추가 검증 기록 없음"
+		if e.AssessmentStatus != "" {
+			assessment = e.AssessmentStatus + " / " + e.AssessmentReason
+		}
+		w.table([][]string{{"항목", "값"}, {"고유 ID / 유형", e.ID + " / " + e.VulnClass}, {"현재 판정", e.VerdictText()}, {"원본 결과 / 검증", e.Outcome + " / " + e.Verification}, {"검증 결과·사유", assessment}, {"위험도 / 원본 상태", e.SeverityText() + " / " + e.Status}, {"실행 / intent", e.Run + " / " + strconv.FormatInt(e.IntentID, 10)}, {"증거 버전 / digest", strconv.FormatInt(e.EvidenceVersion, 10) + " / " + e.Digest}})
+		if v := e.LatestVerification; v != nil {
+			verdict := v.Verdict
+			if verdict == "" {
+				verdict = "판정 없음"
+			}
+			w.paragraph("Normal", fmt.Sprintf("최근 선택 검증: %s · %s · %s · %s · 요청 %s", v.State, verdict, v.Reason, v.Method, v.RequestedAt.UTC().Format(time.RFC3339)))
+			if v.InitialVerdict != "" {
+				w.paragraph("Normal", "최초 자동 검증: "+v.InitialVerdict+" · "+v.InitialReason)
+			}
+			for _, source := range v.Sources {
+				w.paragraph("Normal", "추가 감사 관찰: 호출 "+source.CallRef+" · 시도 "+source.AttemptRef+" · digest "+source.ObservationDigest)
+			}
+			if v.EarlierVerdict != "" {
+				w.paragraph("Normal", "이전 유효 추가 검증: "+v.EarlierVerdict+" · "+v.EarlierReason+" · 요청 "+v.EarlierRequestedAt.UTC().Format(time.RFC3339))
+				if v.EarlierSuperseded {
+					w.paragraph("Normal", "이후 추가 검증으로 현재 집계에서 제외")
+				}
+				for _, source := range v.EarlierSources {
+					w.paragraph("Normal", "이전 감사 관찰: 호출 "+source.CallRef+" · 시도 "+source.AttemptRef+" · digest "+source.ObservationDigest)
+				}
+			}
+		}
 		if review := e.BusinessRuleReview; review != nil {
 			w.paragraph("Heading2", "업무 규칙 미확인 · 판정 보류")
 			w.paragraph("Normal", review.Observation)

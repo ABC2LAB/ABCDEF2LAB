@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/report"
 )
@@ -78,15 +79,67 @@ func writeDiagnosticBusinessRuleReviews(w http.ResponseWriter, data report.Diagn
 		report.BusinessRuleReview
 	}
 	entries := []entry{}
+	type observation struct {
+		Step    int    `json:"step"`
+		Method  string `json:"method"`
+		Summary string `json:"summary"`
+	}
+	type verification struct {
+		ID             string                     `json:"id"`
+		Status         string                     `json:"status"`
+		Reason         string                     `json:"reason"`
+		EvidenceDigest string                     `json:"evidence_digest,omitempty"`
+		AttemptRefs    []string                   `json:"attempt_refs,omitempty"`
+		Observations   []observation              `json:"observations"`
+		Sources        []candidateverify.SourceV2 `json:"sources,omitempty"`
+	}
+	verifications := []verification{}
+	assessments := map[int64]report.CandidateAssessment{}
+	if data.Run != nil && (data.Run.VerificationVersion == "passive/v1" || data.Run.VerificationVersion == diagnosisVerificationV2) {
+		for _, assessment := range data.Run.CandidateAssessments {
+			assessments[assessment.CandidateID] = assessment
+		}
+	}
 	for _, candidate := range data.Entries {
 		if candidate.BusinessRuleReview != nil {
 			entries = append(entries, entry{ID: candidate.ID, BusinessRuleReview: *candidate.BusinessRuleReview})
 		}
+		if candidate.Kind != "candidate" || data.Run == nil || (data.Run.VerificationVersion != "passive/v1" && data.Run.VerificationVersion != diagnosisVerificationV2) {
+			continue
+		}
+		id, err := strconv.ParseInt(strings.TrimPrefix(candidate.ID, "candidate-"), 10, 64)
+		if err != nil {
+			continue
+		}
+		assessment, found := assessments[id]
+		if !found && data.Run.State == report.DiagnosticRunRunning {
+			verifications = append(verifications, verification{ID: candidate.ID, Status: "insufficient", Reason: "verification_not_complete", EvidenceDigest: candidate.Digest, Observations: []observation{}})
+			continue
+		}
+		if !found && !candidate.SourceLoadFailed {
+			continue
+		}
+		row := verification{ID: candidate.ID, Status: assessment.Status, Reason: assessment.Reason, EvidenceDigest: candidate.Digest, AttemptRefs: append([]string(nil), assessment.AttemptRefs...), Observations: []observation{}, Sources: append([]candidateverify.SourceV2(nil), assessment.Sources...)}
+		if candidate.SourceLoadFailed {
+			row.Status, row.Reason = "insufficient", "source_unavailable"
+		}
+		for _, step := range candidate.Steps {
+			if len(row.Observations) >= 2 {
+				break
+			}
+			summary := report.DiagnosticText(step.Observation)
+			if len(summary) > 512 {
+				summary = "관찰 요약 일부 생략"
+			}
+			row.Observations = append(row.Observations, observation{Step: step.Number, Method: step.Method, Summary: summary})
+		}
+		verifications = append(verifications, row)
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	writeJSON(w, http.StatusOK, struct {
-		TaskID  string  `json:"task_id"`
-		Entries []entry `json:"entries"`
-	}{TaskID: strconv.FormatInt(data.TaskID, 10), Entries: entries})
+		TaskID                 string         `json:"task_id"`
+		Entries                []entry        `json:"entries"`
+		CandidateVerifications []verification `json:"candidate_verifications,omitempty"`
+	}{TaskID: strconv.FormatInt(data.TaskID, 10), Entries: entries, CandidateVerifications: verifications})
 }

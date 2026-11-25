@@ -760,6 +760,40 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow 
 	if exec("GRANT SELECT, INSERT, UPDATE(original_digest, evidence_entry, step_id, binding_digest, outcome, reason, reviewer, revision, reviewed_at) ON remediation_followup_reviews TO product_api") != nil {
 		return errPreparation
 	}
+	// 선택 후보 검증의 요청·사건은 관리 API만 append한다. 실행 역할과 보고서
+	// 조회 역할에 이 표의 변경 권한을 확대하지 않는다.
+	for _, table := range []string{"diagnostic_candidate_verification_requests", "diagnostic_candidate_verification_events"} {
+		if exec("GRANT SELECT, INSERT ON "+table+" TO product_api") != nil {
+			return errPreparation
+		}
+	}
+	for _, table := range []string{"diagnostic_candidate_verification_plans", "diagnostic_candidate_verification_decisions"} {
+		if exec("GRANT SELECT, INSERT ON "+table+" TO product_api") != nil ||
+			exec("GRANT SELECT ON "+table+" TO product_runtime") != nil {
+			return errPreparation
+		}
+	}
+	if exec("GRANT SELECT ON diagnostic_candidate_verification_executions TO product_api") != nil ||
+		exec("GRANT SELECT, INSERT ON diagnostic_candidate_verification_executions TO product_runtime") != nil ||
+		exec("GRANT SELECT ON diagnostic_candidate_verification_requests TO product_runtime") != nil ||
+		exec("GRANT SELECT, INSERT ON diagnostic_candidate_verification_events TO product_runtime") != nil ||
+		exec("GRANT USAGE ON SEQUENCE diagnostic_candidate_verification_events_id_seq TO product_runtime") != nil {
+		return errPreparation
+	}
+	if exec("GRANT INSERT ON diagnostic_candidate_observations_v2 TO product_runtime") != nil ||
+		exec("GRANT SELECT ON diagnostic_candidate_observations_v2 TO product_api") != nil {
+		return errPreparation
+	}
+	// 원본 후보가 같은 탐색 intent에서 나온 사실만 확인한다. 그래프 전체
+	// 변경 권한은 제품 API에 주지 않는다.
+	if exec("GRANT SELECT(exploration_id,src_id,rel,dst_id) ON exploration_edges TO product_api") != nil {
+		return errPreparation
+	}
+	for _, sequence := range []string{"diagnostic_candidate_verification_requests_id_seq", "diagnostic_candidate_verification_events_id_seq"} {
+		if exec("GRANT USAGE ON SEQUENCE "+sequence+" TO product_api") != nil {
+			return errPreparation
+		}
+	}
 	// 진단 Worker의 insert_assets(C24, 루프 복원 결정안 §9-5): 자산 upsert 칼럼과 작업 연결 출처 칼럼만 갱신하고, 연결
 	// 동기화 트리거(sync_task_asset_links)가 호출자 권한으로 지우는 연결 행만 DELETE한다. 서버 검사와 같은 목록이다.
 	if exec("GRANT INSERT, UPDATE("+strings.Join(server.FirstDiagnosisAssetUpdateColumns, ", ")+") ON assets TO product_runtime") != nil ||

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/privateinput"
 )
 
@@ -185,6 +186,33 @@ func (r *FirstDiagnosisHTTPRuntime) TaskID() int64 {
 		return 0
 	}
 	return r.host.authority.approval().TaskID
+}
+
+// RunSelectedCandidateGET uses the already admitted, fresh E² task without
+// starting the diagnosis Planner or model worker loop. The caller must bind
+// the approved plan, create exactly one intent and close the runtime before
+// assessing results. The protected supervisor checks the binding on acquire.
+func (r *FirstDiagnosisHTTPRuntime) RunSelectedCandidateGET(ctx context.Context, intentID int64, exactURL string) ([]e2runner.TrustedResult, error) {
+	if r == nil || r.server == nil || r.server.m == nil || r.host == nil || r.closing.Load() || r.closed.Load() || intentID <= 0 || r.host.CheckRoot(ctx) != nil {
+		return nil, ErrCandidateExecutionBinding
+	}
+	taskID := strconv.FormatInt(r.TaskID(), 10)
+	task := r.server.m.ResolveTask(taskID)
+	if task == nil || task.Store == nil {
+		return nil, ErrCandidateExecutionBinding
+	}
+	intent, err := task.Store.GetNode(intentID)
+	if err != nil || intent == nil || intent.Kind != db.KindIntent {
+		return nil, ErrCandidateExecutionBinding
+	}
+	return r.host.runtime.runSelectedCandidateGET(ctx, task, intent, exactURL)
+}
+
+func (r *FirstDiagnosisHTTPRuntime) SelectedCandidateResults() []e2runner.TrustedResult {
+	if r == nil || r.host == nil || r.host.runtime == nil || r.TaskID() <= 0 {
+		return nil
+	}
+	return r.host.runtime.Results(strconv.FormatInt(r.TaskID(), 10))
 }
 
 func (r *FirstDiagnosisHTTPRuntime) Handler() http.Handler {

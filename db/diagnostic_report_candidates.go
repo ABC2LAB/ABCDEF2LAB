@@ -47,5 +47,26 @@ func ListDiagnosticReportCandidates(ctx context.Context, q DiagnosticCandidateQu
 		}
 		out = append(out, DiagnosticReportCandidate{Candidate: c, Unavailable: invalid})
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	valid := make([]DiagnosticCandidate, 0, len(out))
+	for _, row := range out {
+		if !row.Unavailable {
+			valid = append(valid, row.Candidate)
+		}
+	}
+	if err := attachDiagnosticCandidateSaveFences(ctx, q, exploration, task, valid); err != nil {
+		return nil, err
+	}
+	for i, j := 0, 0; i < len(out); i++ {
+		if !out[i].Unavailable {
+			out[i].Candidate.SaveFence = valid[j].SaveFence
+			j++
+		}
+	}
+	return out, nil
 }

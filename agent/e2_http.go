@@ -220,6 +220,15 @@ and audit completion. Report incomplete work and policy-limited coverage.
 Use submit_diagnostic_candidate for a potential vulnerability supported by an actual
 Bash call_ref from this intent. It preserves an unconfirmed review candidate, never
 a finding or E3 verdict. Unsupported verification must not erase an observation.
+For an observed HTML security-header concern, compare the possibility of a normal
+non-HTML response or an already configured header before proposing
+verification_claim=html_nosniff_missing. Supply only separately observed, approved
+normal GET call_refs as related_call_refs. Do not send additional requests solely
+to satisfy this claim. The backend checks the recorded response properties.
+For a Server-version disclosure, distinguish an actual response header from
+documentation text and a versionless banner. Use
+verification_claim=server_version_banner only with separately recorded GETs;
+do not infer that the displayed software version is vulnerable.
 This session cannot create confirmed findings or E3 verdicts; those require the existing
 trusted evidence and storage pipeline. Do not claim overall diagnosis completion.`
 

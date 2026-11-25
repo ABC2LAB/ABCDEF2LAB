@@ -140,6 +140,18 @@ func NewProductDiagnosisHandler(ctx context.Context, pool *sql.DB, keyDir, dataD
 			writeJSON(w, 400, map[string]string{"error": "model_not_installed"})
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, candidateVerificationPrefix) && strings.Contains(r.URL.Path, "/verifications") {
+			if strings.HasSuffix(r.URL.Path, "/decision") {
+				candidateVerificationDecisionHTTP(w, r, pool, authenticate, endpoint)
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/cancel") {
+				candidateVerificationCancelHTTP(w, r, pool, authenticate, endpoint)
+				return
+			}
+			candidateVerificationHTTP(w, r, pool, authenticate, endpoint)
+			return
+		}
 		if r.URL.Path == productReleasePath {
 			owner, e := authenticate(r)
 			if e != nil {

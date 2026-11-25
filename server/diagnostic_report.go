@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/remediation"
 	"github.com/Autumn-27/artex/report"
@@ -78,6 +79,29 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 		writeDiagnosticBusinessRuleReviews(w, data)
 		return
 	}
+	// v2의 정상 완료 보고서는 원본 후보와 검증 결과를 함께 싣는다. 조회 전에
+	// 종료 기록·정책·후보 근거를 검증했으며 원본 스냅샷은 변경하지 않는다.
+	if data.Run != nil && (data.Run.VerificationVersion == "passive/v1" || data.Run.VerificationVersion == diagnosisVerificationV2) {
+		if data.Run.VerificationVersion == diagnosisVerificationV2 && data.Run.State == report.DiagnosticRunRunning {
+			writeErr(w, http.StatusConflict, "점검 진행 중이며 최종 보고서는 아직 없습니다. 내부 검토 기록을 확인하세요.")
+			return
+		}
+		if data.Run.VerificationVersion != diagnosisVerificationV2 || data.Run.State != report.DiagnosticRunCompleted {
+			// 기존 v1 및 정상 완료가 아닌 v2 회차의 출력 의미는 유지한다.
+			if !projectConfirmedReport(&data) {
+				if data.Run.State == report.DiagnosticRunRunning {
+					writeErr(w, http.StatusConflict, "점검 진행 중이며 확정된 취약점 보고서는 아직 없습니다. 내부 검토 기록을 확인하세요.")
+					return
+				}
+				if data.Run.VerificationSourceUnavailable {
+					writeErr(w, http.StatusServiceUnavailable, "검증 원천을 확인할 수 없어 취약점 보고서를 생성하지 않았습니다.")
+					return
+				}
+				writeErr(w, http.StatusNotFound, "확정된 취약점이 없어 보고서를 생성하지 않았습니다. 점검 완료 기록에서 미완료 후보를 확인하세요.")
+				return
+			}
+		}
+	}
 	data.Shared = audience != "internal"
 	var body []byte
 	if format == "docx" {
@@ -104,6 +128,26 @@ func (s *Server) diagnosticReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = w.Write(body)
+}
+
+// 출력 사본만 추린다. 이행점검용 저장 근거는 변경하지 않는다.
+func projectConfirmedReport(data *report.DiagnosticReport) bool {
+	if data == nil {
+		return false
+	}
+	confirmed := len(data.ProductConfirmed)
+	entries := make([]report.DiagnosticEntry, 0, len(data.Entries))
+	for _, entry := range data.Entries {
+		if entry.Outcome == "confirmed" {
+			entries = append(entries, entry)
+			confirmed++
+		}
+	}
+	if confirmed == 0 {
+		return false
+	}
+	data.Entries = entries
+	return true
 }
 
 // 모든 조회를 같은 PostgreSQL 스냅샷에서 수행한다. 원문 파일·대상 URL은 열지 않는다.
@@ -159,6 +203,13 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 	if err := tx.QueryRowContext(ctx, `SELECT exploration_id FROM tasks WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&expID); err != nil {
 		return out, err
 	}
+	// 후보 판정은 종료 기록에 결속된다. 이행점검도 이 entry 읽기 경로를 공유한다.
+	// 개요는 entry 조립 뒤에 읽으므로 후보를 평가하기 전에 먼저 종료 기록을 읽는다.
+	run, err := readDiagnosticRun(ctx, tx, taskID)
+	if err != nil {
+		return out, err
+	}
+	out.Run = run
 	// 원문 TEXT를 드라이버로 읽기 전에 DB에서 총 바이트를 검사한다.
 	var storedBytes int64
 	if err := tx.QueryRowContext(ctx, `SELECT
@@ -172,6 +223,15 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 	candidates, err := db.ListDiagnosticReportCandidates(ctx, tx, expID, taskID, report.MaxFindings+1)
 	if err != nil {
 		return out, err
+	}
+	assessments := make(map[int64]report.CandidateAssessment)
+	if out.Run != nil && (out.Run.VerificationVersion == "passive/v1" || out.Run.VerificationVersion == diagnosisVerificationV2) {
+		for _, a := range out.Run.CandidateAssessments {
+			if a.CandidateID <= 0 || assessments[a.CandidateID].CandidateID != 0 {
+				return out, errDiagnosticReportScope
+			}
+			assessments[a.CandidateID] = a
+		}
 	}
 	for _, row := range candidates {
 		c := row.Candidate.NormalizedSeverity()
@@ -199,7 +259,63 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 			severity = c.SuggestedSeverity
 		}
 		entry := report.DiagnosticEntry{ID: fmt.Sprintf("candidate-%d", c.ID), Kind: "candidate", LanguageMixed: c.LanguageMixed, Run: c.RunRef, IntentID: c.IntentID, Title: c.Name, VulnClass: c.VulnClass, Severity: severity, SeveritySource: c.SeveritySource, SeverityRationale: c.SeverityRationale, Status: c.Classification, Verification: c.Verification, Outcome: outcome, Summary: c.Summary, Remediation: c.Remediation, Evidence: c.Evidence, EvidenceVersion: c.EvidenceVersion, Digest: c.EvidenceDigest, ObservedAt: c.ObservedAt, Truncated: c.OutputTruncated}
+		if out.Run != nil && (out.Run.VerificationVersion == "passive/v1" || out.Run.VerificationVersion == diagnosisVerificationV2) && out.Run.State != report.DiagnosticRunRunning && c.RunRef == out.Run.RunRef {
+			a, found := assessments[c.ID]
+			if !found || a.EvidenceDigest != c.EvidenceDigest {
+				return out, errDiagnosticReportScope
+			}
+			check := candidateverify.Assess(c)
+			if out.Run.VerificationVersion == diagnosisVerificationV2 {
+				check = candidateverify.Result{Status: a.Status, Reason: a.Reason, Attempts: a.AttemptRefs, Sources: a.Sources}
+				if !candidateverify.ValidateStoredV2(c, check) {
+					return out, errDiagnosticReportScope
+				}
+			}
+			if check.Status != a.Status || check.Reason != a.Reason || !equalStringSlices(check.Attempts, a.AttemptRefs) {
+				return out, errDiagnosticReportScope
+			}
+			entry.AssessmentStatus, entry.AssessmentReason = check.Status, check.Reason
+			if out.Run.VerificationVersion == "passive/v1" {
+				entry.Status = check.Reason // 기존 v1 출력 표현 유지
+			}
+			switch check.Status {
+			case candidateverify.Confirmed:
+				entry.Outcome, entry.Verification = "confirmed", "passive_observation_v1"
+				if out.Run.VerificationVersion == diagnosisVerificationV2 {
+					entry.Verification = "passive_observation_v2"
+				}
+				entry.Severity, entry.SeveritySource, entry.SeverityRationale = "info", "", ""
+				if c.VerificationClaim == "html_nosniff_missing" {
+					entry.Title = "HTML 문서 보안 헤더 누락"
+					entry.Summary = "동일한 승인 경로 패턴의 독립적인 HTML 조회 두 건 이상에서 X-Content-Type-Options: nosniff 설정이 없었습니다. 관찰한 설정 누락을 확정하며 악용 가능성은 별도 판단 대상입니다."
+					entry.Remediation = "해당 HTML 응답에 X-Content-Type-Options: nosniff를 설정하고 배포 범위를 확인하세요."
+					entry.Report = "수정 후 해당 경로 패턴의 정상 HTML 응답에서 nosniff 헤더가 일관되게 반환되는지 확인하세요."
+				} else {
+					entry.Title = "Server 응답 헤더의 버전 노출"
+					entry.Summary = "동일한 승인 경로 패턴의 독립적인 응답 두 건 이상에서 Server 헤더의 소프트웨어 버전 표기가 확인됐습니다. 버전 노출 사실만 확정하며 해당 버전의 취약성은 주장하지 않습니다."
+					entry.Remediation = "Server 응답 헤더에서 상세 버전 표기를 제거할지 운영 정책에 따라 검토하고 설정을 적용하세요."
+					entry.Report = "수정 후 해당 경로 패턴의 정상 응답에서 Server 헤더에 상세 버전이 남지 않는지 확인하세요."
+				}
+			case candidateverify.Negative:
+				entry.Outcome = "negative"
+			case candidateverify.Insufficient:
+				if check.Reason == "source_unavailable" {
+					entry.Outcome = "unknown"
+				} else {
+					entry.Outcome = "review"
+				}
+			case candidateverify.Unsupported:
+				entry.Outcome = "review"
+			default:
+				return out, errDiagnosticReportScope
+			}
+		}
 		out.Entries = append(out.Entries, entry)
+	}
+	if out.Run != nil && out.Run.VerificationVersion == diagnosisVerificationV2 && out.Run.State == report.DiagnosticRunCompleted {
+		if err := attachLatestCandidateVerifications(ctx, tx, taskID, candidates, assessments, &out); err != nil {
+			return out, err
+		}
 	}
 	if len(out.Entries) > report.MaxFindings {
 		return out, report.ErrExportBlocked
@@ -362,6 +478,17 @@ func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at tim
 		}
 	}
 	return out, nil
+}
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 func equalDigest(a, b []byte) bool {
 	return len(a) == sha256.Size && len(b) == sha256.Size && strings.EqualFold(hex.EncodeToString(a), hex.EncodeToString(b))
