@@ -73,6 +73,7 @@ it("정확한 승인 대상의 실제 시험 계정 등록만 조회한다", asy
     hasTestAccounts: true,
     statement: SERVER_EXTERNAL_ACCOUNT_STATEMENT,
     loginMethodMissing: false,
+    targetId: "target-1",
   });
   expect(vi.mocked(apiFetch).mock.calls[1][0]).toBe("/api/product/targets/target-1/accounts");
 });
@@ -101,6 +102,7 @@ it.each([
     hasTestAccounts: false,
     statement: "",
     loginMethodMissing: false,
+    targetId: "target-1",
   });
 });
 it("계정 조회 실패·다른 origin은 계정 없음으로 바꾸지 않는다", async () => {
@@ -144,6 +146,7 @@ it.each([
     hasTestAccounts: true,
     statement: "",
     loginMethodMissing: false,
+    targetId: "target-1",
   });
 });
 it.each([
