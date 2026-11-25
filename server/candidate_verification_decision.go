@@ -89,7 +89,8 @@ func candidateVerificationDecisionHTTP(w http.ResponseWriter, r *http.Request, p
 		return
 	}
 	run, err := readDiagnosticRun(ctx, tx, route.task)
-	if err != nil || run == nil || run.State != report.DiagnosticRunCompleted || run.VerificationVersion != diagnosisVerificationV2 || run.RunRef != candidate.RunRef {
+	if err != nil || run == nil || run.State != report.DiagnosticRunCompleted ||
+		(run.VerificationVersion != diagnosisVerificationV2 && run.VerificationVersion != diagnosisVerificationSelected) || run.RunRef != candidate.RunRef {
 		candidateVerificationError(w, 409, "diagnosis_not_completed")
 		return
 	}
@@ -116,8 +117,17 @@ WHERE q.id=$1 AND q.task_id=$2 AND q.candidate_id=$3 FOR UPDATE OF q`, requestID
 		candidateVerificationError(w, 404, "verification_not_found")
 		return
 	}
-	if err != nil || method != "active/v1" || requester != owner || originalDigest != candidate.EvidenceDigest || originalVersion != candidate.EvidenceVersion || originalRunRef != candidate.RunRef {
+	if err != nil || requester != owner || originalDigest != candidate.EvidenceDigest || originalVersion != candidate.EvidenceVersion || originalRunRef != candidate.RunRef {
 		candidateVerificationError(w, 503, "verification_evidence_invalid")
+		return
+	}
+	if method == "llm/v1" && run.VerificationVersion == diagnosisVerificationSelected {
+		candidateVerificationLLMDecision(w, r, ctx, tx, authenticate, endpoint, owner, ownerReq, *ownerResp.Job,
+			requestID, candidate, planJSON, storedPlanDigest, step, state, input.PlanDigest, input.Decision)
+		return
+	}
+	if method != "active/v1" || run.VerificationVersion != diagnosisVerificationV2 {
+		candidateVerificationError(w, 409, "selected_verification_method_required")
 		return
 	}
 	var plan candidateActivePlan

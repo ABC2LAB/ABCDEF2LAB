@@ -23,14 +23,19 @@ import (
 )
 
 type verificationOwnerEndpoint struct {
-	task  string
-	calls atomic.Int64
+	task   string
+	calls  atomic.Int64
+	scope  *diagnosisprep.Scope
+	target *diagnosisprep.ProductTarget
 }
 
 func (e *verificationOwnerEndpoint) Call(_ context.Context, req diagnosisprep.Request) (diagnosisprep.Response, error) {
 	e.calls.Add(1)
-	if req.Command == diagnosisprep.ProductControl && req.Principal == "ARTEX" && req.Product != nil && req.Product.Operation == "candidate_analyze" {
+	if req.Command == diagnosisprep.ProductControl && req.Principal == "ARTEX" && req.Product != nil && (req.Product.Operation == "candidate_analyze" || req.Product.Operation == "candidate_llm_execute") {
 		return diagnosisprep.Response{Version: req.Version, RequestID: req.RequestID, Product: &diagnosisprep.ProductResponse{Reason: "scheduled"}}, nil
+	}
+	if req.Command == diagnosisprep.ProductControl && req.Principal == "ARTEX" && req.Product != nil && req.Product.Operation == "target" && e.target != nil && req.Product.TargetID == e.target.ID {
+		return diagnosisprep.Response{Version: req.Version, RequestID: req.RequestID, Product: &diagnosisprep.ProductResponse{Target: e.target}}, nil
 	}
 	allowed := req.Command == diagnosisprep.AuthorizeTask && req.Principal == "ARTEX" && req.TaskID == e.task
 	out := diagnosisprep.Response{Version: req.Version, RequestID: req.RequestID, Authorized: &allowed}
@@ -39,6 +44,7 @@ func (e *verificationOwnerEndpoint) Call(_ context.Context, req diagnosisprep.Re
 			Input: diagnosisprep.Input{TargetURL: "https://owned.example/", ProfileID: "local"},
 			State: diagnosisprep.Unknown, Phase: diagnosisprep.Planning, TaskID: req.TaskID,
 			PreparationStarted: true, AuthorityState: diagnosisprep.AuthorityNotIssued}
+		out.Job.Scope = e.scope
 	}
 	return out, nil
 }

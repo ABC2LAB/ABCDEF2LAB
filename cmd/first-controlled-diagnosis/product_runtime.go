@@ -631,6 +631,18 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			} else {
 				control.Reason, err = e.backend.scheduleCandidateVerification(ctx, r.Product.JobID, r.Product.CommandKey)
 			}
+		case "candidate_llm_execute":
+			if e.backend == nil {
+				err = errPreparation
+			} else {
+				control.Reason, err = e.backend.scheduleCandidateLLMExecution(ctx, r.Product.JobID, r.Product.CommandKey)
+			}
+		case "candidate_llm_cancel":
+			if e.backend == nil {
+				err = errPreparation
+			} else {
+				control.Reason, err = e.backend.cancelCandidateLLMExecution(ctx, r.Product.JobID, r.Product.CommandKey)
+			}
 		case "candidate_analyze":
 			if e.backend == nil {
 				err = errPreparation

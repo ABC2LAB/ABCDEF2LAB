@@ -742,7 +742,11 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				})
 			}
 		}
-		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, AccountAuth: auth.AccountAuth, Sessions: auth.Sessions, RefreshSession: refresh, sessionStore: sessionStore, programCalls: programCalls}, nil
+		var verifySelected func(context.Context, e2host.ObservationRef) (e2host.Verification, error)
+		if hostRecorder != nil {
+			verifySelected = hostRecorder.ObservedAt
+		}
+		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, VerifySelected: verifySelected, AccountAuth: auth.AccountAuth, Sessions: auth.Sessions, RefreshSession: refresh, sessionStore: sessionStore, programCalls: programCalls}, nil
 	}
 	// 진단 Worker의 insert_assets는 검사를 거친 일반 규칙과 인증 준비 규칙의 origin을 쓴다(C24).
 	approvedOrigins := make([]string, 0, len(policy.Rules))

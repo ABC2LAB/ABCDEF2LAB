@@ -41,7 +41,8 @@ func ProjectTrustedSelected(taskID int64, runRef string, calls []e2runner.Truste
 			// set that a later reviewer might mistake for independent evidence.
 			return nil, nil
 		}
-		row := StoredObservationV2{Revision: 2, Source: makeSource(call, obs), HeaderMode: call.Execution.HeaderMode}
+		row := StoredObservationV2{Revision: 2, Source: makeSource(call, obs), HeaderMode: call.Execution.HeaderMode,
+			SelectedProof: call.SelectedProof}
 		raw, err := json.Marshal(row)
 		if err != nil || len(raw) > 4096 {
 			// The observation store has a fixed per-row limit. Keep the run

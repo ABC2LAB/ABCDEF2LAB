@@ -238,7 +238,7 @@ func validProductRequest(r *ProductRequest) bool {
 	if r.Operation != "resolve" && r.TargetURL != "" {
 		return false
 	}
-	if r.Operation == "candidate_execute" || r.Operation == "candidate_cancel" || r.Operation == "candidate_analyze" || r.Operation == "candidate_analysis_cancel" {
+	if r.Operation == "candidate_execute" || r.Operation == "candidate_cancel" || r.Operation == "candidate_analyze" || r.Operation == "candidate_analysis_cancel" || r.Operation == "candidate_llm_execute" || r.Operation == "candidate_llm_cancel" {
 		id, err := strconv.ParseInt(r.JobID, 10, 64)
 		return err == nil && id > 0 && strconv.FormatInt(id, 10) == r.JobID && candidateControlDigest.MatchString(r.CommandKey) &&
 			r.TargetID == "" && r.ProfileID == "" && r.Registration == nil && r.ExpectedRevision == 0 && len(r.SelectedIDs) == 0 &&

@@ -15,9 +15,10 @@ import (
 // E² call. It contains no request URL, response body, cookie, or credential.
 type StoredObservationV2 struct {
 	// Zero preserves the rules used by observations saved before candidate-scoped replay.
-	Revision   int                `json:"revision,omitempty"`
-	Source     SourceV2           `json:"source"`
-	HeaderMode e2proxy.HeaderMode `json:"header_mode"`
+	Revision      int                          `json:"revision,omitempty"`
+	Source        SourceV2                     `json:"source"`
+	HeaderMode    e2proxy.HeaderMode           `json:"header_mode"`
+	SelectedProof *e2runner.SelectedAuditProof `json:"selected_proof,omitempty"`
 }
 
 const MaxStoredObservationsV2 = 2048

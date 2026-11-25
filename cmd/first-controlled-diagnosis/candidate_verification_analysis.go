@@ -147,7 +147,9 @@ func (b *urlPreparationRuntime) executeCandidateAnalysis(ctx context.Context, re
 		finish, stop := context.WithTimeout(context.WithoutCancel(b.ctx), 10*time.Second)
 		defer stop()
 		reason := "analysis_unavailable"
-		if errors.Is(ctx.Err(), context.Canceled) {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			reason = "analysis_timeout"
+		} else if errors.Is(ctx.Err(), context.Canceled) {
 			reason = "analysis_interrupted"
 		}
 		if errors.Is(resultErr, diagnosisprep.ErrCandidateBudget) {
@@ -213,7 +215,9 @@ func (b *urlPreparationRuntime) executeCandidateAnalysis(ctx context.Context, re
 	if limits.CostUSDMicros > 200000 {
 		limits.CostUSDMicros = 200000
 	}
-	limits.DurationSeconds = int64(selectedCandidateAnalysisTimeout / time.Second)
+	if limits.DurationSeconds > int64(selectedCandidateAnalysisTimeout/time.Second) {
+		limits.DurationSeconds = int64(selectedCandidateAnalysisTimeout / time.Second)
+	}
 	observe := func(diagnosisprep.ModelUsage) error { return nil }
 	var budget *server.FirstDiagnosisModelBudget
 	if l.launch.ModelExecutionMode == "openrouter" {

@@ -77,15 +77,16 @@ WHERE q.id=$1 AND q.task_id=$2 AND q.candidate_id=$3 AND q.method IN ('active/v1
 		return
 	}
 	if method == "llm/v1" {
-		if input.PlanDigest != "" {
+		if input.PlanDigest != "" && input.PlanDigest != digest {
 			candidateVerificationError(w, 409, "verification_plan_changed")
 			return
 		}
-		if state != "requested" && state != "checking_stored_evidence" && state != "analysis_ready" && state != "cancelled" {
+		if state != "requested" && state != "checking_stored_evidence" && state != "analysis_ready" && state != "awaiting_approval" &&
+			state != "approved" && state != "running" && state != "cancelled" {
 			candidateVerificationError(w, 409, "verification_cancel_unavailable")
 			return
 		}
-		if state != "cancelled" && (step == 1 || step == 2 || step == 3) {
+		if state != "cancelled" && (step == 1 || step == 2 || step == 3 || step == 4) {
 			emptySources := []byte("[]")
 			sum := sha256.Sum256(emptySources)
 			_, err = tx.ExecContext(ctx, `INSERT INTO diagnostic_candidate_verification_events(request_id,step,process_state,reason,sources,sources_digest,rule_version)
@@ -104,6 +105,16 @@ VALUES($1,$2,'cancelled','user_cancelled',$3,$4,'selected/llm-v1')`, requestID, 
 			command := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "candidate-analysis-cancel", Command: diagnosisprep.ProductControl,
 				Principal: owner, Product: &diagnosisprep.ProductRequest{Operation: "candidate_analysis_cancel", JobID: strconv.FormatInt(requestID, 10), CommandKey: digest}}
 			_, _ = endpoint.Call(ctx, command)
+		}
+		if state == "approved" || state == "running" {
+			command := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "candidate-llm-cancel-runtime", Command: diagnosisprep.ProductControl,
+				Principal: owner, Product: &diagnosisprep.ProductRequest{Operation: "candidate_llm_cancel", JobID: strconv.FormatInt(requestID, 10), CommandKey: digest}}
+			response, callErr := endpoint.Call(ctx, command)
+			if callErr != nil || diagnosisprep.ValidateResponse(command, response) != nil || response.Error != "" || response.Product == nil || response.Product.Reason == "" {
+				candidateVerificationError(w, 503, "verification_cancel_unavailable")
+				return
+			}
+			state = response.Product.Reason
 		}
 		writeJSON(w, 200, map[string]string{"request_id": strconv.FormatInt(requestID, 10), "process_state": state})
 		return

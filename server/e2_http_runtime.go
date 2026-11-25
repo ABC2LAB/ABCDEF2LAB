@@ -14,6 +14,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/diagnosisflow"
+	"github.com/Autumn-27/artex/e2host"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
@@ -113,8 +114,11 @@ func (r localE2HTTPRun) Close(ctx context.Context) error { return r.runner.Close
 type E2HTTPRunOptions struct {
 	Execution     *e2proxy.Execution
 	ObserveResult func(context.Context, e2runner.Result) error
-	Runner        E2HTTPLeaseRunner
-	Release       func(context.Context) error
+	// VerifySelected asks the audit Host to authenticate one ordinary result
+	// against the current journal head before it can become candidate evidence.
+	VerifySelected func(context.Context, e2host.ObservationRef) (e2host.Verification, error)
+	Runner         E2HTTPLeaseRunner
+	Release        func(context.Context) error
 	// AccountAuth는 인증 준비의 계정별 결과(라벨 → authenticated·login_failed·session_not_found·result_unknown·not_sent),
 	// Sessions는 인증된 시험 계정의 보낼 세션 헤더다(실행 메모리에만, C14). 인증 준비가 없으면 둘 다 비어 있다.
 	AccountAuth map[string]string

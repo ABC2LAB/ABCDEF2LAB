@@ -126,6 +126,11 @@ type DiagnosticLatestVerification struct {
 	EarlierSources                                 []DiagnosticVerificationSourceRef
 	EarlierRequestedAt                             time.Time
 	BusinessQuestions                              []DiagnosticBusinessQuestion
+	Final                                          *DiagnosticFinalReview
+}
+
+type DiagnosticFinalReview struct {
+	Claim, NormalExplanation, Reason, Limitations, Remediation, VerificationCriteria string
 }
 
 type DiagnosticBusinessQuestion struct {
@@ -255,10 +260,10 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		seen[e.ID] = true
-		if (e.Kind != "candidate" && e.Kind != "finding" && e.Kind != "verdict") || !strings.HasPrefix(e.ID, e.Kind+"-") || (e.Verification != "stored_verification" && e.Verification != "manual_review_required" && e.Verification != "passive_observation_v1" && e.Verification != "passive_observation_v2" && e.Verification != "active_observation_v1") {
+		if (e.Kind != "candidate" && e.Kind != "finding" && e.Kind != "verdict") || !strings.HasPrefix(e.ID, e.Kind+"-") || (e.Verification != "stored_verification" && e.Verification != "manual_review_required" && e.Verification != "passive_observation_v1" && e.Verification != "passive_observation_v2" && e.Verification != "active_observation_v1" && e.Verification != "selected_model_evidence_v1") {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
-		if (e.Verification == "passive_observation_v1" || e.Verification == "passive_observation_v2" || e.Verification == "active_observation_v1") && e.Outcome != "confirmed" {
+		if (e.Verification == "passive_observation_v1" || e.Verification == "passive_observation_v2" || e.Verification == "active_observation_v1" || e.Verification == "selected_model_evidence_v1") && e.Outcome != "confirmed" {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		if e.AssessmentStatus != "" {
@@ -291,13 +296,18 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		if e.LatestVerification != nil {
 			latest := *e.LatestVerification
 			latest.BusinessQuestions = append([]DiagnosticBusinessQuestion(nil), latest.BusinessQuestions...)
+			if latest.Final != nil {
+				copy := *latest.Final
+				latest.Final = &copy
+			}
 			if e.Kind != "candidate" || in.Run == nil ||
 				(in.Run.VerificationVersion != "passive/v2" && in.Run.VerificationVersion != "selected/llm-v1") ||
 				latest.EvidenceDigest != e.Digest || latest.RequestedAt.IsZero() || latest.Reason == "" {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
 			if latest.EarlierVerdict != "" {
-				if (latest.EarlierVerdict != "confirmed" && latest.EarlierVerdict != "negative") || latest.EarlierReason == "" || latest.EarlierRequestedAt.IsZero() || len(latest.EarlierSources) != 2 || latest.EarlierRequestedAt.After(latest.RequestedAt) {
+				if (latest.EarlierVerdict != "confirmed" && latest.EarlierVerdict != "negative") || latest.EarlierReason == "" || latest.EarlierRequestedAt.IsZero() ||
+					len(latest.EarlierSources) < 2 || len(latest.EarlierSources) > 8 || latest.EarlierRequestedAt.After(latest.RequestedAt) {
 					return DiagnosticReport{}, ErrExportBlocked
 				}
 			} else if latest.EarlierSuperseded || latest.EarlierReason != "" || !latest.EarlierRequestedAt.IsZero() || len(latest.EarlierSources) != 0 {
@@ -305,18 +315,26 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			}
 			switch latest.Method {
 			case "llm/v1":
-				// Selection is a request for analysis, never a verdict or a
-				// target execution. Preserve the original suspect assessment.
 				if in.Run.VerificationVersion != "selected/llm-v1" ||
-					(latest.State != "requested" && latest.State != "checking_stored_evidence" && latest.State != "analysis_ready" && latest.State != "failed" && latest.State != "cancelled") ||
-					latest.Verdict != "" || latest.InitialVerdict != "" || latest.InitialReason != "" ||
-					latest.EarlierVerdict != "" || len(latest.Sources) != 0 ||
-					e.AssessmentStatus != "insufficient" ||
+					(latest.State != "requested" && latest.State != "checking_stored_evidence" && latest.State != "analysis_ready" && latest.State != "awaiting_approval" && latest.State != "approved" && latest.State != "rejected" && latest.State != "running" && latest.State != "evidence_ready" && latest.State != "assessing" && latest.State != "completed" && latest.State != "expired" && latest.State != "failed" && latest.State != "cancelled") ||
+					latest.InitialVerdict != "" || latest.InitialReason != "" {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
+				if latest.State == "completed" {
+					if latest.Reason != "model_evidence_checked" || latest.Verdict != e.AssessmentStatus || e.AssessmentReason != "selected_model_evidence_checked" ||
+						latest.Final == nil ||
+						(latest.Verdict != "confirmed" && latest.Verdict != "negative" && latest.Verdict != "insufficient") ||
+						(latest.Verdict == "confirmed" && (e.Verification != "selected_model_evidence_v1" || e.Outcome != "confirmed")) ||
+						(latest.Verdict == "negative" && e.Outcome != "negative") ||
+						(latest.Verdict == "insufficient" && e.Outcome != "review") || len(latest.Sources) > 8 {
+						return DiagnosticReport{}, ErrExportBlocked
+					}
+				} else if latest.Final != nil || latest.Verdict != "" || len(latest.Sources) != 0 || e.AssessmentStatus != "insufficient" ||
 					(e.AssessmentReason != "selected_verification_required" && e.AssessmentReason != "source_unavailable") ||
 					(e.Outcome != "review" && e.Outcome != "unknown") {
 					return DiagnosticReport{}, ErrExportBlocked
 				}
-				if latest.State != "analysis_ready" && latest.State != "cancelled" && len(latest.BusinessQuestions) != 0 {
+				if latest.State != "analysis_ready" && latest.State != "awaiting_approval" && latest.State != "approved" && latest.State != "rejected" && latest.State != "running" && latest.State != "evidence_ready" && latest.State != "assessing" && latest.State != "completed" && latest.State != "expired" && latest.State != "cancelled" && len(latest.BusinessQuestions) != 0 {
 					return DiagnosticReport{}, ErrExportBlocked
 				}
 				if len(latest.BusinessQuestions) > 4 {
@@ -337,6 +355,30 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 					in.ExposedCredentialValues += count
 					q.Answer, count = dlp.DiagnosticTextCounted(q.Answer)
 					in.ExposedCredentialValues += count
+				}
+				seenCalls, seenAttempts := map[string]bool{}, map[string]bool{}
+				for _, source := range latest.Sources {
+					if source.CallRef == "" || source.AttemptRef == "" || len(source.ObservationDigest) != 64 ||
+						seenCalls[source.CallRef] || seenAttempts[source.AttemptRef] {
+						return DiagnosticReport{}, ErrExportBlocked
+					}
+					seenCalls[source.CallRef], seenAttempts[source.AttemptRef] = true, true
+				}
+				if latest.Final != nil {
+					fields := []*string{&latest.Final.Claim, &latest.Final.NormalExplanation, &latest.Final.Reason,
+						&latest.Final.Limitations, &latest.Final.Remediation, &latest.Final.VerificationCriteria}
+					for _, field := range fields {
+						if *field == "" || len(*field) > 4096 {
+							return DiagnosticReport{}, ErrExportBlocked
+						}
+						size += len(*field)
+						if size > MaxDiagnosticReportBytes {
+							return DiagnosticReport{}, ErrExportBlocked
+						}
+						var count int
+						*field, count = dlp.DiagnosticTextCounted(*field)
+						in.ExposedCredentialValues += count
+					}
 				}
 			case "stored/v1":
 				if in.Run.VerificationVersion != "passive/v2" {
@@ -406,7 +448,10 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 					e.LatestVerification.Method == "stored/v1" && !e.LatestVerification.EarlierSuperseded && e.LatestVerification.EarlierVerdict == "confirmed" && e.LatestVerification.EarlierReason == verificationReason) &&
 				((verificationReason == "html_nosniff_missing_followup_twice" && e.VulnClass == "security_headers") ||
 					(verificationReason == "server_version_banner_followup_twice" && e.VulnClass == "information_disclosure"))
-			passiveCandidate := e.Kind == "candidate" && (legacyPassiveCandidate || activeCandidate)
+			selectedCandidate := e.Verification == "selected_model_evidence_v1" && in.Run != nil && in.Run.VerificationVersion == "selected/llm-v1" &&
+				e.LatestVerification != nil && e.LatestVerification.Method == "llm/v1" && e.LatestVerification.State == "completed" &&
+				e.LatestVerification.Verdict == "confirmed" && verificationReason == "selected_model_evidence_checked"
+			passiveCandidate := e.Kind == "candidate" && (legacyPassiveCandidate || activeCandidate || selectedCandidate)
 			if !legacyFinding && !passiveCandidate || e.Stale {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
@@ -549,6 +594,10 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		if in.Shared {
 			e.BusinessRuleReview = nil
 			if e.LatestVerification != nil {
+				if e.LatestVerification.Final != nil {
+					e.LatestVerification.Final = &DiagnosticFinalReview{Claim: "[REDACTED]", NormalExplanation: "[REDACTED]",
+						Reason: "[REDACTED]", Limitations: "[REDACTED]", Remediation: "[REDACTED]", VerificationCriteria: "[REDACTED]"}
+				}
 				for i := range e.LatestVerification.BusinessQuestions {
 					e.LatestVerification.BusinessQuestions[i].Question = "[REDACTED]"
 					if e.LatestVerification.BusinessQuestions[i].Answered {
@@ -771,7 +820,7 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 {{range .Entries}}<article id="{{.ID}}"><h3>{{.ID}} · {{.Title}}</h3>
 <dl><dt>유형</dt><dd>{{.VulnClass}}</dd><dt>현재 판정</dt><dd>{{.VerdictText}}</dd><dt>원본 결과 구분</dt><dd>{{.Outcome}}</dd>
 <dt>검증 방법</dt><dd>{{.Verification}}</dd><dt>검증 결과·사유</dt><dd>{{if .AssessmentStatus}}{{.AssessmentStatus}} / {{.AssessmentReason}}{{else}}추가 검증 기록 없음{{end}}</dd><dt>심각도</dt><dd>{{.SeverityText}}</dd>{{if .SeverityRationale}}<dt>예상 심각도 근거 · 모델 제안</dt><dd>{{.SeverityRationale}}</dd>{{end}}<dt>원본 처리/실행 상태</dt><dd>{{.Status}}</dd>
-{{with .LatestVerification}}<dt>최근 선택 검증</dt><dd>{{.State}} · {{if .Verdict}}{{.Verdict}}{{else}}판정 없음{{end}} · {{.Reason}} · {{.Method}} · 요청 {{.RequestedAt}}</dd>{{range .BusinessQuestions}}<dt>업무 사실 질문 {{.QuestionIndex}}</dt><dd>{{.Question}}</dd>{{if .Answered}}<dt>사용자 답변 (송신 승인 아님)</dt><dd>{{.Answer}}</dd>{{end}}{{end}}{{if .InitialVerdict}}<dt>최초 자동 검증</dt><dd>{{.InitialVerdict}} · {{.InitialReason}}</dd>{{end}}{{range .Sources}}<dt>추가 감사 관찰</dt><dd>호출 {{.CallRef}} · 시도 {{.AttemptRef}} · digest {{.ObservationDigest}}</dd>{{end}}{{if .EarlierVerdict}}<dt>이전 유효 추가 검증</dt><dd>{{.EarlierVerdict}} · {{.EarlierReason}} · 요청 {{.EarlierRequestedAt}}{{if .EarlierSuperseded}} · 이후 추가 검증으로 현재 집계에서 제외{{end}}</dd>{{range .EarlierSources}}<dt>이전 감사 관찰</dt><dd>호출 {{.CallRef}} · 시도 {{.AttemptRef}} · digest {{.ObservationDigest}}</dd>{{end}}{{end}}{{end}}
+{{with .LatestVerification}}<dt>최근 선택 검증</dt><dd>{{.State}} · {{if .Verdict}}{{.Verdict}}{{else}}판정 없음{{end}} · {{.Reason}} · {{.Method}} · 요청 {{.RequestedAt}}</dd>{{range .BusinessQuestions}}<dt>업무 사실 질문 {{.QuestionIndex}}</dt><dd>{{.Question}}</dd>{{if .Answered}}<dt>사용자 답변 (송신 승인 아님)</dt><dd>{{.Answer}}</dd>{{end}}{{end}}{{with .Final}}<dt>검증 주장</dt><dd>{{.Claim}}</dd><dt>가능한 정상 설명</dt><dd>{{.NormalExplanation}}</dd><dt>판정 근거</dt><dd>{{.Reason}}</dd><dt>판정 한계</dt><dd>{{.Limitations}}</dd><dt>수정 요청</dt><dd>{{.Remediation}}</dd><dt>수정 후 확인</dt><dd>{{.VerificationCriteria}}</dd>{{end}}{{if .InitialVerdict}}<dt>최초 자동 검증</dt><dd>{{.InitialVerdict}} · {{.InitialReason}}</dd>{{end}}{{range .Sources}}<dt>추가 감사 관찰</dt><dd>호출 {{.CallRef}} · 시도 {{.AttemptRef}} · digest {{.ObservationDigest}}</dd>{{end}}{{if .EarlierVerdict}}<dt>이전 유효 추가 검증</dt><dd>{{.EarlierVerdict}} · {{.EarlierReason}} · 요청 {{.EarlierRequestedAt}}{{if .EarlierSuperseded}} · 이후 추가 검증으로 현재 집계에서 제외{{end}}</dd>{{range .EarlierSources}}<dt>이전 감사 관찰</dt><dd>호출 {{.CallRef}} · 시도 {{.AttemptRef}} · digest {{.ObservationDigest}}</dd>{{end}}{{end}}{{end}}
 <dt>회차 / intent</dt><dd>{{if .Run}}{{.Run}}{{else}}회차 미기록{{end}} / {{if .IntentID}}{{.IntentID}}{{else}}intent 미기록{{end}}</dd><dt>관찰 시각</dt><dd>{{if .ObservedAt.IsZero}}미기록{{else}}{{.ObservedAt}}{{end}}</dd>
 <dt>증거 버전 / digest</dt><dd>{{.EvidenceVersion}} / {{.Digest}}</dd></dl>
 {{if .LanguageMixed}}<p>다른 언어 섞임: 모델이 쓴 이름·설명·조치·근거에 한자·가나가 섞여 있습니다. 섞인 부분을 짚어 한국어로 다시 쓰게 했지만 남았습니다.</p>{{end}}

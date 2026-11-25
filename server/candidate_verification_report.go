@@ -82,7 +82,8 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 		if !found || !included || !assessed || candidateRow.Unavailable ||
 			!validStoredAutomaticCandidateAssessment(candidateRow.Candidate, assessment) ||
 			validateCandidateVerificationAttempt(row, step, binding, candidateRow.Candidate, assessment) != nil ||
-			validateCandidateActiveEvidence(ctx, tx, row, binding, candidateRow.Candidate) != nil {
+			validateCandidateActiveEvidence(ctx, tx, row, binding, candidateRow.Candidate) != nil ||
+			validateCandidateLLMEvidence(ctx, tx, row, binding) != nil {
 			return errCandidateVerificationHistory
 		}
 		var analysis *candidateAnalysisView
@@ -94,7 +95,10 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 			}
 			var readErr error
 			analysis, readErr = readCandidateAnalysis(ctx, tx, requestID, candidateID)
-			if readErr != nil || (row.Latest.State == "analysis_ready" || row.Latest.State == "cancelled" && step == 4) != (analysis != nil) {
+			if readErr != nil || (step >= 3 && !(step == 3 && row.Latest.State != "analysis_ready")) != (analysis != nil) {
+				return errCandidateVerificationHistory
+			}
+			if row.LLMPlan != nil && (analysis == nil || !candidateLLMPlanMatchesAnalysis(*row.LLMPlan, *analysis)) {
 				return errCandidateVerificationHistory
 			}
 			if analysis != nil {
@@ -102,6 +106,10 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 				if readErr != nil {
 					return errCandidateVerificationHistory
 				}
+			}
+			row.Final, readErr = readCandidateFinalVerdict(ctx, tx, row, binding, candidateRow.Candidate)
+			if readErr != nil || (row.Latest.State == "completed") != (row.Final != nil) {
+				return errCandidateVerificationHistory
 			}
 		}
 		verdict := ""
@@ -142,13 +150,27 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 			if err := validateCandidateVerificationAttempt(earlier, earlierStep, earlierBinding, candidateRow.Candidate, assessment); err != nil {
 				return errCandidateVerificationHistory
 			}
-			if err := validateCandidateActiveEvidence(ctx, tx, earlier, earlierBinding, candidateRow.Candidate); err != nil || earlier.Latest.Verdict == nil {
+			if earlier.Latest.Verdict == nil {
 				return errCandidateVerificationHistory
 			}
-			latest.EarlierSuperseded = row.Method == "stored/v1" && superseded
+			switch earlier.Method {
+			case "active/v1":
+				if validateCandidateActiveEvidence(ctx, tx, earlier, earlierBinding, candidateRow.Candidate) != nil {
+					return errCandidateVerificationHistory
+				}
+			case "llm/v1":
+				var err error
+				earlier.Final, err = readCandidateFinalVerdict(ctx, tx, earlier, earlierBinding, candidateRow.Candidate)
+				if err != nil || earlier.Final == nil {
+					return errCandidateVerificationHistory
+				}
+			default:
+				return errCandidateVerificationHistory
+			}
+			latest.EarlierSuperseded = superseded
 			latest.EarlierVerdict, latest.EarlierReason, latest.EarlierRequestedAt = *earlier.Latest.Verdict, earlier.Latest.Reason, earlier.RequestedAt
 			var refs []candidateVerificationSourceRef
-			if json.Unmarshal(earlier.Latest.Sources, &refs) != nil || len(refs) != 2 {
+			if json.Unmarshal(earlier.Latest.Sources, &refs) != nil || len(refs) < 2 || len(refs) > 8 {
 				return errCandidateVerificationHistory
 			}
 			for _, ref := range refs {
@@ -160,7 +182,7 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 		}
 		activeRow := row
 		applyActive := row.Method == "active/v1" && row.Latest.State == "completed"
-		if row.Method == "stored/v1" && earlierErr == nil && !latest.EarlierSuperseded {
+		if row.Method == "stored/v1" && earlierErr == nil && earlier.Method == "active/v1" && !latest.EarlierSuperseded {
 			activeRow, applyActive = earlier, true
 		}
 		if applyActive {
@@ -199,6 +221,31 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 				return errCandidateVerificationHistory
 			}
 		}
+		if row.Method == "llm/v1" && row.Final != nil {
+			latest.Final = &report.DiagnosticFinalReview{Claim: row.Final.Claim, NormalExplanation: row.Final.NormalExplanation,
+				Reason: row.Final.Reason, Limitations: row.Final.Limitations, Remediation: row.Final.Remediation,
+				VerificationCriteria: row.Final.VerificationCriteria}
+			entry.AssessmentStatus, entry.AssessmentReason = row.Final.Verdict, "selected_model_evidence_checked"
+			entry.Summary = row.Final.Claim + "\n" + row.Final.Reason
+			entry.Remediation = row.Final.Remediation
+			entry.Report = row.Final.VerificationCriteria
+			latest.Sources = make([]report.DiagnosticVerificationSourceRef, 0, len(row.Final.Sources))
+			for _, ref := range row.Final.Sources {
+				latest.Sources = append(latest.Sources, report.DiagnosticVerificationSourceRef{CallRef: ref.CallRef,
+					AttemptRef: ref.AttemptRef, ObservationDigest: ref.ObservationDigest})
+			}
+			switch row.Final.Verdict {
+			case "confirmed":
+				entry.Outcome, entry.Verification = "confirmed", "selected_model_evidence_v1"
+				entry.Severity, entry.SeveritySource, entry.SeverityRationale = "info", "", ""
+			case "negative":
+				entry.Outcome = "negative"
+			case "insufficient":
+				entry.Outcome = "review"
+			default:
+				return errCandidateVerificationHistory
+			}
+		}
 		entry.LatestVerification = latest
 	}
 	return nil
@@ -208,11 +255,11 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 // supersedes it. A failed or inconclusive request can only set the latter.
 const priorCandidateVerdictSQL = `SELECT q.id,q.candidate_id,q.request_key,q.method,q.original_evidence_digest,q.original_evidence_version,q.original_run_ref,q.requested_at,e.step,e.process_state,e.verdict,e.reason,e.sources,e.sources_digest,e.rule_version,e.execution_ref,e.approval_ref,e.event_at,p.plan,p.plan_digest,d.decision,d.plan_digest,x.followup_task_id,x.run_ref,
 EXISTS (SELECT 1 FROM diagnostic_candidate_verification_requests newer
-        WHERE newer.task_id=q.task_id AND newer.candidate_id=q.candidate_id AND newer.method='active/v1' AND newer.id>q.id AND newer.id<$3)
+        WHERE newer.task_id=q.task_id AND newer.candidate_id=q.candidate_id AND newer.method IN ('active/v1','llm/v1') AND newer.id>q.id AND newer.id<$3)
 FROM diagnostic_candidate_verification_requests q
 JOIN LATERAL (SELECT * FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON e.process_state='completed' AND e.verdict IN ('confirmed','negative')
 JOIN diagnostic_candidate_verification_plans p ON p.request_id=q.id
 JOIN diagnostic_candidate_verification_decisions d ON d.request_id=q.id
 JOIN diagnostic_candidate_verification_executions x ON x.request_id=q.id AND x.plan_digest=p.plan_digest
-WHERE q.task_id=$1 AND q.candidate_id=$2 AND q.id<$3 AND q.method='active/v1'
+WHERE q.task_id=$1 AND q.candidate_id=$2 AND q.id<$3 AND q.method IN ('active/v1','llm/v1')
 ORDER BY q.id DESC LIMIT 1`

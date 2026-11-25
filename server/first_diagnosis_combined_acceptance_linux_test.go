@@ -497,12 +497,10 @@ running:
 	if counts.Calls != wantCalls || counts.Allowed != wantAllowed || counts.Denied != wantDenied || counts.Responses != wantResponses || counts.ForwardAttempted != wantResponses || counts.Unknown != 0 {
 		t.Fatal("저장된 종료 상태의 실제 송신 건수 불일치")
 	}
-	wantConfirmed, wantPending := 1, 0
-	if reordered {
-		wantConfirmed, wantPending = 0, 1
-	}
-	if passive && (saved.Verification == nil || saved.Verification.Version != diagnosisVerificationV2 || saved.Verification.NonIDORConfirmed != wantConfirmed || saved.Verification.VerificationPending != wantPending || len(saved.Verification.Candidates) != 1 || len(saved.Verification.Candidates[0].Result.Sources) == 0) {
-		t.Fatal("후보 이후 독립 관찰의 최종 판정 누락")
+	if passive && (saved.Verification == nil || saved.Verification.Version != diagnosisVerificationSelected ||
+		saved.Verification.NonIDORConfirmed != 0 || saved.Verification.VerificationPending != 1 ||
+		len(saved.Verification.Candidates) != 1 || saved.Verification.Candidates[0].Result.Reason != "selected_verification_required") {
+		t.Fatal("신규 회차의 선택 검증 대기 상태 또는 최초 관찰 누락")
 	}
 
 	base := "/api/report/diagnostic/remediation?task=" + task.ID + "&audience=internal"
@@ -544,21 +542,16 @@ running:
 		t.Fatal("저장과 복사 본문 불일치")
 	}
 	code, body, headers := client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&download=1", "")
-	v2Report := saved.Verification != nil && saved.Verification.Version == diagnosisVerificationV2
-	if v2Report {
-		if code != 200 || headers.Get("Content-Disposition") == "" || !strings.Contains(string(body), source.EntryID) || strings.Contains(string(body), record.Bundle.AIPrompt) {
-			t.Fatal("v2 완료 회차의 확정·미확정 후보 HTML 보고서 누락")
-		}
-	} else if code != 404 || headers.Get("Content-Disposition") != "" || strings.Contains(string(body), record.Bundle.AIPrompt) {
-		t.Fatal("이전 v1 회차의 보고서 출력 계약 변경")
+	if code != 200 || headers.Get("Content-Disposition") == "" || !strings.Contains(string(body), source.EntryID) || strings.Contains(string(body), record.Bundle.AIPrompt) {
+		t.Fatal("완료 회차의 확정·미확정 후보 HTML 보고서 누락")
 	}
 	code, _, _ = client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&format=docx", "")
-	if v2Report && code != 200 || !v2Report && code != 404 {
-		t.Fatal("v2와 이전 v1 회차의 Word 출력 계약 불일치")
+	if code != 200 {
+		t.Fatal("완료 회차의 Word 출력 계약 불일치")
 	}
 	code, body, _ = client.request("GET", "/api/report/diagnostic?task="+task.ID+"&audience=internal&format=review-json", "")
-	if code != 200 || !strings.Contains(string(body), source.EntryID) {
-		t.Fatal("미확정 후보 검토 기록 누락")
+	if code != 200 || !strings.Contains(string(body), task.ID) || strings.Contains(string(body), record.Bundle.AIPrompt) {
+		t.Fatal("업무 규칙 검토 목록의 조회 또는 보호 실패")
 	}
 	if code, _, _ := client.request("GET", "/api/report/diagnostic?task=999999999", ""); code != 403 {
 		t.Fatal("다른 task 보고서 허용")

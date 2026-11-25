@@ -1,0 +1,30 @@
+{
+  "fixture_version": "selected-candidate-ui/v1",
+  "synthetic_only": true,
+  "examples_are_partial": true,
+  "routes": {
+    "history": "/api/product/tasks/42/candidates/7/verifications",
+    "plan": "/api/product/tasks/42/candidates/7/verifications/101/plan",
+    "decision": "/api/product/tasks/42/candidates/7/verifications/101/decision",
+    "cancel": "/api/product/tasks/42/candidates/7/verifications/101/cancel",
+    "report": "/api/report/diagnostic?task=42&audience=internal"
+  },
+  "history_examples": [
+    {"case": "requested", "latest": {"process_state": "requested", "verdict": null, "reason": "selected_by_user"}},
+    {"case": "analysis_ready", "latest": {"process_state": "analysis_ready", "verdict": null, "reason": "analysis_available"}, "analysis": {"digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "proposal": {"version": "selected/analysis-v1", "candidate_id": 7, "claim": "합성 응답에서 내부 정보가 보임", "normal_explanation": "문서 예시일 수 있음", "existing_call_refs": ["call-original"], "business_questions": ["이 경로가 공개 문서인가요?"], "actions": [{"purpose": "같은 기능의 별도 응답 확인", "method": "GET", "path_hint": "/documents"}], "limitations": "원본 관찰만 있음"}}},
+    {"case": "awaiting_approval", "latest": {"process_state": "awaiting_approval", "verdict": null, "reason": "action_approval_required"}, "plan_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "llm_plan": {"version": "candidate-llm-plan/v1", "task_id": 42, "candidate_id": 7, "actions": [{"purpose": "별도 응답 확인", "method": "GET", "exact_path": "/documents"}], "max_requests": 1, "duration_seconds": 90}},
+    {"case": "running", "latest": {"process_state": "running", "verdict": null, "reason": "execution_started"}},
+    {"case": "assessing", "latest": {"process_state": "assessing", "verdict": null, "reason": "final_model_started"}},
+    {"case": "confirmed", "latest": {"process_state": "completed", "verdict": "confirmed", "reason": "model_evidence_checked", "sources": [{"call_ref": "call-original", "attempt_ref": "attempt-original", "observation_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}, {"call_ref": "call-followup", "attempt_ref": "attempt-followup", "observation_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}]}, "final_verdict": {"version": "selected/final-v1", "candidate_id": 7, "verdict": "confirmed", "claim": "별도 응답에서 같은 내부 정보 노출", "normal_explanation": "문서 예시 가능성을 대조함", "reason": "독립 관찰 두 건", "limitations": "승인된 경로에서만 확인", "remediation": "내부 정보 제거", "verification_criteria": "동일 경로에서 정보 비노출 확인", "sources": [{"call_ref": "call-original", "attempt_ref": "attempt-original", "observation_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}, {"call_ref": "call-followup", "attempt_ref": "attempt-followup", "observation_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}]}},
+    {"case": "negative", "latest": {"process_state": "completed", "verdict": "negative", "reason": "model_evidence_checked"}},
+    {"case": "insufficient", "latest": {"process_state": "completed", "verdict": "insufficient", "reason": "model_evidence_checked"}},
+    {"case": "failed", "latest": {"process_state": "failed", "verdict": null, "reason": "candidate_execution_unavailable"}},
+    {"case": "cancelled", "latest": {"process_state": "cancelled", "verdict": null, "reason": "candidate_execution_cancelled"}},
+    {"case": "expired", "latest": {"process_state": "expired", "verdict": null, "reason": "candidate_execution_timeout"}}
+  ],
+  "report_summaries": [
+    {"case": "suspected_and_confirmed", "found": 2, "suspected": 1, "confirmed": 1},
+    {"case": "suspected_only", "found": 2, "suspected": 2, "confirmed": 0},
+    {"case": "nothing_found", "found": 0, "suspected": 0, "confirmed": 0}
+  ]
+}

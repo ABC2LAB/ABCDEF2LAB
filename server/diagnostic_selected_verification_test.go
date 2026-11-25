@@ -329,7 +329,8 @@ func TestSelectedAnalysisPersistsWithoutChangingVerdictPostgres(t *testing.T) {
 			t.Errorf("synthetic model request escaped pinned endpoint: %s %s", r.Method, r.URL.Path)
 		}
 		content, _ := json.Marshal(CandidateAnalysisProposal{Version: "selected/analysis-v1", CandidateID: candidateID, Claim: "Synthetic concern",
-			NormalExplanation: "A normal explanation remains possible", BusinessQuestions: []string{"Is this access intended?"}, Limitations: "Original observation unavailable"})
+			NormalExplanation: "A normal explanation remains possible", BusinessQuestions: []string{"Is this access intended?"},
+			Actions: []CandidateProposedAction{{Purpose: "Compare a bounded read", Method: "GET", PathHint: "/books/v1"}}, Limitations: "Original observation unavailable"})
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": "synthetic-analysis", "object": "chat.completion", "model": "local:selected-test",
 			"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": string(content)}, "finish_reason": "stop"}},
 			"usage":   map[string]int{"prompt_tokens": 120, "completion_tokens": 45, "total_tokens": 165}})
@@ -439,6 +440,47 @@ func TestSelectedAnalysisPersistsWithoutChangingVerdictPostgres(t *testing.T) {
 			t.Fatalf("business fact missing from %s report", suffix)
 		}
 	}
+	now := time.Now().UTC()
+	owner.scope = &diagnosisprep.Scope{TargetRef: "target-synthetic", ScopeRef: "scope-synthetic", AttestationRef: "attestation-synthetic",
+		Origin: "https://owned.example", PathPrefixes: []string{"/books"}, Methods: []string{"GET"},
+		QueryPolicy: "any", BodyPolicy: "bounded", ApprovalMode: "installed_delegation", ExpiresAt: now.Add(time.Hour)}
+	owner.target = &diagnosisprep.ProductTarget{ID: "target-synthetic", Origin: "https://owned.example", State: "approved", Revision: 3,
+		PathPrefixes: []string{"/books"}, Methods: []string{"GET"}, ApprovedAt: now.Add(-time.Hour), ExpiresAt: now.Add(time.Hour)}
+	planPath := path + "/" + page.Verifications[0].ID + "/plan"
+	planBody := fmt.Sprintf(`{"analysis_digest":%q}`, page.Verifications[0].Analysis.Digest)
+	requestPlan := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, planPath, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		candidateVerificationLLMPlanHTTP(response, req, s.m.pg.DB, func(*http.Request) (string, error) { return "ARTEX", nil }, owner)
+		return response
+	}
+	if planned := requestPlan(planBody); planned.Code != 200 {
+		t.Fatalf("model action plan unavailable: %d", planned.Code)
+	}
+	if planned := requestPlan(planBody); planned.Code != 200 {
+		t.Fatalf("model action plan not idempotent: %d", planned.Code)
+	}
+	page = candidateVerificationPage{}
+	if planned := invoke(http.MethodGet, ""); planned.Code != 200 || json.Unmarshal(planned.Body.Bytes(), &page) != nil ||
+		page.Verifications[0].Latest.State != "awaiting_approval" || page.Verifications[0].LLMPlan == nil ||
+		page.Verifications[0].LLMPlan.Actions[0].ExactPath != "/books/v1" || page.Verifications[0].Latest.Verdict != nil {
+		t.Fatalf("planned action is not reviewable: %d", planned.Code)
+	}
+	if report := reportRequest("GET", fmt.Sprintf("/api/report/diagnostic?task=%d&audience=internal", taskID), ""); report.Code != 200 {
+		t.Fatalf("pending action blocked report: %d", report.Code)
+	}
+	decisionPath := path + "/" + page.Verifications[0].ID + "/decision"
+	decisionRequest := httptest.NewRequest(http.MethodPost, decisionPath, strings.NewReader(fmt.Sprintf(`{"plan_digest":%q,"decision":"rejected"}`, page.Verifications[0].PlanDigest)))
+	decisionRequest.Header.Set("Content-Type", "application/json")
+	rejected := httptest.NewRecorder()
+	candidateVerificationDecisionHTTP(rejected, decisionRequest, s.m.pg.DB, func(*http.Request) (string, error) { return "ARTEX", nil }, owner)
+	if rejected.Code != 200 {
+		t.Fatalf("model action rejection failed: %d", rejected.Code)
+	}
+	if rejectedHistory := invoke(http.MethodGet, ""); rejectedHistory.Code != 200 {
+		t.Fatalf("rejected action broke history: %d", rejectedHistory.Code)
+	}
 	if _, err := s.m.pg.ExecContext(t.Context(), `UPDATE diagnostic_candidate_verification_analyses SET proposal_digest=repeat('0',64) WHERE request_id=$1`, requestID); err != nil {
 		t.Fatal(err)
 	}
@@ -450,16 +492,6 @@ func TestSelectedAnalysisPersistsWithoutChangingVerdictPostgres(t *testing.T) {
 	}
 	if _, err := s.m.pg.ExecContext(t.Context(), `UPDATE diagnostic_candidate_verification_analyses SET proposal_digest=$2 WHERE request_id=$1`, requestID, page.Verifications[0].Analysis.Digest); err != nil {
 		t.Fatal(err)
-	}
-	firstCancel := httptest.NewRequest(http.MethodPost, path+"/"+page.Verifications[0].ID+"/cancel", strings.NewReader(`{}`))
-	firstCancel.Header.Set("Content-Type", "application/json")
-	firstCancelled := httptest.NewRecorder()
-	candidateVerificationCancelHTTP(firstCancelled, firstCancel, s.m.pg.DB, func(*http.Request) (string, error) { return "ARTEX", nil }, owner)
-	if firstCancelled.Code != 200 {
-		t.Fatalf("ready analysis cancellation: %d", firstCancelled.Code)
-	}
-	if followup := invoke(http.MethodGet, ""); followup.Code != 200 {
-		t.Fatalf("cancelled analysis broke history: %d", followup.Code)
 	}
 	second := invoke(http.MethodPost, fmt.Sprintf(`{"request_id":"analysis-test-2","evidence_digest":"%s"}`, rows[0].EvidenceDigest))
 	var secondPage candidateVerificationPage

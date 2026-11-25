@@ -145,6 +145,10 @@ func NewProductDiagnosisHandler(ctx context.Context, pool *sql.DB, keyDir, dataD
 				candidateVerificationAnswerHTTP(w, r, pool, authenticate, endpoint)
 				return
 			}
+			if strings.HasSuffix(r.URL.Path, "/plan") {
+				candidateVerificationLLMPlanHTTP(w, r, pool, authenticate, endpoint)
+				return
+			}
 			if strings.HasSuffix(r.URL.Path, "/decision") {
 				candidateVerificationDecisionHTTP(w, r, pool, authenticate, endpoint)
 				return

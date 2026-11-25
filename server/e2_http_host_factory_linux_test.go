@@ -193,6 +193,9 @@ func TestE2HTTPFactoryPreparationFailuresCloseHostBeforeNextRun(t *testing.T) {
 			acquired.AccountAuth["tester-a"] != E2HTTPAuthLoginFailed {
 			t.Fatal("실제 인증 실패 준비 경로가 실행되지 않음", err)
 		}
+		if !tc.rejectAcquire && acquired.VerifySelected == nil {
+			t.Fatal("제품 Host가 일반 결과 검증 콜백을 연결하지 않음")
+		}
 		if err := acquired.Runner.Stop(t.Context()); err != nil {
 			t.Fatal(err)
 		}

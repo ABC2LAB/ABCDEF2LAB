@@ -14,7 +14,7 @@
 
 `POST /api/product/tasks/{task}/candidates/{candidate}/verifications/{verification}/cancel`에 `{}`를 보내면 `requested`, `checking_stored_evidence`, `analysis_ready` 상태의 같은 사용자 요청을 `cancelled/user_cancelled`로 전이한다. 실행 중 분석이면 보호 실행기의 context도 취소한다. 이미 공급자에게 전달된 호출은 취소 시점에 따라 과금될 수 있으며 재시도하지 않는다. 취소와 모델 결과 저장이 경쟁하면 최신 사건 잠금으로 늦은 결과 저장을 거부한다. 같은 취소는 멱등이다. 분석 준비 중 설치 예산이 없으면 송신 없이 `failed/budget_unavailable`로 기록한다.
 
-분석은 `requested → checking_stored_evidence → analysis_ready` 순서로 기록한다. 분석 중 장애·재시작은 `failed/analysis_unavailable` 또는 `failed/analysis_interrupted`가 되며, 미확인 호출을 자동 재송신하지 않는다. `GET` 이력의 `analysis`는 모델 제안·digest·사용량을 제공하고 `business_answers`는 질문 번호와 사용자 답변을 제공한다. `analysis_ready`는 취약점 판정이 아니다. 행동 승인·신규 E② 실행·최종 판정은 아직 연결되지 않았다.
+분석은 `requested → checking_stored_evidence → analysis_ready` 순서로 기록한다. 분석 중 장애·재시작은 `failed/analysis_unavailable` 또는 `failed/analysis_interrupted`, 시간 상한 도달은 `failed/analysis_timeout`이 되며, 미확인 호출을 자동 재송신하지 않는다. `GET` 이력의 `analysis`는 모델 제안·digest·사용량을 제공하고 `business_answers`는 질문 번호와 사용자 답변을 제공한다. `analysis_ready`는 취약점 판정이 아니다.
 
 `POST /api/product/tasks/{task}/candidates/{candidate}/verifications/{verification}/answers`는 `{"analysis_digest":"<sha256>","question_index":1,"answer":"<업무 진술>"}`을 받는다. 질문 번호는 분석의 `business_questions` 배열에서 1부터 시작한다. 작업 소유권·후보·분석 판본을 검사하고, 답변은 DLP 처리 후 immutable 행으로 저장한다. 같은 답변 재전송은 200, 다른 답변은 `409 business_answer_conflict`, 변경된 분석 판본은 `409 analysis_changed`, 분석 전 입력은 `409 analysis_not_ready`다. 이 API는 모델·대상 요청을 만들지 않으며 답변 자체는 행동 승인으로 해석하지 않는다.
 
@@ -22,7 +22,7 @@
 
 선택 후보의 모델 단계는 해당 설치에 설정된 모델 프로필과 남은 설치 예산을 사용한다(사용자 결정, 2026-11-25). 후보 요청이나 승인 JSON으로 모델, 제공자, 비용 상한을 바꾸지 않는다. 새 실행은 별도 회차와 장부 항목을 가져야 하며, 원래 진단의 종료된 모델 예약이나 E② 권한을 이어받지 않는다. 설치 잔여 예산을 확인할 수 없으면 모델 호출 전에 중단한다. 후보 전용 시간·요청·비용 상한은 설치 상한의 하한으로 적용하고, 승인된 계획의 상한을 실행 중 늘리지 않는다.
 
-선택 분석은 보호 준비 서비스가 일반 진단 `Start`와 같은 잠금에서 설치 위임의 `MaxRuns`와 집계 예산을 확인하고, 선택 요청 하나에 설치 회차 예산 전부를 영속 예약한 뒤에만 시작한다. 예약 행은 취소·미확인 결과에도 환불하지 않으며 재시작 뒤 일반 진단에도 계속 합산한다. 설치된 OpenRouter v4는 선택 요청 고유 run ledger를 사용하고, 로컬 모델은 기존 `FirstDiagnosisModelBudget`을 사용한다. 분석 모델 호출은 한 번, 재시도 없음, 180초 상한이다. 실제 유료 OpenRouter 호출은 이 작업의 합성 시험에서 수행하지 않았다. 이후 행동·최종 판정 단계는 아직 구현되지 않았다.
+선택 분석은 보호 준비 서비스가 일반 진단 `Start`와 같은 잠금에서 설치 위임의 `MaxRuns`와 집계 예산을 확인하고, 선택 요청 하나에 설치 회차 예산 전부를 영속 예약한 뒤에만 시작한다. 예약 행은 취소·미확인 결과에도 환불하지 않으며 재시작 뒤 일반 진단에도 계속 합산한다. 설치된 OpenRouter v4는 선택 요청 고유 run ledger를 사용하고, 로컬 모델은 기존 `FirstDiagnosisModelBudget`을 사용한다. 분석 모델 호출은 한 번, 재시도 없음, 180초 상한이다. 최종 모델 단계도 한 번만 호출하며 남은 모델 요청·토큰·비용 한도를 재검사한다. 승인된 계획은 최대 3개의 GET/HEAD, 90초 실행 상한을 갖는다. 실제 유료 OpenRouter 호출은 이 작업의 합성 시험에서 수행하지 않았다.
 
 ## 근거와 보고서
 
@@ -32,8 +32,32 @@
 
 `OriginalObservation`은 후보의 최초 `call_ref`와 저장된 E② 관찰의 시도·정책·회차 내용이 일치할 때만 제공한다. 원본 관찰이 없으면 `nil`이며, 후속 모델 단계가 다른 호출의 경로나 현재 대상의 응답을 원본인 것처럼 대체해서는 안 된다. 저장된 관찰에는 원문 URL과 본문이 없으므로, 원본 요청의 정확한 입력이 필요하지만 남아 있지 않은 후보는 추가 확인 없이 재현 성공으로 판정할 수 없다.
 
-`BuildCandidateAnalysisRequest`는 검증된 선택 문맥을 도구 없는 모델 입력으로 제한하고 비밀 형식을 다시 가린다. `ParseCandidateAnalysisProposal`은 후보 ID와 실제 제시한 `call_ref`를 확인하고, 모델이 이 단계에서 `verdict`를 추가하면 거부하며, 반환 설명·질문·행동 문구에도 DLP를 적용한다. 보호 실행기는 설치 모델 어댑터로 이를 한 번 호출하고 검증된 제안을 영속 저장한다. 업무 질문의 답변은 별도 출처로 저장한다. 제안된 행동은 아직 승인·실행 이력이 아니다.
+`BuildCandidateAnalysisRequest`는 검증된 선택 문맥을 도구 없는 모델 입력으로 제한하고 비밀 형식을 다시 가린다. `ParseCandidateAnalysisProposal`은 후보 ID와 실제 제시한 `call_ref`를 확인하고, 모델이 이 단계에서 `verdict`를 추가하면 거부하며, 반환 설명·질문·행동 문구에도 DLP를 적용한다. 보호 실행기는 설치 모델 어댑터로 이를 한 번 호출하고 검증된 제안을 영속 저장한다. 업무 질문의 답변은 별도 출처로 저장한다. 행동 제안은 별도 승인 전까지 송신 권한이 아니다.
 
 정상 완료 보고서의 HTML·DOCX에는 의심 후보와 `selected_verification_required`가 남고, 후보 선택 요청이 있으면 최근 처리 상태를 별도로 투영한다. 모델이 주장한 문장만으로 확정 수를 늘리지 않는다. 기존 보고서와 이행점검의 원본 근거는 수정하지 않는다.
 
-`llm/v1` 선택 요청 직후와 분석·취소 뒤에도 내부용·공유용 HTML 및 DOCX 보고서는 계속 발행한다. 선택만 한 후보의 `insufficient/selected_verification_required`는 아직 검증을 시도해 판단 불가가 된 결과가 아니므로 보고서 요약의 **의심** 수에 포함한다. 선택 요청의 처리 상태는 후보 판정과 별도로 표시한다. 분석 질문과 답변은 내부용 보고서에 표시하고 공유용에서는 가린다. 현재 최종 검증 판정이나 신규 대상 송신은 없으며, 이 상태로 `confirmed`·`negative`를 출력하면 보고서 출력이 차단된다.
+`llm/v1` 선택 요청 직후와 분석·취소 뒤에도 내부용·공유용 HTML 및 DOCX 보고서는 계속 발행한다. 선택만 한 후보의 `insufficient/selected_verification_required`는 아직 검증을 시도해 판단 불가가 된 결과가 아니므로 보고서 요약의 **의심** 수에 포함한다. 선택 요청의 처리 상태는 후보 판정과 별도로 표시한다. 분석 질문과 답변은 내부용 보고서에 표시하고 공유용에서는 가린다. 완료된 최종 검증은 별도 이력에 보존하고 최신 보고서에서만 현재 판정으로 투영한다. 확정·부정은 원본 관찰과 별도 E② 관찰의 비민감 출처를 모두 인용해야 한다. 모델이 출처를 잘못 가리키거나 원본 관찰이 없으면 확정·부정을 거부한다.
+
+## 행동 승인부터 최종 판정까지의 API
+
+다음 경로는 제품 관리 호스트의 기존 Bearer 인증과 원본 작업 소유권을 사용한다. 모든 본문은 `application/json`; 오류는 `{"error":"<고정 사유 코드>"}`다. `GET`은 저장 자료만 읽고 대상·모델 송신을 만들지 않는다.
+
+| 단계 | HTTP | 요청 | 성공 응답·이력 위치 |
+|---|---|---|---|
+| 후보 선택 | `POST /api/product/tasks/{task}/candidates/{candidate}/verifications` | `{"request_id":"synthetic-request-001","evidence_digest":"<sha256>","method":"llm/v1"}` | 200; `verifications[].id`, `latest.process_state=requested` |
+| 분석·이력 조회 | 같은 경로 `GET` | 본문 없음; `?before={verification_id}` 선택 | 200; `analysis.proposal`, `analysis.digest`, `business_answers`, `latest`, `final_verdict` |
+| 업무 답변 | `POST .../verifications/{verification}/answers` | `{"analysis_digest":"<sha256>","question_index":1,"answer":"합성 업무 답변"}` | 200; 동일 답변 멱등, 다른 답변 409 |
+| 실행 계획 | `POST .../verifications/{verification}/plan` | `{"analysis_digest":"<sha256>"}` | 200; `plan`, `plan_digest`, `process_state=awaiting_approval` |
+| 결정 | `POST .../verifications/{verification}/decision` | `{"plan_digest":"<sha256>","decision":"approved"}` 또는 `rejected` | 200; `approval_ref`, `execution_start=scheduled/unavailable/not_requested` |
+| 취소 | `POST .../verifications/{verification}/cancel` | 승인 전 `{}`, 승인 후 `{"plan_digest":"<sha256>"}` | 200; `process_state`. 실제 송신과 경합할 수 있어 이력을 다시 조회한다. |
+| 최신 보고서 | `GET /api/report/diagnostic?task={task}&audience=internal` | `&format=docx` 선택 | 완료된 최신 판정, 검증 설명·근거, 의심/확정/판단 불가/부정 집계 |
+
+처리 상태와 취약점 판정은 다른 칸이다. `latest.process_state`는 `requested`, `checking_stored_evidence`, `analysis_ready`, `awaiting_approval`, `approved`, `rejected`, `running`, `evidence_ready`, `assessing`, `completed`, `failed`, `cancelled`, `expired` 중 하나다. `latest.verdict`는 완료된 결과에서만 `confirmed`, `negative`, `insufficient`다. `analysis_ready`나 `approved`를 확정으로 표시하지 않는다. `analysis`, `llm_plan`, `final_verdict`, `business_answers`는 해당 단계의 저장 자료가 없으면 생략된다. `latest.sources`의 출처 참조는 원본·후속 증거의 식별과 digest이며 응답 본문이 아니다.
+
+[합성 UI fixture](fixtures/selected-candidate-llm-verification.json)는 상태별 핵심 필드만 담은 부분 응답 예시다. 실제 이력 응답에는 원본 후보 digest·시각·자동 판정·저장 근거 상태 등이 추가되며, UI는 실제 API 응답의 생략 조건을 따른다.
+
+추가 실행은 원본 task와 다른 task/run, 승인 사건, 정확한 계획 digest, 발급된 E② scope digest에 결속한다. 송신 직전에 원본 작업의 현재 인가·범위 및 대상 승인을 다시 읽고, 계획의 exact GET/HEAD 경로만 허용한다. 판정은 닫힌 실행의 감사 완료·봉인 확인·영속 관찰을 재검사한 뒤 저장하며 이력과 보고서 재조회에서도 재검사한다. 최종 모델 시간 상한 도달은 `expired/final_model_timeout`으로 구분한다. 원본 후보·최초 자동 판정·종료 기록은 수정하지 않는다.
+
+일반 E② 결과도 감사 Host의 현재 v3 저널에서 `call_ref`·`attempt_id`·`sequence`에 맞는 완료 사건을 조회해 체크포인트를 발급받는다. 후속 관찰마다 사건의 작업·회차·정책·메서드·상태·시각을 Runner의 비민감 관찰과 대조하고, 저장·재조회 시 같은 체크포인트의 sequence와 MAC이 마감 봉인에 포함됐는지 확인한다. 체크포인트가 없거나 다른 사건·저널·봉인에 속하면 근거를 수락하지 않는다. Host 체크포인트와 MAC은 모델 입력에 넣지 않는다. 확정·부정에는 원본과 후속의 서로 다른 실제 호출이 필요하고, 메서드·정확한 기능 경로가 다르면 판단 보류만 가능하다.
+
+현재 안전 경계: 인증 세션이 필요한 대상, 외부 시험 계정이 결속된 회차, 활성 E③ 선언 대상에서는 새 실행을 거부한다. 원본의 신뢰 가능한 관찰이 없어도 후속 검증의 `insufficient`는 남길 수 있지만 확정·부정은 허용하지 않는다. 기존 관찰만으로 끝내는 LLM 선택 검증과 과거 시점 HTML·DOCX 버전 선택은 아직 구현되지 않았다. 이 경계가 해소되기 전에는 전체 백엔드 수용 완료로 표시하지 않는다.

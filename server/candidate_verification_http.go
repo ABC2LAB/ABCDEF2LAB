@@ -118,9 +118,11 @@ type candidateVerificationAttempt struct {
 	OriginalRunRef  string                     `json:"original_run_ref"`
 	RequestedAt     time.Time                  `json:"requested_at"`
 	Plan            *candidateActivePlan       `json:"plan,omitempty"`
+	LLMPlan         *CandidateLLMPlan          `json:"llm_plan,omitempty"`
 	PlanDigest      string                     `json:"plan_digest,omitempty"`
 	Latest          candidateVerificationEvent `json:"latest"`
 	Analysis        *candidateAnalysisView     `json:"analysis,omitempty"`
+	Final           *CandidateFinalVerdict     `json:"final_verdict,omitempty"`
 	BusinessAnswers []candidateBusinessAnswer  `json:"business_answers,omitempty"`
 }
 
@@ -307,6 +309,15 @@ func candidateVerificationHTTP(w http.ResponseWriter, r *http.Request, pool *sql
 			return
 		}
 		if run.VerificationVersion == diagnosisVerificationSelected {
+			linkedE3, linkErr := candidateClaimedByE3(ctx, tx, route.task, candidate.ID)
+			if linkErr != nil {
+				candidateVerificationError(w, 503, "verification_scope_unavailable")
+				return
+			}
+			if ownershipIDORCandidate(candidate) || linkedE3 {
+				candidateVerificationError(w, 409, "idor_requires_e3")
+				return
+			}
 			// A request records selection only. It grants no target or model
 			// execution authority and cannot call the archived type-specific rules.
 			if input.EvidenceDigest != candidate.EvidenceDigest {
@@ -572,7 +583,8 @@ func listCandidateVerifications(ctx context.Context, tx *sql.Tx, route candidate
 	items := make([]candidateVerificationAttempt, 0, len(pending))
 	for _, pendingRow := range pending {
 		if validateCandidateVerificationAttempt(pendingRow.row, pendingRow.step, pendingRow.binding, candidate, automatic) != nil ||
-			validateCandidateActiveEvidence(ctx, tx, pendingRow.row, pendingRow.binding, candidate) != nil {
+			validateCandidateActiveEvidence(ctx, tx, pendingRow.row, pendingRow.binding, candidate) != nil ||
+			validateCandidateLLMEvidence(ctx, tx, pendingRow.row, pendingRow.binding) != nil {
 			return nil, false, db.ErrDiagnosticCandidate
 		}
 		if pendingRow.row.Method == "llm/v1" {
@@ -581,7 +593,10 @@ func listCandidateVerifications(ctx context.Context, tx *sql.Tx, route candidate
 				return nil, false, db.ErrDiagnosticCandidate
 			}
 			pendingRow.row.Analysis, err = readCandidateAnalysis(ctx, tx, id, candidate.ID)
-			if err != nil || (pendingRow.row.Latest.State == "analysis_ready" || pendingRow.row.Latest.State == "cancelled" && pendingRow.step == 4) != (pendingRow.row.Analysis != nil) {
+			if err != nil || (pendingRow.step >= 3 && !(pendingRow.step == 3 && pendingRow.row.Latest.State != "analysis_ready")) != (pendingRow.row.Analysis != nil) {
+				return nil, false, db.ErrDiagnosticCandidate
+			}
+			if pendingRow.row.LLMPlan != nil && (pendingRow.row.Analysis == nil || !candidateLLMPlanMatchesAnalysis(*pendingRow.row.LLMPlan, *pendingRow.row.Analysis)) {
 				return nil, false, db.ErrDiagnosticCandidate
 			}
 			if pendingRow.row.Analysis != nil {
@@ -589,6 +604,10 @@ func listCandidateVerifications(ctx context.Context, tx *sql.Tx, route candidate
 				if err != nil {
 					return nil, false, db.ErrDiagnosticCandidate
 				}
+			}
+			pendingRow.row.Final, err = readCandidateFinalVerdict(ctx, tx, pendingRow.row, pendingRow.binding, candidate)
+			if err != nil || (pendingRow.row.Latest.State == "completed") != (pendingRow.row.Final != nil) {
+				return nil, false, db.ErrDiagnosticCandidate
 			}
 		}
 		items = append(items, pendingRow.row)
@@ -629,11 +648,22 @@ func scanCandidateVerificationAttempt(scanner candidateVerificationScanner, extr
 	}
 	if planDigest.Valid {
 		row.PlanDigest = planDigest.String
-		var plan candidateActivePlan
-		if strictJSON(planJSON, &plan) != nil {
+		switch row.Method {
+		case "active/v1":
+			var plan candidateActivePlan
+			if strictJSON(planJSON, &plan) != nil {
+				return row, 0, binding, db.ErrDiagnosticCandidate
+			}
+			row.Plan = &plan
+		case "llm/v1":
+			var plan CandidateLLMPlan
+			if strictJSON(planJSON, &plan) != nil {
+				return row, 0, binding, db.ErrDiagnosticCandidate
+			}
+			row.LLMPlan = &plan
+		default:
 			return row, 0, binding, db.ErrDiagnosticCandidate
 		}
-		row.Plan = &plan
 	} else if len(planJSON) != 0 {
 		return row, 0, binding, db.ErrDiagnosticCandidate
 	}
@@ -653,8 +683,7 @@ func validateCandidateVerificationAttempt(row candidateVerificationAttempt, step
 		return validateCandidateActiveAttempt(row, step, binding, candidate)
 	}
 	if row.Method == "llm/v1" {
-		if row.Plan != nil || row.PlanDigest != "" || binding.Decision.Valid || binding.DecisionDigest.Valid || binding.FollowupTask.Valid || binding.RunRef.Valid ||
-			(step < 1 || step > 4) ||
+		if row.Plan != nil || (step < 1 || step > 9) ||
 			(step == 1 && (row.Latest.State != "requested" || row.Latest.Reason != "selected_by_user")) ||
 			(step == 2 && !(row.Latest.State == "cancelled" && row.Latest.Reason == "user_cancelled" ||
 				row.Latest.State == "failed" && (row.Latest.Reason == "analysis_unavailable" || row.Latest.Reason == "analysis_interrupted" || row.Latest.Reason == "budget_unavailable") ||
@@ -662,10 +691,62 @@ func validateCandidateVerificationAttempt(row candidateVerificationAttempt, step
 			(step == 3 && !(row.Latest.State == "cancelled" && row.Latest.Reason == "user_cancelled" ||
 				row.Latest.State == "analysis_ready" && row.Latest.Reason == "analysis_available" ||
 				row.Latest.State == "failed" && (row.Latest.Reason == "analysis_unavailable" || row.Latest.Reason == "analysis_interrupted" || row.Latest.Reason == "budget_unavailable"))) ||
-			(step == 4 && (row.Latest.State != "cancelled" || row.Latest.Reason != "user_cancelled")) ||
-			row.Latest.Verdict != nil ||
-			row.Latest.RuleVersion != diagnosisVerificationSelected || row.Latest.ExecutionRef != "" || row.Latest.ApprovalRef != "" ||
-			string(row.Latest.Sources) != "[]" {
+			(step == 4 && !(row.Latest.State == "cancelled" && row.Latest.Reason == "user_cancelled" ||
+				row.Latest.State == "awaiting_approval" && row.Latest.Reason == "action_approval_required")) ||
+			(step == 5 && !(row.Latest.State == "cancelled" && row.Latest.Reason == "user_cancelled" ||
+				row.Latest.State == "approved" && row.Latest.Reason == "user_approved" ||
+				row.Latest.State == "rejected" && row.Latest.Reason == "user_rejected" ||
+				row.Latest.State == "expired" && row.Latest.Reason == "plan_expired")) ||
+			(step == 6 && !(row.Latest.State == "running" && row.Latest.Reason == "execution_started" ||
+				row.Latest.State == "failed" && row.Latest.Reason == "candidate_execution_unavailable" ||
+				row.Latest.State == "cancelled" && row.Latest.Reason == "candidate_execution_cancelled" ||
+				row.Latest.State == "expired" && row.Latest.Reason == "candidate_execution_timeout")) ||
+			(step == 7 && !(row.Latest.State == "evidence_ready" && row.Latest.Reason == "sealed_observations_available" ||
+				row.Latest.State == "failed" && row.Latest.Reason == "candidate_execution_unavailable" ||
+				row.Latest.State == "cancelled" && row.Latest.Reason == "candidate_execution_cancelled" ||
+				row.Latest.State == "expired" && row.Latest.Reason == "candidate_execution_timeout")) ||
+			(step == 8 && !(row.Latest.State == "assessing" && row.Latest.Reason == "final_model_started" ||
+				row.Latest.State == "failed" && row.Latest.Reason == "final_model_unavailable" ||
+				row.Latest.State == "cancelled" && row.Latest.Reason == "candidate_execution_cancelled" ||
+				row.Latest.State == "expired" && row.Latest.Reason == "candidate_execution_timeout")) ||
+			(step == 9 && !(row.Latest.State == "completed" && row.Latest.Reason == "model_evidence_checked" ||
+				row.Latest.State == "failed" && (row.Latest.Reason == "final_model_unavailable" || row.Latest.Reason == "final_model_interrupted") ||
+				row.Latest.State == "cancelled" && row.Latest.Reason == "candidate_execution_cancelled" ||
+				row.Latest.State == "expired" && row.Latest.Reason == "candidate_execution_timeout")) ||
+			(row.Latest.State == "completed") != (row.Latest.Verdict != nil) ||
+			row.Latest.RuleVersion != diagnosisVerificationSelected ||
+			(step < 6 && row.Latest.ExecutionRef != "") ||
+			(step == 5 && row.Latest.State == "approved") != (row.Latest.ApprovalRef != "") ||
+			(step != 5 && row.Latest.ApprovalRef != "") ||
+			(row.Latest.State != "evidence_ready" && row.Latest.State != "completed" && string(row.Latest.Sources) != "[]") {
+			return db.ErrDiagnosticCandidate
+		}
+		if step >= 6 {
+			if !binding.Decision.Valid || binding.Decision.String != "approved" || binding.DecisionDigest.String != row.PlanDigest ||
+				binding.FollowupTask.Valid != binding.RunRef.Valid ||
+				(binding.FollowupTask.Valid && (binding.FollowupTask.Int64 == candidate.TaskID || binding.RunRef.String != row.Latest.ExecutionRef)) ||
+				(!binding.FollowupTask.Valid && (row.Latest.ExecutionRef != "" || row.Latest.State == "running" || row.Latest.State == "evidence_ready" || step >= 8)) {
+				return db.ErrDiagnosticCandidate
+			}
+		} else if row.Latest.State == "approved" || row.Latest.State == "rejected" {
+			if !binding.Decision.Valid || binding.Decision.String != row.Latest.State || !binding.DecisionDigest.Valid || binding.DecisionDigest.String != row.PlanDigest || binding.FollowupTask.Valid || binding.RunRef.Valid {
+				return db.ErrDiagnosticCandidate
+			}
+		} else if binding.Decision.Valid || binding.DecisionDigest.Valid || binding.FollowupTask.Valid || binding.RunRef.Valid {
+			return db.ErrDiagnosticCandidate
+		}
+		if row.LLMPlan != nil {
+			if step < 4 || step == 4 && row.Latest.State != "awaiting_approval" ||
+				row.LLMPlan.TaskID != candidate.TaskID || row.LLMPlan.CandidateID != candidate.ID ||
+				row.LLMPlan.EvidenceDigest != candidate.EvidenceDigest || row.LLMPlan.OriginalRunRef != candidate.RunRef ||
+				!candidateVerificationDigest.MatchString(row.PlanDigest) {
+				return db.ErrDiagnosticCandidate
+			}
+			digest, err := candidateLLMPlanDigest(*row.LLMPlan)
+			if err != nil || digest != row.PlanDigest {
+				return db.ErrDiagnosticCandidate
+			}
+		} else if row.PlanDigest != "" || step >= 4 {
 			return db.ErrDiagnosticCandidate
 		}
 		return nil
