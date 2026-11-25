@@ -1,11 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"reflect"
 	"strconv"
 
 	"github.com/Autumn-27/artex/candidateverify"
@@ -45,10 +45,14 @@ func selectedOriginalObservation(candidate db.DiagnosticCandidate, rows []candid
 		if source.CallRef != candidate.CallRef {
 			continue
 		}
+		if len(original.Trusted.Call.Observations) != 1 {
+			return nil, ErrCandidateSelectedContext
+		}
+		storedObservation, storedErr := json.Marshal(source.Observation)
+		candidateObservation, candidateErr := json.Marshal(original.Trusted.Call.Observations[0])
 		if bound != nil || source.IntentID != candidate.IntentID || source.TaskRef != strconv.FormatInt(candidate.TaskID, 10) ||
 			source.RunRef != candidate.RunRef || original.Trusted.Call.CallRef != candidate.CallRef ||
-			len(original.Trusted.Call.Observations) != 1 ||
-			!reflect.DeepEqual(source.Observation, original.Trusted.Call.Observations[0]) ||
+			storedErr != nil || candidateErr != nil || !bytes.Equal(storedObservation, candidateObservation) ||
 			source.PolicyRevision != original.Trusted.Execution.PolicyRevision ||
 			rows[i].HeaderMode != original.Trusted.Execution.HeaderMode {
 			return nil, ErrCandidateSelectedContext
