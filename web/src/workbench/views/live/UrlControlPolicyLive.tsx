@@ -30,11 +30,11 @@ import {
 import { cx } from "../../lib/cx";
 import { useUrl } from "../../live/urlDiagnosis";
 import { urlAccountAuthRows } from "../../live/urlMap";
-import { useShell } from "../../shell";
+import { useShell, type View } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { Kv } from "../../ui/parts";
 import s from "../../workbench.module.css";
-import { UrlHead } from "./urlParts";
+import { BackButton, UrlHead } from "./urlParts";
 
 // ── 인라인 스타일(뼈대). 색은 실재 workbench 토큰만(접근통제 지도·커버리지·발견 상세·전송 통제 흐름과 같은 팔레트).
 const chipBase: CSSProperties = {
@@ -156,7 +156,14 @@ export function UrlControlPolicyLive() {
   );
   const accountAuth = useUrl((st) => st.job?.account_auth);
   // 숨겨 마운트된 화면이라 들어올 때마다 같은 task 의 정책을 다시 확인한다
-  const visible = useShell().route === "controlpolicy";
+  const { route, goTo } = useShell();
+  const visible = route === "controlpolicy";
+  // 뒤로 가기(사용자 11/25): 들어오기 직전 화면으로. 들어오는 곳은 새 점검 '정책 전체 보기'와 전송 통제 흐름 둘이고,
+  // 주소로 바로 열었거나 다른 화면에서 왔으면 새 점검으로 간다
+  const [backTo, setBackTo] = useState<View>("new");
+  useEffect(() => {
+    if (route !== "controlpolicy") setBackTo(route === "e2flow" ? "e2flow" : "new");
+  }, [route]);
   // 어느 task·결속의 결과인지 같이 들고, 지금 조회와 다른 결과는 보이지 않는다.
   const [result, setResult] = useState<{ task: string | null; binding: string; load: PolicyLoad | "failed" } | null>(
     null,
@@ -219,7 +226,11 @@ export function UrlControlPolicyLive() {
 
   return (
     <>
-      <UrlHead title="전송 통제 정책" crumb="전송 통제 정책" />
+      <UrlHead
+        title="전송 통제 정책"
+        crumb="전송 통제 정책"
+        acts={<BackButton to={backTo === "e2flow" ? "전송 통제 흐름" : "새 점검"} onClick={() => goTo(backTo)} />}
+      />
       {/* 오른쪽 상세 패널이 없는 화면이라 빈 패널 칸을 두지 않고 가운데를 다 쓴다(solo) */}
       <div className={cx(s.vb, s.solo)}>
         <div className={s.vm}>
