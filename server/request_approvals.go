@@ -252,10 +252,13 @@ func (s *RequestApprovalService) awaitRequestApproval(ctx context.Context, p e2p
 	}
 	if ctx.Err() != nil || binding.ctx.Err() != nil || !time.Now().Before(a.ExpiresAt) {
 		if current.State == "pending" || current.State == "allowed" {
+			now := time.Now()
 			current.State = "cancelled"
-			if !time.Now().Before(a.ExpiresAt) {
+			if !now.Before(a.ExpiresAt) {
 				current.State = "expired"
 			}
+			// 닫힌 까닭은 대기가 끝난 지금 가린다. 운영자 종료 표지는 대기 시작 뒤에 바뀌므로 지금 결속을 본다.
+			current.ClosedReason = approvalClosedReason(ctx, s.bindings[task], a.ExpiresAt, now)
 			current.ExecutionState = "not_sent"
 			if s.store.SwapRequestApproval(persistCtx, current, false) != nil {
 				return false, errRequestApproval
@@ -286,6 +289,61 @@ func (s *RequestApprovalService) awaitRequestApproval(ctx context.Context, p e2p
 	status, reason = "allowed", "complete"
 	return true, nil
 }
+
+// 승인 대기가 결정 없이 닫힌 까닭(closed_reason)의 고정 코드다. 화면이 '취소'·'만료'의 이유를 가린다(2026-11-25 경준
+// 요청). E② 전송 결과(reason)와 섞지 않는다.
+const (
+	approvalClosedModelStage = "model_stage_closed" // 모델 단계 마감으로 call 문맥이 끊김
+	approvalClosedTimeout    = "request_timeout"    // 요청·call·회차 기한
+	approvalClosedOperator   = "operator_stopped"   // 운영자 종료로 실행 결속이 끝남
+	approvalClosedRun        = "run_closed"         // 그 밖에 실행이 닫힘
+	approvalClosedExpired    = "approval_expired"   // 승인 기한 만료(state=expired와 같이)
+)
+
+// approvalClosedReason은 승인 대기가 결정 없이 끝난 까닭이다. 승인 기한 → 운영자 종료 → 승인 대기 문맥의 원인(모델 단계
+// 마감·기한, E② Call.do가 싣는다) → 실행 결속 문맥의 기한 → 그 밖 순서로 본다.
+func approvalClosedReason(wait context.Context, binding requestApprovalBinding, expiresAt, now time.Time) string {
+	switch {
+	case !now.Before(expiresAt):
+		return approvalClosedExpired
+	case binding.stopRequested:
+		return approvalClosedOperator
+	}
+	cause := context.Cause(wait)
+	switch {
+	case errors.Is(cause, e2proxy.ErrModelStageClosed):
+		return approvalClosedModelStage
+	case errors.Is(cause, context.DeadlineExceeded) || errors.Is(wait.Err(), context.DeadlineExceeded):
+		return approvalClosedTimeout
+	case binding.ctx != nil && errors.Is(context.Cause(binding.ctx), context.DeadlineExceeded):
+		return approvalClosedTimeout
+	}
+	return approvalClosedRun
+}
+
+// projectedClosedReason은 응답에 싣는 closed_reason이다. cancelled·expired에만 싣는다. 만료는 늘 approval_expired다.
+// 취소는 둘로 나눈다. 읽는 이 순간 대기 건(pending·미소비 allowed)을 취소로 투영한 경우(projected)만 지금 결속을 보고 운영자
+// 종료면 operator_stopped, 아니면 run_closed다. 이미 cancelled로 저장된 기록은 저장한 까닭을 쓰고, 까닭이 없으면(이 칸 이전
+// 기록) 실제 원인을 모르므로 run_closed다. 지금의 운영자 종료를 지난 취소에 덧씌우지 않는다(#953 이동찬 P2).
+func projectedClosedReason(a db.RequestApproval, b requestApprovalBinding, bound, projected bool) string {
+	switch a.State {
+	case "expired":
+		return approvalClosedExpired
+	case "cancelled":
+		if projected {
+			if bound && b.stopRequested {
+				return approvalClosedOperator
+			}
+			return approvalClosedRun
+		}
+		if a.ClosedReason != "" && a.ClosedReason != approvalClosedExpired {
+			return a.ClosedReason
+		}
+		return approvalClosedRun
+	}
+	return ""
+}
+
 func (s *RequestApprovalService) authorized(task int64, owner string) bool {
 	_, ok := s.bindings[task]
 	return ok && owner == "ARTEX"
@@ -301,6 +359,7 @@ func (s *RequestApprovalService) decorate(a db.RequestApproval) db.RequestApprov
 	if !a.Live && a.Consumed && (a.ExecutionState == "awaiting_dispatch" || a.ExecutionState == "dispatch_pending") {
 		a.ExecutionState = "unknown"
 	}
+	stored := a.State
 	if a.State == "pending" || a.State == "allowed" && !a.Consumed {
 		if !time.Now().Before(a.ExpiresAt) {
 			a.State = "expired"
@@ -308,6 +367,7 @@ func (s *RequestApprovalService) decorate(a db.RequestApproval) db.RequestApprov
 			a.State = "cancelled"
 		}
 	}
+	a.ClosedReason = projectedClosedReason(a, b, bok, a.State != stored)
 	a.CanDecide = a.Live && a.State == "pending" && time.Now().Before(a.ExpiresAt)
 	return a
 }
