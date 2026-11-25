@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -117,25 +118,23 @@ func requestKind(e e2proxy.Event) string {
 	return e2RequestKindUnclassified
 }
 
-// sentRequests는 시도마다 마지막 결과 행 하나를 저널 순서로 모으고, 요청을 보낸 시도만 남긴다.
+// sentRequests는 시도마다 마지막 결과 행 하나를 남기고, 요청을 보낸 시도만 그 행의 저널 번호(Index) 오름차순으로 준다.
+// 쪽 넘김 cursor가 이 번호라서 순서도 같은 번호로 정한다. 같은 시도의 결과 행이 다른 시도 사이에 끼어 있어도(A·B·A) 줄이
+// 빠지거나 두 번 나오지 않는다(#931 이동찬 P2).
 func sentRequests(events []e2proxy.Event) []e2proxy.Event {
-	last := map[string]int{}
-	order := []string{}
-	for i, e := range events {
-		if e.Stage != "result" || e.AttemptID == "" {
-			continue
+	last := map[string]e2proxy.Event{}
+	for _, e := range events {
+		if e.Stage == "result" && e.AttemptID != "" {
+			last[e.AttemptID] = e
 		}
-		if _, ok := last[e.AttemptID]; !ok {
-			order = append(order, e.AttemptID)
-		}
-		last[e.AttemptID] = i
 	}
-	out := make([]e2proxy.Event, 0, len(order))
-	for _, id := range order {
-		if e := events[last[id]]; e.RequestWritten {
+	out := make([]e2proxy.Event, 0, len(last))
+	for _, e := range last {
+		if e.RequestWritten {
 			out = append(out, e)
 		}
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Index < out[j].Index })
 	return out
 }
 

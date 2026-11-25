@@ -148,3 +148,39 @@ func TestE2RequestDetailShowsJournalFieldsAndReasons(t *testing.T) {
 		t.Fatalf("바뀐 저널 %d %s", w.Code, w.Body.String())
 	}
 }
+
+// 같은 시도의 결과 행이 다른 시도 사이에 끼어도(A(1)·B(2)·A(3)) 쪽 넘김이 줄을 빠뜨리거나 두 번 주지 않는다. 줄은 시도마다
+// 마지막 결과 행의 저널 번호 순서다(#931 이동찬 P2).
+func TestE2RequestsPagesInterleavedDuplicateResults(t *testing.T) {
+	a := liveEvent("result", "call-a", strings.Repeat("a", 32), 1, "allowed", e2proxy.Complete)
+	b := liveEvent("result", "call-b", strings.Repeat("b", 32), 1, "allowed", e2proxy.Complete)
+	c := liveEvent("result", "call-c", strings.Repeat("c", 32), 1, "allowed", e2proxy.Complete)
+	runsDir, _ := liveRunFixture(t, func(add func(e2proxy.Event)) {
+		for _, e := range []e2proxy.Event{a, b, a, c, b} {
+			add(e)
+		}
+	})
+	var got []string
+	path := "/api/tasks/9/e2-flow/requests?limit=1"
+	for pages := 0; ; pages++ {
+		if pages > 10 {
+			t.Fatal("쪽이 끝나지 않음")
+		}
+		w := requestDetailsGet(t, runsDir, path)
+		var page e2RequestsPage
+		if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &page) != nil || page.Total != 3 {
+			t.Fatalf("쪽 %d: %s", w.Code, w.Body.String())
+		}
+		for _, row := range page.Rows {
+			got = append(got, row.CallRef)
+		}
+		if page.NextCursor == nil {
+			break
+		}
+		path = "/api/tasks/9/e2-flow/requests?limit=1&cursor=" + string(must(json.Marshal(*page.NextCursor)))
+	}
+	// 마지막 결과 행 번호: A=3, C=4, B=5.
+	if strings.Join(got, ",") != "call-a,call-c,call-b" {
+		t.Fatalf("쪽을 이은 줄 %v", got)
+	}
+}
