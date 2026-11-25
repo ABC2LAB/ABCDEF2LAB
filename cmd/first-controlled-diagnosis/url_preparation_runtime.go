@@ -871,7 +871,7 @@ func (b *urlPreparationRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 	// 작업대 실데이터(통제 정책·전송 통제 흐름)는 실행 결속 디렉터리에서 직접 읽는다(계약 workbench-live-data §3·§4).
 	if view := liveDataView(r.URL.Path); view != "" {
-		serveLiveData(w, r, b.config.RunsDir, auth.Job.ID, view)
+		serveLiveDataWith(w, r, b.config.RunsDir, auth.Job.ID, view, b.liveExplorationRequests)
 		return
 	}
 	if auth.Job.Scope != nil {

@@ -91,6 +91,22 @@
 
 `X-Jindo-E2-Model-Writes: 1` 헤더를 보낸 클라이언트에는 검증된 응답에 `model_writes`를 추가한다. 운영자가 다음 점검 전 대상을 확인할 때 쓰는 읽기 전용 요약으로, 모델 단계 POST·PUT·PATCH·DELETE만 시도 ID로 센다. `responded_2xx`는 2xx 응답을 받은 수이며 객체 생성 여부는 알 수 없다. `unverified`는 송신했을 수 있으나 2xx 응답이 확인되지 않은 수다. 송신 전 거부, 송신하지 못한 연결 실패, 인증 준비·갱신, E③ 쓰기는 포함하지 않는다. 기존 E③ 리셋 기록이나 운영자 확인의 효력을 이 요약으로 바꾸지 않는다.
 
+검증된 응답에는 `target_requests`가 늘 붙는다(2026-11-25 사용자 지시). 작업대 '보낸 요청' 총계와 마우스 올림 내역에 쓰는 대상 요청 수다. 기존 `counts`·화면의 진단 흐름 `counts.sent`는 그대로 둔다.
+
+| 칸 | 뜻 | 출처 |
+|---|---|---|
+| `model` | 모델이 진단 단계에서 보낸 요청 | 검증한 E② 저널의 결과 행 중 `request_written`이고 프로그램 호출이 아닌 시도 수 |
+| `login` | 프로그램 로그인(인증 준비 `auth_prep` + 세션 다시 받기 `refresh_session`) | 같은 저널, 같은 기준 |
+| `confirmation` | 확정 단계(E③) 요청 | 같은 저널, 같은 기준. E③ 확정 호출 행(E③ 감사 칸 또는 E③ 프로그램 호출)이 이 저널에 있을 때만 센다 |
+| `exploration` | 탐색 단계에서 탐색 경계를 지난 대상 요청 | 회차 상태 디렉터리의 `exploration-requests.json`(탐색 경계가 세션 마감 때 확정한 `target_requests`, 진단 E② 예산에서 빼는 그 몫). 탐색 중이면 경계가 지금 보고하는 수 |
+| `exploration_state` | `none`(탐색 단계 없음, 0) · `pending`(시작 전, 0) · `running`(탐색 중) · `closed`(경계 확정) · `not_run`(열지 않음, 0) · `unknown`(경계가 확정하지 못했거나 기록을 못 읽음) | |
+| `total` | `model + login + confirmation + exploration` | 탐색 수를 모르면 `null` |
+
+- 세 갈래는 이 응답 하나에서 같은 시점에 읽는다(저널 검증·탐색 기록·경계 조회를 한 요청 안에서). 시도마다 결과 행 하나만 센다(`counts`와 같은 규칙).
+- 모르는 수는 0으로 바꾸지 않는다: `running`인데 경계가 이 회차 세션을 보고하지 않거나, `unknown`이면 `exploration`·`total`은 `null`이다.
+- `exploration-requests.json`은 감사 기록이 아니라 표시용이다. 기록을 쓰지 못해도 진단은 멈추지 않고 화면 총계만 모름으로 보인다.
+- 시험: `TestE2FlowTargetRequestsMatchJournalAndExplorationRecord`(내역이 저널에서 따로 센 수·탐색 기록과 같고 합이 맞음), `TestE2FlowTargetRequestsExplorationStates`.
+
 그 task의 전송 통제 감사 기록(실행 결속 디렉터리의 저널, HMAC 체인 검증 뒤)을 호출(call) 단위로 묶은 투영이다. 저널 검증이 실패하면 사건을 하나도 보이지 않고 `journal: "invalid"`로 답한다(일부만 보이고 "정상"으로 보이게 하지 않는다).
 
 현재 [제품 조회](../../cmd/first-controlled-diagnosis/url_live_views.go)는 감사 키 pin과 읽은 저널의 HMAC 체인을 검증한다. `VerifyJournalEvents`에 신뢰 체크포인트를 전달하지 않아 끝 행이 삭제된 유효 접두부도 `journal: "verified"`로 표시될 수 있다.

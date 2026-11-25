@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -84,12 +85,17 @@ func (b *urlPreparationRuntime) productExplorationStage(l *urlLoadedProfile, e d
 	if !ok {
 		return nil
 	}
+	// 작업대 '보낸 요청' 총계의 탐색 몫(url_target_requests.go). 탐색 단계가 있는 회차는 시작 전부터 기록을 둔다.
+	stateDir := filepath.Join(b.config.RunsDir, e.Job.ID, "state")
+	recordExplorationStage(stateDir, explorationKnown(explorationPending, 0))
 	return func(host *server.Server) server.E2HTTPExplorationStage {
 		return func(ctx context.Context, task *server.Task) (server.ExplorationCharge, error) {
 			if task == nil || task.ID != taskID {
 				return server.ExplorationCharge{}, exploration.ErrBinding
 			}
+			recordExplorationStage(stateDir, explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationRunning})
 			result, err := host.RunExplorationPipeline(ctx, task, options)
+			recordExplorationStage(stateDir, explorationResultRecord(result.Status == "NOT_RUN", result.Charge.Known, result.Charge.Requests))
 			return result.Charge, err
 		}
 	}
