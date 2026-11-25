@@ -105,3 +105,37 @@ func TestSelectedFixtureAnalysisAndFinalAreInsufficient(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectedNosniffFixtureRequiresIndependentMatchingHTML(t *testing.T) {
+	observation := func(call, attempt, digest string) selectedFixtureObservation {
+		var row selectedFixtureObservation
+		row.Source.CallRef, row.Source.Observation.AttemptRef, row.Source.Digest = call, attempt, digest
+		row.Source.Observation.Method = "GET"
+		row.Source.Observation.Endpoint = "/rest/products/search"
+		row.Source.Observation.StatusCode = http.StatusOK
+		row.Source.Observation.ExactFunction = true
+		row.Source.Observation.HTMLSecurity = "nosniff_missing"
+		return row
+	}
+	input := map[string]any{"candidate_id": 23, "original_observation": observation("original", "attempt-1", "digest-1"),
+		"followup_observations": []any{observation("followup", "attempt-2", "digest-2")}}
+	invoke := func() map[string]any {
+		raw, _ := json.Marshal(input)
+		content, _ := json.Marshal(string(raw))
+		result := selectedNosniffVerdict(23, []fixtureMessage{{Role: "user", Content: content}})
+		return result.(map[string]any)
+	}
+	if result := invoke(); result["verdict"] != "confirmed" || len(result["sources"].([]any)) != 2 {
+		t.Fatal("independent comparable observations were not confirmed")
+	}
+	input["followup_observations"] = []any{observation("original", "attempt-1", "digest-1")}
+	if invoke()["verdict"] != "insufficient" {
+		t.Fatal("duplicate original observation was confirmed")
+	}
+	bad := observation("followup", "attempt-2", "digest-2")
+	bad.Source.Observation.HTMLSecurity = "nosniff_present"
+	input["followup_observations"] = []any{bad}
+	if invoke()["verdict"] != "insufficient" {
+		t.Fatal("normal header response was confirmed")
+	}
+}

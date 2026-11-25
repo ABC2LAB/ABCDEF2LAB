@@ -68,7 +68,7 @@ func main() {
 		}
 		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "explore_bash_seen": exploreBashSeen.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load()})
 	})
-	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" {
+	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
 		handler := model(*target)
@@ -76,6 +76,8 @@ func main() {
 			handler = workflowModel()
 		} else if *mode == "selected-model" {
 			handler = selectedModel(*target)
+		} else if *mode == "selected-model-nosniff" {
+			handler = selectedNosniffModel(*target)
 		}
 		mux.Handle("POST /v1/chat/completions", handler)
 		must(http.ListenAndServe(":8080", mux))
@@ -98,6 +100,11 @@ func main() {
 		} else {
 			denied.Add(1)
 		}
+		if *mode == "selected-target-nosniff" && r.Method == "GET" && r.URL.Path == "/rest/products/search" {
+			w.Header().Set("Content-Type", "text/html")
+			io.WriteString(w, "<html><body>Owned synthetic product listing</body></html>")
+			return
+		}
 		if *mode == "workflow-target" {
 			workflowReceive(r)
 			if r.Method == "GET" && r.URL.Path == "/workflow" {
@@ -119,6 +126,72 @@ func must(e error) {
 
 type fixtureTurns struct{ goals, planner, worker, explore int }
 
+type fixtureMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+type selectedFixtureObservation struct {
+	Source struct {
+		CallRef     string `json:"call_ref"`
+		Digest      string `json:"digest"`
+		Observation struct {
+			AttemptRef    string `json:"attempt_ref"`
+			Method        string `json:"method"`
+			Endpoint      string `json:"endpoint"`
+			StatusCode    int    `json:"status_code"`
+			ExactFunction bool   `json:"exact_function"`
+			HTMLSecurity  string `json:"html_security"`
+		} `json:"observation"`
+	} `json:"source"`
+}
+
+// This owned fixture models a careful reviewer. It cannot report confirmed
+// from the candidate text, one response, or two copies of the same attempt.
+func selectedNosniffVerdict(candidateID int64, messages []fixtureMessage) any {
+	result := map[string]any{"version": "selected/final-v1", "candidate_id": candidateID, "verdict": "insufficient",
+		"claim":                 "An approved HTML response may be missing the nosniff header.",
+		"normal_explanation":    "The response might not be HTML or the first observation might be incomplete.",
+		"reason":                "Two independent comparable HTML observations were not established.",
+		"limitations":           "Only the approved exact path is checked.",
+		"remediation":           "Set X-Content-Type-Options: nosniff on HTML responses.",
+		"verification_criteria": "Repeat two separate approved HTML reads and check both response headers.",
+		"sources":               []any{}}
+	var input struct {
+		CandidateID int64                        `json:"candidate_id"`
+		Original    *selectedFixtureObservation  `json:"original_observation"`
+		Followup    []selectedFixtureObservation `json:"followup_observations"`
+	}
+	for _, message := range messages {
+		var text string
+		if message.Role == "user" && json.Unmarshal(message.Content, &text) == nil {
+			_ = json.Unmarshal([]byte(text), &input)
+		}
+	}
+	if input.CandidateID != candidateID || input.Original == nil || len(input.Followup) != 1 {
+		return result
+	}
+	a, b := input.Original.Source, input.Followup[0].Source
+	good := func(o selectedFixtureObservation) bool {
+		s := o.Source
+		return s.CallRef != "" && s.Digest != "" && s.Observation.AttemptRef != "" &&
+			s.Observation.Method == "GET" && s.Observation.Endpoint == "/rest/products/search" &&
+			s.Observation.ExactFunction && s.Observation.StatusCode == http.StatusOK &&
+			s.Observation.HTMLSecurity == "nosniff_missing"
+	}
+	if !good(*input.Original) || !good(input.Followup[0]) || a.CallRef == b.CallRef ||
+		a.Observation.AttemptRef == b.Observation.AttemptRef || a.Digest == b.Digest {
+		return result
+	}
+	result["verdict"] = "confirmed"
+	result["reason"] = "Two independent audited HTML reads at the same approved function lack nosniff."
+	result["sources"] = []any{
+		map[string]string{"call_ref": a.CallRef, "attempt_ref": a.Observation.AttemptRef, "observation_digest": a.Digest},
+		map[string]string{"call_ref": b.CallRef, "attempt_ref": b.Observation.AttemptRef, "observation_digest": b.Digest},
+	}
+	return result
+}
+
 func model(target string) http.Handler {
 	return modelWithSelection(target, false)
 }
@@ -126,10 +199,18 @@ func model(target string) http.Handler {
 // selectedModel is a disposable, no-cost fixture for the candidate API E2E.
 // Its initial diagnosis has one goal and one observed fact in a fresh DB.
 func selectedModel(target string) http.Handler {
-	return modelWithSelection(target, true)
+	return modelWithSelectionMode(target, true, false)
+}
+
+func selectedNosniffModel(target string) http.Handler {
+	return modelWithSelectionMode(target, true, true)
 }
 
 func modelWithSelection(target string, selected bool) http.Handler {
+	return modelWithSelectionMode(target, selected, false)
+}
+
+func modelWithSelectionMode(target string, selected, nosniff bool) http.Handler {
 	var mu sync.Mutex
 	turns := map[string]*fixtureTurns{}
 	originPattern := regexp.MustCompile(`https://(?:juice-a|juice-b|juice)\.test:9443`)
@@ -143,10 +224,7 @@ func modelWithSelection(target string, selected bool) http.Handler {
 					Name string `json:"name"`
 				} `json:"function"`
 			} `json:"tools"`
-			Messages []struct {
-				Role    string          `json:"role"`
-				Content json.RawMessage `json:"content"`
-			} `json:"messages"`
+			Messages []fixtureMessage `json:"messages"`
 		}
 		if json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&req) != nil {
 			w.WriteHeader(400)
@@ -209,6 +287,14 @@ func modelWithSelection(target string, selected bool) http.Handler {
 					"existing_call_refs": []string{}, "business_questions": []string{"Is this listing intended to be public?"},
 					"actions":     []any{map[string]any{"purpose": "Compare the current public listing response with the original observation", "method": "GET", "path_hint": "/rest/products/search"}},
 					"limitations": "The target fixture does not define a private listing policy."}
+				if nosniff {
+					result = map[string]any{"version": "selected/analysis-v1", "candidate_id": candidateID,
+						"claim":              "The observed HTML response may be missing X-Content-Type-Options: nosniff.",
+						"normal_explanation": "The original read might have been incomplete or the header may vary by response.",
+						"existing_call_refs": []string{}, "business_questions": []string{},
+						"actions":     []any{map[string]any{"purpose": "Independently inspect the same approved HTML response headers", "method": "GET", "path_hint": "/rest/products/search"}},
+						"limitations": "Only the approved exact HTML path is checked."}
+				}
 			} else if strings.Contains(all, "selected/final-v1") {
 				result = map[string]any{"version": "selected/final-v1", "candidate_id": candidateID, "verdict": "insufficient",
 					"claim":                 "A product listing may reveal information outside its intended audience.",
@@ -217,6 +303,9 @@ func modelWithSelection(target string, selected bool) http.Handler {
 					"limitations":           "No approved business rule distinguishes a public from a private listing.",
 					"remediation":           "Define the intended audience and restrict the listing only if needed.",
 					"verification_criteria": "Confirm the intended audience, then repeat the same approved read.", "sources": []any{}}
+				if nosniff {
+					result = selectedNosniffVerdict(candidateID, req.Messages)
+				}
 			} else {
 				http.Error(w, "unexpected_selected_prompt", 400)
 				return
@@ -290,7 +379,11 @@ func modelWithSelection(target string, selected bool) http.Handler {
 					http.Error(w, "trusted_observation_missing", 500)
 					return
 				}
-				tool("submit_diagnostic_candidate", "owned-candidate", map[string]any{"call_ref": ref, "vulnclass": "access_control", "name": "소유 Juice Shop 관찰 후보", "summary": "실제 HTTPS 상품 응답을 관찰했습니다. 확정 취약점이 아닌 수동 검토 후보입니다.", "remediation": "실제 접근 권한을 별도로 검증하세요."})
+				if nosniff {
+					tool("submit_diagnostic_candidate", "owned-candidate", map[string]any{"call_ref": ref, "vulnclass": "security_headers", "name": "HTML nosniff 후보", "summary": "합성 HTML 응답의 보안 헤더 상태를 별도 요청으로 검증합니다.", "remediation": "HTML 응답에 X-Content-Type-Options: nosniff를 설정하세요."})
+				} else {
+					tool("submit_diagnostic_candidate", "owned-candidate", map[string]any{"call_ref": ref, "vulnclass": "access_control", "name": "소유 Juice Shop 관찰 후보", "summary": "실제 HTTPS 상품 응답을 관찰했습니다. 확정 취약점이 아닌 수동 검토 후보입니다.", "remediation": "실제 접근 권한을 별도로 검증하세요."})
+				}
 			case 3:
 				deniedTarget := target + "/outside-approved"
 				if target == "https://juice-a.test:9443" {
