@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -67,12 +68,14 @@ func main() {
 		}
 		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "explore_bash_seen": exploreBashSeen.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load()})
 	})
-	if *mode == "model" || *mode == "workflow-model" {
+	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
 		handler := model(*target)
 		if *mode == "workflow-model" {
 			handler = workflowModel()
+		} else if *mode == "selected-model" {
+			handler = selectedModel(*target)
 		}
 		mux.Handle("POST /v1/chat/completions", handler)
 		must(http.ListenAndServe(":8080", mux))
@@ -117,6 +120,16 @@ func must(e error) {
 type fixtureTurns struct{ goals, planner, worker, explore int }
 
 func model(target string) http.Handler {
+	return modelWithSelection(target, false)
+}
+
+// selectedModel is a disposable, no-cost fixture for the candidate API E2E.
+// Its initial diagnosis has one goal and one observed fact in a fresh DB.
+func selectedModel(target string) http.Handler {
+	return modelWithSelection(target, true)
+}
+
+func modelWithSelection(target string, selected bool) http.Handler {
 	var mu sync.Mutex
 	turns := map[string]*fixtureTurns{}
 	originPattern := regexp.MustCompile(`https://(?:juice-a|juice-b|juice)\.test:9443`)
@@ -169,6 +182,53 @@ func model(target string) http.Handler {
 		}
 		message := map[string]any{"role": "assistant", "content": "No further approved action."}
 		finish := "stop"
+		if selected && len(names) == 0 {
+			var candidateID int64
+			var text string
+			for _, m := range req.Messages {
+				if m.Role != "user" || json.Unmarshal(m.Content, &text) != nil {
+					continue
+				}
+				var input struct {
+					CandidateID int64 `json:"candidate_id"`
+				}
+				if json.Unmarshal([]byte(text), &input) == nil && input.CandidateID > 0 {
+					candidateID = input.CandidateID
+				}
+			}
+			if candidateID <= 0 {
+				http.Error(w, "selected_candidate_missing", 400)
+				return
+			}
+			var result any
+			all := string(req.Messages[0].Content)
+			if strings.Contains(all, "selected/analysis-v1") {
+				result = map[string]any{"version": "selected/analysis-v1", "candidate_id": candidateID,
+					"claim":              "A product listing may reveal information outside its intended audience.",
+					"normal_explanation": "The listing may be intentionally public.",
+					"existing_call_refs": []string{}, "business_questions": []string{"Is this listing intended to be public?"},
+					"actions":     []any{map[string]any{"purpose": "Compare the current public listing response with the original observation", "method": "GET", "path_hint": "/rest/products/search"}},
+					"limitations": "The target fixture does not define a private listing policy."}
+			} else if strings.Contains(all, "selected/final-v1") {
+				result = map[string]any{"version": "selected/final-v1", "candidate_id": candidateID, "verdict": "insufficient",
+					"claim":                 "A product listing may reveal information outside its intended audience.",
+					"normal_explanation":    "The listing may be intentionally public.",
+					"reason":                "The separate audited read does not establish an unauthorized audience.",
+					"limitations":           "No approved business rule distinguishes a public from a private listing.",
+					"remediation":           "Define the intended audience and restrict the listing only if needed.",
+					"verification_criteria": "Confirm the intended audience, then repeat the same approved read.", "sources": []any{}}
+			} else {
+				http.Error(w, "unexpected_selected_prompt", 400)
+				return
+			}
+			raw, _ := json.Marshal(result)
+			message["content"] = string(raw)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"id": "owned-synthetic", "object": "chat.completion", "model": req.Model,
+				"choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}},
+				"usage":   map[string]int{"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20}})
+			return
+		}
 		tool := func(name, id string, args any) {
 			raw, _ := json.Marshal(args)
 			message = map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{map[string]any{"id": id, "type": "function", "function": map[string]any{"name": name, "arguments": string(raw)}}}}
@@ -199,6 +259,11 @@ func model(target string) http.Handler {
 			turn.planner++
 			if turn.planner == 1 {
 				tool("add_intent", "owned-intent", map[string]any{"intents": []any{map[string]any{"summary": "Observe " + target + "/rest/products/search through the enforced Bash boundary, preserve a manual-review candidate, and verify denial of /outside-approved.", "priority": 5}}})
+			} else if selected && turn.worker >= 3 && names["prove_goal"] {
+				// The dedicated E2E starts with an empty product DB: origin fact 1,
+				// generated goal 2, and the observed read fact 4. Never use this
+				// fixture mode against a persisted or shared installation.
+				tool("prove_goal", "owned-goal-proof", map[string]any{"goal_id": 2, "evidence_id": 4, "reason": "The approved read was observed and its review candidate was saved."})
 			}
 		case names["Bash"]:
 			worker.Add(1)
