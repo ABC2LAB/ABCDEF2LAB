@@ -98,7 +98,7 @@ import { createInitialState, useWb } from "../store";
 import { Markdown } from "../ui/Markdown";
 import { DashboardByMode, LiveByMode, NewScanByMode, ReportByMode, ScopeByMode } from "../views/live/byMode";
 import { UrlFindingLive } from "../views/live/UrlFindingLive";
-import { buildPocMarkdown, entryEp, FindingDetail, LIVE_DETAIL_POLL_MS } from "../views/live/UrlLiveLive";
+import { buildPocMarkdown, entryEp, FindingDetail, flowPauseOf, LIVE_DETAIL_POLL_MS } from "../views/live/UrlLiveLive";
 import {
   BACKUP_CONFIRMED_STATEMENT,
   EXCLUDE_EXAMPLE,
@@ -3797,5 +3797,102 @@ describe("앞 설치 때 열린 탭의 저장 핸들(11/24 화면 VAmPI 발견 5
     expect(screen.queryByText(STALE_BINDING_TEXT)).toBeNull();
     expect(useUrl.getState().uncertain).toBe(true);
     expect(url.readURLHandle(owner)).not.toBeNull();
+  });
+});
+
+describe("흐름 일시정지 → 점검 진행 '일시정지됨'(11/24 화면 VAmPI 발견 10)", () => {
+  const autoJob = { ...running, input: { ...running.input, workflow_mode: "ai_auto_v1" as const } };
+  const flowLimits = {
+    format: "abc2lab.workbench-flow/v1" as const,
+    max_pages: 10,
+    max_endpoints: 64,
+    max_response_bytes: 4096,
+    allow_reversible_writes: false,
+  };
+  function serveFlow(state: { paused: boolean; revision: number; fail?: boolean; stage?: string }) {
+    const prev = vi.mocked(teamApi.apiFetch).getMockImplementation();
+    vi.mocked(teamApi.apiFetch).mockImplementation(async (path, ...rest) => {
+      if (String(path) === `/api/product/workflows/${autoJob.id}`) {
+        if (state.fail) throw new ApiError(503, "workflow_unavailable");
+        return {
+          workflow: {
+            format: "abc2lab.workbench-flow/v1",
+            job_id: autoJob.id,
+            task_id: autoJob.task_id,
+            run_ref: `run-${autoJob.id}`,
+            source_digest: autoJob.source_digest,
+            revision: state.revision,
+            mode: "ai_auto_v1",
+            stage: state.stage ?? "diagnosing",
+            paused: state.paused,
+            initial_completed: true,
+            reversible_writes: false,
+            deep_runs: 1,
+            deep_closed: 0,
+            limits: flowLimits,
+            counts: { found: 3, visited: 3, queued: 0, sent: 3, attempted: 3, unknown: 0, blocked: 0 },
+            endpoints: [],
+            events: [],
+            commands: [],
+            updated_at: "2026-11-24T06:25:50Z",
+          },
+        } as never;
+      }
+      if (prev) return prev(path, ...rest);
+      throw new ApiError(404, "not found");
+    });
+  }
+
+  it("러너 · 다른 탭이 흐름을 일시정지해도 2초 조회로 '일시정지됨'이 뜨고, 재개하면 '진행 중'으로 돌아간다", async () => {
+    saveHandle({ ...handle, input: autoJob.input });
+    u.readURLStatus.mockResolvedValue(autoJob);
+    const flow = { paused: false, revision: 125 };
+    serveFlow(flow);
+    mount("live");
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
+    flow.paused = true;
+    flow.revision = 126;
+    expect(await screen.findByText("일시정지됨", { selector: "h1 + span" }, { timeout: 5000 })).toBeInTheDocument();
+    flow.paused = false;
+    flow.revision = 128;
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" }, { timeout: 5000 })).toBeInTheDocument();
+  }, 15000);
+
+  it("탐색 중(점검 상태 preparing)에 일시정지해도 '일시정지됨'이 뜬다 — 일시정지 버튼이 있는 단계와 같게", async () => {
+    const prepJob = { ...autoJob, state: "preparing" as const };
+    saveHandle({ ...handle, input: prepJob.input });
+    u.readURLStatus.mockResolvedValue(prepJob);
+    serveFlow({ paused: true, revision: 40, stage: "crawling" });
+    mount("live");
+    expect(await screen.findByText("일시정지됨", { selector: "h1 + span" }, { timeout: 5000 })).toBeInTheDocument();
+  }, 15000);
+
+  it("흐름 상태를 다시 읽지 못하면 마지막 스냅숏으로 '진행 중'을 단정하지 않고 '일시정지 여부 확인 중'", async () => {
+    saveHandle({ ...handle, input: autoJob.input });
+    u.readURLStatus.mockResolvedValue(autoJob);
+    const flow: { paused: boolean; revision: number; fail?: boolean } = { paused: false, revision: 125 };
+    serveFlow(flow);
+    mount("live");
+    expect(await screen.findByText("진행 중", { selector: "h1 + span" })).toBeInTheDocument();
+    flow.fail = true;
+    expect(
+      await screen.findByText("일시정지 여부 확인 중", { selector: "h1 + span" }, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    // 다시 읽히면 서버 값대로
+    flow.fail = false;
+    flow.paused = true;
+    flow.revision = 126;
+    expect(await screen.findByText("일시정지됨", { selector: "h1 + span" }, { timeout: 5000 })).toBeInTheDocument();
+  }, 20000);
+});
+
+describe("flowPauseOf — 흐름 일시정지 상태", () => {
+  it("확인된 스냅숏만 paused/running, 못 읽었거나 결과 불명이면 unknown, 흐름 없는 점검은 none", () => {
+    expect(flowPauseOf(true, { paused: true }, true, false)).toBe("paused");
+    expect(flowPauseOf(true, { paused: false }, true, false)).toBe("running");
+    expect(flowPauseOf(true, { paused: false }, false, false)).toBe("unknown");
+    expect(flowPauseOf(true, { paused: true }, true, true)).toBe("unknown");
+    expect(flowPauseOf(true, null, false, false)).toBe("none");
+    expect(flowPauseOf(false, { paused: true }, true, false)).toBe("none");
   });
 });
