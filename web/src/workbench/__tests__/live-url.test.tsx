@@ -2629,6 +2629,49 @@ describe("레일 (URL 진단)", () => {
 });
 
 describe("대시보드 · 인증 (URL 진단)", () => {
+  it("점검 정보 '보낸 요청'은 대상에 나간 요청 총계(e2-flow target_requests), 마우스 올리면 내역(사용자 11/25)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(running);
+    const prev = vi.mocked(teamApi.apiFetch).getMockImplementation();
+    vi.mocked(teamApi.apiFetch).mockImplementation(async (path, ...rest) => {
+      if (String(path).startsWith(`/api/tasks/${running.task_id}/e2-flow`))
+        return {
+          format: "abc2lab.e2-flow-view/v1",
+          journal: "verified",
+          last_index: 0,
+          more: false,
+          omitted_calls: 0,
+          counts: {
+            attempts: 56,
+            allowed: 56,
+            denied: 0,
+            unsupported: 0,
+            forward_attempted: 56,
+            responses: 56,
+            unknown: 0,
+            transient: 0,
+            withheld: 0,
+            calls: 0,
+          },
+          calls: [],
+          target_requests: {
+            model: 50,
+            login: 6,
+            confirmation: 0,
+            unclassified: 0,
+            exploration: 0,
+            exploration_state: "none",
+            total: 56,
+          },
+        } as never;
+      if (prev) return prev(path, ...rest);
+      throw new ApiError(404, "not found");
+    });
+    mount("dashboard");
+    const sent = await screen.findByTitle("모델 50 · 로그인 6");
+    expect(sent).toHaveTextContent(/^56건/);
+  });
+
   it("대시보드: 이어 보는 진단은 진행 중인 점검에 한 줄, 상세에서 알맞은 화면으로 간다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue(running);
