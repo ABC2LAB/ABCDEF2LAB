@@ -169,6 +169,33 @@ intent 행의 `complete`는 송신 전 감사의 초기 값이며 응답 성공�
 
 분류 규칙(fail-closed): "차단"은 `forward_attempted`가 false일 때만이다. 송신을 시도한 뒤의 거부·실패는 불명으로 보인다. 모르는 `reason`·`stage` 값은 불명이다. `transport_failed`는 대상에 닿지 않은 송신 실패이고 결과 불명과 따로 보인다(C02). 이 사유의 `forward_attempted=true`는 연결 시도를 포함하며 요청 송신의 증거가 아니다. `request_written=false && response_received=false`이면 연결 시도 여부와 관계없이 송신 실패로 표시한다. 연결 뒤 끊김은 서버가 `unknown`으로 남긴다.
 
+### 4.1 요청 전체 기록과 요청 상세 (2026-11-25)
+
+e2-flow와 같은 결속·정책 확인을 지나, 검증한 E② 저널만 읽는 두 경로다. 끝난 점검도 회차 디렉터리가 남아 있는 동안 읽힌다(작업 권한 확인은 점검 상태와 무관하다). 그 운영자·그 작업만 받는다(브리지 작업 권한 → 실행 쪽 작업 결속 확인). 저널 형식은 바꾸지 않는다(합성 확인의 저널 대조 기준선·동결, 사용자 결정). 크기·헤더 이름은 측정 뒤 후보다([개발 계획](../development-plan.md) '측정 뒤 다음 단계').
+
+**전체 기록** `GET /api/tasks/{id}/e2-flow/requests?cursor=&limit=` (형식 `abc2lab.e2-flow-requests/v1`)
+
+- 줄: 대상에 요청을 보낸 시도(결과 행이 `request_written`)만, 시도마다 마지막 결과 행 하나, 저널 순서. 모양은 흐름 이벤트 줄과 같다: `at`·`kind`·`method`·`path`(시도별 화면용 경로 틀, 가린 값)·`status`·`call_ref`·`attempt_id`, 그리고 쪽 넘김용 `index`.
+- `kind`: `request`(모델 진단 요청) · `auth_prep` · `refresh_session`(프로그램 로그인) · `confirmation`(E③ 확정) · `unclassified`(이 판이 모르는 프로그램 호출 종류).
+- `total`: 보낸 시도 전체 수다. e2-flow `target_requests`의 `model + login + confirmation + unclassified`와 같다(시험 `TestE2RequestsPagesMatchFlowTargetRequests`). 탐색 요청은 E② 저널에 없어 여기 없다.
+- `limit` 기본 100·최대 200, `cursor`는 앞 쪽 마지막 줄의 `index`다. 다음 쪽이 있으면 `next_cursor`가 붙는다. 그 밖의 조회 조건·중복·형식이 틀린 값은 400이다.
+
+**요청 상세** `GET /api/tasks/{id}/e2-flow/requests/{call_ref}/{attempt_id}` (형식 `abc2lab.e2-flow-request/v1`, 조회 조건 없음)
+
+- 칸: `kind`·`index`·`at`·`method`·`path_pattern`·`rule_ref`·`decision`·`reason`·`status_code`·`forward_attempted`·`request_written`·`response_received`·`response_complete`·`response_truncated`. 그 시도의 마지막 결과 행(없으면 의도 행)이다. 보내지 않은 시도도 저널에 있으면 열린다.
+- `request_headers`·`request_body`·`response_headers`·`response_body`: 늘 `{"state":"not_stored"}`다. E② 저널은 헤더·본문·크기·경로 원문을 저장하지 않는다. 저장 기록 가림(시험 계정 비밀번호 정확값·세션 토큰·쿠키)이 걸릴 값 자체가 응답에 없다.
+
+**못 읽는 경우의 이유 코드** (JSON `{"reason": ...}`)
+
+| 상태 | `reason` | 뜻 |
+|---|---|---|
+| 404 | `not_found` | 이 회차 저널에 그 호출·시도가 없다 |
+| 404 | `not_journaled` | 이 회차에 E② 저널이 아직 없다(실행 전이거나 전송 통제를 거치지 않은 회차) |
+| 409 | `journal_invalid` | 저널이 있지만 실행 감사 키로 검증하지 못했다(내용을 보이지 않는다) |
+| 403 | (브리지·실행 쪽 권한 응답) | 권한 없음: 다른 운영자·결속되지 않은 작업 |
+
+탐색 단계 줄(탐색 경계를 지난 요청)은 E② 저널에 없다. 화면은 그 줄을 '탐색 단계 · 탐색 경계 통과 · 요청 원문 기록 없음'으로 보인다(상세를 열지 않는다).
+
 ## 5. 커버리지 — 1단계는 기존 워크플로 snapshot
 
 `GET /api/product/workflows/{job}`의 snapshot `endpoints`(방문 `visited`·선택 `selected`·상태 `status`·관찰 오류 `observation_error`·발견 출처)와 `counts`로 그린다. 새 집계 API는 snapshot으로 그릴 수 없는 칸이 생기면 그때 이 문서에 더한다.

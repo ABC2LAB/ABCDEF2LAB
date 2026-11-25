@@ -46,10 +46,15 @@ func liveDataView(path string) string {
 		return ""
 	}
 	parts := strings.Split(tail, "/")
-	if len(parts) != 2 || parts[1] != "control-policy" && parts[1] != "e2-flow" {
-		return ""
+	switch {
+	case len(parts) == 2 && (parts[1] == "control-policy" || parts[1] == "e2-flow"):
+		return parts[1]
+	case len(parts) == 3 && parts[1] == "e2-flow" && parts[2] == "requests":
+		return e2RequestsView
+	case len(parts) == 5 && parts[1] == "e2-flow" && parts[2] == "requests":
+		return e2RequestView
 	}
-	return parts[1]
+	return ""
 }
 
 var errRunNotBound = errors.New("run_not_bound")
@@ -430,6 +435,10 @@ func serveLiveDataWith(w http.ResponseWriter, r *http.Request, runsDir, jobID, v
 		return
 	}
 	defer b.Close()
+	if view == e2RequestsView || view == e2RequestView {
+		serveE2Requests(w, r, b, view)
+		return
+	}
 	var out any
 	if view == "control-policy" {
 		out = controlPolicyOf(b)

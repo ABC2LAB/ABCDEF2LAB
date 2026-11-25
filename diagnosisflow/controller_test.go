@@ -789,3 +789,41 @@ func TestHTTPTargetFlowKeepsSchemeInOrigin(t *testing.T) {
 		t.Fatal("ftp target accepted")
 	}
 }
+
+// 요청을 보낸 관찰 줄(kind=request)에만 E② 호출·시도 식별자가 붙는다. 다시 보낸 요청은 시도마다 다른 식별자다(2026-11-25).
+func TestRequestEventsCarryCallAndAttemptOnlyWhenSent(t *testing.T) {
+	c, _ := flowFixture(t, Manual)
+	syntheticCrawl(t, c)
+	// 승인 범위·선택 판단에서 막혀 보내지 않은 시도도 관찰 줄은 남는다(식별자 없이).
+	view := e2proxy.RequestView{Method: "GET", URL: "https://owned.test/read/item"}
+	denied := e2proxy.Receipt{AttemptID: "denied-attempt", CallRef: "owned-call", Decision: "denied", NotSent: true}
+	if err := c.After(t.Context(), view, denied); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := c.Snapshot()
+	seen := map[string]bool{}
+	var sent, unsent int
+	for _, e := range s.Events {
+		if e.Kind != "request" {
+			if e.CallRef != "" || e.AttemptID != "" {
+				t.Fatalf("요청 아닌 줄에 식별자 %+v", e)
+			}
+			continue
+		}
+		if e.AttemptID == "" {
+			if e.CallRef != "" {
+				t.Fatalf("시도 없이 호출 식별자만 %+v", e)
+			}
+			unsent++
+			continue
+		}
+		if e.CallRef != "owned-call" || seen[e.AttemptID] {
+			t.Fatalf("보낸 줄 식별자 %+v", e)
+		}
+		seen[e.AttemptID] = true
+		sent++
+	}
+	if sent != 2 || unsent != 1 {
+		t.Fatalf("보낸 줄 %d개·안 보낸 줄 %d개", sent, unsent)
+	}
+}

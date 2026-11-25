@@ -127,7 +127,8 @@ func liveGet(t *testing.T, runsDir, path string) (*httptest.ResponseRecorder, ma
 }
 
 func TestLiveDataViewPaths(t *testing.T) {
-	for path, want := range map[string]string{"/api/tasks/9/control-policy": "control-policy", "/api/tasks/9/e2-flow": "e2-flow", "/api/tasks/9/access-map": "", "/api/tasks/9/e2-flow/x": "", "/api/report/e2-flow": ""} {
+	for path, want := range map[string]string{"/api/tasks/9/control-policy": "control-policy", "/api/tasks/9/e2-flow": "e2-flow", "/api/tasks/9/access-map": "", "/api/tasks/9/e2-flow/x": "", "/api/report/e2-flow": "",
+		"/api/tasks/9/e2-flow/requests": e2RequestsView, "/api/tasks/9/e2-flow/requests/call/" + strings.Repeat("a", 32): e2RequestView, "/api/tasks/9/e2-flow/requests/call": "", "/api/tasks/9/control-policy/requests": ""} {
 		if got := liveDataView(path); got != want {
 			t.Errorf("%s: %q", path, got)
 		}
