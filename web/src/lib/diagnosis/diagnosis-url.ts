@@ -1,5 +1,5 @@
 import { ApiError, apiFetch } from "./api";
-import { preservesURLRunTiming, sameURLRunTime, validURLRunTiming } from "./diagnosis-run-timing";
+import { preservesURLRunTiming, sameURLRunTime, validURLRunTiming, validUTCInstant } from "./diagnosis-run-timing";
 import { validTaskID } from "./first-diagnosis";
 
 const base = "/api/diagnoses/v2";
@@ -136,6 +136,8 @@ export type URLDiagnosisJob = {
   diagnostic_log_incomplete?: true;
   /** 시험 계정별 인증 준비 결과(§3.4, C14 S08). completed·cancelled·failed, 계정 결속 실행만. 자격·세션 값은 없다. */
   account_auth?: URLAccountAuth;
+  /** 계정별 account_auth 가 마지막으로 바뀐 시각(RFC3339Nano UTC, 키가 account_auth 와 같음). 계약 §2 표 · §3.4 */
+  account_auth_updated_at?: Record<string, string>;
 };
 export type URLIntentOutcomes = {
   done: number;
@@ -519,13 +521,16 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     "intent_outcomes",
     "diagnostic_log_incomplete",
     "account_auth",
+    "account_auth_updated_at",
   ]);
   if (!validURLRunTiming(d)) return invalid();
   if (d.diagnostic_log_incomplete !== undefined && (d.diagnostic_log_incomplete !== true || d.state !== "completed"))
     return invalid();
   // §3.4·§3 "있는 state" 밖에서 오면 거부한다. 모드(워크플로·외부 API)로는 거부하지 않는다(계약 §3.2 account_auth 행).
-  if (d.account_auth !== undefined && !["completed", "cancelled", "failed"].includes(String(d.state))) return invalid();
+  // 2026-11-25부터 인증 준비가 끝난 뒤의 running · stopping 에도 싣는다(#936). 준비 중 · 결과 불명에는 없다.
+  if (d.account_auth !== undefined && !ACCOUNT_AUTH_STATES.includes(String(d.state))) return invalid();
   const auth = d.account_auth === undefined ? undefined : accountAuth(d.account_auth);
+  const authAt = accountAuthTimes(auth, d.account_auth_updated_at, String(d.state));
   const outcomes = d.intent_outcomes === undefined ? undefined : intentOutcomes(d.intent_outcomes);
   if (!validRunResult(String(d.state), d.outcome, d.closing_reason, outcomes)) return invalid();
   const input = parseInput(d.input);
@@ -587,6 +592,7 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     ...(outcomes ? { intent_outcomes: outcomes } : {}),
     ...(d.diagnostic_log_incomplete === true ? { diagnostic_log_incomplete: true as const } : {}),
     ...(auth ? { account_auth: auth } : {}),
+    ...(authAt ? { account_auth_updated_at: authAt } : {}),
   };
 }
 function intentOutcomes(v: unknown): URLIntentOutcomes {
@@ -607,6 +613,33 @@ function intentOutcomes(v: unknown): URLIntentOutcomes {
 /** 계정별 인증 결과 맵(§3.4). 라벨은 서버 등록 라벨 규칙 그대로(`diagnosisprep.ValidAccountLabel`: 영숫자로 시작,
  *  소문자·숫자·_·- 32자), 값은 결과 enum뿐, 1…16개. 자격·세션 값은 안 받는다. 서버가 만들 수 없는 라벨은 계약 밖이다. */
 const ACCOUNT_LABEL = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+/** account_auth 를 실을 수 있는 상태(서버 diagnosisprep accountAuthState 와 같음). */
+const ACCOUNT_AUTH_STATES: readonly string[] = ["running", "stopping", "completed", "cancelled", "failed"];
+/** 실행 중 상태: account_auth 가 오면 변경 시각도 반드시 같이 온다(#936). 끝난 상태는 시각 없는 옛 기록도 받는다. */
+const ACCOUNT_AUTH_LIVE_STATES: readonly string[] = ["running", "stopping"];
+
+/**
+ * account_auth_updated_at: account_auth 와 키가 정확히 같고 값은 서버 RFC3339Nano UTC 시각(서버 validAccountAuthTimes).
+ * account_auth 없이 시각만 오면 거부한다. 시각이 없으면 끝난 상태만 받는다 — 칸이 생기기 전(#936 이전) 끝난 점검의 기록.
+ */
+function accountAuthTimes(
+  auth: URLAccountAuth | undefined,
+  v: unknown,
+  state: string,
+): Record<string, string> | undefined {
+  if (v === undefined) return auth && ACCOUNT_AUTH_LIVE_STATES.includes(state) ? invalid() : undefined;
+  if (!auth || !object(v)) return invalid();
+  const labels = Object.keys(auth);
+  if (Object.keys(v).length !== labels.length) return invalid();
+  const out: Record<string, string> = {};
+  for (const label of labels) {
+    const at = Object.hasOwn(v, label) ? v[label] : undefined;
+    if (!validUTCInstant(at)) return invalid();
+    out[label] = at;
+  }
+  return out;
+}
+
 function accountAuth(v: unknown): URLAccountAuth {
   if (!object(v)) return invalid();
   const labels = Object.keys(v);
