@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -34,6 +36,20 @@ type E2HTTPFileAuth struct {
 type E2HTTPFileAuthAccount struct {
 	Label      string        `json:"label"`
 	Credential E2HTTPFilePin `json:"credential"`
+}
+
+// CandidateAccountRevision is a non-secret stable reference for one marked
+// test account and one credential-file revision. The credential file includes
+// a random nonce, so its SHA-256 is not an unsalted password verifier.
+func CandidateAccountRevision(label, credentialSHA256 string) string {
+	if !diagnosisprep.ValidAccountLabel(label) || len(credentialSHA256) != 64 {
+		return ""
+	}
+	if _, err := hex.DecodeString(credentialSHA256); err != nil {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(label + "\x00" + credentialSHA256))
+	return hex.EncodeToString(sum[:])
 }
 
 // 인증 준비 결과(실행 기록의 account_auth 값)다. 세션 값은 여기에 없다.
@@ -233,6 +249,43 @@ func (s *e2HTTPSessionStore) snapshot() E2HTTPSessions {
 		out[label] = header.Clone()
 	}
 	return out
+}
+
+// matchSentAccount inspects only the protected in-memory sessions and the
+// actual headers passed to the target. A claimed label or matching header
+// category alone is never account proof. Ambiguous matches fail closed.
+func (s *e2HTTPSessionStore) matchSentAccount(sent http.Header, customHeader string) (string, bool) {
+	if s == nil || sent == nil {
+		return "", false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	matched := ""
+	for label, session := range s.sessions {
+		if len(session) == 0 || s.bindings[label] == "" {
+			continue
+		}
+		equal := true
+		for key, values := range session {
+			if !slices.Equal(sent.Values(key), values) {
+				equal = false
+				break
+			}
+		}
+		for _, key := range []string{"Authorization", "Cookie", customHeader} {
+			if key != "" && len(sent.Values(key)) > 0 && len(session.Values(key)) == 0 {
+				equal = false
+			}
+		}
+		if !equal {
+			continue
+		}
+		if matched != "" {
+			return "", false
+		}
+		matched = label
+	}
+	return matched, matched != ""
 }
 
 // e2HTTPProgramCalls는 서버가 연 E② 호출(인증 준비 등)이다. Worker Bash 결과가 없으므로 마감 때 E② 기록의 최종·감사

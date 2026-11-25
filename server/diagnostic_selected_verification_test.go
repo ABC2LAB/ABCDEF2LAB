@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
@@ -113,41 +112,26 @@ func TestSelectedVerificationKeepsCandidateWithoutAutomaticVerdictPostgres(t *te
 		t.Fatal(err)
 	}
 	context, err := ReadCandidateSelectedContext(t.Context(), s.m.pg.DB, selectedID)
-	if err != nil || context.Candidate.ID != id || len(context.Observations) != 2 || context.RunRef != passiveRunRef ||
-		context.OriginalObservation == nil || context.OriginalObservation.Source.CallRef != context.Candidate.CallRef {
-		t.Fatalf("selected context did not bind original evidence: count=%d err=%v", len(context.Observations), err)
-	}
-	changed := append([]candidateverify.StoredObservationV2(nil), context.Observations...)
-	var withoutOriginal []candidateverify.StoredObservationV2
-	for i := range changed {
-		if changed[i].Source.CallRef == context.Candidate.CallRef {
-			changed[i].Source.Observation.StatusCode++
-		} else {
-			withoutOriginal = append(withoutOriginal, context.Observations[i])
-		}
-	}
-	if _, err := selectedOriginalObservation(context.Candidate, changed); err == nil {
-		t.Fatal("candidate's original call accepted with changed observation")
-	}
-	if missing, err := selectedOriginalObservation(context.Candidate, withoutOriginal); err != nil || missing != nil {
-		t.Fatal("missing original call was represented as available")
+	if err != nil || context.Candidate.ID != id || len(context.Observations) != 0 || context.RunRef != passiveRunRef ||
+		context.OriginalObservation != nil || !context.SourceUnavailable {
+		t.Fatalf("unsealed legacy observation was exposed: count=%d err=%v", len(context.Observations), err)
 	}
 	context.Candidate.Summary = "Observed concern; password=synthetic-model-secret"
 	modelRequest, err := BuildCandidateAnalysisRequest(context, 512)
 	if err != nil || modelRequest.MaxTokens != 512 || len(modelRequest.Tools) != 0 || len(modelRequest.Messages) != 1 ||
 		strings.Contains(modelRequest.Messages[0].Text(), "synthetic-model-secret") ||
-		!strings.Contains(modelRequest.Messages[0].Text(), `"original_observation_available":true`) {
+		!strings.Contains(modelRequest.Messages[0].Text(), `"original_observation_available":false`) {
 		t.Fatal("selected model context has unsafe tools, missing provenance, or a synthetic secret")
 	}
 	if _, err := BuildCandidateAnalysisRequest(context, 0); err == nil {
 		t.Fatal("model request without an installed output cap was accepted")
 	}
-	proposal := fmt.Sprintf(`{"version":"selected/analysis-v1","candidate_id":%d,"claim":"검토 대상","normal_explanation":"정상 설명 가능","existing_call_refs":[%q],"business_questions":["이 접근이 의도된 정책인가요?"],"actions":[{"purpose":"관찰 비교","method":"GET","path_hint":"/books/v1"}],"limitations":"원문 입력은 저장되지 않음"}`,
-		id, context.Candidate.CallRef)
+	proposal := fmt.Sprintf(`{"version":"selected/analysis-v1","candidate_id":%d,"claim":"검토 대상","normal_explanation":"정상 설명 가능","existing_call_refs":[],"business_questions":["이 접근이 의도된 정책인가요?"],"actions":[{"purpose":"관찰 비교","method":"GET","path_hint":"/books/v1"}],"limitations":"원문 입력은 저장되지 않음"}`,
+		id)
 	if _, err := ParseCandidateAnalysisProposal([]byte(proposal), context); err != nil {
 		t.Fatal("bound synthetic analysis proposal rejected")
 	}
-	if _, err := ParseCandidateAnalysisProposal([]byte(strings.Replace(proposal, context.Candidate.CallRef, "other-candidate-call", 1)), context); err == nil {
+	if _, err := ParseCandidateAnalysisProposal([]byte(strings.Replace(proposal, `"existing_call_refs":[]`, `"existing_call_refs":["other-candidate-call"]`, 1)), context); err == nil {
 		t.Fatal("unobserved model source accepted")
 	}
 	if _, err := ParseCandidateAnalysisProposal([]byte(strings.TrimSuffix(proposal, "}")+`,"verdict":"confirmed"}`), context); err == nil {
@@ -455,31 +439,23 @@ func TestSelectedAnalysisPersistsWithoutChangingVerdictPostgres(t *testing.T) {
 		candidateVerificationLLMPlanHTTP(response, req, s.m.pg.DB, func(*http.Request) (string, error) { return "ARTEX", nil }, owner)
 		return response
 	}
-	if planned := requestPlan(planBody); planned.Code != 200 {
-		t.Fatalf("model action plan unavailable: %d", planned.Code)
-	}
-	if planned := requestPlan(planBody); planned.Code != 200 {
-		t.Fatalf("model action plan not idempotent: %d", planned.Code)
+	if planned := requestPlan(planBody); planned.Code != 409 || !strings.Contains(planned.Body.String(), "candidate_original_observation_unavailable") {
+		t.Fatalf("unverifiable original acquired an execution plan: %d %s", planned.Code, planned.Body.String())
 	}
 	page = candidateVerificationPage{}
 	if planned := invoke(http.MethodGet, ""); planned.Code != 200 || json.Unmarshal(planned.Body.Bytes(), &page) != nil ||
-		page.Verifications[0].Latest.State != "awaiting_approval" || page.Verifications[0].LLMPlan == nil ||
-		page.Verifications[0].LLMPlan.Actions[0].ExactPath != "/books/v1" || page.Verifications[0].Latest.Verdict != nil {
-		t.Fatalf("planned action is not reviewable: %d", planned.Code)
+		page.Verifications[0].Latest.State != "analysis_ready" || page.Verifications[0].LLMPlan != nil || page.Verifications[0].Latest.Verdict != nil {
+		t.Fatalf("unverifiable action changed history: %d", planned.Code)
 	}
 	if report := reportRequest("GET", fmt.Sprintf("/api/report/diagnostic?task=%d&audience=internal", taskID), ""); report.Code != 200 {
-		t.Fatalf("pending action blocked report: %d", report.Code)
+		t.Fatalf("unverifiable action blocked report: %d", report.Code)
 	}
-	decisionPath := path + "/" + page.Verifications[0].ID + "/decision"
-	decisionRequest := httptest.NewRequest(http.MethodPost, decisionPath, strings.NewReader(fmt.Sprintf(`{"plan_digest":%q,"decision":"rejected"}`, page.Verifications[0].PlanDigest)))
-	decisionRequest.Header.Set("Content-Type", "application/json")
-	rejected := httptest.NewRecorder()
-	candidateVerificationDecisionHTTP(rejected, decisionRequest, s.m.pg.DB, func(*http.Request) (string, error) { return "ARTEX", nil }, owner)
-	if rejected.Code != 200 {
-		t.Fatalf("model action rejection failed: %d", rejected.Code)
-	}
-	if rejectedHistory := invoke(http.MethodGet, ""); rejectedHistory.Code != 200 {
-		t.Fatalf("rejected action broke history: %d", rejectedHistory.Code)
+	cancelFirst := httptest.NewRequest(http.MethodPost, path+"/"+page.Verifications[0].ID+"/cancel", strings.NewReader(`{}`))
+	cancelFirst.Header.Set("Content-Type", "application/json")
+	cancelledFirst := httptest.NewRecorder()
+	candidateVerificationCancelHTTP(cancelledFirst, cancelFirst, s.m.pg.DB, func(*http.Request) (string, error) { return "ARTEX", nil }, owner)
+	if cancelledFirst.Code != 200 {
+		t.Fatalf("unverifiable selection could not be cancelled: %d", cancelledFirst.Code)
 	}
 	if _, err := s.m.pg.ExecContext(t.Context(), `UPDATE diagnostic_candidate_verification_analyses SET proposal_digest=repeat('0',64) WHERE request_id=$1`, requestID); err != nil {
 		t.Fatal(err)
@@ -493,10 +469,13 @@ func TestSelectedAnalysisPersistsWithoutChangingVerdictPostgres(t *testing.T) {
 	if _, err := s.m.pg.ExecContext(t.Context(), `UPDATE diagnostic_candidate_verification_analyses SET proposal_digest=$2 WHERE request_id=$1`, requestID, page.Verifications[0].Analysis.Digest); err != nil {
 		t.Fatal(err)
 	}
+	if restored := invoke(http.MethodGet, ""); restored.Code != 200 {
+		t.Fatalf("restored analysis remained unreadable: %d %s digest=%q", restored.Code, restored.Body.String(), page.Verifications[0].Analysis.Digest)
+	}
 	second := invoke(http.MethodPost, fmt.Sprintf(`{"request_id":"analysis-test-2","evidence_digest":"%s"}`, rows[0].EvidenceDigest))
 	var secondPage candidateVerificationPage
 	if second.Code != 200 || json.Unmarshal(second.Body.Bytes(), &secondPage) != nil || len(secondPage.Verifications) != 2 {
-		t.Fatal("second analysis request unavailable")
+		t.Fatalf("second analysis request unavailable: status=%d body=%s history=%d", second.Code, second.Body.String(), len(secondPage.Verifications))
 	}
 	secondID, err := strconv.ParseInt(secondPage.Verifications[0].ID, 10, 64)
 	if err != nil {

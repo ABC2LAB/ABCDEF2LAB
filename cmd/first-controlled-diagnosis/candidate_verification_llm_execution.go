@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
+	"sort"
 	"strconv"
 	"time"
 
@@ -32,9 +34,15 @@ func candidateLLMRuntimeSeconds(planSeconds int, installedSeconds, workerTimeout
 }
 
 func candidateLLMReadRule(ref, origin, connectIP, spki string, action server.CandidateLLMPlanAction) server.E2HTTPFileRule {
+	queryKeys := make([]string, 0, len(action.Query))
+	for key := range action.Query {
+		queryKeys = append(queryKeys, key)
+	}
+	sort.Strings(queryKeys)
 	return server.E2HTTPFileRule{Ref: ref, Origin: origin, ConnectIP: connectIP,
 		PathPrefix: action.ExactPath, PathMatch: "exact", PathScopeRef: ref, Methods: []string{action.Method},
-		ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}},
+		ExactQuery: server.CandidateActionQuery(action.Query), RequestHeaders: action.Headers, StrictHeaders: true,
+		ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: queryKeys, JSONFields: []string{}},
 		TLSSPKISHA256:   spki}
 }
 
@@ -128,8 +136,7 @@ WHERE id=$1 AND method='llm/v1'`, requestID).Scan(&originalTaskID, &evidenceDige
 		return errPreparation
 	}
 	defer l.clearMaterials()
-	if l.productTarget == nil || l.productRegistry == nil || l.policy.Auth != nil || l.policy.HeaderMode != e2proxy.HeaderPreserve ||
-		len(l.productAccounts) != 0 || l.externalTestAccounts {
+	if l.productTarget == nil || l.productRegistry == nil {
 		return errPreparation
 	}
 	ledger, ok := b.endpoint.(interface {
@@ -159,10 +166,65 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 	if err != nil || currentTarget == nil || !server.CandidateLLMPlanStillApproved(time.Now().UTC(), plan, ownerResp.Job.Input, *ownerResp.Job.Scope, *currentTarget) || l.current() != nil {
 		return errPreparation
 	}
+	if plan.AccountRef == "" {
+		if plan.AuthPreparation != nil {
+			return errPreparation
+		}
+		// The original was anonymous. Account material is unnecessary for a
+		// read-only follow-up and must not be copied into its authority root.
+		if l.policy.Auth != nil {
+			for _, account := range l.policy.Auth.Accounts {
+				if raw := l.materials[account.Credential.File]; raw != nil {
+					clear(raw)
+					delete(l.materials, account.Credential.File)
+				}
+			}
+		}
+		l.policy.Auth = nil
+		l.productAccounts = nil
+		l.policy.HeaderMode = e2proxy.HeaderPreserve
+	} else {
+		if l.policy.Auth == nil || plan.AuthPreparation == nil || l.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough ||
+			l.policy.Auth.Login.Method != plan.AuthPreparation.Method || l.policy.Auth.Login.Path != plan.AuthPreparation.ExactPath ||
+			server.CandidateLoginDigest(l.policy.Auth.Login) != plan.AuthPreparation.LoginDigest {
+			return errPreparation
+		}
+		var selected *server.E2HTTPFileAuthAccount
+		var selectedRun *productRunAccount
+		for i := range l.policy.Auth.Accounts {
+			account := &l.policy.Auth.Accounts[i]
+			if server.CandidateAccountRevision(account.Label, account.Credential.SHA256) == plan.AccountRef {
+				if selected != nil {
+					return errPreparation
+				}
+				selected = account
+			}
+		}
+		for i := range l.productAccounts {
+			account := &l.productAccounts[i]
+			if server.CandidateAccountRevision(account.Label, account.CredentialSHA256) == plan.AccountRef {
+				selectedRun = account
+			}
+		}
+		if selected == nil || selectedRun == nil || selected.Label != selectedRun.Label ||
+			selected.Credential.SHA256 != selectedRun.CredentialSHA256 {
+			return errPreparation
+		}
+		for _, account := range l.policy.Auth.Accounts {
+			if account.Label != selected.Label {
+				if raw := l.materials[account.Credential.File]; raw != nil {
+					clear(raw)
+					delete(l.materials, account.Credential.File)
+				}
+			}
+		}
+		l.policy.Auth.Accounts = []server.E2HTTPFileAuthAccount{*selected}
+		l.policy.Auth.PasswordResponse = e2proxy.PasswordResponseMaskSpans
+		l.productAccounts = []productRunAccount{*selectedRun}
+		l.policy.SelectedAccountRef = plan.AccountRef
+	}
 	l.policy.Workflow = nil
-	l.policy.Auth = nil
 	l.policy.E3WriteConsent, l.policy.E3Resettable = false, false
-	l.policy.HeaderMode = e2proxy.HeaderPreserve
 	l.policy.ApprovalMode = e2proxy.ApprovalPreauthorizedScope
 	l.policy.CaseRef = digest
 	l.policy.Rules = nil
@@ -172,6 +234,18 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 			l.productTarget.Target.TLSSPKISHA256, action))
 	}
 	count := len(plan.Actions)
+	if l.policy.Auth != nil {
+		login := l.policy.Auth.Login
+		l.policy.Rules = append(l.policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: plan.Origin,
+			ConnectIP: l.productTarget.SelectedIP, PathPrefix: login.Path, PathScopeRef: "auth-login-path",
+			Methods: []string{login.Method}, Purpose: e2proxy.PurposeAuthPrep,
+			ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}},
+			TLSSPKISHA256:   l.productTarget.Target.TLSSPKISHA256})
+		count++
+	}
+	if count != plan.MaxRequests {
+		return errPreparation
+	}
 	if l.profile.Budget.Requests < int64(count) || l.profile.Budget.DurationSeconds < 1 ||
 		l.policy.MaxRequests < uint64(count) || l.policy.Limits.MaxAttempts < uint64(count) ||
 		l.policy.Limits.MaxCalls < count || l.policy.Runtime.MaxToolCalls < count {
@@ -254,16 +328,22 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 	phase = "authority_validation"
 	rawPolicy, _, err := urlReadPin(launch.HTTP.PolicyFile, 256<<10, false)
 	var issued server.E2HTTPFilePolicy
-	if err != nil || e2config.StrictJSON(rawPolicy, &issued) != nil || len(issued.Rules) != len(plan.Actions) ||
+	if err != nil || e2config.StrictJSON(rawPolicy, &issued) != nil || len(issued.Rules) != count ||
 		issued.CaseRef != digest || issued.RunRef != issuedScope.RunRef || issued.ResetRef != issuedScope.ResetRef ||
-		issued.PolicyRef != issuedScope.PolicyRef || issued.Auth != nil || issued.E3WriteConsent || issued.E3Resettable ||
+		issued.PolicyRef != issuedScope.PolicyRef || issued.SelectedAccountRef != plan.AccountRef || issued.E3WriteConsent || issued.E3Resettable ||
 		issued.Limits.E3ConfirmationRequests == nil || *issued.Limits.E3ConfirmationRequests != 0 {
+		clear(rawPolicy)
+		runtimePool.Close()
+		return errPreparation
+	}
+	if (plan.AccountRef == "") != (issued.Auth == nil) {
 		clear(rawPolicy)
 		runtimePool.Close()
 		return errPreparation
 	}
 	for i, action := range plan.Actions {
 		if issued.Rules[i].Purpose != "" || issued.Rules[i].Credentials != nil || issued.Rules[i].PathMatch != "exact" || issued.Rules[i].PathPrefix != action.ExactPath ||
+			issued.Rules[i].ExactQuery != server.CandidateActionQuery(action.Query) || !maps.Equal(issued.Rules[i].RequestHeaders, action.Headers) || !issued.Rules[i].StrictHeaders ||
 			len(issued.Rules[i].Methods) != 1 || issued.Rules[i].Methods[0] != action.Method {
 			clear(rawPolicy)
 			runtimePool.Close()
@@ -290,6 +370,13 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 		target, _, err := b.product.targets.view("ARTEX", current.TargetID)
 		if err != nil || target == nil || !server.CandidateLLMPlanStillApproved(time.Now(), current, fresh.Job.Input, *fresh.Job.Scope, *target) {
 			return errPreparation
+		}
+		if current.AuthPreparation != nil {
+			login, loginErr := b.product.targets.targetLogin("ARTEX", current.TargetID)
+			if loginErr != nil || login == nil || login.Method != current.AuthPreparation.Method || login.Path != current.AuthPreparation.ExactPath ||
+				server.CandidateLoginDigest(*login) != current.AuthPreparation.LoginDigest {
+				return errPreparation
+			}
 		}
 		var latest string
 		if pool.QueryRowContext(call, `SELECT process_state FROM diagnostic_candidate_verification_events WHERE request_id=$1 ORDER BY step DESC LIMIT 1`, requestID).Scan(&latest) != nil || latest != "running" {

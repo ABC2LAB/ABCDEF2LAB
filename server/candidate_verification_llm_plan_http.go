@@ -118,6 +118,12 @@ WHERE q.id=$1 AND q.task_id=$2 AND q.candidate_id=$3 AND q.method='llm/v1' FOR U
 		candidateVerificationError(w, 409, "analysis_changed")
 		return
 	}
+	for _, action := range analysis.Proposal.Actions {
+		if action.Method != http.MethodGet && action.Method != http.MethodHead {
+			candidateVerificationError(w, 409, "candidate_action_method_unsupported")
+			return
+		}
+	}
 	if _, err := readCandidateBusinessAnswers(ctx, tx, requestID, *analysis); err != nil {
 		candidateVerificationError(w, 503, "business_answer_integrity_failed")
 		return
@@ -129,7 +135,25 @@ WHERE q.id=$1 AND q.task_id=$2 AND q.candidate_id=$3 AND q.method='llm/v1' FOR U
 		candidateVerificationError(w, 503, "verification_target_unavailable")
 		return
 	}
-	plan, digest, err := makeCandidateLLMPlan(time.Now().UTC(), candidate, *analysis, ownerResp.Job.Input, *ownerResp.Job.Scope, *targetResp.Product.Target)
+	originalContext, contextErr := readCandidatePlanOriginal(ctx, pool, requestID)
+	if contextErr != nil || originalContext.Candidate.ID != candidate.ID || originalContext.Candidate.EvidenceDigest != candidate.EvidenceDigest ||
+		originalContext.OriginalObservation == nil {
+		candidateVerificationError(w, 409, "candidate_original_observation_unavailable")
+		return
+	}
+	var login *diagnosisprep.TargetLogin
+	if originalContext.OriginalObservation != nil && originalContext.OriginalObservation.Source.Observation.RequestAccountRef != "" {
+		loginReq := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "candidate-llm-plan-login", Command: diagnosisprep.ProductControl,
+			Principal: owner, Product: &diagnosisprep.ProductRequest{Operation: "target_login", TargetID: ownerResp.Job.Scope.TargetRef}}
+		loginResp, loginErr := endpoint.Call(ctx, loginReq)
+		if loginErr != nil || diagnosisprep.ValidateResponse(loginReq, loginResp) != nil || loginResp.Error != "" ||
+			loginResp.Product == nil || loginResp.Product.Login == nil {
+			candidateVerificationError(w, 409, "candidate_auth_preparation_unavailable")
+			return
+		}
+		login = loginResp.Product.Login
+	}
+	plan, digest, err := makeCandidateLLMPlan(time.Now().UTC(), candidate, originalContext.OriginalObservation, *analysis, ownerResp.Job.Input, *ownerResp.Job.Scope, *targetResp.Product.Target, login)
 	if err != nil {
 		candidateVerificationError(w, 409, "candidate_action_plan_unavailable")
 		return
@@ -142,7 +166,9 @@ WHERE q.id=$1 AND q.task_id=$2 AND q.candidate_id=$3 AND q.method='llm/v1' FOR U
 			return
 		}
 		var prior CandidateLLMPlan
-		if strictJSON(stored, &prior) != nil || prior.AnalysisDigest != analysis.Digest ||
+		if strictJSON(stored, &prior) != nil || prior.AnalysisDigest != analysis.Digest || prior.AccountRef != plan.AccountRef ||
+			(prior.AuthPreparation != nil && (login == nil || prior.AuthPreparation.LoginDigest != candidateLoginDigest(*login))) ||
+			(prior.AuthPreparation == nil && login != nil) ||
 			!candidateLLMPlanStillApproved(time.Now().UTC(), prior, ownerResp.Job.Input, *ownerResp.Job.Scope, *targetResp.Product.Target) {
 			// The stored plan is immutable. A changed target or policy needs a
 			// newly selected verification, never an in-place plan rewrite.

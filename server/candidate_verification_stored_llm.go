@@ -85,7 +85,7 @@ func selectedStoredComparisons(c CandidateSelectedContext, seal db.SealCheckReco
 		source, obs := row.Source, row.Source.Observation
 		if source.CallRef == primary.CallRef || obs.AttemptRef == base.AttemptRef ||
 			obs.Method != base.Method || obs.Endpoint != base.Endpoint || obs.RuleRef != base.RuleRef ||
-			obs.RequestAuthContext != base.RequestAuthContext ||
+			!candidateRequestContextComparable(base, obs) ||
 			!obs.ExactFunction || source.ScopeDigest != primary.ScopeDigest ||
 			source.PolicyRevision != primary.PolicyRevision || row.HeaderMode != c.OriginalObservation.HeaderMode ||
 			obs.Sequence <= c.Candidate.SaveFence.AttemptHighWater {

@@ -38,19 +38,23 @@ func revalidateStoredCandidateEvidence(ctx context.Context, tx *sql.Tx, c Candid
 		return ErrCandidateStoredLLMEvidence
 	}
 	rows, err := readCandidateObservations(ctx, tx, candidate.TaskID, candidate.RunRef)
-	if err != nil || len(rows) != run.VerificationObservationsCount || !reflect.DeepEqual(rows, c.Original.Observations) {
+	if err != nil || len(rows) != run.VerificationObservationsCount {
 		return ErrCandidateStoredLLMEvidence
 	}
 	digest, err := candidateObservationsDigest(rows)
 	if err != nil || digest != run.VerificationObservationsDigest {
 		return ErrCandidateStoredLLMEvidence
 	}
-	primary, err := selectedOriginalObservation(candidate, rows)
-	if err != nil || primary == nil || !reflect.DeepEqual(*primary, *c.Original.OriginalObservation) {
-		return ErrCandidateStoredLLMEvidence
-	}
 	seal, ok, err := db.ReadSealCheck(ctx, tx, candidate.TaskID, candidate.RunRef)
 	if err != nil || !ok {
+		return ErrCandidateStoredLLMEvidence
+	}
+	rows = sealedCandidateObservations(rows, seal)
+	if !reflect.DeepEqual(rows, c.Original.Observations) {
+		return ErrCandidateStoredLLMEvidence
+	}
+	primary, err := selectedOriginalObservation(candidate, rows)
+	if err != nil || primary == nil || !reflect.DeepEqual(*primary, *c.Original.OriginalObservation) {
 		return ErrCandidateStoredLLMEvidence
 	}
 	comparisons, err := selectedStoredComparisons(c.Original, seal)

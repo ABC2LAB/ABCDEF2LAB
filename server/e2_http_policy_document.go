@@ -66,13 +66,18 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 	if run {
 		// e3_write_consent·e3_resettable은 제품 발급(productE3PolicyRules)이 E③ 확정 단계를 켤 때 싣는 칸이다. factory는
 		// 같은 칸을 받으므로 실행 정책 문서도 받는다(선언 있는 회차의 확정 몫 읽기가 이 검증을 쓴다).
-		optional = append(optional, "workflow", "e3_write_consent", "e3_resettable")
+		optional = append(optional, "workflow", "e3_write_consent", "e3_resettable", "selected_account_ref")
 		approvalMode = approvalMode || policy.ApprovalMode == e2proxy.ApprovalConfirmEveryRequest || policy.ApprovalMode == e2proxy.ApprovalWorkbenchV1
 	}
 	if !e2HTTPExactJSON(raw, top, optional, "evaluation", "upstream_ca") || !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) ||
 		policy.Format != E2HTTPFilePolicyFormat || !approvalMode ||
 		policy.HeaderMode == "" || policy.MaxRequests == 0 || policy.MaxRequests > uint64(math.MaxInt) || len(policy.Rules) == 0 || len(policy.Rules) > 128 ||
 		!policy.ValidUntil.After(policy.ValidFrom) {
+		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
+	}
+	if policy.SelectedAccountRef != "" && (!run || policy.Auth == nil || len(policy.Auth.Accounts) != 1 ||
+		policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough || policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope ||
+		CandidateAccountRevision(policy.Auth.Accounts[0].Label, policy.Auth.Accounts[0].Credential.SHA256) != policy.SelectedAccountRef) {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 	}
 	for _, value := range []string{policy.RunRef, policy.ResetRef, policy.PolicyRef, policy.CaseRef, policy.PolicyRevision, policy.BudgetRef, policy.OwnerRef, policy.AccountRef, policy.SessionRef} {
@@ -159,7 +164,7 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 	}
 	rules := make([]e2proxy.Rule, 0, len(policy.Rules))
 	for i, rule := range policy.Rules {
-		if !e2HTTPExactJSON(ruleJSON[i], []string{"approval_display", "ref", "origin", "connect_ip", "path_prefix", "path_scope_ref", "methods"}, []string{"credentials", "tls_spki_sha256", "purpose", "path_match"}, "credentials") {
+		if !e2HTTPExactJSON(ruleJSON[i], []string{"approval_display", "ref", "origin", "connect_ip", "path_prefix", "path_scope_ref", "methods"}, []string{"credentials", "tls_spki_sha256", "purpose", "path_match", "exact_query", "request_headers", "strict_headers"}, "credentials") {
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
 		var obj map[string]json.RawMessage
@@ -177,7 +182,12 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 		if err != nil {
 			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 		}
-		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Purpose: rule.Purpose, Origin: rule.Origin, ConnectIP: ip, TLSSPKISHA256: rule.TLSSPKISHA256, PathPrefix: rule.PathPrefix, PathMatch: rule.PathMatch, PathScopeRef: rule.PathScopeRef, Methods: rule.Methods})
+		if !validSelectedActionInputs(nil, rule.RequestHeaders) || !validSelectedPolicyQuery(rule.ExactQuery) ||
+			(rule.ExactQuery != "" || len(rule.RequestHeaders) > 0 || rule.StrictHeaders) && (rule.PathMatch != "exact" || rule.Purpose != "" || len(rule.Methods) != 1 ||
+				rule.Methods[0] != "GET" && rule.Methods[0] != "HEAD") {
+			return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
+		}
+		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Purpose: rule.Purpose, Origin: rule.Origin, ConnectIP: ip, TLSSPKISHA256: rule.TLSSPKISHA256, PathPrefix: rule.PathPrefix, PathMatch: rule.PathMatch, ExactQuery: rule.ExactQuery, StrictHeaders: rule.StrictHeaders, Headers: selectedActionHeaders(rule.RequestHeaders), PathScopeRef: rule.PathScopeRef, Methods: rule.Methods})
 	}
 	requestTimeout, ok1 := e2HTTPMilliseconds(policy.Limits.RequestTimeoutMS, time.Minute)
 	callTimeout, ok2 := e2HTTPMilliseconds(policy.Limits.CallTimeoutMS, time.Hour)

@@ -17,11 +17,13 @@ func ExecuteSelectedCandidateActions(ctx context.Context, manager *Manager, opti
 	taskID int64, runRef string, plan CandidateLLMPlan) ([]candidateverify.StoredObservationV2, error) {
 	if ctx == nil || ctx.Err() != nil || manager == nil || taskID <= 0 || runRef == "" ||
 		plan.Version != "candidate-llm-plan/v1" || len(plan.Actions) < 1 || len(plan.Actions) > 3 ||
-		plan.MaxRequests != len(plan.Actions) || !candidateVerificationOrigin.MatchString(plan.Origin) {
+		plan.MaxRequests != len(plan.Actions)+boolInt(plan.AuthPreparation != nil) ||
+		(plan.AccountRef == "") != (plan.AuthPreparation == nil) || !candidateVerificationOrigin.MatchString(plan.Origin) {
 		return nil, ErrCandidateExecutionBinding
 	}
 	for _, action := range plan.Actions {
-		if action.Method != "GET" && action.Method != "HEAD" || !validSelectedExactPath(action.ExactPath) {
+		if action.Method != "GET" && action.Method != "HEAD" || !validSelectedExactPath(action.ExactPath) ||
+			!validSelectedActionInputs(action.Query, action.Headers) {
 			return nil, ErrCandidateExecutionBinding
 		}
 	}

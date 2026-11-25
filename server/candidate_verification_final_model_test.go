@@ -177,8 +177,33 @@ func TestCandidateFinalVerdictAuthenticationContextMismatch(t *testing.T) {
 	}
 	c.Followup[0].Source.Observation.RequestAuthContext = "authorization"
 	got, err = ParseCandidateFinalVerdict(raw, c)
+	if err != nil || got.Verdict != "insufficient" || got.Reason != "account_identity_unverified" {
+		t.Fatalf("matching header category alone established account identity: %+v %v", got, err)
+	}
+	c.Original.OriginalObservation.Source.Observation.RequestAccountRef = strings.Repeat("1", 64)
+	c.Followup[0].Source.Observation.RequestAccountRef = strings.Repeat("2", 64)
+	got, err = ParseCandidateFinalVerdict(raw, c)
+	if err != nil || got.Verdict != "insufficient" || got.Reason != "context_mismatch" {
+		t.Fatalf("different account revisions were compared: %+v %v", got, err)
+	}
+	c.Followup[0].Source.Observation.RequestAccountRef = strings.Repeat("1", 64)
+	c.Original.OriginalObservation.Source.Observation.StatusCode = 200
+	c.Followup[0].Source.Observation.StatusCode = 200
+	got, err = ParseCandidateFinalVerdict(raw, c)
 	if err != nil || got.Verdict != "confirmed" {
-		t.Fatalf("matching authorization context rejected: %+v %v", got, err)
+		t.Fatalf("same verified account revision was rejected: %+v %v", got, err)
+	}
+	c.Followup[0].Source.Observation.StatusCode = 401
+	got, err = ParseCandidateFinalVerdict(raw, c)
+	if err != nil || got.Verdict != "insufficient" {
+		t.Fatalf("expired session became decisive: %+v %v", got, err)
+	}
+	c.Followup[0].Source.Observation.StatusCode = 200
+	c.Original.OriginalObservation.Source.Observation.RequestAuthContext = "unknown"
+	c.Followup[0].Source.Observation.RequestAuthContext = "unknown"
+	got, err = ParseCandidateFinalVerdict(raw, c)
+	if err != nil || got.Verdict != "insufficient" {
+		t.Fatalf("unclassified credential header became decisive: %+v %v", got, err)
 	}
 }
 
@@ -206,12 +231,53 @@ func TestCandidateFinalVerdictRejectsUnrelatedFollowupPath(t *testing.T) {
 			{CallRef: "followup-call", AttemptRef: "followup-attempt", ObservationDigest: strings.Repeat("b", 64)},
 		}}
 	raw, _ := json.Marshal(verdict)
-	if _, err := ParseCandidateFinalVerdict(raw, c); err == nil {
-		t.Fatal("unrelated function confirmed by model")
+	if got, err := ParseCandidateFinalVerdict(raw, c); err != nil || got.Verdict != "insufficient" || got.Reason != "input_context_mismatch" {
+		t.Fatalf("unrelated function became decisive: %+v %v", got, err)
 	}
 	verdict.Verdict = "insufficient"
 	raw, _ = json.Marshal(verdict)
 	if _, err := ParseCandidateFinalVerdict(raw, c); err != nil {
 		t.Fatal("unrelated function could not remain inconclusive", err)
 	}
+}
+
+func TestCandidateFinalVerdictRequiresComparableReproductionWithNormalControl(t *testing.T) {
+	c := syntheticCandidateAssessmentContext(t)
+	c.Followup[0].Source.Observation.RuleRef = "candidate-llm-1"
+	control := c.Followup[0]
+	control.Source.CallRef = "control-call"
+	control.Source.Digest = strings.Repeat("c", 64)
+	control.Source.Observation.AttemptRef = "control-attempt"
+	control.Source.Observation.RuleRef = "candidate-llm-2"
+	control.Source.Observation.RequestQueryDigest = strings.Repeat("d", 64)
+	c.Followup = append(c.Followup, control)
+	c.Plan.Actions = []CandidateLLMPlanAction{
+		{Purpose: "repeat original", Method: "GET", ExactPath: "/documents"},
+		{Purpose: "normal contrast", Method: "GET", ExactPath: "/documents", Kind: "normal_control", Query: map[string]string{"mode": "review"}},
+	}
+	verdict := CandidateFinalVerdict{Version: "selected/final-v1", CandidateID: 1, Verdict: "confirmed",
+		Claim: "Observed defect", NormalExplanation: "A normal response may differ", Reason: "Independent reproduction and control",
+		Limitations: "Only one feature", Remediation: "Remove the defect", VerificationCriteria: "Repeat both conditions",
+		Sources: []candidateVerificationSourceRef{
+			{"original-call", "original-attempt", strings.Repeat("a", 64)},
+			{"followup-call", "followup-attempt", strings.Repeat("b", 64)},
+			{"control-call", "control-attempt", strings.Repeat("c", 64)},
+		}}
+	check := func(want string) {
+		t.Helper()
+		raw, _ := json.Marshal(verdict)
+		got, err := ParseCandidateFinalVerdict(raw, c)
+		if err != nil || got.Verdict != want {
+			t.Fatalf("with a normal control: %+v %v, want %s", got, err, want)
+		}
+	}
+	check("confirmed")
+	c.Followup[0].Source.Observation.RequestQueryDigest = strings.Repeat("e", 64)
+	check("insufficient")
+	c.Followup[0].Source.Observation.RequestQueryDigest = ""
+	c.Plan.Actions[0].Kind = "normal_control"
+	check("insufficient")
+	c.Plan.Actions[0].Kind = ""
+	c.Followup[1].Source.Observation.RequestAuthContext = "authorization"
+	check("insufficient")
 }

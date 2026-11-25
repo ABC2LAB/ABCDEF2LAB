@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"regexp"
+	"sort"
 	"strconv"
 	"time"
 
@@ -77,6 +78,7 @@ func (r *E2HTTPRuntime) runSelectedCandidateActions(ctx context.Context, task *T
 	}
 	for _, action := range actions {
 		if action.Method != "GET" && action.Method != "HEAD" || !validSelectedExactPath(action.ExactPath) ||
+			!validSelectedActionInputs(action.Query, action.Headers) ||
 			!candidateVerificationOrigin.MatchString(origin) {
 			return nil, errCandidateE2Execution
 		}
@@ -106,7 +108,19 @@ func (r *E2HTTPRuntime) runSelectedCandidateActions(ctx context.Context, task *T
 		if bound.Err() != nil || ctx.Err() != nil {
 			return nil, errCandidateE2Execution
 		}
-		command := "curl --silent --show-error --max-time 15 --output /dev/null --request " + action.Method + " --url " + strconv.Quote(origin+action.ExactPath)
+		url := origin + action.ExactPath
+		if query := selectedActionQuery(action.Query); query != "" {
+			url += "?" + query
+		}
+		command := "curl --silent --show-error --max-time 15 --output /dev/null --request " + action.Method + " --url " + strconv.Quote(url)
+		names := make([]string, 0, len(action.Headers))
+		for name := range action.Headers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			command += " --header " + strconv.Quote(name+": "+action.Headers[name])
+		}
 		result, runErr := lease.Runner.RunForIntent(bound, intent.ID, command)
 		observeErr := r.observeResult(bound, t, lease, intent.ID, result)
 		if observeErr != nil || runErr != nil {

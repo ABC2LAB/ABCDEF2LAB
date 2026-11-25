@@ -10,7 +10,6 @@ import (
 
 	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/e2proxy"
 )
 
 // Reconstruct a ready observation from the sealed follow-up task on every
@@ -48,26 +47,31 @@ WHERE request_id=$1 AND followup_task_id=$2 AND run_ref=$3`, requestID, binding.
 	if err != nil || len(observations) != len(row.LLMPlan.Actions) {
 		return db.ErrDiagnosticCandidate
 	}
-	want := map[string]int{}
-	for _, action := range row.LLMPlan.Actions {
-		want[fmt.Sprintf("%s %s", action.Method, action.ExactPath)]++
-	}
+	matched := make([]bool, len(row.LLMPlan.Actions))
 	sources := make([]candidateverify.SourceV2, 0, len(observations))
 	for _, stored := range observations {
 		obs := stored.Source.Observation
-		key := fmt.Sprintf("%s %s", obs.Method, obs.Endpoint)
 		if !candidateverify.ValidSelectedStoredObservation(binding.FollowupTask.Int64, binding.RunRef.String, stored) ||
 			!selectedObservationSealed(stored, seal) ||
 			stored.Source.ScopeDigest != scopeDigest ||
-			stored.HeaderMode != e2proxy.HeaderPreserve || !obs.ExactFunction || obs.Decision != "allowed" ||
-			!obs.ResponseComplete || !obs.AuditComplete || want[key] == 0 {
+			!selectedPlanObservationMatches(*row.LLMPlan, stored) || !obs.ExactFunction || obs.Decision != "allowed" ||
+			!obs.ResponseComplete || !obs.AuditComplete {
 			return db.ErrDiagnosticCandidate
 		}
-		want[key]--
+		found := false
+		for i, action := range row.LLMPlan.Actions {
+			if !matched[i] && obs.RuleRef == fmt.Sprintf("candidate-llm-%d", i+1) && selectedActionMatchesObservation(action, obs) {
+				matched[i], found = true, true
+				break
+			}
+		}
+		if !found {
+			return db.ErrDiagnosticCandidate
+		}
 		sources = append(sources, stored.Source)
 	}
-	for _, count := range want {
-		if count != 0 {
+	for _, done := range matched {
+		if !done {
 			return db.ErrDiagnosticCandidate
 		}
 	}

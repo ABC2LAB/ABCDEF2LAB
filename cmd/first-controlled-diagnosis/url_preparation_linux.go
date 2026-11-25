@@ -34,19 +34,43 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 // follow-up. An active declaration on the original target must never grant
 // E③ capabilities to this separate task.
 func (b *urlPreparationRuntime) issueSelectedCandidate(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask) (launchConfig, error) {
-	if l == nil || l.productTarget == nil || l.productRegistry == nil || l.productConnection == nil || l.policy.Auth != nil ||
+	if l == nil || l.productTarget == nil || l.productRegistry == nil || l.productConnection == nil ||
 		l.policy.Workflow != nil || l.policy.E3WriteConsent || l.policy.E3Resettable ||
-		l.policy.HeaderMode != e2proxy.HeaderPreserve || len(l.productAccounts) != 0 || l.externalTestAccounts ||
-		len(l.policy.Rules) < 1 || len(l.policy.Rules) > 3 {
+		len(l.policy.Rules) < 1 || len(l.policy.Rules) > 4 {
 		return launchConfig{}, errPreparation
 	}
+	if l.policy.SelectedAccountRef == "" {
+		if l.policy.Auth != nil || l.policy.HeaderMode != e2proxy.HeaderPreserve || len(l.productAccounts) != 0 {
+			return launchConfig{}, errPreparation
+		}
+	} else if l.policy.Auth == nil || len(l.policy.Auth.Accounts) != 1 || len(l.productAccounts) != 1 ||
+		l.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough ||
+		server.CandidateAccountRevision(l.policy.Auth.Accounts[0].Label, l.policy.Auth.Accounts[0].Credential.SHA256) != l.policy.SelectedAccountRef ||
+		l.productAccounts[0].Label != l.policy.Auth.Accounts[0].Label || l.productAccounts[0].CredentialSHA256 != l.policy.Auth.Accounts[0].Credential.SHA256 {
+		return launchConfig{}, errPreparation
+	}
+	ordinary, loginRules := 0, 0
 	for _, rule := range l.policy.Rules {
-		if rule.Ref == "" || rule.PathScopeRef == "" || rule.Purpose != "" || rule.Credentials != nil ||
-			rule.PathMatch != "exact" || len(rule.Methods) != 1 || rule.Methods[0] != "GET" && rule.Methods[0] != "HEAD" ||
+		if rule.Ref == "" || rule.PathScopeRef == "" || rule.Credentials != nil || len(rule.Methods) != 1 ||
 			rule.Origin != l.productTarget.Target.Origin || rule.ConnectIP != l.productConnection.IP ||
 			rule.TLSSPKISHA256 != l.productConnection.SPKI {
 			return launchConfig{}, errPreparation
 		}
+		if rule.Purpose == e2proxy.PurposeAuthPrep {
+			if l.policy.Auth == nil || rule.Ref != l.policy.Auth.RuleRef || rule.PathPrefix != l.policy.Auth.Login.Path ||
+				rule.Methods[0] != l.policy.Auth.Login.Method || rule.PathMatch != "" {
+				return launchConfig{}, errPreparation
+			}
+			loginRules++
+		} else if rule.Purpose == "" && rule.PathMatch == "exact" &&
+			(rule.Methods[0] == "GET" || rule.Methods[0] == "HEAD") {
+			ordinary++
+		} else {
+			return launchConfig{}, errPreparation
+		}
+	}
+	if ordinary < 1 || ordinary > 3 || (l.policy.Auth == nil && loginRules != 0) || (l.policy.Auth != nil && loginRules != 1) {
+		return launchConfig{}, errPreparation
 	}
 	return b.issueForPurpose(l, jobID, actual, true)
 }

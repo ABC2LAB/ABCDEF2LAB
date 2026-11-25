@@ -66,6 +66,16 @@ func selectedOriginalObservation(candidate db.DiagnosticCandidate, rows []candid
 	return bound, nil
 }
 
+func sealedCandidateObservations(rows []candidateverify.StoredObservationV2, seal db.SealCheckRecord) []candidateverify.StoredObservationV2 {
+	sealed := make([]candidateverify.StoredObservationV2, 0, len(rows))
+	for _, observation := range rows {
+		if selectedObservationSealed(observation, seal) {
+			sealed = append(sealed, observation)
+		}
+	}
+	return sealed
+}
+
 // ReadCandidateSelectedContext reads one selected request and the immutable
 // original run in a single snapshot. Its caller must separately authorize the
 // current requester and recheck the request state immediately before any model
@@ -82,6 +92,10 @@ func ReadCandidateAssessmentOriginal(ctx context.Context, pool *sql.DB, requestI
 
 func ReadCandidateStoredAssessmentOriginal(ctx context.Context, pool *sql.DB, requestID int64) (CandidateSelectedContext, error) {
 	return readCandidateSelectedContext(ctx, pool, requestID, 3, "analysis_ready")
+}
+
+func readCandidatePlanOriginal(ctx context.Context, pool *sql.DB, requestID int64) (CandidateSelectedContext, error) {
+	return readCandidateSelectedContext(ctx, pool, requestID, 0, "")
 }
 
 func readCandidateSelectedContext(ctx context.Context, pool *sql.DB, requestID int64, wantStep int, wantState string) (CandidateSelectedContext, error) {
@@ -102,7 +116,8 @@ FROM diagnostic_candidate_verification_requests q
 JOIN tasks t ON t.id=q.task_id AND t.deleted_at IS NULL
 JOIN LATERAL (SELECT step,process_state FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON true
 WHERE q.id=$1 AND q.method='llm/v1'`, requestID).Scan(&out.TaskID, &candidateID, &explorationID, &originalVersion, &originalDigest, &originalRun, &step, &state)
-	if err != nil || step != wantStep || state != wantState {
+	if err != nil || (wantStep != 0 && (step != wantStep || state != wantState)) ||
+		(wantStep == 0 && !(step == 3 && state == "analysis_ready" || step == 4 && state == "awaiting_approval")) {
 		return CandidateSelectedContext{}, ErrCandidateSelectedContext
 	}
 	candidate, found, err := db.ReadDiagnosticCandidateWithFence(ctx, tx, explorationID, out.TaskID, candidateID)
@@ -143,12 +158,28 @@ WHERE q.id=$1 AND q.method='llm/v1'`, requestID).Scan(&out.TaskID, &candidateID,
 				return CandidateSelectedContext{}, ErrCandidateSelectedContext
 			}
 		}
+		if len(out.Observations) > 0 {
+			seal, ok, sealErr := db.ReadSealCheck(ctx, tx, out.TaskID, run.RunRef)
+			if sealErr != nil {
+				return CandidateSelectedContext{}, ErrCandidateSelectedContext
+			}
+			// Older completed runs may contain bounded observations without a
+			// Host checkpoint (for example, when the proof exceeded the row limit).
+			// Keep those rows in the immutable store but never show them to the
+			// model or use them to authorize a follow-up plan.
+			if ok {
+				out.Observations = sealedCandidateObservations(out.Observations, seal)
+			} else {
+				out.Observations = nil
+			}
+		}
 		out.OriginalObservation, err = selectedOriginalObservation(candidate, out.Observations)
 		if err != nil {
 			return CandidateSelectedContext{}, ErrCandidateSelectedContext
 		}
 	}
-	out.RequestID, out.Candidate, out.RunRef, out.SourceUnavailable = requestID, candidate, run.RunRef, run.VerificationSourceUnavailable
+	out.RequestID, out.Candidate, out.RunRef = requestID, candidate, run.RunRef
+	out.SourceUnavailable = run.VerificationSourceUnavailable || run.VerificationObservationsStored && out.OriginalObservation == nil
 	if err := tx.Commit(); err != nil {
 		return CandidateSelectedContext{}, ErrCandidateSelectedContext
 	}

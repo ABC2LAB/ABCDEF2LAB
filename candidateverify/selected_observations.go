@@ -2,12 +2,15 @@ package candidateverify
 
 import (
 	"encoding/json"
+	"regexp"
 	"strconv"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 )
+
+var accountRevisionRef = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // ProjectTrustedSelected preserves bounded, safe E² observations for later
 // candidate review. It makes no vulnerability verdict and applies no
@@ -77,7 +80,13 @@ func ValidSelectedStoredObservation(taskID int64, runRef string, row StoredObser
 		obs.Method != "" && obs.Endpoint != "" && obs.RuleRef != "" && obs.Decision == "allowed" &&
 		obs.ForwardAttempted && obs.ResponseComplete && !obs.ResponseTruncated && obs.AuditComplete &&
 		(obs.RequestAuthContext == "" || obs.RequestAuthContext == "none" || obs.RequestAuthContext == "authorization" ||
-			obs.RequestAuthContext == "cookie" || obs.RequestAuthContext == "authorization_and_cookie") &&
+			obs.RequestAuthContext == "cookie" || obs.RequestAuthContext == "authorization_and_cookie" || obs.RequestAuthContext == "custom" || obs.RequestAuthContext == "unknown") &&
+		(obs.RequestAccountRef == "" || accountRevisionRef.MatchString(obs.RequestAccountRef)) &&
+		(obs.RequestQueryDigest == "" || accountRevisionRef.MatchString(obs.RequestQueryDigest)) &&
+		(obs.RequestHeaderDigest == "" || accountRevisionRef.MatchString(obs.RequestHeaderDigest)) &&
+		(obs.ResponseMediaClass == "" || obs.ResponseMediaClass == "html" || obs.ResponseMediaClass == "json" ||
+			obs.ResponseMediaClass == "plain_text" || obs.ResponseMediaClass == "xml" || obs.ResponseMediaClass == "binary" ||
+			obs.ResponseMediaClass == "other" || obs.ResponseMediaClass == "unknown") &&
 		s.Digest == sourceDigest(obs) &&
 		(row.HeaderMode == e2proxy.HeaderPreserve || row.HeaderMode == e2proxy.HeaderProtectedSessionProposal ||
 			row.HeaderMode == e2proxy.HeaderTestAccountPassthrough)

@@ -22,17 +22,20 @@ import (
 
 func TestSelectedCandidateActionsRealE2SyntheticRunnerPostgres(t *testing.T) {
 	for _, test := range []struct {
-		name, path string
-		allowed    bool
+		name    string
+		action  CandidateLLMPlanAction
+		allowed bool
 	}{
-		{"approved-exact-path", "/documents", true},
-		{"outside-exact-path", "/blocked", false},
+		{"approved-exact-path", CandidateLLMPlanAction{Purpose: "Check independently", Method: "GET", ExactPath: "/documents"}, true},
+		{"outside-exact-path", CandidateLLMPlanAction{Purpose: "Check independently", Method: "GET", ExactPath: "/blocked"}, false},
+		{"approved-query-header", CandidateLLMPlanAction{Purpose: "Check structured input", Method: "GET", ExactPath: "/documents",
+			Query: map[string]string{"mode": "review"}, Headers: map[string]string{"Accept": "application/json"}}, true},
 	} {
-		t.Run(test.name, func(t *testing.T) { runSelectedCandidateActionFixture(t, test.path, test.allowed) })
+		t.Run(test.name, func(t *testing.T) { runSelectedCandidateActionFixture(t, test.action, test.allowed) })
 	}
 }
 
-func runSelectedCandidateActionFixture(t *testing.T, actionPath string, wantAllowed bool) {
+func runSelectedCandidateActionFixture(t *testing.T, action CandidateLLMPlanAction, wantAllowed bool) {
 	helper := firstDiagnosisNativeHelper(t)
 	f := newControlledLocalDatabaseFixture(t)
 	installer := &db.DB{DB: f.Installer}
@@ -59,7 +62,9 @@ func runSelectedCandidateActionFixture(t *testing.T, actionPath string, wantAllo
 		if r.URL.Path == "/blocked" {
 			blocked.Add(1)
 		}
-		if r.Method != http.MethodGet || r.URL.Path != "/documents" {
+		if r.Method != http.MethodGet || r.URL.Path != "/documents" ||
+			action.Query != nil && r.URL.RawQuery != selectedActionQuery(action.Query) ||
+			action.Headers != nil && r.Header.Get("Accept") != action.Headers["Accept"] {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
@@ -82,7 +87,8 @@ func runSelectedCandidateActionFixture(t *testing.T, actionPath string, wantAllo
 	}
 	policy.OwnerRef = "ARTEX"
 	policy.ApprovalMode = e2proxy.ApprovalPreauthorizedScope
-	policy.Rules = []E2HTTPFileRule{{Ref: "candidate-exact", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/documents", PathMatch: "exact", PathScopeRef: "candidate-exact", Methods: []string{"GET"}}}
+	policy.Rules = []E2HTTPFileRule{{Ref: "candidate-exact", Origin: target.URL, ConnectIP: "127.0.0.1", PathPrefix: "/documents", PathMatch: "exact",
+		ExactQuery: selectedActionQuery(action.Query), RequestHeaders: action.Headers, StrictHeaders: true, PathScopeRef: "candidate-exact", Methods: []string{"GET"}}}
 	policy.MaxRequests, policy.Limits.MaxAttempts, policy.Limits.MaxCalls = 1, 1, 1
 	policy.Limits.MaxConcurrent = 1
 	policy.Limits.CallTimeoutMS, policy.Limits.RequestTimeoutMS, policy.Proxy.RequestTimeoutMS = 20000, 15000, 15000
@@ -103,7 +109,7 @@ func runSelectedCandidateActionFixture(t *testing.T, actionPath string, wantAllo
 	}
 	manifest := firstDiagnosisSupervisorModelManifest(t, installer)
 	_ = firstDiagnosisPinFixtureTaskProfile(t, installer, task)
-	plan := CandidateLLMPlan{Version: "candidate-llm-plan/v1", Origin: target.URL, Actions: []CandidateLLMPlanAction{{Purpose: "Check independently", Method: "GET", ExactPath: actionPath}}, MaxRequests: 1}
+	plan := CandidateLLMPlan{Version: "candidate-llm-plan/v1", Origin: target.URL, Actions: []CandidateLLMPlanAction{action}, MaxRequests: 1}
 	observations, err := ExecuteSelectedCandidateActions(ctx, manager, FirstDiagnosisHTTPStartOptions{
 		Host: cfg, SkillDir: skillDir, DataDir: dataDir, KeyDir: keyDir,
 		LocalLLMManifestPath: manifest, Supervisor: &candidateGETTestSupervisor{taskID: task.ID}, CleanupTimeout: 5 * time.Second,
@@ -117,7 +123,8 @@ func runSelectedCandidateActionFixture(t *testing.T, actionPath string, wantAllo
 	if err != nil || allowed.Load() != 1 || blocked.Load() != 0 || len(observations) != 1 {
 		t.Fatalf("candidate E2 action: allowed=%d blocked=%d observations=%d err=%v", allowed.Load(), blocked.Load(), len(observations), err)
 	}
-	if observations[0].Source.Observation.Endpoint != "/documents" || !observations[0].Source.Observation.AuditComplete {
+	if observations[0].Source.Observation.Endpoint != "/documents" || !observations[0].Source.Observation.AuditComplete ||
+		!selectedActionMatchesObservation(action, observations[0].Source.Observation) {
 		t.Fatal("candidate E2 observation incomplete")
 	}
 }

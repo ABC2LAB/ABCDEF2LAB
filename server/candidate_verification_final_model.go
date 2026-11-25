@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -16,6 +18,28 @@ import (
 )
 
 var ErrCandidateFinalVerdict = errors.New("candidate final verdict invalid")
+
+var candidateAccountRevision = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+func candidateAuthComparable(original, comparison e2proxy.HTTPObservation) bool {
+	if original.RequestAuthContext == "" || original.RequestAuthContext == "unknown" || original.RequestAuthContext != comparison.RequestAuthContext {
+		return false
+	}
+	if original.RequestAuthContext == "none" {
+		return original.RequestAccountRef == "" && comparison.RequestAccountRef == ""
+	}
+	if original.StatusCode == 401 || original.StatusCode == 407 || comparison.StatusCode == 401 || comparison.StatusCode == 407 ||
+		original.StatusCode < 200 || comparison.StatusCode < 200 {
+		return false
+	}
+	return candidateAccountRevision.MatchString(original.RequestAccountRef) &&
+		original.RequestAccountRef == comparison.RequestAccountRef
+}
+
+func candidateRequestContextComparable(original, comparison e2proxy.HTTPObservation) bool {
+	return candidateAuthComparable(original, comparison) && original.RequestQueryDigest == comparison.RequestQueryDigest &&
+		original.RequestHeaderDigest == comparison.RequestHeaderDigest
+}
 
 type CandidateFinalVerdict struct {
 	Version              string                           `json:"version"`
@@ -152,37 +176,56 @@ func ParseCandidateFinalVerdict(raw []byte, c CandidateAssessmentContext) (Candi
 		original = original || kind == "original"
 		followup = followup || kind == "followup"
 	}
-	// An authenticated original and an anonymous follow-up are different
-	// experiments even when both use HeaderPreserve. Unknown old projections
-	// also cannot support a decisive comparison. Keep the model's explanation
-	// but clamp its recommendation to an inconclusive result.
-	comparableAuth := c.Original.OriginalObservation != nil &&
-		c.Original.OriginalObservation.Source.Observation.RequestAuthContext != ""
-	if comparableAuth {
-		for _, row := range c.Followup {
-			if row.Source.Observation.RequestAuthContext != c.Original.OriginalObservation.Source.Observation.RequestAuthContext {
-				comparableAuth = false
-				break
+	// Header categories alone do not prove identity. A protected matcher
+	// binds the actual sent credentials to a salted account revision; refresh
+	// changes the session but retains that revision.
+	comparableAuth := c.Original.OriginalObservation != nil
+	comparableReproduction, reproductionCount := comparableAuth, 0
+	for _, row := range c.Followup {
+		if c.Original.OriginalObservation == nil {
+			break
+		}
+		observed, originalObservation := row.Source.Observation, c.Original.OriginalObservation.Source.Observation
+		if !candidateAuthComparable(originalObservation, observed) || row.HeaderMode != c.Original.OriginalObservation.HeaderMode {
+			comparableAuth = false
+		}
+		kind := ""
+		if len(c.Plan.Actions) > 0 {
+			found := false
+			for i, action := range c.Plan.Actions {
+				if observed.RuleRef == fmt.Sprintf("candidate-llm-%d", i+1) {
+					kind, found = action.Kind, true
+					break
+				}
+			}
+			if !found {
+				return CandidateFinalVerdict{}, ErrCandidateFinalVerdict
+			}
+		}
+		if kind == "" {
+			reproductionCount++
+			if !candidateRequestContextComparable(originalObservation, observed) || !observed.ExactFunction ||
+				observed.Method != originalObservation.Method || observed.Endpoint != originalObservation.Endpoint {
+				comparableReproduction = false
 			}
 		}
 	}
-	if !comparableAuth {
+	if !comparableAuth || !comparableReproduction || reproductionCount == 0 {
 		out.Verdict = "insufficient"
 		out.Reason = "context_mismatch"
+		if comparableAuth && !comparableReproduction {
+			out.Reason = "input_context_mismatch"
+		}
+		if c.Original.OriginalObservation != nil && c.Followup[0].Source.Observation.RequestAccountRef == "" &&
+			c.Original.OriginalObservation.Source.Observation.RequestAuthContext != "none" &&
+			c.Original.OriginalObservation.Source.Observation.RequestAuthContext == c.Followup[0].Source.Observation.RequestAuthContext {
+			out.Reason = "account_identity_unverified"
+		}
 	}
 	if out.Verdict != "insufficient" && (!original || !followup ||
 		c.Original.OriginalObservation.HeaderMode != c.Followup[0].HeaderMode ||
 		!c.Original.OriginalObservation.Source.Observation.ExactFunction) {
 		return CandidateFinalVerdict{}, ErrCandidateFinalVerdict
-	}
-	if out.Verdict != "insufficient" {
-		originalObservation := c.Original.OriginalObservation.Source.Observation
-		for _, row := range c.Followup {
-			observed := row.Source.Observation
-			if observed.Method != originalObservation.Method || observed.Endpoint != originalObservation.Endpoint {
-				return CandidateFinalVerdict{}, ErrCandidateFinalVerdict
-			}
-		}
 	}
 	for _, row := range c.Followup {
 		if !row.Source.Observation.ExactFunction || c.Original.OriginalObservation != nil && row.HeaderMode != c.Original.OriginalObservation.HeaderMode {

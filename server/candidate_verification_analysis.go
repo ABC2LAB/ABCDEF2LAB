@@ -30,9 +30,12 @@ type CandidateAnalysisProposal struct {
 }
 
 type CandidateProposedAction struct {
-	Purpose  string `json:"purpose"`
-	Method   string `json:"method"`
-	PathHint string `json:"path_hint"`
+	Purpose  string            `json:"purpose"`
+	Method   string            `json:"method"`
+	PathHint string            `json:"path_hint"`
+	Kind     string            `json:"kind,omitempty"`
+	Query    map[string]string `json:"query,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
 }
 
 const selectedAnalysisSystem = `You are reviewing one unconfirmed non-IDOR diagnostic candidate.
@@ -42,7 +45,7 @@ First distinguish the candidate's claim from plausible normal behavior. Use only
 If the original request or business rule is missing, state the limitation or ask a business question. A business answer never grants target access.
 Propose at most three bounded target actions that might distinguish the claim; these are proposals, not permission to execute.
 Return only one JSON object with version selected/analysis-v1, candidate_id, claim, normal_explanation, existing_call_refs, business_questions, actions, limitations.
-Each action has purpose, method, path_hint. Do not invent an exact path from a masked endpoint. No tools are available.`
+Each action has purpose, method, path_hint, optional kind (normal_control for a separate baseline), query and headers. At least one action must independently repeat the original comparable condition. Query and headers are noncredential ordinary inputs, never authentication. Do not invent an exact path from a masked endpoint. No tools are available.`
 
 // BuildCandidateAnalysisRequest prepares a bounded, tool-free model input from
 // the verified stored context. It does not call a model or a target. The
@@ -93,18 +96,22 @@ func BuildCandidateAnalysisRequest(c CandidateSelectedContext, maxTokens int) (l
 	// complete set remains available to the trusted verifier.
 	selected := candidateAnalysisObservations(c, original)
 	input := struct {
-		CandidateID         int64                                 `json:"candidate_id"`
-		VulnClass           string                                `json:"vulnclass"`
-		Name                string                                `json:"name"`
-		Summary             string                                `json:"summary"`
-		Evidence            string                                `json:"evidence"`
-		EvidenceTruncated   bool                                  `json:"evidence_truncated"`
-		OriginalAvailable   bool                                  `json:"original_observation_available"`
-		SourceUnavailable   bool                                  `json:"source_unavailable"`
-		Observations        []candidateverify.StoredObservationV2 `json:"observations"`
-		ObservationsOmitted bool                                  `json:"observations_omitted"`
-	}{c.Candidate.ID, dlp.DiagnosticText(c.Candidate.VulnClass), dlp.DiagnosticText(c.Candidate.Name), dlp.DiagnosticText(c.Candidate.Summary),
-		evidence, truncated, original != nil, c.SourceUnavailable, selected, len(selected) != len(c.Observations)}
+		CandidateID         int64                       `json:"candidate_id"`
+		VulnClass           string                      `json:"vulnclass"`
+		Name                string                      `json:"name"`
+		Summary             string                      `json:"summary"`
+		Evidence            string                      `json:"evidence"`
+		EvidenceTruncated   bool                        `json:"evidence_truncated"`
+		OriginalAvailable   bool                        `json:"original_observation_available"`
+		SourceUnavailable   bool                        `json:"source_unavailable"`
+		Observations        []candidateModelObservation `json:"observations"`
+		ObservationsOmitted bool                        `json:"observations_omitted"`
+	}{CandidateID: c.Candidate.ID, VulnClass: dlp.DiagnosticText(c.Candidate.VulnClass), Name: dlp.DiagnosticText(c.Candidate.Name),
+		Summary: dlp.DiagnosticText(c.Candidate.Summary), Evidence: evidence, EvidenceTruncated: truncated,
+		OriginalAvailable: original != nil, SourceUnavailable: c.SourceUnavailable, ObservationsOmitted: len(selected) != len(c.Observations)}
+	for _, row := range selected {
+		input.Observations = append(input.Observations, modelObservation(row))
+	}
 	raw, err := json.Marshal(input)
 	if err != nil || len(raw) > 48<<10 {
 		return llm.CompletionRequest{}, ErrCandidateAnalysis
@@ -172,7 +179,8 @@ func ParseCandidateAnalysisProposal(raw []byte, c CandidateSelectedContext) (Can
 	for _, action := range out.Actions {
 		if strings.TrimSpace(action.Purpose) == "" || !validText(action.Purpose, 1024) ||
 			!validText(action.Method, 16) || strings.TrimSpace(action.Method) == "" ||
-			!validText(action.PathHint, 1024) {
+			!validText(action.PathHint, 1024) || action.Kind != "" && action.Kind != "normal_control" ||
+			!validSelectedActionInputs(action.Query, action.Headers) {
 			return CandidateAnalysisProposal{}, ErrCandidateAnalysis
 		}
 	}

@@ -63,11 +63,21 @@ func revalidateCandidateAssessmentEvidence(ctx context.Context, tx *sql.Tx, sele
 	}
 	if run.VerificationObservationsStored {
 		original, err := readCandidateObservations(ctx, tx, c.TaskID, c.RunRef)
-		if err != nil || len(original) != run.VerificationObservationsCount || !reflect.DeepEqual(original, c.Observations) {
+		if err != nil || len(original) != run.VerificationObservationsCount {
 			return ErrCandidateAssessmentContext
 		}
 		digest, err := candidateObservationsDigest(original)
 		if err != nil || digest != run.VerificationObservationsDigest {
+			return ErrCandidateAssessmentContext
+		}
+		if len(original) > 0 {
+			seal, ok, sealErr := db.ReadSealCheck(ctx, tx, c.TaskID, c.RunRef)
+			if sealErr != nil || !ok {
+				return ErrCandidateAssessmentContext
+			}
+			original = sealedCandidateObservations(original, seal)
+		}
+		if !reflect.DeepEqual(original, c.Observations) {
 			return ErrCandidateAssessmentContext
 		}
 		bound, err := selectedOriginalObservation(candidate, original)

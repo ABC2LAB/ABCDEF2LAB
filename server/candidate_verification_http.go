@@ -767,7 +767,7 @@ func validateCandidateVerificationAttempt(row candidateVerificationAttempt, step
 				return db.ErrDiagnosticCandidate
 			}
 		} else if row.PlanDigest != "" || step >= 4 && !(step == 4 &&
-			(row.Latest.State == "assessing" || row.Latest.State == "failed" || row.Latest.State == "expired") ||
+			(row.Latest.State == "assessing" || row.Latest.State == "failed" || row.Latest.State == "expired" || row.Latest.State == "cancelled") ||
 			step == 5 && (row.Latest.State == "completed" || row.Latest.State == "failed" || row.Latest.State == "cancelled" || row.Latest.State == "expired")) {
 			return db.ErrDiagnosticCandidate
 		}

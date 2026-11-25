@@ -37,16 +37,17 @@ func readStoredCandidateFinalVerdict(ctx context.Context, tx *sql.Tx, row candid
 	if err != nil || digest != run.VerificationObservationsDigest {
 		return nil, ErrCandidateFinalVerdict
 	}
+	seal, ok, err := db.ReadSealCheck(ctx, tx, candidate.TaskID, candidate.RunRef)
+	if err != nil || !ok {
+		return nil, ErrCandidateFinalVerdict
+	}
+	rows = sealedCandidateObservations(rows, seal)
 	primary, err := selectedOriginalObservation(candidate, rows)
 	if err != nil || primary == nil {
 		return nil, ErrCandidateFinalVerdict
 	}
 	original := CandidateSelectedContext{RequestID: id, TaskID: candidate.TaskID, Candidate: candidate,
 		RunRef: candidate.RunRef, Observations: rows, OriginalObservation: primary}
-	seal, ok, err := db.ReadSealCheck(ctx, tx, candidate.TaskID, candidate.RunRef)
-	if err != nil || !ok {
-		return nil, ErrCandidateFinalVerdict
-	}
 	comparisons, err := selectedStoredComparisons(original, seal)
 	if err != nil {
 		return nil, ErrCandidateFinalVerdict

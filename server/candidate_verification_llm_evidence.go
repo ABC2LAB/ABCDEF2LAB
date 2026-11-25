@@ -13,6 +13,37 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 )
 
+func selectedPlanObservationMatches(plan CandidateLLMPlan, row candidateverify.StoredObservationV2) bool {
+	obs := row.Source.Observation
+	if plan.AccountRef == "" {
+		return row.HeaderMode == e2proxy.HeaderPreserve && obs.RequestAuthContext == "none" && obs.RequestAccountRef == ""
+	}
+	return row.HeaderMode == e2proxy.HeaderTestAccountPassthrough &&
+		candidateAccountRevision.MatchString(plan.AccountRef) && obs.RequestAuthContext != "" &&
+		obs.RequestAuthContext != "none" && obs.RequestAccountRef == plan.AccountRef
+}
+
+func selectedActionMatchesObservation(action CandidateLLMPlanAction, obs e2proxy.HTTPObservation) bool {
+	if obs.Method != action.Method || obs.Endpoint != action.ExactPath || !obs.ExactFunction {
+		return false
+	}
+	queryDigest := ""
+	if query := selectedActionQuery(action.Query); query != "" {
+		sum := sha256.Sum256([]byte(query))
+		queryDigest = hex.EncodeToString(sum[:])
+	}
+	headerDigest := ""
+	if len(action.Headers) != 0 {
+		raw, err := json.Marshal(selectedActionHeaders(action.Headers))
+		if err != nil {
+			return false
+		}
+		sum := sha256.Sum256(raw)
+		headerDigest = hex.EncodeToString(sum[:])
+	}
+	return obs.RequestQueryDigest == queryDigest && obs.RequestHeaderDigest == headerDigest
+}
+
 // CompleteCandidateLLMEvidence persists only sealed, audited E² observations.
 // It cannot make a vulnerability verdict. The later model receives exactly
 // these durable projections and the preserved original observations.
@@ -71,25 +102,30 @@ WHERE q.id=$1 AND x.followup_task_id=$3 FOR UPDATE OF q`, requestID, runRef, fol
 	if err != nil || !ok {
 		return ErrCandidateExecutionBinding
 	}
-	want := map[string]int{}
-	for _, action := range plan.Actions {
-		want[fmt.Sprintf("%s %s", action.Method, action.ExactPath)]++
-	}
+	matched := make([]bool, len(plan.Actions))
 	var sources []candidateverify.SourceV2
 	for _, row := range observations {
 		obs := row.Source.Observation
 		if !candidateverify.ValidSelectedStoredObservation(followupTaskID, runRef, row) || row.Source.ScopeDigest != scopeDigest ||
 			!selectedObservationSealed(row, seal) ||
-			row.HeaderMode != e2proxy.HeaderPreserve ||
-			!obs.ExactFunction || obs.Decision != "allowed" || !obs.ResponseComplete || !obs.AuditComplete ||
-			obs.RuleRef == "" || want[fmt.Sprintf("%s %s", obs.Method, obs.Endpoint)] == 0 {
+			!selectedPlanObservationMatches(plan, row) ||
+			!obs.ExactFunction || obs.Decision != "allowed" || !obs.ResponseComplete || !obs.AuditComplete || obs.RuleRef == "" {
 			return ErrCandidateExecutionBinding
 		}
-		want[fmt.Sprintf("%s %s", obs.Method, obs.Endpoint)]--
+		foundAction := false
+		for i, action := range plan.Actions {
+			if !matched[i] && obs.RuleRef == fmt.Sprintf("candidate-llm-%d", i+1) && selectedActionMatchesObservation(action, obs) {
+				matched[i], foundAction = true, true
+				break
+			}
+		}
+		if !foundAction {
+			return ErrCandidateExecutionBinding
+		}
 		sources = append(sources, row.Source)
 	}
-	for _, count := range want {
-		if count != 0 {
+	for _, done := range matched {
+		if !done {
 			return ErrCandidateExecutionBinding
 		}
 	}

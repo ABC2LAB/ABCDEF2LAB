@@ -42,8 +42,22 @@ func TestSelectedObservationRequiresExactHostSealCheck(t *testing.T) {
 	}
 	trusted := e2runner.TrustedResult{Execution: e2proxy.ExecutionView{Scope: scope, IntentID: event.IntentID, PolicyRevision: event.PolicyRevision},
 		Call: e2proxy.CallResult{CallRef: event.CallRef, IntentID: event.IntentID, Observations: []e2proxy.HTTPObservation{observation}}}
+	trusted.Execution.HeaderMode = e2proxy.HeaderPreserve
+	trusted.Classification = "completed"
 	if !selectedVerifiedResult(trusted, e2host.Verification{Event: event, Checkpoint: cp}) {
 		t.Fatal("Host v3 result did not match Runner observation")
+	}
+	context := syntheticCandidateAssessmentContext(t).Original
+	context.Candidate.RunRef, context.Candidate.CallRef, context.RunRef = scope.RunRef, event.CallRef, scope.RunRef
+	context.Observations = []candidateverify.StoredObservationV2{row}
+	context.OriginalObservation = &context.Observations[0]
+	evidence, _ := json.Marshal(map[string]any{"trusted": trusted})
+	context.Candidate.Evidence = string(evidence)
+	context.Candidate.EvidenceDigest = db.DiagnosticEvidenceDigest(string(evidence))
+	request, err := BuildCandidateAnalysisRequest(context, 512)
+	if err != nil || len(request.Messages) != 1 || strings.Contains(request.Messages[0].Text(), cp.MAC) ||
+		strings.Contains(request.Messages[0].Text(), "selected_proof") || !strings.Contains(request.Messages[0].Text(), event.CallRef) {
+		t.Fatal("analysis model prompt exposed Host proof or lost the bounded observation", err)
 	}
 	legacyEvent := event
 	legacyEvent.Version = e2proxy.Version
@@ -136,6 +150,14 @@ func TestSelectedStoredComparisonsRequirePostSaveIndependentSealedCalls(t *testi
 		},
 		"different authentication": func(c *CandidateSelectedContext, _ *db.SealCheckRecord) {
 			c.Observations[1].Source.Observation.RequestAuthContext = "authorization"
+		},
+		"same authorization category without account proof": func(c *CandidateSelectedContext, _ *db.SealCheckRecord) {
+			c.OriginalObservation.Source.Observation.RequestAuthContext = "authorization"
+			raw, _ := json.Marshal(c.OriginalObservation.Source.Observation)
+			c.OriginalObservation.Source.Digest = db.DiagnosticEvidenceDigest(string(raw))
+			c.Observations[1].Source.Observation.RequestAuthContext = "authorization"
+			raw, _ = json.Marshal(c.Observations[1].Source.Observation)
+			c.Observations[1].Source.Digest = db.DiagnosticEvidenceDigest(string(raw))
 		},
 		"missing proof": func(c *CandidateSelectedContext, _ *db.SealCheckRecord) { c.Observations[1].SelectedProof = nil },
 		"missing seal":  func(_ *CandidateSelectedContext, s *db.SealCheckRecord) { s.Checks[1].Included = false },

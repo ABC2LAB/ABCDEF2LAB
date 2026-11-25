@@ -65,6 +65,11 @@ FROM diagnostic_candidate_verification_verdicts WHERE request_id=$1`, id).
 		if err != nil || originalDigest != run.VerificationObservationsDigest {
 			return nil, ErrCandidateFinalVerdict
 		}
+		seal, ok, sealErr := db.ReadSealCheck(ctx, tx, candidate.TaskID, candidate.RunRef)
+		if sealErr != nil || !ok {
+			return nil, ErrCandidateFinalVerdict
+		}
+		originalRows = sealedCandidateObservations(originalRows, seal)
 		original, err = selectedOriginalObservation(candidate, originalRows)
 		if err != nil {
 			return nil, ErrCandidateFinalVerdict
