@@ -1287,6 +1287,11 @@ a.ph:hover {
   background: var(--und-bg);
   color: var(--und);
 }
+/* 거부(승인 요청 결과): 허용(.in 초록)과 바로 갈리게 빨강(사용자 11/25) */
+.tag.deny {
+  background: var(--hi-bg);
+  color: var(--hi);
+}
 .m {
   font-family: var(--mono);
   font-size: 11.5px;
@@ -4476,6 +4481,14 @@ button.smm:hover {
   border-color: var(--rule);
   background: var(--bg);
 }
+/* 승인 요청 칸 머리 오른쪽 [처리된 요청 n](사용자 11/25): 누르면 오른쪽 패널에 처리된 요청 목록 */
+.ldecide > .sh .apq-done {
+  margin-left: auto;
+}
+.ldecide > .sh .apq-done[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
 /* 승인 요청 목록(사용자 11/24): 한 줄 = 메서드 · 경로 · 계획 · 상태 · 받은 시각, 누르면 그 아래 펼침 */
 .apq {
   list-style: none;
@@ -4535,6 +4548,18 @@ button.smm:hover {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-all;
+}
+/* 오른쪽 패널 처리된 요청 거르기(허용 · 거부 · 만료) */
+.apq-fil {
+  align-self: flex-start;
+  margin-bottom: 8px;
+}
+/* 오른쪽 패널의 처리된 요청 목록: 노란 상자 밖이라 보통 구분선 */
+.apq-side .apq-item {
+  border-top-color: var(--rule);
+}
+.apq-side .apq-row {
+  flex-wrap: wrap;
 }
 .meters {
   display: grid;

@@ -1391,6 +1391,105 @@ describe("점검 진행", () => {
     );
   });
 
+  // 승인 요청이 계속 쌓여 대기 요청이 묻혔다(사용자 11/25): 가운데엔 대기만, 처리된 요청은 [처리된 요청 n]으로 오른쪽 패널에
+  it("승인 요청: 가운데는 대기만, [처리된 요청 n]은 오른쪽 패널에 목록(최근 순) · [← 진행 요약]으로 돌아온다", async () => {
+    const row = (id: number, state: "pending" | "allowed" | "denied", at: string) => ({
+      id: `ap-${id}`,
+      task_id: 42,
+      run_ref: `run-${job.id}`,
+      intent_id: id,
+      call_ref: `call-${id}`,
+      attempt_id: `attempt-${id}`,
+      policy_revision: "rev-1",
+      account_ref: "a",
+      session_ref: "s",
+      request_sha256: "d".repeat(64),
+      method: "POST",
+      target_origin: "https://target.example",
+      path: `/api/items/${id}`,
+      input_preview: {},
+      body_bytes: 19,
+      created_at: at,
+      expires_at: "2099-01-01T00:00:00Z",
+      state,
+      consumed: state === "allowed",
+      execution_state: state === "allowed" ? ("completed" as const) : ("not_sent" as const),
+      live: state === "pending",
+      can_decide: state === "pending",
+    });
+    vi.mocked(api.fetchRequestApprovals).mockResolvedValue({
+      run: {
+        run_ref: `run-${job.id}`,
+        phase: "running",
+        outcome: "",
+        stop_requested: false,
+        context_cancelled: false,
+        drain_complete: false,
+        closure_failed: false,
+      },
+      approvals: [
+        row(1, "allowed", "2026-11-11T01:00:01Z"),
+        row(2, "denied", "2026-11-11T01:00:02Z"),
+        row(3, "pending", "2026-11-11T01:00:03Z"),
+      ],
+    });
+    vi.mocked(cands.fetchLiveCandidates).mockResolvedValue(
+      cands.parseLiveCandidates({ task_id: "42", items: [], returned: 0, candidate_total: 0, truncated: false }, "42"),
+    );
+    useUrl.setState({ handle, job, verified: true, flow: { ...flow, stage: "diagnosing" }, flowVerified: true });
+    render(
+      <ShellContext.Provider value={shell("live")}>
+        <UrlLiveLive />
+      </ShellContext.Provider>,
+    );
+    const queue = await screen.findByRole("region", { name: "승인 요청" });
+    expect(within(queue).getByText("대기 1")).toBeInTheDocument();
+    // 가운데 목록엔 대기 요청 한 줄만(처음부터 펼쳐져 있다, 사용자 11/25)
+    expect(within(queue).getAllByRole("button", { expanded: true })).toHaveLength(1);
+    expect(within(queue).getByText("/api/items/3")).toBeInTheDocument();
+    expect(within(queue).queryByText("/api/items/1")).toBeNull();
+    const doneBtn = within(queue).getByRole("button", { name: "처리된 요청 2" });
+    expect(doneBtn).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(doneBtn);
+    const side = screen.getByRole("complementary", { name: "처리된 승인 요청" });
+    expect(within(side).getByRole("heading", { level: 2, name: "처리된 요청 2" })).toBeInTheDocument();
+    expect(doneBtn).toHaveAttribute("aria-pressed", "true");
+    // 최근 것부터: 거부(01:00:02) → 허용(01:00:01). 줄을 펼쳐도 승인 · 거부 버튼은 없다
+    const rows = within(within(side).getByRole("list", { name: "처리된 요청" })).getAllByRole("button");
+    expect(rows.map((r) => r.textContent?.match(/\/api\/items\/\d/)?.[0])).toEqual(["/api/items/2", "/api/items/1"]);
+    expect(rows[0]).toHaveTextContent("거부");
+    expect(rows[1]).toHaveTextContent("허용");
+    // 거부는 빨강 · 허용은 초록 딱지로 갈린다(사용자 11/25)
+    expect(within(rows[0]).getByText("거부").className).toMatch(/deny/);
+    expect(within(rows[1]).getByText("허용").className).toMatch(/\bin\b|_in_/);
+    // 결과로 거르기: 있는 결과만(허용 1 · 거부 1, 만료 없음), 누르면 그것만 · 다시 누르면 전체
+    const fil = within(side).getByRole("group", { name: "결과로 거르기" });
+    expect(
+      within(fil)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["허용 1", "거부 1"]);
+    fireEvent.click(within(fil).getByRole("button", { name: "거부 1" }));
+    const only = () =>
+      within(within(side).getByRole("list", { name: "처리된 요청" }))
+        .getAllByRole("button")
+        .map((r) => r.textContent?.match(/\/api\/items\/\d/)?.[0]);
+    expect(only()).toEqual(["/api/items/2"]);
+    fireEvent.click(within(fil).getByRole("button", { name: "거부 1" }));
+    expect(only()).toEqual(["/api/items/2", "/api/items/1"]);
+    // 거르기로 줄이 다시 그려졌으니 다시 찾는다
+    const allowedRow = within(within(side).getByRole("list", { name: "처리된 요청" })).getByRole("button", {
+      name: /\/api\/items\/1/,
+    });
+    fireEvent.click(allowedRow);
+    expect(allowedRow).toHaveAttribute("aria-expanded", "true");
+    expect(within(side).queryByRole("button", { name: "승인하고 보내기" })).toBeNull();
+    // [← 진행 요약]으로 돌아온다
+    fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로 돌아가기" }));
+    expect(screen.getByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
+    expect(doneBtn).toHaveAttribute("aria-pressed", "false");
+  });
+
   it("가운데는 상태 카드 · 확인 필요 · 발견 후보(활동 기록 없음), 전송 통제와 탐색 현황은 오른쪽 진행 요약에", async () => {
     vi.mocked(api.fetchRequestApprovals).mockResolvedValue({
       run: {
@@ -1533,22 +1632,27 @@ describe("점검 진행", () => {
     expect(document.getElementById("lPlan")).toBeNull();
     expect(within(card).queryByRole("button", { name: /계획 (보기|접기)/ })).toBeNull();
     expect(screen.queryByRole("region", { name: "서버 진단 활동" })).toBeNull();
-    // 승인 요청은 한 줄씩 쌓이는 목록(사용자 11/24): 줄 = 메서드 · 경로 · 계획 제목 · 상태 · 받은 시각, 미리보기 · 승인/거부는
-    // 줄을 눌러야 펼쳐진다(요청이 올 때마다 큰 상자가 뜨지 않게)
+    // 승인 요청 줄 = 메서드 · 경로 · 계획 제목 · 상태 · 받은 시각(사용자 11/24). 대기 요청은 처음부터 펼쳐 미리보기 · 승인/거부가
+    // 바로 보이고, 여러 개여도 먼저 온 하나만 그 자리에(사용자 11/25) — 남은 수는 머리 '대기 n'. 줄을 누르면 접힌다
     const decide = await screen.findByRole("region", { name: "승인 요청" });
-    expect(within(decide).getByText("대기 2 · 전체 2")).toBeInTheDocument();
-    expect(within(decide).getByText("/api/users/2")).toBeInTheDocument();
-    expect(within(decide).getAllByText("고른 경로 심화 점검").length).toBeGreaterThan(0);
-    expect(within(decide).getAllByText("승인 대기")).toHaveLength(2);
-    expect(within(decide).queryByRole("button", { name: "승인하고 보내기" })).toBeNull();
-    const row = within(decide).getByRole("button", { name: /\/api\/users\/2/ });
-    expect(row).toHaveAttribute("aria-expanded", "false");
-    fireEvent.click(row);
-    expect(row).toHaveAttribute("aria-expanded", "true");
+    // 머리엔 대기 수만(처리된 요청이 없으면 [처리된 요청] 버튼도 없다, 사용자 11/25)
+    expect(within(decide).getByText("대기 2")).toBeInTheDocument();
+    expect(within(decide).queryByRole("button", { name: /처리된 요청/ })).toBeNull();
+    // 받은 시각이 같아 먼저 온(목록 앞) /api/users/1 하나만 보인다
+    expect(within(decide).getByText("/api/users/1")).toBeInTheDocument();
+    expect(within(decide).queryByText("/api/users/2")).toBeNull();
+    // 줄의 계획 제목은 그 요청의 계획(intent 1 = 공개 경로 탐색)
+    expect(within(decide).getByText("공개 경로 탐색")).toBeInTheDocument();
+    expect(within(decide).getAllByText("승인 대기")).toHaveLength(1);
     expect(within(decide).getAllByRole("button", { name: "승인하고 보내기" })).toHaveLength(1);
-    expect(within(decide).getByRole("button", { name: "거부" })).toBeInTheDocument();
+    expect(within(decide).getAllByRole("button", { name: "거부" })).toHaveLength(1);
+    const row = within(decide).getByRole("button", { name: /\/api\/users\/1/ });
+    expect(row).toHaveAttribute("aria-expanded", "true");
     fireEvent.click(row);
+    expect(row).toHaveAttribute("aria-expanded", "false");
     expect(within(decide).queryByRole("button", { name: "승인하고 보내기" })).toBeNull();
+    fireEvent.click(row);
+    expect(within(decide).getAllByRole("button", { name: "승인하고 보내기" })).toHaveLength(1);
     // '확인 필요' 글은 숫자 칸 이름 한 군데
     expect(screen.getAllByText("확인 필요")).toHaveLength(1);
     // 발견 후보 목록: 최근 순, 줄마다 Worker 등급(없으면 미평가) · 번호 / 관측 시각 · 검토 필요, 첫 목록엔 '새로' 없음
@@ -1583,9 +1687,9 @@ describe("점검 진행", () => {
     expect(within(insp).getByRole("heading", { level: 3, name: "전송 통제" })).toBeInTheDocument();
     // 탐색 현황: 방문 · 발견한 API · 심화 선택 (서버 수 그대로)
     expect(within(insp).getByText("탐색 현황").parentElement).toHaveTextContent("방문 1발견한 API 3심화 선택 2");
-    // 승인 버튼은 줄을 펼쳐야 보인다(승인 요청 목록, 사용자 11/24)
+    // 대기 요청은 처음부터 펼쳐져 승인 버튼이 바로 보인다 — 한 번에 하나(사용자 11/25)
     const queue = screen.getByRole("region", { name: "승인 요청" });
-    expect(within(queue).getAllByRole("button", { expanded: false })).toHaveLength(2);
+    expect(within(queue).getAllByRole("button", { expanded: true })).toHaveLength(1);
     act(() =>
       useUrl.setState({
         handle: {
@@ -1602,11 +1706,7 @@ describe("점검 진행", () => {
     // 다시 연(복구) 점검 안내 문장은 두지 않는다(사용자 11/17). 진행 목록에서 다시 연 점검도 승인할 수 있다
     // (사용자 2026-11-22, 1차 리허설 F16: 새로고침 한 번에 승인을 못 하면 승인 모드 통제가 무너진다)
     expect(screen.queryByText(/다시 연 점검/)).toBeNull();
-    // 두 요청 다 펼치면 승인할 수 있다(한 번에 한 줄만 펼친다)
-    for (const path of [/\/api\/users\/1/, /\/api\/users\/2/]) {
-      fireEvent.click(within(queue).getByRole("button", { name: path }));
-      expect(within(queue).getAllByRole("button", { name: "승인하고 보내기" })).toHaveLength(1);
-      expect(within(queue).getByRole("button", { name: "승인하고 보내기" })).toBeEnabled();
-    }
+    // 다시 연 점검에서도 지금 요청을 승인할 수 있다
+    expect(within(queue).getByRole("button", { name: "승인하고 보내기" })).toBeEnabled();
   });
 });
