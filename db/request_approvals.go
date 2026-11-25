@@ -45,9 +45,12 @@ type RequestApproval struct {
 	Consumed       bool              `json:"consumed"`
 	ExecutionState string            `json:"execution_state"`
 	Reason         string            `json:"reason,omitempty"`
-	Live           bool              `json:"live"`
-	CanDecide      bool              `json:"can_decide"`
-	Version        int64             `json:"-"`
+	// ClosedReason은 승인 대기가 결정 없이 닫힌 까닭이다(state가 cancelled·expired일 때만, 고정 코드). Reason(E② 전송 결과)과
+	// 섞지 않는다. model_stage_closed·request_timeout·operator_stopped·run_closed·approval_expired.
+	ClosedReason string `json:"closed_reason,omitempty"`
+	Live         bool   `json:"live"`
+	CanDecide    bool   `json:"can_decide"`
+	Version      int64  `json:"-"`
 }
 
 func (d *DB) InsertRequestApproval(ctx context.Context, a RequestApproval) error {
