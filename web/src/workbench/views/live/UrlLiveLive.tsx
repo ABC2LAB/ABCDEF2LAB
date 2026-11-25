@@ -616,13 +616,46 @@ function SavedFindings({
   );
 }
 
+/** 흐름 일시정지 상태를 알약에 어떻게 보일지. */
+export type FlowPause = "paused" | "running" | "unknown" | "none";
+
 /**
- * 점검 진행 화면의 상태 알약 (시안 lState: 진행 중 · 일시정지됨). 실행 중이 아니거나 확인하지 못한 상태는
- * 공통 알약(서버 상태 글) 그대로. 일시정지됨은 탐색 흐름이 있는 점검의 흐름 스냅숏일 때만이다.
+ * 흐름 스냅숏 → 일시정지 상태(11/24 화면 VAmPI 발견 10). 확인된(verified · 결과 불명 아님) 스냅숏일 때만 paused/running 이고,
+ * 탐색 흐름이 있는데 다시 읽지 못했으면 'unknown' — 마지막으로 읽은 스냅숏으로 '진행 중'을 단정하지 않는다(절대 규칙 5).
+ * 흐름이 없는 점검은 'none'.
  */
-function LivePill({ job, verified, paused }: { job: { state: UrlState }; verified: boolean; paused: boolean }) {
+export function flowPauseOf(
+  workflow: boolean,
+  flow: Pick<WorkflowSnapshot, "paused"> | null,
+  flowVerified: boolean,
+  flowUncertain: boolean,
+): FlowPause {
+  if (!workflow || !flow) return "none";
+  if (!flowVerified || flowUncertain) return "unknown";
+  return flow.paused ? "paused" : "running";
+}
+
+/**
+ * 점검 진행 화면의 상태 알약 (시안 lState: 진행 중 · 일시정지됨). 일시정지됨은 확인된 흐름 스냅숏이 일시정지일 때, 점검이 아직
+ * 움직이는 상태(준비 · 실행 중)면 보인다 — 일시정지 버튼이 있는 탐색(preparing)에서도 뜬다(전에는 running 만이라 탐색 중
+ * 일시정지가 안 보였다). 실행 중인데 흐름 상태를 다시 읽지 못했으면 '일시정지 여부 확인 중'. 그 밖은 공통 알약(서버 상태 글).
+ */
+function LivePill({ job, verified, pause }: { job: { state: UrlState }; verified: boolean; pause: FlowPause }) {
+  const moving = job.state === "running" || job.state === "preparing";
+  if (moving && pause === "paused")
+    return (
+      <span className={cx(s.pill, s.wait)} data-flow-pause="paused">
+        일시정지됨
+      </span>
+    );
   if (!verified || job.state !== "running") return <UrlPill job={job} verified={verified} />;
-  return paused ? <span className={s.pill}>일시정지됨</span> : <span className={cx(s.pill, s.run)}>진행 중</span>;
+  if (pause === "unknown")
+    return (
+      <span className={cx(s.pill, s.wait)} data-flow-pause="unknown">
+        일시정지 여부 확인 중
+      </span>
+    );
+  return <span className={cx(s.pill, s.run)}>진행 중</span>;
 }
 
 /** live 점검 진행 (URL 진단, 시안 data-view="live"). */
@@ -634,6 +667,8 @@ export function UrlLiveLive() {
   const verified = useUrl((st) => st.verified);
   const busy = useUrl((st) => st.busy);
   const flow = useUrl((st) => st.flow);
+  const flowVerified = useUrl((st) => st.flowVerified);
+  const flowUncertain = useUrl((st) => st.flowUncertain);
   const g = useUrlGates();
   const host = useUrlHost();
   const stop = useStopConfirm("종료");
@@ -741,7 +776,8 @@ export function UrlLiveLive() {
 
   const ended = URL_ENDED_STATES.includes(job.state);
   // 서버가 보고한 흐름 상태만 표시한다. 일시정지 · 다시 시작은 흐름 API(PauseButton), 점검 제어 API 는 부르지 않는다.
-  const pausedNow = flow ? !!flow.paused : false;
+  const pause = flowPauseOf(!!job.input.workflow_mode, flow, flowVerified, flowUncertain);
+  const pausedNow = pause === "paused";
   const run = a.poll.data?.run;
   const ap = approvalCounts(run, a.poll.data?.approvals);
   const known = (n: number) => (ap.known ? fmtCount(n) : "—");
@@ -871,7 +907,7 @@ export function UrlLiveLive() {
         crumb="점검 진행"
         host={host}
         phase="live"
-        pill={<LivePill job={job} verified={verified} paused={pausedNow} />}
+        pill={<LivePill job={job} verified={verified} pause={pause} />}
         acts={
           <>
             <PauseButton />
