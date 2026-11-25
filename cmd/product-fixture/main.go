@@ -21,7 +21,7 @@ import (
 	"time"
 )
 
-var calls, goals, planner, worker, allowed, denied, exploreTurns, exploreBash atomic.Int64
+var calls, goals, planner, worker, allowed, denied, authLogins, authenticatedReads, structuredReads, exploreTurns, exploreBash atomic.Int64
 
 // exploreBashSeen은 탐색 직접 Bash 결과에서 모델이 본 상태 코드 줄이다(예: "approved=200 outside=403"). 값은 소유 fixture의 상태 코드뿐이다.
 var exploreBashSeen atomic.Value
@@ -55,7 +55,7 @@ func main() {
 	}
 	var u *url.URL
 	readyAddress := ""
-	if *mode != "selected-target-nosniff" {
+	if *mode != "selected-target-nosniff" && *mode != "selected-target-auth-nosniff" {
 		u, e = url.Parse(*upstream)
 		must(e)
 		readyAddress, e = upstreamDialAddress(u)
@@ -70,9 +70,9 @@ func main() {
 				c.Close()
 			}
 		}
-		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "explore_bash_seen": exploreBashSeen.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load()})
+		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "explore_bash_seen": exploreBashSeen.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load(), "auth_logins": authLogins.Load(), "authenticated_reads": authenticatedReads.Load(), "structured_reads": structuredReads.Load()})
 	})
-	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" || *mode == "selected-model-stored-nosniff" {
+	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" || *mode == "selected-model-stored-nosniff" || *mode == "selected-model-auth-nosniff" || *mode == "selected-model-structured-nosniff" || *mode == "selected-model-overconfident-nosniff" {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
 		handler := model(*target)
@@ -83,7 +83,13 @@ func main() {
 		} else if *mode == "selected-model-nosniff" {
 			handler = selectedNosniffModel(*target)
 		} else if *mode == "selected-model-stored-nosniff" {
-			handler = modelWithSelectionMode(*target, true, true, true)
+			handler = modelWithSelectionMode(*target, true, true, true, false, false, false)
+		} else if *mode == "selected-model-auth-nosniff" {
+			handler = modelWithSelectionMode(*target, true, true, false, true, false, false)
+		} else if *mode == "selected-model-structured-nosniff" {
+			handler = modelWithSelectionMode(*target, true, true, false, false, true, false)
+		} else if *mode == "selected-model-overconfident-nosniff" {
+			handler = modelWithSelectionMode(*target, true, true, false, false, false, true)
 		}
 		mux.Handle("POST /v1/chat/completions", handler)
 		must(http.ListenAndServe(":8080", mux))
@@ -104,12 +110,39 @@ func main() {
 		must(http.ListenAndServe(":9081", mux))
 	}()
 	server := &http.Server{Addr: ":9443", TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if *mode == "selected-target-auth-nosniff" && r.Method == "POST" && r.URL.Path == "/login" {
+			var input struct {
+				Username string `json:"username"`
+				Password string `json:"password"`
+			}
+			if json.NewDecoder(io.LimitReader(r.Body, 1024)).Decode(&input) != nil ||
+				(input.Username != "owned-a" || input.Password != "synthetic-secret-a") &&
+					(input.Username != "owned-b" || input.Password != "synthetic-secret-b") {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			authLogins.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"auth_token": fmt.Sprintf("synthetic-session-%s-%d", strings.TrimPrefix(input.Username, "owned-"), authLogins.Load())})
+			return
+		}
 		if r.Method == "GET" && r.URL.Path == "/rest/products/search" {
 			allowed.Add(1)
+			if r.URL.RawQuery == "view=summary" && r.Header.Get("Accept-Language") == "en-US" {
+				structuredReads.Add(1)
+			}
 		} else {
 			denied.Add(1)
 		}
-		if *mode == "selected-target-nosniff" && r.Method == "GET" && r.URL.Path == "/rest/products/search" {
+		if (*mode == "selected-target-nosniff" || *mode == "selected-target-auth-nosniff") && r.Method == "GET" && r.URL.Path == "/rest/products/search" {
+			if *mode == "selected-target-auth-nosniff" {
+				if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer synthetic-session-a-") &&
+					!strings.HasPrefix(r.Header.Get("Authorization"), "Bearer synthetic-session-b-") {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				authenticatedReads.Add(1)
+			}
 			w.Header().Set("Content-Type", "text/html")
 			io.WriteString(w, "<html><body>Owned synthetic product listing</body></html>")
 			return
@@ -189,7 +222,7 @@ func selectedNosniffVerdict(candidateID int64, messages []fixtureMessage) any {
 		result["reason"] = "synthetic_original_unavailable"
 		return result
 	}
-	if len(input.Followup) != 1 {
+	if len(input.Followup) < 1 || len(input.Followup) > 3 {
 		result["reason"] = "synthetic_followup_unavailable"
 		return result
 	}
@@ -229,22 +262,23 @@ func model(target string) http.Handler {
 // selectedModel is a disposable, no-cost fixture for the candidate API E2E.
 // Its initial diagnosis has one goal and one observed fact in a fresh DB.
 func selectedModel(target string) http.Handler {
-	return modelWithSelectionMode(target, true, false, false)
+	return modelWithSelectionMode(target, true, false, false, false, false, false)
 }
 
 func selectedNosniffModel(target string) http.Handler {
-	return modelWithSelectionMode(target, true, true, false)
+	return modelWithSelectionMode(target, true, true, false, false, false, false)
 }
 
 func modelWithSelection(target string, selected bool) http.Handler {
-	return modelWithSelectionMode(target, selected, false, false)
+	return modelWithSelectionMode(target, selected, false, false, false, false, false)
 }
 
-func modelWithSelectionMode(target string, selected, nosniff, stored bool) http.Handler {
+func modelWithSelectionMode(target string, selected, nosniff, stored, authenticated, structured, overconfident bool) http.Handler {
 	var mu sync.Mutex
 	turns := map[string]*fixtureTurns{}
 	originPattern := regexp.MustCompile(`https://(?:juice-a|juice-b|juice|synthetic)\.test:9443`)
 	exactGoal := regexp.MustCompile(`Inspect the approved (?:read-only )?HTTPS target (https://(?:juice-a|juice-b|juice|synthetic)\.test:9443)`)
+	syntheticSession := regexp.MustCompile(`synthetic-session-a-[0-9]+`)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -324,6 +358,14 @@ func modelWithSelectionMode(target string, selected, nosniff, stored bool) http.
 						"existing_call_refs": []string{}, "business_questions": []string{},
 						"actions":     []any{map[string]any{"purpose": "Independently inspect the same approved HTML response headers", "method": "GET", "path_hint": "/rest/products/search"}},
 						"limitations": "Only the approved exact HTML path is checked."}
+					if structured {
+						result.(map[string]any)["actions"] = []any{
+							map[string]any{"purpose": "Repeat the approved HTML read", "method": "GET", "path_hint": "/rest/products/search"},
+							map[string]any{"purpose": "Compare the public summary representation", "kind": "normal_control", "method": "GET",
+								"path_hint": "/rest/products/search", "query": map[string]string{"view": "summary"},
+								"headers": map[string]string{"Accept-Language": "en-US"}},
+						}
+					}
 				}
 			} else if strings.Contains(all, "selected/final-v1") {
 				result = map[string]any{"version": "selected/final-v1", "candidate_id": candidateID, "verdict": "insufficient",
@@ -335,6 +377,15 @@ func modelWithSelectionMode(target string, selected, nosniff, stored bool) http.
 					"verification_criteria": "Confirm the intended audience, then repeat the same approved read.", "sources": []any{}}
 				if nosniff {
 					result = selectedNosniffVerdict(candidateID, req.Messages)
+					if overconfident {
+						claim := result.(map[string]any)
+						claim["verdict"] = "confirmed"
+						claim["reason"] = "Synthetic model asserted a defect using an unrelated source."
+						claim["sources"] = []any{map[string]string{
+							"call_ref": "unrelated-call", "attempt_ref": "unrelated-attempt",
+							"observation_digest": strings.Repeat("a", 64),
+						}}
+					}
 				}
 			} else {
 				http.Error(w, "unexpected_selected_prompt", 400)
@@ -389,7 +440,22 @@ func modelWithSelectionMode(target string, selected, nosniff, stored bool) http.
 			turn.worker++
 			switch turn.worker {
 			case 1:
-				tool("Bash", "owned-allow", map[string]any{"command": "curl --silent --show-error --max-time 5 " + target + "/rest/products/search", "timeout_ms": 7000})
+				command := "curl --silent --show-error --max-time 5 " + target + "/rest/products/search"
+				if authenticated {
+					var session string
+					for _, m := range req.Messages {
+						if value := syntheticSession.FindString(string(m.Content)); value != "" {
+							session = value
+							break
+						}
+					}
+					if session == "" {
+						http.Error(w, "owned_session_missing", 400)
+						return
+					}
+					command = "curl --silent --show-error --max-time 5 --header 'Authorization: Bearer " + session + "' " + target + "/rest/products/search"
+				}
+				tool("Bash", "owned-allow", map[string]any{"command": command, "timeout_ms": 7000})
 			case 2:
 				ref := ""
 				for _, m := range req.Messages {

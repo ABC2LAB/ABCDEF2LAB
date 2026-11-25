@@ -160,9 +160,8 @@ func candidateLLMPlanStillApproved(now time.Time, p CandidateLLMPlan, original d
 	if p.AuthPreparation != nil && (p.AuthPreparation.Method != "POST" || !validSelectedExactPath(p.AuthPreparation.ExactPath) ||
 		!candidateVerificationDigest.MatchString(p.AuthPreparation.LoginDigest) ||
 		pathscope.ExcludedAny(p.AuthPreparation.ExactPath, p.ExcludedPaths) ||
-		!pathWithinAny(p.AuthPreparation.ExactPath, scope.PathPrefixes) ||
 		!pathWithinAny(p.AuthPreparation.ExactPath, target.PathPrefixes) ||
-		!slices.Contains(scope.Methods, "POST") || !slices.Contains(target.Methods, "POST")) {
+		!slices.Contains(target.Methods, "POST")) {
 		return false
 	}
 	parsed, err := url.Parse(original.TargetURL)
