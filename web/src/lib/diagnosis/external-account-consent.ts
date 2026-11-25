@@ -11,7 +11,7 @@ const ref = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9][
 export async function readExternalTestAccountPresence(
   target: string,
   signal?: AbortSignal,
-): Promise<{ hasTestAccounts: boolean; statement: string; loginMethodMissing: boolean }> {
+): Promise<{ hasTestAccounts: boolean; statement: string; loginMethodMissing: boolean; targetId?: string }> {
   const origin = new URL(target).origin;
   const resolved = await apiFetch<unknown>(
     `/api/product/targets/resolve?url=${encodeURIComponent(target)}`,
@@ -62,5 +62,7 @@ export async function readExternalTestAccountPresence(
     hasTestAccounts: accounts.some((a) => object(a) && a.classification === "test"),
     statement,
     loginMethodMissing,
+    // 진행 화면의 '로그인 방식 등록' 안내가 계정 분류 화면에서 이 대상을 미리 고르게 한다
+    targetId: t.id,
   };
 }

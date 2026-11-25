@@ -73,6 +73,7 @@ import s from "../../workbench.module.css";
 import { ApprovalQueue, useRequestApprovals } from "./approvals";
 import { CoverageGraphSection } from "./coverageGraphView";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
+import { AccountAuthWarning, LoginMethodMissingWarning } from "./liveAccountWarnings";
 import { PriceCapsNotice } from "./PriceCapsNotice";
 import { ProductVerdictReport, productConfirmationSummary, useProductVerdicts } from "./productVerdictViews";
 import { ReportAssetGraph } from "./ReportAssetGraph";
@@ -924,6 +925,9 @@ export function UrlLiveLive() {
           {stop.box}
           <UrlNotices />
           <WorkflowNotice />
+          {/* 시험 계정 인증 경고(#936 account_auth, 2초 조회로 갱신) · 로그인 방식 없음(#914). 알림만, 회차는 멈추지 않는다 */}
+          <AccountAuthWarning auth={job.account_auth} at={job.account_auth_updated_at} />
+          <LoginMethodMissingWarning targetUrl={handle.input.target_url} active={visible && !ended} />
           {job.reason_code ? <p className={s.help}>{`서버 사유: ${reasonText(job.reason_code)}`}</p> : null}
           {job.diagnostic_log_incomplete ? (
             <p className={s.help}>{reasonText("diagnostic_logging_incomplete")}</p>
