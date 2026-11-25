@@ -68,7 +68,7 @@ func main() {
 		}
 		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "explore_bash_seen": exploreBashSeen.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load()})
 	})
-	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" {
+	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" || *mode == "selected-model-stored-nosniff" {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
 		handler := model(*target)
@@ -78,6 +78,8 @@ func main() {
 			handler = selectedModel(*target)
 		} else if *mode == "selected-model-nosniff" {
 			handler = selectedNosniffModel(*target)
+		} else if *mode == "selected-model-stored-nosniff" {
+			handler = modelWithSelectionMode(*target, true, true, true)
 		}
 		mux.Handle("POST /v1/chat/completions", handler)
 		must(http.ListenAndServe(":8080", mux))
@@ -216,18 +218,18 @@ func model(target string) http.Handler {
 // selectedModel is a disposable, no-cost fixture for the candidate API E2E.
 // Its initial diagnosis has one goal and one observed fact in a fresh DB.
 func selectedModel(target string) http.Handler {
-	return modelWithSelectionMode(target, true, false)
+	return modelWithSelectionMode(target, true, false, false)
 }
 
 func selectedNosniffModel(target string) http.Handler {
-	return modelWithSelectionMode(target, true, true)
+	return modelWithSelectionMode(target, true, true, false)
 }
 
 func modelWithSelection(target string, selected bool) http.Handler {
-	return modelWithSelectionMode(target, selected, false)
+	return modelWithSelectionMode(target, selected, false, false)
 }
 
-func modelWithSelectionMode(target string, selected, nosniff bool) http.Handler {
+func modelWithSelectionMode(target string, selected, nosniff, stored bool) http.Handler {
 	var mu sync.Mutex
 	turns := map[string]*fixtureTurns{}
 	originPattern := regexp.MustCompile(`https://(?:juice-a|juice-b|juice)\.test:9443`)
@@ -365,7 +367,7 @@ func modelWithSelectionMode(target string, selected, nosniff bool) http.Handler 
 			turn.planner++
 			if turn.planner == 1 {
 				tool("add_intent", "owned-intent", map[string]any{"intents": []any{map[string]any{"summary": "Observe " + target + "/rest/products/search through the enforced Bash boundary, preserve a manual-review candidate, and verify denial of /outside-approved.", "priority": 5}}})
-			} else if selected && turn.worker >= 3 && names["prove_goal"] {
+			} else if selected && turn.worker >= 3 && (!stored || turn.worker >= 4) && names["prove_goal"] {
 				// The dedicated E2E starts with an empty product DB: origin fact 1,
 				// generated goal 2, and the observed read fact 4. Never use this
 				// fixture mode against a persisted or shared installation.
@@ -402,6 +404,12 @@ func modelWithSelectionMode(target string, selected, nosniff bool) http.Handler 
 					tool("submit_diagnostic_candidate", "owned-candidate", map[string]any{"call_ref": ref, "vulnclass": "access_control", "name": "소유 Juice Shop 관찰 후보", "summary": "실제 HTTPS 상품 응답을 관찰했습니다. 확정 취약점이 아닌 수동 검토 후보입니다.", "remediation": "실제 접근 권한을 별도로 검증하세요."})
 				}
 			case 3:
+				if stored {
+					tool("Bash", "owned-independent", map[string]any{"command": "curl --silent --show-error --max-time 5 " + target + "/rest/products/search", "timeout_ms": 7000})
+					break
+				}
+				fallthrough
+			case 4:
 				deniedTarget := target + "/outside-approved"
 				if target == "https://juice-a.test:9443" {
 					deniedTarget = "https://juice-b.test:9443/rest/products/search"

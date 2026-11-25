@@ -26,8 +26,12 @@ func TestDiagnosticReportMixedSyntheticComposition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	prepared, err := PrepareDiagnostic(in)
+	if err != nil || prepared.Suspected != 1 || prepared.Confirmed != 3 || prepared.ModelSupported != 0 || prepared.NotExecuted != 1 {
+		t.Fatalf("mixed result counts changed: %+v %v", prepared, err)
+	}
 	s := string(body)
-	for _, want := range []string{"<td>1</td><td>3</td><td>0</td><td>0</td><td>1</td><td>0</td><td>0</td>", "SQL injection candidate", "SSRF policy block", "finding-3", "1. 합성 요청", "스크린샷 부재", "출력이 잘렸습니다"} {
+	for _, want := range []string{"프로그램 확정", "관찰 확인됨(모델 판정)", "SQL injection candidate", "SSRF policy block", "finding-3", "1. 합성 요청", "스크린샷 부재", "출력이 잘렸습니다"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %q", want)
 		}
@@ -84,7 +88,8 @@ func TestDiagnosticReportInternalSharedAndEscaping(t *testing.T) {
 	if strings.Contains(string(shared), "SQL injection candidate") || strings.Contains(string(shared), "&lt;script&gt;") {
 		t.Fatal("shared free text leaked")
 	}
-	if !strings.Contains(string(shared), "<td>1</td><td>3</td><td>0</td><td>0</td><td>1</td>") {
+	prepared, err := PrepareDiagnostic(in)
+	if err != nil || prepared.Suspected != 1 || prepared.Confirmed != 3 || prepared.ModelSupported != 0 || prepared.NotExecuted != 1 || !strings.Contains(string(shared), "프로그램 확정") {
 		t.Fatal("shared counts changed")
 	}
 }

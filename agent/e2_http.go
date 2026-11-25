@@ -103,17 +103,18 @@ type E2HTTPRunner interface {
 // one is not guessed from the other or accepted merely for matching a format.
 // Reusing a Runner preserves its execution's approval, counters, and stop latch.
 type E2HTTPExecution struct {
-	Workflow      *diagnosisflow.Controller
-	ObservePrompt func(context.Context, string, []byte) error
-	ObserveResult func(context.Context, e2runner.Result) error
-	Runner        E2HTTPRunner
-	Control       *E2HTTPControl
-	TaskID        int64
-	IntentID      int64
-	TaskRef       string
-	RunRef        string
-	MaxTurns      int
-	MaxDuration   time.Duration
+	Workflow             *diagnosisflow.Controller
+	CaptureSelectedProof bool
+	ObservePrompt        func(context.Context, string, []byte) error
+	ObserveResult        func(context.Context, e2runner.Result) error
+	Runner               E2HTTPRunner
+	Control              *E2HTTPControl
+	TaskID               int64
+	IntentID             int64
+	TaskRef              string
+	RunRef               string
+	MaxTurns             int
+	MaxDuration          time.Duration
 	// ApprovedOrigins는 이 실행의 E② 승인 규칙 origin이다(신뢰한 정책에서만 채운다). 비어 있으면 insert_assets를
 	// 붙이지 않는다(C24).
 	ApprovedOrigins []string

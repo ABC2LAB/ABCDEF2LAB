@@ -82,10 +82,12 @@ WHERE q.id=$1 AND q.task_id=$2 AND q.candidate_id=$3 AND q.method IN ('active/v1
 			return
 		}
 		if state != "requested" && state != "checking_stored_evidence" && state != "analysis_ready" && state != "awaiting_approval" &&
+			!(state == "assessing" && step == 4) &&
 			state != "approved" && state != "running" && state != "cancelled" {
 			candidateVerificationError(w, 409, "verification_cancel_unavailable")
 			return
 		}
+		storedAssessing := state == "assessing" && step == 4
 		if state != "cancelled" && (step == 1 || step == 2 || step == 3 || step == 4) {
 			emptySources := []byte("[]")
 			sum := sha256.Sum256(emptySources)
@@ -104,6 +106,11 @@ VALUES($1,$2,'cancelled','user_cancelled',$3,$4,'selected/llm-v1')`, requestID, 
 		if step == 2 && state == "cancelled" {
 			command := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "candidate-analysis-cancel", Command: diagnosisprep.ProductControl,
 				Principal: owner, Product: &diagnosisprep.ProductRequest{Operation: "candidate_analysis_cancel", JobID: strconv.FormatInt(requestID, 10), CommandKey: digest}}
+			_, _ = endpoint.Call(ctx, command)
+		}
+		if storedAssessing && state == "cancelled" {
+			command := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "candidate-stored-cancel", Command: diagnosisprep.ProductControl,
+				Principal: owner, Product: &diagnosisprep.ProductRequest{Operation: "candidate_stored_cancel", JobID: strconv.FormatInt(requestID, 10), CommandKey: digest}}
 			_, _ = endpoint.Call(ctx, command)
 		}
 		if state == "approved" || state == "running" {

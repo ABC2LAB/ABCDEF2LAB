@@ -17,6 +17,7 @@ var ErrCandidateAssessmentContext = errors.New("candidate assessment context una
 // Reading it cannot send a model or target request.
 type CandidateAssessmentContext struct {
 	Original       CandidateSelectedContext
+	StoredOnly     bool
 	Plan           CandidateLLMPlan
 	Analysis       candidateAnalysisView
 	Answers        []candidateBusinessAnswer

@@ -172,7 +172,10 @@ WHERE q.method='active/v1' AND e.process_state IN ('approved','running') ORDER B
 	if err := b.recoverCandidateAnalyses(ctx, pool); err != nil {
 		return err
 	}
-	return b.recoverCandidateLLMExecutions(ctx, pool)
+	if err := b.recoverCandidateLLMExecutions(ctx, pool); err != nil {
+		return err
+	}
+	return b.recoverCandidateStoredAssessments(ctx, pool)
 }
 
 func candidateTerminalEvent(ctx context.Context, pool *sql.DB, requestID int64, state, reason string) error {

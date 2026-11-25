@@ -1351,13 +1351,14 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		r.E3Audit = &e3.audit
 	}
 	var session http.Header
+	var requestHeaders http.Header
 	finish := func(resp *http.Response, cause error) (*http.Response, http.Header, Receipt, error) {
 		if e3 != nil {
 			e3.finish(&r, ctx)
 		}
 		var boundaryErr error
 		rr, aerr := c.finish(ctx, r, func(rr Receipt) {
-			c.observeHTTP(req, resp, rr)
+			c.observeHTTP(req, requestHeaders, resp, rr)
 			attempt := rr
 			attempt.Reason = r.Reason
 			c.observeAttemptPath(req, attempt)

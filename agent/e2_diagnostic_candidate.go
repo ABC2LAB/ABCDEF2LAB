@@ -101,8 +101,9 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 	saved := func(ctx context.Context, c db.DiagnosticCandidate, event func(name, status, reason, ref string)) (int64, bool) {
 		var id int64
 		var err error
-		// Unsupported and legacy candidates keep their existing save semantics.
-		if fenced, ok := store.(diagnosticCandidateFenceStore); ok && candidateverify.SupportedV2(c) {
+		// Selected verification uses the same post-save E² attempt fence for
+		// every candidate class. Legacy runs retain their previous behavior.
+		if fenced, ok := store.(diagnosticCandidateFenceStore); ok && (candidateverify.SupportedV2(c) || binding.CaptureSelectedProof) {
 			id, err = fenced.RecordDiagnosticCandidateWithFence(ctx, c, func() (db.DiagnosticCandidateSaveFence, error) {
 				if binding.Runner == nil {
 					return db.DiagnosticCandidateSaveFence{}, db.ErrDiagnosticCandidate

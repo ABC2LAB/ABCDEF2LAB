@@ -655,6 +655,12 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			} else {
 				control.Reason, err = e.backend.cancelCandidateAnalysis(ctx, r.Product.JobID, r.Product.CommandKey)
 			}
+		case "candidate_stored_cancel":
+			if e.backend == nil {
+				err = errPreparation
+			} else {
+				control.Reason, err = e.backend.cancelCandidateStoredAssessment(ctx, r.Product.JobID, r.Product.CommandKey)
+			}
 		case "candidate_cancel":
 			if e.backend == nil {
 				err = errPreparation

@@ -144,14 +144,18 @@ func TestDiagnosticReportDatabaseScopeAndNoFalseConfirmation(t *testing.T) {
 			t.Fatal("unverified state promoted")
 		}
 	}
+	prepared, err := report.PrepareDiagnostic(data)
+	if err != nil || prepared.Suspected != 2 || prepared.Confirmed != 0 || prepared.ModelSupported != 0 || prepared.NotExecuted != 1 {
+		t.Fatalf("unverified results changed counts: %+v %v", prepared, err)
+	}
 	path := fmt.Sprintf("/api/report/diagnostic?task=%d", tid)
 	shared := req("GET", path, "")
 	if shared.Code != 200 || strings.Contains(shared.Body.String(), "합성 XSS 후보") {
 		t.Fatalf("shared export=%d", shared.Code)
 	}
 	internal := req("GET", path+"&audience=internal&download=1", "")
-	if internal.Code != 200 || !strings.Contains(internal.Body.String(), "합성 XSS 후보") || !strings.Contains(internal.Body.String(), "<td>2</td><td>0</td><td>0</td><td>0</td><td>1</td>") {
-		t.Fatalf("internal export=%d body=%s", internal.Code, internal.Body.String())
+	if internal.Code != 200 || !strings.Contains(internal.Body.String(), "합성 XSS 후보") || !strings.Contains(internal.Body.String(), "프로그램 확정") || !strings.Contains(internal.Body.String(), "관찰 확인됨(모델 판정)") {
+		t.Fatalf("internal export missing separate result counts: %d", internal.Code)
 	}
 	if internal.Header().Get("Content-Disposition") == "" || internal.Header().Get("Content-Security-Policy") == "" || strings.Contains(internal.Body.String(), "<script>not executable") {
 		t.Fatal("unsafe download")

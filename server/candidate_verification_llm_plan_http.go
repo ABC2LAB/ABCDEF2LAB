@@ -57,6 +57,13 @@ func candidateVerificationLLMPlanHTTP(w http.ResponseWriter, r *http.Request, po
 		candidateVerificationError(w, 403, "verification_scope_denied")
 		return
 	}
+	// The analysis worker owns the no-target stored-evidence path. A user
+	// opening the plan endpoint immediately after analysis must not race it
+	// into a new target execution when sealed comparisons already suffice.
+	if _, err := ReadCandidateStoredAssessmentContext(ctx, pool, requestID); err == nil {
+		candidateVerificationError(w, 409, "stored_evidence_assessment_pending")
+		return
+	}
 	tx, err := pool.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		candidateVerificationError(w, 503, "verification_storage_unavailable")

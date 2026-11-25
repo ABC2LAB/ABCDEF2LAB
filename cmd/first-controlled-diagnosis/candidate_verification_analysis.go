@@ -55,11 +55,20 @@ WHERE q.id=$1 AND q.method='llm/v1'`, id).Scan(&storedDigest, &state)
 	b.candidateWG.Add(1)
 	go func() {
 		defer b.candidateWG.Done()
-		defer func() { b.mu.Lock(); delete(b.candidateWorkers, id); b.mu.Unlock() }()
-		defer cancel()
-		if err := b.executeCandidateAnalysis(bounded, id, digest); err != nil {
+		analysisErr := b.executeCandidateAnalysis(bounded, id, digest)
+		cancel()
+		b.mu.Lock()
+		delete(b.candidateWorkers, id)
+		b.mu.Unlock()
+		if analysisErr != nil {
 			log.Printf("[candidate-analysis] request %d ended without a ready analysis", id)
+			return
 		}
+		// An eligible stored comparison needs no new target plan or approval.
+		// Missing evidence leaves analysis_ready for the explicit plan flow.
+		ready, stop := context.WithTimeout(b.ctx, 10*time.Second)
+		defer stop()
+		_ = b.scheduleCandidateStoredAssessment(ready, id)
 	}()
 	return "scheduled", nil
 }

@@ -421,6 +421,21 @@ func candidateVerificationHTTP(w http.ResponseWriter, r *http.Request, pool *sql
 			return
 		}
 	}
+	// The durable event and model output retain the model's original token for
+	// sealed replay. Public JSON never presents it as a program confirmation.
+	for i := range page.Verifications {
+		attempt := &page.Verifications[i]
+		if attempt.Method != "llm/v1" {
+			continue
+		}
+		if attempt.Latest.Verdict != nil {
+			shown := displayModelVerdict(*attempt.Latest.Verdict)
+			attempt.Latest.Verdict = &shown
+		}
+		if attempt.Final != nil {
+			attempt.Final.Verdict = displayModelVerdict(attempt.Final.Verdict)
+		}
+	}
 	writeJSON(w, 200, page)
 }
 
@@ -440,7 +455,7 @@ func createCandidateLLMVerification(ctx context.Context, tx *sql.Tx, route candi
 		return err
 	}
 	var pending int64
-	err = tx.QueryRowContext(ctx, `SELECT q.id FROM diagnostic_candidate_verification_requests q JOIN LATERAL (SELECT process_state FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON true WHERE q.task_id=$1 AND q.candidate_id=$2 AND e.process_state IN ('requested','checking_stored_evidence','analysis_ready','awaiting_approval','approved','running') LIMIT 1`, route.task, route.candidate).Scan(&pending)
+	err = tx.QueryRowContext(ctx, `SELECT q.id FROM diagnostic_candidate_verification_requests q JOIN LATERAL (SELECT process_state FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON true WHERE q.task_id=$1 AND q.candidate_id=$2 AND e.process_state IN ('requested','checking_stored_evidence','analysis_ready','awaiting_approval','approved','running','evidence_ready','assessing') LIMIT 1`, route.task, route.candidate).Scan(&pending)
 	if err == nil {
 		return errCandidateVerificationPending
 	}
@@ -692,11 +707,16 @@ func validateCandidateVerificationAttempt(row candidateVerificationAttempt, step
 				row.Latest.State == "analysis_ready" && row.Latest.Reason == "analysis_available" ||
 				row.Latest.State == "failed" && (row.Latest.Reason == "analysis_unavailable" || row.Latest.Reason == "analysis_interrupted" || row.Latest.Reason == "budget_unavailable"))) ||
 			(step == 4 && !(row.Latest.State == "cancelled" && row.Latest.Reason == "user_cancelled" ||
-				row.Latest.State == "awaiting_approval" && row.Latest.Reason == "action_approval_required")) ||
+				row.Latest.State == "awaiting_approval" && row.Latest.Reason == "action_approval_required" ||
+				row.Latest.State == "assessing" && row.Latest.Reason == "stored_final_model_started" ||
+				row.Latest.State == "failed" && row.Latest.Reason == "final_model_unavailable" ||
+				row.Latest.State == "expired" && row.Latest.Reason == "final_model_timeout")) ||
 			(step == 5 && !(row.Latest.State == "cancelled" && row.Latest.Reason == "user_cancelled" ||
 				row.Latest.State == "approved" && row.Latest.Reason == "user_approved" ||
 				row.Latest.State == "rejected" && row.Latest.Reason == "user_rejected" ||
-				row.Latest.State == "expired" && row.Latest.Reason == "plan_expired")) ||
+				row.Latest.State == "expired" && (row.Latest.Reason == "plan_expired" || row.Latest.Reason == "final_model_timeout") ||
+				row.Latest.State == "failed" && (row.Latest.Reason == "final_model_unavailable" || row.Latest.Reason == "final_model_interrupted") ||
+				row.Latest.State == "completed" && row.Latest.Reason == "stored_model_evidence_checked")) ||
 			(step == 6 && !(row.Latest.State == "running" && row.Latest.Reason == "execution_started" ||
 				row.Latest.State == "failed" && row.Latest.Reason == "candidate_execution_unavailable" ||
 				row.Latest.State == "cancelled" && row.Latest.Reason == "candidate_execution_cancelled" ||
@@ -746,7 +766,9 @@ func validateCandidateVerificationAttempt(row candidateVerificationAttempt, step
 			if err != nil || digest != row.PlanDigest {
 				return db.ErrDiagnosticCandidate
 			}
-		} else if row.PlanDigest != "" || step >= 4 {
+		} else if row.PlanDigest != "" || step >= 4 && !(step == 4 &&
+			(row.Latest.State == "assessing" || row.Latest.State == "failed" || row.Latest.State == "expired") ||
+			step == 5 && (row.Latest.State == "completed" || row.Latest.State == "failed" || row.Latest.State == "cancelled" || row.Latest.State == "expired")) {
 			return db.ErrDiagnosticCandidate
 		}
 		return nil

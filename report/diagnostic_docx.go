@@ -158,7 +158,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 		w.paragraph("Normal", fmt.Sprintf("근거 불러오기 실패: %d건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.", in.SourceFailures))
 	}
 	w.paragraph("Normal", fmt.Sprintf("원본 발견 항목 %d건 · 별도 E③ 확정 %d건. 발견 0건은 검사 범위 전체의 안전을 뜻하지 않습니다.", len(in.Entries), len(in.ProductConfirmed)))
-	w.table([][]string{{"의심", "확정", "판단 불가", "검증 미지원(의심에 포함)", "미실행", "확인 실패·결과 불명", "부정"}, {strconv.Itoa(in.Suspected), strconv.Itoa(in.Confirmed), strconv.Itoa(in.Inconclusive), strconv.Itoa(in.Unsupported), strconv.Itoa(in.NotExecuted), strconv.Itoa(in.Unknown), strconv.Itoa(in.Negative)}})
+	w.table([][]string{{"의심", "프로그램 확정", "관찰 확인됨(모델 판정)", "판단 불가", "검증 미지원(의심에 포함)", "미실행", "확인 실패·결과 불명", "프로그램 부정", "아님(모델 판정)"}, {strconv.Itoa(in.Suspected), strconv.Itoa(in.Confirmed), strconv.Itoa(in.ModelSupported), strconv.Itoa(in.Inconclusive), strconv.Itoa(in.Unsupported), strconv.Itoa(in.NotExecuted), strconv.Itoa(in.Unknown), strconv.Itoa(in.Negative), strconv.Itoa(in.ModelRefuted)}})
 	if len(in.ProductConfirmed) > 0 || in.ProductSuspected > 0 || in.ProductUndecidable > 0 || in.ProductUnverified > 0 || in.ProductSourceUnavailable > 0 || in.ProductUnreadable > 0 {
 		w.paragraph("Heading2", "제품 E③ 확정 단계")
 		summary := fmt.Sprintf("독립 확정 %d건", len(in.ProductConfirmed))
@@ -186,7 +186,7 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 			w.paragraph("Normal", line)
 		}
 	}
-	w.paragraph("Normal", "확정 집계는 유효한 저장 E③ 판정만 포함합니다. HTTP 성공·AI 주장·후보·정상 종료는 확정 근거가 아닙니다. 검토 필요 후보는 확정 심각도·위험도 합계에 포함하지 않습니다.")
+	w.paragraph("Normal", "확정 집계는 유효한 프로그램 검증 또는 저장 E③ 판정만 포함합니다. HTTP 성공·AI 주장·후보·정상 종료는 확정 근거가 아닙니다. 모델 판정은 별도 집계하고 확정 심각도·위험도 합계에 포함하지 않습니다.")
 	keys := []string{}
 	for k := range in.BySeverity {
 		keys = append(keys, k)

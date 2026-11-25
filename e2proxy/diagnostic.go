@@ -28,11 +28,14 @@ type HTTPObservation struct {
 	StatusCode       int    `json:"status_code,omitempty"`
 	ResponseComplete bool   `json:"response_complete"`
 	// ResponseTruncated는 본문 상한 때문에 앞부분만 도구에 준 응답이다(사유 withheld).
-	ResponseTruncated bool             `json:"response_truncated,omitempty"`
-	ForwardAttempted  bool             `json:"forward_attempted"`
-	AuditComplete     bool             `json:"audit_complete"`
-	ObservedAt        time.Time        `json:"observed_at"`
-	Technologies      []HTTPTechnology `json:"technologies,omitempty"`
+	ResponseTruncated bool      `json:"response_truncated,omitempty"`
+	ForwardAttempted  bool      `json:"forward_attempted"`
+	AuditComplete     bool      `json:"audit_complete"`
+	ObservedAt        time.Time `json:"observed_at"`
+	// RequestAuthContext records only the presence of target credential
+	// header names. It never contains header values or cookie names.
+	RequestAuthContext string           `json:"request_auth_context,omitempty"`
+	Technologies       []HTTPTechnology `json:"technologies,omitempty"`
 	// HTMLSecurity는 성공한 HTML 응답의 비밀 없는 헤더 속성만 담는다.
 	HTMLSecurity string `json:"html_security,omitempty"`
 }
@@ -53,7 +56,7 @@ func cloneHTTPObservations(in []HTTPObservation) []HTTPObservation {
 	sort.Slice(out, func(i, j int) bool { return out[i].Sequence < out[j].Sequence })
 	return out
 }
-func (c *Call) observeHTTP(req *http.Request, resp *http.Response, r Receipt) {
+func (c *Call) observeHTTP(req *http.Request, sentHeaders http.Header, resp *http.Response, r Receipt) {
 	if req == nil || req.URL == nil {
 		return
 	}
@@ -88,6 +91,9 @@ func (c *Call) observeHTTP(req *http.Request, resp *http.Response, r Receipt) {
 		method = "UNSUPPORTED"
 	}
 	obs := HTTPObservation{Sequence: r.Sequence, AttemptRef: r.AttemptID, Method: method, Endpoint: endpoint, ExactFunction: prefix != "" && req.URL.EscapedPath() == prefix && req.URL.RawQuery == "" && !strings.Contains(endpoint, "{"), RuleRef: r.RuleRef, Decision: r.Decision, Reason: r.Reason, StatusCode: r.StatusCode, ResponseComplete: r.ResponseComplete, ResponseTruncated: r.ResponseTruncated, ForwardAttempted: r.ForwardAttempted, AuditComplete: r.AuditComplete, ObservedAt: r.At}
+	if r.ForwardAttempted {
+		obs.RequestAuthContext = requestAuthContext(sentHeaders)
+	}
 	if resp != nil && r.ResponseReceived && r.ResponseComplete {
 		if (method == http.MethodGet || method == http.MethodHead) && r.StatusCode == http.StatusOK {
 			mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
@@ -122,6 +128,21 @@ func (c *Call) observeHTTP(req *http.Request, resp *http.Response, r Receipt) {
 		return
 	}
 	c.diagnostics = append(c.diagnostics, obs)
+}
+
+// This bounded category is the only credential information retained in an
+// observation. Header values and cookie names never enter the projection.
+func requestAuthContext(headers http.Header) string {
+	switch {
+	case headerPresent(headers, "Authorization") && headerPresent(headers, "Cookie"):
+		return "authorization_and_cookie"
+	case headerPresent(headers, "Authorization"):
+		return "authorization"
+	case headerPresent(headers, "Cookie"):
+		return "cookie"
+	default:
+		return "none"
+	}
 }
 func (o HTTPObservation) Summary() string {
 	return fmt.Sprintf("실제 통제 요청 %s %s: 전송 시도=%t, HTTP 상태=%d, 응답 완료=%t, 승인 판단=%s, 결과=%s. 이 관찰만으로 취약점이나 구현 기술을 확정하지 않는다.", o.Method, o.Endpoint, o.ForwardAttempted, o.StatusCode, o.ResponseComplete, o.Decision, o.Reason)

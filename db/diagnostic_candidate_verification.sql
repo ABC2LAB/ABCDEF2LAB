@@ -134,9 +134,10 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM diagnostic_candidate_verification_requests q
         JOIN diagnostic_candidate_verification_analyses a ON a.request_id=q.id
-        JOIN diagnostic_candidate_verification_events e ON e.request_id=q.id AND e.step=8
+        JOIN diagnostic_candidate_verification_events e ON e.request_id=q.id AND e.step IN (4,8)
         WHERE q.id=NEW.request_id AND q.method='llm/v1' AND e.process_state='assessing'
           AND a.profile_id=NEW.profile_id
+          AND (e.step=8 OR NOT EXISTS (SELECT 1 FROM diagnostic_candidate_verification_plans p WHERE p.request_id=q.id))
     ) THEN
         RAISE EXCEPTION 'selected verdict binding invalid' USING ERRCODE='23514';
     END IF;
@@ -334,7 +335,7 @@ DECLARE
 BEGIN
     SELECT method INTO method_name FROM diagnostic_candidate_verification_requests WHERE id=NEW.request_id;
     IF method_name='llm/v1' THEN
-        IF (NEW.step=9 AND NEW.process_state='completed') <> (NEW.verdict IS NOT NULL) OR
+        IF (NEW.process_state='completed' AND NEW.step IN (5,9)) <> (NEW.verdict IS NOT NULL) OR
            NEW.rule_version<>'selected/llm-v1' OR
            (NEW.step<6 AND NEW.execution_ref<>'') OR
            (NEW.step<>5 AND NEW.approval_ref<>'') OR
@@ -347,21 +348,30 @@ BEGIN
                WHERE prev.request_id=NEW.request_id AND prev.step=2 AND prev.process_state='checking_stored_evidence') OR
                NEW.process_state='analysis_ready' AND NOT EXISTS (
                    SELECT 1 FROM diagnostic_candidate_verification_analyses a WHERE a.request_id=NEW.request_id))) OR
-           (NEW.step=4 AND (NEW.process_state NOT IN ('cancelled','awaiting_approval') OR NOT EXISTS (
+           (NEW.step=4 AND (NEW.process_state NOT IN ('cancelled','awaiting_approval','assessing','failed','expired') OR NOT EXISTS (
                SELECT 1 FROM diagnostic_candidate_verification_events prev
                WHERE prev.request_id=NEW.request_id AND prev.step=3 AND prev.process_state='analysis_ready') OR
                NEW.process_state='awaiting_approval' AND NOT EXISTS (
+                   SELECT 1 FROM diagnostic_candidate_verification_plans p WHERE p.request_id=NEW.request_id) OR
+               NEW.process_state IN ('assessing','failed','expired') AND EXISTS (
                    SELECT 1 FROM diagnostic_candidate_verification_plans p WHERE p.request_id=NEW.request_id))) OR
-           (NEW.step=5 AND (NEW.process_state NOT IN ('cancelled','approved','rejected','expired') OR NOT EXISTS (
+           (NEW.step=5 AND (NEW.process_state NOT IN ('cancelled','approved','rejected','expired','completed') OR NOT EXISTS (
                SELECT 1 FROM diagnostic_candidate_verification_events prev
-               WHERE prev.request_id=NEW.request_id AND prev.step=4 AND prev.process_state='awaiting_approval') OR
+               WHERE prev.request_id=NEW.request_id AND prev.step=4 AND
+                   (prev.process_state='awaiting_approval' AND NEW.process_state<>'completed' OR
+                    prev.process_state='assessing' AND NEW.process_state IN ('completed','failed','cancelled','expired'))) OR
                NEW.process_state='approved' AND NEW.approval_ref='' OR
                NEW.process_state<>'approved' AND NEW.approval_ref<>'' OR
+               NEW.process_state='completed' AND (NOT EXISTS (
+                   SELECT 1 FROM diagnostic_candidate_verification_verdicts v WHERE v.request_id=NEW.request_id) OR EXISTS (
+                   SELECT 1 FROM diagnostic_candidate_verification_plans p WHERE p.request_id=NEW.request_id)) OR
                NEW.process_state IN ('approved','rejected') AND NOT EXISTS (
                    SELECT 1 FROM diagnostic_candidate_verification_decisions d
                    JOIN diagnostic_candidate_verification_plans p ON p.request_id=d.request_id AND p.plan_digest=d.plan_digest
                    WHERE d.request_id=NEW.request_id AND d.decision=NEW.process_state) OR
-               NEW.process_state='expired' AND NOT EXISTS (
+               NEW.process_state='expired' AND EXISTS (
+                   SELECT 1 FROM diagnostic_candidate_verification_events prev
+                   WHERE prev.request_id=NEW.request_id AND prev.step=4 AND prev.process_state='awaiting_approval') AND NOT EXISTS (
                    SELECT 1 FROM diagnostic_candidate_verification_plans p
                    WHERE p.request_id=NEW.request_id AND p.expires_at<=NEW.event_at) OR
                NEW.process_state IN ('expired','cancelled') AND EXISTS (
@@ -391,7 +401,9 @@ BEGIN
                NEW.step=4 AND NEW.process_state NOT IN ('cancelled','awaiting_approval') OR NEW.step=5 AND NEW.process_state NOT IN ('cancelled','approved','rejected','expired') OR NEW.step>=6)) OR
            (current_user='product_runtime' AND (NEW.step=1 OR
                NEW.step=2 AND NEW.process_state NOT IN ('checking_stored_evidence','failed') OR
-               NEW.step=3 AND NEW.process_state NOT IN ('analysis_ready','failed') OR NEW.step IN (4,5))) THEN
+               NEW.step=3 AND NEW.process_state NOT IN ('analysis_ready','failed') OR
+               NEW.step=4 AND NEW.process_state NOT IN ('assessing','failed','expired') OR
+               NEW.step=5 AND NEW.process_state NOT IN ('completed','failed','cancelled','expired'))) THEN
             RAISE EXCEPTION 'selected verification request invalid' USING ERRCODE='23514';
         END IF;
     ELSIF method_name='stored/v1' THEN

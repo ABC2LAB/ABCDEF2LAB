@@ -44,6 +44,13 @@ func ProjectTrustedSelected(taskID int64, runRef string, calls []e2runner.Truste
 		row := StoredObservationV2{Revision: 2, Source: makeSource(call, obs), HeaderMode: call.Execution.HeaderMode,
 			SelectedProof: call.SelectedProof}
 		raw, err := json.Marshal(row)
+		if err == nil && len(raw) > 4096 && row.SelectedProof != nil {
+			// Preserve the original observation if a bounded Host checkpoint
+			// cannot fit the legacy row limit. That row cannot support a later
+			// stored-only confirmation, but remains reviewable.
+			row.SelectedProof = nil
+			raw, err = json.Marshal(row)
+		}
 		if err != nil || len(raw) > 4096 {
 			// The observation store has a fixed per-row limit. Keep the run
 			// record available without persisting an incomplete large row.
@@ -69,6 +76,8 @@ func ValidSelectedStoredObservation(taskID int64, runRef string, row StoredObser
 		obs.Sequence > 0 && !obs.ObservedAt.IsZero() && obs.AttemptRef != "" && len(obs.AttemptRef) <= 128 &&
 		obs.Method != "" && obs.Endpoint != "" && obs.RuleRef != "" && obs.Decision == "allowed" &&
 		obs.ForwardAttempted && obs.ResponseComplete && !obs.ResponseTruncated && obs.AuditComplete &&
+		(obs.RequestAuthContext == "" || obs.RequestAuthContext == "none" || obs.RequestAuthContext == "authorization" ||
+			obs.RequestAuthContext == "cookie" || obs.RequestAuthContext == "authorization_and_cookie") &&
 		s.Digest == sourceDigest(obs) &&
 		(row.HeaderMode == e2proxy.HeaderPreserve || row.HeaderMode == e2proxy.HeaderProtectedSessionProposal ||
 			row.HeaderMode == e2proxy.HeaderTestAccountPassthrough)

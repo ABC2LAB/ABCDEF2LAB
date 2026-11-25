@@ -120,6 +120,9 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 			State: row.Latest.State, Verdict: verdict, Reason: row.Latest.Reason,
 			Method: row.Method, EvidenceDigest: row.OriginalDigest, RequestedAt: row.RequestedAt,
 		}
+		if row.Method == "llm/v1" {
+			latest.Verdict = displayModelVerdict(verdict)
+		}
 		if analysis != nil {
 			byIndex := make(map[int]candidateBusinessAnswer, len(answers))
 			for _, answer := range answers {
@@ -169,6 +172,9 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 			}
 			latest.EarlierSuperseded = superseded
 			latest.EarlierVerdict, latest.EarlierReason, latest.EarlierRequestedAt = *earlier.Latest.Verdict, earlier.Latest.Reason, earlier.RequestedAt
+			if earlier.Method == "llm/v1" {
+				latest.EarlierVerdict = displayModelVerdict(latest.EarlierVerdict)
+			}
 			var refs []candidateVerificationSourceRef
 			if json.Unmarshal(earlier.Latest.Sources, &refs) != nil || len(refs) < 2 || len(refs) > 8 {
 				return errCandidateVerificationHistory
@@ -225,7 +231,7 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 			latest.Final = &report.DiagnosticFinalReview{Claim: row.Final.Claim, NormalExplanation: row.Final.NormalExplanation,
 				Reason: row.Final.Reason, Limitations: row.Final.Limitations, Remediation: row.Final.Remediation,
 				VerificationCriteria: row.Final.VerificationCriteria}
-			entry.AssessmentStatus, entry.AssessmentReason = row.Final.Verdict, "selected_model_evidence_checked"
+			entry.AssessmentStatus, entry.AssessmentReason = displayModelVerdict(row.Final.Verdict), "selected_model_evidence_checked"
 			entry.Summary = row.Final.Claim + "\n" + row.Final.Reason
 			entry.Remediation = row.Final.Remediation
 			entry.Report = row.Final.VerificationCriteria
@@ -236,10 +242,9 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 			}
 			switch row.Final.Verdict {
 			case "confirmed":
-				entry.Outcome, entry.Verification = "confirmed", "selected_model_evidence_v1"
-				entry.Severity, entry.SeveritySource, entry.SeverityRationale = "info", "", ""
+				entry.Outcome, entry.Verification = "model_supported", "selected_model_review_v1"
 			case "negative":
-				entry.Outcome = "negative"
+				entry.Outcome = "model_refuted"
 			case "insufficient":
 				entry.Outcome = "review"
 			default:
@@ -251,6 +256,18 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 	return nil
 }
 
+// LLM conclusions are recommendations, never program or E3 confirmations.
+func displayModelVerdict(verdict string) string {
+	switch verdict {
+	case "confirmed":
+		return "model_supported"
+	case "negative":
+		return "model_refuted"
+	default:
+		return verdict
+	}
+}
+
 // Return the last decisive verdict and whether a newer active request
 // supersedes it. A failed or inconclusive request can only set the latter.
 const priorCandidateVerdictSQL = `SELECT q.id,q.candidate_id,q.request_key,q.method,q.original_evidence_digest,q.original_evidence_version,q.original_run_ref,q.requested_at,e.step,e.process_state,e.verdict,e.reason,e.sources,e.sources_digest,e.rule_version,e.execution_ref,e.approval_ref,e.event_at,p.plan,p.plan_digest,d.decision,d.plan_digest,x.followup_task_id,x.run_ref,
@@ -258,8 +275,8 @@ EXISTS (SELECT 1 FROM diagnostic_candidate_verification_requests newer
         WHERE newer.task_id=q.task_id AND newer.candidate_id=q.candidate_id AND newer.method IN ('active/v1','llm/v1') AND newer.id>q.id AND newer.id<$3)
 FROM diagnostic_candidate_verification_requests q
 JOIN LATERAL (SELECT * FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON e.process_state='completed' AND e.verdict IN ('confirmed','negative')
-JOIN diagnostic_candidate_verification_plans p ON p.request_id=q.id
-JOIN diagnostic_candidate_verification_decisions d ON d.request_id=q.id
-JOIN diagnostic_candidate_verification_executions x ON x.request_id=q.id AND x.plan_digest=p.plan_digest
+LEFT JOIN diagnostic_candidate_verification_plans p ON p.request_id=q.id
+LEFT JOIN diagnostic_candidate_verification_decisions d ON d.request_id=q.id AND d.plan_digest=p.plan_digest
+LEFT JOIN diagnostic_candidate_verification_executions x ON x.request_id=q.id AND x.plan_digest=p.plan_digest
 WHERE q.task_id=$1 AND q.candidate_id=$2 AND q.id<$3 AND q.method IN ('active/v1','llm/v1')
 ORDER BY q.id DESC LIMIT 1`

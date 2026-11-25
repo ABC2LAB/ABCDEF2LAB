@@ -21,7 +21,10 @@ func readCandidateFinalVerdict(ctx context.Context, tx *sql.Tx, row candidateVer
 	if row.Method != "llm/v1" || row.Latest.State != "completed" {
 		return nil, nil
 	}
-	if row.LLMPlan == nil || row.Latest.Verdict == nil || !binding.FollowupTask.Valid || !binding.RunRef.Valid {
+	if row.LLMPlan == nil {
+		return readStoredCandidateFinalVerdict(ctx, tx, row, binding, candidate)
+	}
+	if row.Latest.Verdict == nil || !binding.FollowupTask.Valid || !binding.RunRef.Valid {
 		return nil, ErrCandidateFinalVerdict
 	}
 	id, err := strconv.ParseInt(row.ID, 10, 64)

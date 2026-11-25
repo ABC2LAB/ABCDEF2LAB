@@ -75,6 +75,7 @@ type DiagnosticReport struct {
 	ProductUnreadable                                 int
 	ProductSealUnconfirmed                            int
 	Confirmed, Review, NotExecuted, Unknown, Negative int
+	ModelSupported, ModelRefuted                      int
 	Suspected, Inconclusive, Unsupported              int
 	BySeverity, ByType                                map[string]int
 }
@@ -241,6 +242,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		in.ModelAccounting = nil
 	}
 	in.Confirmed, in.Review, in.NotExecuted, in.Unknown, in.Negative = 0, 0, 0, 0, 0
+	in.ModelSupported, in.ModelRefuted = 0, 0
 	in.Suspected, in.Inconclusive, in.Unsupported = 0, 0, 0
 	in.SourceFailures = 0
 	in.BySeverity = map[string]int{}
@@ -260,10 +262,10 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		seen[e.ID] = true
-		if (e.Kind != "candidate" && e.Kind != "finding" && e.Kind != "verdict") || !strings.HasPrefix(e.ID, e.Kind+"-") || (e.Verification != "stored_verification" && e.Verification != "manual_review_required" && e.Verification != "passive_observation_v1" && e.Verification != "passive_observation_v2" && e.Verification != "active_observation_v1" && e.Verification != "selected_model_evidence_v1") {
+		if (e.Kind != "candidate" && e.Kind != "finding" && e.Kind != "verdict") || !strings.HasPrefix(e.ID, e.Kind+"-") || (e.Verification != "stored_verification" && e.Verification != "manual_review_required" && e.Verification != "passive_observation_v1" && e.Verification != "passive_observation_v2" && e.Verification != "active_observation_v1" && e.Verification != "selected_model_review_v1") {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
-		if (e.Verification == "passive_observation_v1" || e.Verification == "passive_observation_v2" || e.Verification == "active_observation_v1" || e.Verification == "selected_model_evidence_v1") && e.Outcome != "confirmed" {
+		if (e.Verification == "passive_observation_v1" || e.Verification == "passive_observation_v2" || e.Verification == "active_observation_v1") && e.Outcome != "confirmed" || e.Verification == "selected_model_review_v1" && e.Outcome != "model_supported" {
 			return DiagnosticReport{}, ErrExportBlocked
 		}
 		if e.AssessmentStatus != "" {
@@ -271,6 +273,14 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
 			switch e.AssessmentStatus {
+			case "model_supported":
+				if e.Outcome != "model_supported" || e.Verification != "selected_model_review_v1" {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
+			case "model_refuted":
+				if e.Outcome != "model_refuted" {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
 			case "confirmed":
 				if e.Outcome != "confirmed" {
 					return DiagnosticReport{}, ErrExportBlocked
@@ -306,7 +316,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
 			if latest.EarlierVerdict != "" {
-				if (latest.EarlierVerdict != "confirmed" && latest.EarlierVerdict != "negative") || latest.EarlierReason == "" || latest.EarlierRequestedAt.IsZero() ||
+				if (latest.EarlierVerdict != "confirmed" && latest.EarlierVerdict != "negative" && latest.EarlierVerdict != "model_supported" && latest.EarlierVerdict != "model_refuted") || latest.EarlierReason == "" || latest.EarlierRequestedAt.IsZero() ||
 					len(latest.EarlierSources) < 2 || len(latest.EarlierSources) > 8 || latest.EarlierRequestedAt.After(latest.RequestedAt) {
 					return DiagnosticReport{}, ErrExportBlocked
 				}
@@ -321,11 +331,12 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 					return DiagnosticReport{}, ErrExportBlocked
 				}
 				if latest.State == "completed" {
-					if latest.Reason != "model_evidence_checked" || latest.Verdict != e.AssessmentStatus || e.AssessmentReason != "selected_model_evidence_checked" ||
+					if (latest.Reason != "model_evidence_checked" && latest.Reason != "stored_model_evidence_checked") ||
+						latest.Verdict != e.AssessmentStatus || e.AssessmentReason != "selected_model_evidence_checked" ||
 						latest.Final == nil ||
-						(latest.Verdict != "confirmed" && latest.Verdict != "negative" && latest.Verdict != "insufficient") ||
-						(latest.Verdict == "confirmed" && (e.Verification != "selected_model_evidence_v1" || e.Outcome != "confirmed")) ||
-						(latest.Verdict == "negative" && e.Outcome != "negative") ||
+						(latest.Verdict != "model_supported" && latest.Verdict != "model_refuted" && latest.Verdict != "insufficient") ||
+						(latest.Verdict == "model_supported" && (e.Verification != "selected_model_review_v1" || e.Outcome != "model_supported")) ||
+						(latest.Verdict == "model_refuted" && e.Outcome != "model_refuted") ||
 						(latest.Verdict == "insufficient" && e.Outcome != "review") || len(latest.Sources) > 8 {
 						return DiagnosticReport{}, ErrExportBlocked
 					}
@@ -448,10 +459,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 					e.LatestVerification.Method == "stored/v1" && !e.LatestVerification.EarlierSuperseded && e.LatestVerification.EarlierVerdict == "confirmed" && e.LatestVerification.EarlierReason == verificationReason) &&
 				((verificationReason == "html_nosniff_missing_followup_twice" && e.VulnClass == "security_headers") ||
 					(verificationReason == "server_version_banner_followup_twice" && e.VulnClass == "information_disclosure"))
-			selectedCandidate := e.Verification == "selected_model_evidence_v1" && in.Run != nil && in.Run.VerificationVersion == "selected/llm-v1" &&
-				e.LatestVerification != nil && e.LatestVerification.Method == "llm/v1" && e.LatestVerification.State == "completed" &&
-				e.LatestVerification.Verdict == "confirmed" && verificationReason == "selected_model_evidence_checked"
-			passiveCandidate := e.Kind == "candidate" && (legacyPassiveCandidate || activeCandidate || selectedCandidate)
+			passiveCandidate := e.Kind == "candidate" && (legacyPassiveCandidate || activeCandidate)
 			if !legacyFinding && !passiveCandidate || e.Stale {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
@@ -478,6 +486,20 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			in.Unknown++
 		case "negative":
 			in.Negative++
+		case "model_supported":
+			if e.Kind != "candidate" || e.LatestVerification == nil || e.LatestVerification.Method != "llm/v1" || e.LatestVerification.State != "completed" || e.Stale {
+				return DiagnosticReport{}, ErrExportBlocked
+			}
+			sum := sha256.Sum256([]byte(e.Evidence))
+			if e.Digest != hex.EncodeToString(sum[:]) {
+				return DiagnosticReport{}, ErrExportBlocked
+			}
+			in.ModelSupported++
+		case "model_refuted":
+			if e.Kind != "candidate" || e.LatestVerification == nil || e.LatestVerification.Method != "llm/v1" || e.LatestVerification.State != "completed" {
+				return DiagnosticReport{}, ErrExportBlocked
+			}
+			in.ModelRefuted++
 		default:
 			return DiagnosticReport{}, ErrExportBlocked
 		}
@@ -807,13 +829,13 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 {{if .WorkflowApprovals}}<h3>저장된 요청 승인 이력</h3>{{with .WorkflowApprovalSummary}}<p>{{.}}</p>{{end}}<table><thead><tr><th>메서드</th><th>경로</th><th>결정</th><th>전송 결과</th><th>attempt</th></tr></thead><tbody>{{range .WorkflowApprovals}}<tr><td>{{.Method}}</td><td>{{if $.Shared}}[공유용 경로 비공개]{{else}}{{.Path}}{{end}}</td><td>{{.State}}</td><td>{{.ExecutionState}}</td><td>{{.Attempt}}</td></tr>{{end}}</tbody></table>{{end}}
 <h2>3장. 진단 결과 요약</h2><h3>관리자 요약</h3><p>실행 결과: {{.RunText}}. 실행 결과는 취약점이 없다는 뜻이 아닙니다.</p>{{if .SourceFailures}}<p>근거 불러오기 실패: {{.SourceFailures}}건. 해당 항목의 재현·캡처·프롬프트는 제공하지 않습니다.</p>{{end}}{{if .ExposedCredentialValues}}<p>대상이 노출한 자격 값: 노출됨 {{.ExposedCredentialValues}}건. 보고서에서는 값을 가렸습니다.</p>{{end}}
 <p>원본 발견 항목 {{len .Entries}}건 · 별도 E③ 확정 {{len .ProductConfirmed}}건. 발견 0건은 검사 범위 전체의 안전을 뜻하지 않습니다.</p>
-<table><thead><tr><th>의심</th><th>확정</th><th>판단 불가</th><th>검증 미지원(의심에 포함)</th><th>미실행</th><th>확인 실패·결과 불명</th><th>부정</th></tr></thead>
-<tbody><tr><td>{{.Suspected}}</td><td>{{.Confirmed}}</td><td>{{.Inconclusive}}</td><td>{{.Unsupported}}</td><td>{{.NotExecuted}}</td><td>{{.Unknown}}</td><td>{{.Negative}}</td></tr></tbody></table>
+<table><thead><tr><th>의심</th><th>프로그램 확정</th><th>관찰 확인됨(모델 판정)</th><th>판단 불가</th><th>검증 미지원(의심에 포함)</th><th>미실행</th><th>확인 실패·결과 불명</th><th>프로그램 부정</th><th>아님(모델 판정)</th></tr></thead>
+<tbody><tr><td>{{.Suspected}}</td><td>{{.Confirmed}}</td><td>{{.ModelSupported}}</td><td>{{.Inconclusive}}</td><td>{{.Unsupported}}</td><td>{{.NotExecuted}}</td><td>{{.Unknown}}</td><td>{{.Negative}}</td><td>{{.ModelRefuted}}</td></tr></tbody></table>
 {{if or .ProductConfirmed .ProductSuspected .ProductUndecidable .ProductUnverified .ProductSourceUnavailable .ProductUnreadable}}<h3>제품 E③ 확정 단계</h3>
 <p>독립 확정 {{len .ProductConfirmed}}건{{if .ProductSealUnconfirmed}} · 그중 근거 봉인 미확인 {{.ProductSealUnconfirmed}}건{{end}}{{if or .ProductSuspected .ProductUndecidable}} · 의심 {{.ProductSuspected}}건 · 판정 불가 {{.ProductUndecidable}}건(확정에 세지 않음){{end}}{{if .ProductUnverified}} · 확인 실패 {{.ProductUnverified}}건(확정에 안 셈){{end}}{{if .ProductSourceUnavailable}} · 당시 원본 미확인 {{.ProductSourceUnavailable}}건(확정에 세지 않음){{end}}{{if .ProductUnreadable}} · 제품 확정 단계 판정을 읽지 못함({{.ProductUnreadable}}건, 확정에 세지 않음){{end}}</p>
 <ul>{{range .ProductConfirmed}}<li>제품 판정 {{.VerdictID}} · 자원 종류 {{.ResourceType}} · 근거 호출 {{.EvidenceCalls}}건{{if .SealUnconfirmedReason}} · 근거 봉인 미확인({{.SealUnconfirmedReason}}){{end}}</li>{{end}}</ul>{{end}}
 <p>실행 completed는 취약점 확정이 아닙니다. 후보는 실제 관찰을 가진 검토 대상이며 자동 검증 또는 권한 있는 사람의 근거 있는 판단이 더 필요합니다.
-심각도·처리 상태·판정·실행 결과를 따로 표시합니다. 유사 제목끼리 합치지 않으며 원래 ID를 유지합니다.</p>
+심각도·처리 상태·판정·실행 결과를 따로 표시합니다. 모델 판정은 프로그램 확정·부정과 별도 집계하며 확정 심각도에 포함하지 않습니다. 유사 제목끼리 합치지 않으며 원래 ID를 유지합니다.</p>
 <h3>확정 결과 심각도별 집계</h3><ul>{{range $key, $count := .BySeverity}}<li>{{$key}}: {{$count}}</li>{{end}}</ul>
 <h3>확정 결과 유형별 집계</h3><ul>{{range $key, $count := .ByType}}<li>{{$key}}: {{$count}}</li>{{end}}</ul>
 <h2>4장. 취약점별 상세 결과</h2><p>확정 항목과 검토 필요·미실행·불명·비취약 항목은 결과 구분을 기준으로 분리해서 검토하세요.</p>
@@ -888,6 +910,10 @@ func (e DiagnosticEntry) VerdictText() string {
 	switch e.Outcome {
 	case "confirmed":
 		return "확정"
+	case "model_supported":
+		return "관찰 확인됨(모델 판정)"
+	case "model_refuted":
+		return "아님(모델 판정)"
 	case "negative":
 		return "부정"
 	case "unknown":

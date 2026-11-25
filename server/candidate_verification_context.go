@@ -71,16 +71,20 @@ func selectedOriginalObservation(candidate db.DiagnosticCandidate, rows []candid
 // current requester and recheck the request state immediately before any model
 // or E² work; a read-only snapshot is never an execution authority.
 func ReadCandidateSelectedContext(ctx context.Context, pool *sql.DB, requestID int64) (CandidateSelectedContext, error) {
-	return readCandidateSelectedContext(ctx, pool, requestID, false)
+	return readCandidateSelectedContext(ctx, pool, requestID, 1, "requested")
 }
 
 // The assessment phase reads the same immutable original after the new E²
 // evidence is sealed. This still grants neither model nor target authority.
 func ReadCandidateAssessmentOriginal(ctx context.Context, pool *sql.DB, requestID int64) (CandidateSelectedContext, error) {
-	return readCandidateSelectedContext(ctx, pool, requestID, true)
+	return readCandidateSelectedContext(ctx, pool, requestID, 7, "evidence_ready")
 }
 
-func readCandidateSelectedContext(ctx context.Context, pool *sql.DB, requestID int64, assessment bool) (CandidateSelectedContext, error) {
+func ReadCandidateStoredAssessmentOriginal(ctx context.Context, pool *sql.DB, requestID int64) (CandidateSelectedContext, error) {
+	return readCandidateSelectedContext(ctx, pool, requestID, 3, "analysis_ready")
+}
+
+func readCandidateSelectedContext(ctx context.Context, pool *sql.DB, requestID int64, wantStep int, wantState string) (CandidateSelectedContext, error) {
 	if ctx == nil || ctx.Err() != nil || pool == nil || requestID <= 0 {
 		return CandidateSelectedContext{}, ErrCandidateSelectedContext
 	}
@@ -98,8 +102,7 @@ FROM diagnostic_candidate_verification_requests q
 JOIN tasks t ON t.id=q.task_id AND t.deleted_at IS NULL
 JOIN LATERAL (SELECT step,process_state FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON true
 WHERE q.id=$1 AND q.method='llm/v1'`, requestID).Scan(&out.TaskID, &candidateID, &explorationID, &originalVersion, &originalDigest, &originalRun, &step, &state)
-	if err != nil || (!assessment && (step != 1 || state != "requested")) ||
-		(assessment && (step != 7 || state != "evidence_ready")) {
+	if err != nil || step != wantStep || state != wantState {
 		return CandidateSelectedContext{}, ErrCandidateSelectedContext
 	}
 	candidate, found, err := db.ReadDiagnosticCandidateWithFence(ctx, tx, explorationID, out.TaskID, candidateID)

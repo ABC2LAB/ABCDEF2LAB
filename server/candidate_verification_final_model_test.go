@@ -25,10 +25,10 @@ func syntheticCandidateAssessmentContext(t *testing.T) CandidateAssessmentContex
 	t.Helper()
 	originalSource := candidateverify.StoredObservationV2{Revision: 2, HeaderMode: e2proxy.HeaderPreserve,
 		Source: candidateverify.SourceV2{CallRef: "original-call", Digest: strings.Repeat("a", 64),
-			Observation: e2proxy.HTTPObservation{AttemptRef: "original-attempt", Method: "GET", Endpoint: "/documents", ExactFunction: true}}}
+			Observation: e2proxy.HTTPObservation{AttemptRef: "original-attempt", Method: "GET", Endpoint: "/documents", ExactFunction: true, RequestAuthContext: "none"}}}
 	followup := candidateverify.StoredObservationV2{Revision: 2, HeaderMode: e2proxy.HeaderPreserve,
 		Source: candidateverify.SourceV2{CallRef: "followup-call", Digest: strings.Repeat("b", 64),
-			Observation: e2proxy.HTTPObservation{AttemptRef: "followup-attempt", Method: "GET", Endpoint: "/documents", ExactFunction: true}}}
+			Observation: e2proxy.HTTPObservation{AttemptRef: "followup-attempt", Method: "GET", Endpoint: "/documents", ExactFunction: true, RequestAuthContext: "none"}}}
 	evidence, err := json.Marshal(map[string]any{"trusted": map[string]any{
 		"classification": "completed", "output_truncated": false,
 		"execution": map[string]any{"scope": map[string]string{"TaskRef": "42", "RunRef": "original-run"}, "intent_id": 7},
@@ -157,6 +157,28 @@ func TestCandidateFinalVerdictRequiresCitedIndependentSources(t *testing.T) {
 	raw, _ = json.Marshal(base)
 	if _, err := ParseCandidateFinalVerdict(raw, c); err != nil {
 		t.Fatal("missing original observation could not be left inconclusive", err)
+	}
+}
+
+func TestCandidateFinalVerdictAuthenticationContextMismatch(t *testing.T) {
+	c := syntheticCandidateAssessmentContext(t)
+	c.Original.OriginalObservation.Source.Observation.RequestAuthContext = "authorization"
+	verdict := CandidateFinalVerdict{Version: "selected/final-v1", CandidateID: 1, Verdict: "confirmed",
+		Claim: "Synthetic claim", NormalExplanation: "Public resource may be normal", Reason: "Model recommendation",
+		Limitations: "Only two requests", Remediation: "Review exposure", VerificationCriteria: "Repeat under matching authorization",
+		Sources: []candidateVerificationSourceRef{
+			{"original-call", "original-attempt", strings.Repeat("a", 64)},
+			{"followup-call", "followup-attempt", strings.Repeat("b", 64)},
+		}}
+	raw, _ := json.Marshal(verdict)
+	got, err := ParseCandidateFinalVerdict(raw, c)
+	if err != nil || got.Verdict != "insufficient" || got.Reason != "context_mismatch" {
+		t.Fatalf("authenticated original and anonymous followup became decisive: %+v %v", got, err)
+	}
+	c.Followup[0].Source.Observation.RequestAuthContext = "authorization"
+	got, err = ParseCandidateFinalVerdict(raw, c)
+	if err != nil || got.Verdict != "confirmed" {
+		t.Fatalf("matching authorization context rejected: %+v %v", got, err)
 	}
 }
 

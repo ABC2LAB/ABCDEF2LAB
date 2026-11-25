@@ -92,3 +92,63 @@ func TestSelectedObservationRequiresExactHostSealCheck(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectedStoredComparisonsRequirePostSaveIndependentSealedCalls(t *testing.T) {
+	scope := transmit.Scope{TaskRef: "42", RunRef: "stored-run", CaseRef: "case-stored", ResetRef: "reset-stored", PolicyRef: "policy-stored"}
+	at := time.Now().UTC()
+	rawScope, _ := json.Marshal(scope)
+	makeRow := func(sequence uint64, callRef, attemptRef string) candidateverify.StoredObservationV2 {
+		obs := e2proxy.HTTPObservation{Sequence: sequence, AttemptRef: attemptRef, Method: "GET", Endpoint: "/documents", RequestAuthContext: "none",
+			ExactFunction: true, RuleRef: "same-rule", Decision: "allowed", Reason: e2proxy.Complete,
+			StatusCode: 200, ResponseComplete: true, ForwardAttempted: true, AuditComplete: true, ObservedAt: at}
+		rawObs, _ := json.Marshal(obs)
+		event := e2proxy.Event{Index: sequence * 2, Stage: "result", Receipt: e2proxy.Receipt{
+			Version: e2proxy.JournalVersionV3, Scope: scope, IntentID: 7, PolicyRevision: "revision-stored",
+			CallRef: callRef, AttemptID: attemptRef, Sequence: sequence, Method: "GET", RuleRef: "same-rule",
+			Decision: "allowed", Reason: e2proxy.Complete, ForwardAttempted: true, RequestWritten: true,
+			ResponseReceived: true, ResponseComplete: true, AuditComplete: true, StatusCode: 200, At: at.Add(25 * time.Millisecond),
+		}}
+		cp := e2proxy.JournalCheckpoint{Version: e2proxy.JournalVersionV3, JournalID: "journal-stored", Sequence: sequence * 2,
+			MAC: strings.Repeat("a", 64), Scope: scope}
+		return candidateverify.StoredObservationV2{Revision: 2, HeaderMode: e2proxy.HeaderPreserve,
+			Source: candidateverify.SourceV2{CallRef: callRef, IntentID: 7, TaskRef: "42", RunRef: scope.RunRef,
+				ScopeDigest: db.DiagnosticEvidenceDigest(string(rawScope)), PolicyRevision: "revision-stored", Observation: obs,
+				Digest: db.DiagnosticEvidenceDigest(string(rawObs))}, SelectedProof: &e2runner.SelectedAuditProof{Event: event, Checkpoint: cp}}
+	}
+	first, second := makeRow(1, "call-first", "attempt-first"), makeRow(2, "call-second", "attempt-second")
+	seal := db.SealCheckRecord{TaskID: 42, RunRef: scope.RunRef,
+		Head: db.ProductCheckpoint{JournalID: "journal-stored", Sequence: 4, MAC: strings.Repeat("a", 64)},
+		Checks: []db.SealCheck{{Sequence: 2, MAC: strings.Repeat("a", 64), Included: true},
+			{Sequence: 4, MAC: strings.Repeat("a", 64), Included: true}}}
+	c := CandidateSelectedContext{TaskID: 42, RunRef: scope.RunRef,
+		Candidate:           db.DiagnosticCandidate{CallRef: first.Source.CallRef, SaveFence: &db.DiagnosticCandidateSaveFence{AttemptHighWater: 1}},
+		OriginalObservation: &first, Observations: []candidateverify.StoredObservationV2{first, second}}
+	if got, err := selectedStoredComparisons(c, seal); err != nil || len(got) != 1 || got[0].Source.CallRef != second.Source.CallRef {
+		t.Fatal("independent sealed post-save observation rejected", err)
+	}
+	for name, mutate := range map[string]func(*CandidateSelectedContext, *db.SealCheckRecord){
+		"before save": func(c *CandidateSelectedContext, _ *db.SealCheckRecord) { c.Candidate.SaveFence.AttemptHighWater = 2 },
+		"same call": func(c *CandidateSelectedContext, _ *db.SealCheckRecord) {
+			c.Observations[1].Source.CallRef = c.OriginalObservation.Source.CallRef
+		},
+		"different function": func(c *CandidateSelectedContext, _ *db.SealCheckRecord) {
+			c.Observations[1].Source.Observation.Endpoint = "/other"
+		},
+		"different authentication": func(c *CandidateSelectedContext, _ *db.SealCheckRecord) {
+			c.Observations[1].Source.Observation.RequestAuthContext = "authorization"
+		},
+		"missing proof": func(c *CandidateSelectedContext, _ *db.SealCheckRecord) { c.Observations[1].SelectedProof = nil },
+		"missing seal":  func(_ *CandidateSelectedContext, s *db.SealCheckRecord) { s.Checks[1].Included = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			copyContext, copySeal := c, seal
+			copyContext.Candidate.SaveFence = &db.DiagnosticCandidateSaveFence{AttemptHighWater: 1}
+			copyContext.Observations = append([]candidateverify.StoredObservationV2(nil), c.Observations...)
+			copySeal.Checks = append([]db.SealCheck(nil), seal.Checks...)
+			mutate(&copyContext, &copySeal)
+			if _, err := selectedStoredComparisons(copyContext, copySeal); err == nil {
+				t.Fatal("untrusted stored comparison accepted")
+			}
+		})
+	}
+}
