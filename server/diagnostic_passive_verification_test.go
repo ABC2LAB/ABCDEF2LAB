@@ -21,6 +21,11 @@ const passiveRunRef = "synthetic-passive-run"
 
 func storePassiveCandidate(t *testing.T, s *Server, taskID int64, claim, first, second string) int64 {
 	t.Helper()
+	return storePassiveCandidateForCall(t, s, taskID, claim, first, second, "passive-call-a", "passive-attempt-a")
+}
+
+func storePassiveCandidateForCall(t *testing.T, s *Server, taskID int64, claim, first, second, callRef, attemptRef string) int64 {
+	t.Helper()
 	task := s.m.ResolveTask(fmt.Sprint(taskID))
 	intent, err := task.Store.AddIntent(map[string]any{"description": "synthetic normal HTML observation"}, 5, nil, "test")
 	if err != nil {
@@ -45,7 +50,7 @@ func storePassiveCandidate(t *testing.T, s *Server, taskID int64, claim, first, 
 	if claim == "server_version_banner" {
 		class = "information_disclosure"
 	}
-	primary := call("passive-call-a", obs("passive-attempt-a", first))
+	primary := call(callRef, obs(attemptRef, first))
 	if second != "" {
 		primary["related_calls"] = []any{call("passive-call-b", obs("passive-attempt-b", second))}
 	}
@@ -53,7 +58,7 @@ func storePassiveCandidate(t *testing.T, s *Server, taskID int64, claim, first, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := db.DiagnosticCandidate{TaskID: taskID, IntentID: intent, RunRef: passiveRunRef, CallRef: "passive-call-a", VulnClass: class, VerificationClaim: claim, Name: "합성 관찰", Summary: "모델 주장", Classification: "completed", Verification: "manual_review_required", EvidenceVersion: 1, Evidence: string(raw), EvidenceDigest: db.DiagnosticEvidenceDigest(string(raw)), ObservedAt: time.Now().UTC()}
+	c := db.DiagnosticCandidate{TaskID: taskID, IntentID: intent, RunRef: passiveRunRef, CallRef: callRef, VulnClass: class, VerificationClaim: claim, Name: "합성 관찰", Summary: "모델 주장", Classification: "completed", Verification: "manual_review_required", EvidenceVersion: 1, Evidence: string(raw), EvidenceDigest: db.DiagnosticEvidenceDigest(string(raw)), ObservedAt: time.Now().UTC()}
 	var envelope struct {
 		Trusted e2runner.TrustedResult `json:"trusted"`
 	}

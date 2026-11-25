@@ -54,9 +54,10 @@ type diagnosisVerificationRecord struct {
 	Candidates          []diagnosisCandidateAssessment `json:"candidates"`
 }
 type diagnosisCandidateAssessment struct {
-	CandidateID    int64                  `json:"candidate_id"`
-	EvidenceDigest string                 `json:"evidence_digest"`
-	Result         candidateverify.Result `json:"result"`
+	StoredReviewUnavailable bool                   `json:"stored_review_unavailable,omitempty"`
+	CandidateID             int64                  `json:"candidate_id"`
+	EvidenceDigest          string                 `json:"evidence_digest"`
+	Result                  candidateverify.Result `json:"result"`
 }
 
 // diagnosisLanguageCounts는 저장된 진단 후보 기준이다. 다시 쓰라고 했지만 모델이 다시 내지 않은 요청은 진단 로그
@@ -215,14 +216,14 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 	if language.Rewrites, language.Mixed, err = db.CountDiagnosticCandidateLanguage(ctx, tx, exploration, state.RunRef); err != nil {
 		return ErrFirstDiagnosisOutcome
 	}
-	candidates, err := db.ListDiagnosticCandidatesQuery(ctx, tx, exploration, task, state.RunRef, db.MaxDiagnosticCandidates+1)
+	candidates, candidateReadErr := db.ListDiagnosticCandidatesQuery(ctx, tx, exploration, task, state.RunRef, db.MaxDiagnosticCandidates+1)
 	version := "passive/v1"
 	if policy != nil {
 		version = diagnosisVerificationV2
 	}
 	verification := &diagnosisVerificationRecord{Version: version, Candidates: make([]diagnosisCandidateAssessment, 0, len(candidates))}
 	var durableObservations []candidateverify.StoredObservationV2
-	if policy != nil && state.Outcome == "completed" && len(trusted) != 0 && trusted[0] != nil {
+	if candidateReadErr == nil && policy != nil && state.Outcome == "completed" && len(trusted) != 0 && trusted[0] != nil {
 		durableObservations, err = candidateverify.ProjectTrustedV2(task, state.RunRef, trusted[0])
 		if err != nil {
 			return ErrFirstDiagnosisOutcome
@@ -236,7 +237,7 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 			}
 		}
 	}
-	if err != nil || len(candidates) > db.MaxDiagnosticCandidates {
+	if candidateReadErr != nil || len(candidates) > db.MaxDiagnosticCandidates {
 		// 후보 근거 손상 때문에 정본 종료 기록을 잃지 않는다.
 		verification.SourceUnavailable = true
 		candidates = nil
@@ -257,19 +258,16 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 				result = candidateverify.AssessV2(candidate, trusted[0])
 			}
 		}
+		row := diagnosisCandidateAssessment{CandidateID: candidate.ID, EvidenceDigest: candidate.EvidenceDigest, Result: result}
 		if verification.ObservationsStored && candidateverify.SupportedV2(candidate) {
 			stored := candidateverify.AssessStoredV2(candidate, durableObservations)
 			if stored.Status != result.Status || stored.Reason != result.Reason || !reflect.DeepEqual(stored.Attempts, result.Attempts) || !reflect.DeepEqual(stored.Sources, result.Sources) {
-				// A partial projection must never change or hide the immutable
-				// automatic result. This run remains available without durable
-				// selected-review evidence.
-				verification.ObservationsStored = false
-				verification.ObservationsCount = 0
-				verification.ObservationsDigest = ""
-				durableObservations = nil
+				// Keep the immutable automatic assessment. Other candidates may still
+				// have a complete set of observations in the same run.
+				row.StoredReviewUnavailable = true
 			}
 		}
-		verification.Candidates = append(verification.Candidates, diagnosisCandidateAssessment{CandidateID: candidate.ID, EvidenceDigest: candidate.EvidenceDigest, Result: result})
+		verification.Candidates = append(verification.Candidates, row)
 		switch result.Status {
 		case candidateverify.Confirmed:
 			verification.NonIDORConfirmed++

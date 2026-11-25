@@ -96,3 +96,16 @@ func TestProjectTrustedV2IgnoresDuplicateAttempt(t *testing.T) {
 		t.Fatalf("duplicate attempt projection: %d, %v", len(stored), err)
 	}
 }
+
+func TestStoredObservationRevisionUsesOriginalBannerRules(t *testing.T) {
+	_, calls := v2Fixture(t, "nosniff_missing", "")
+	calls[0].Call.Observations[0].Technologies = []e2proxy.HTTPTechnology{
+		{Header: "Server", Name: "Example", Version: "1"}, {Header: "X-Powered-By", Name: "Framework"},
+	}
+	if _, _, ok := storedObservation(0, calls[0], "server_version_banner"); ok {
+		t.Fatal("legacy review gained new evidence")
+	}
+	if _, _, ok := storedObservation(candidateScopedRevision, calls[0], "server_version_banner"); !ok {
+		t.Fatal("current review lost valid server header")
+	}
+}

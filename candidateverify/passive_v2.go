@@ -38,6 +38,10 @@ func SupportedV2(c db.DiagnosticCandidate) bool {
 }
 
 func AssessV2(c db.DiagnosticCandidate, calls []e2runner.TrustedResult) Result {
+	return assessV2(c, calls, v2Observation)
+}
+
+func assessV2(c db.DiagnosticCandidate, calls []e2runner.TrustedResult, observe func(e2runner.TrustedResult, string) (e2proxy.HTTPObservation, string, bool)) Result {
 	if !SupportedV2(c) {
 		return Result{Status: Unsupported, Reason: "type_not_supported"}
 	}
@@ -66,7 +70,7 @@ func AssessV2(c db.DiagnosticCandidate, calls []e2runner.TrustedResult) Result {
 	if primary == nil || !sameRun(c, *primary) || primary.Call.IntentID != c.IntentID || original.Trusted.Execution.Scope != primary.Execution.Scope || original.Trusted.Execution.PolicyRevision != primary.Execution.PolicyRevision || original.Trusted.Execution.HeaderMode != primary.Execution.HeaderMode {
 		return Result{Status: Insufficient, Reason: "primary_source_unavailable"}
 	}
-	base, state, ok := v2Observation(*primary, c.VerificationClaim)
+	base, state, ok := observe(*primary, c.VerificationClaim)
 	if !ok {
 		return Result{Status: Insufficient, Reason: "primary_observation_unavailable"}
 	}
@@ -87,7 +91,7 @@ func AssessV2(c db.DiagnosticCandidate, calls []e2runner.TrustedResult) Result {
 		if !sameRun(c, call) || call.Call.CallRef == c.CallRef || call.Execution.Scope != primary.Execution.Scope || call.Execution.PolicyRevision != primary.Execution.PolicyRevision || call.Execution.HeaderMode != primary.Execution.HeaderMode {
 			continue
 		}
-		obs, otherState, valid := v2Observation(call, c.VerificationClaim)
+		obs, otherState, valid := observe(call, c.VerificationClaim)
 		if !valid || !obs.ExactFunction || obs.Endpoint != base.Endpoint || obs.RuleRef != base.RuleRef {
 			continue
 		}
