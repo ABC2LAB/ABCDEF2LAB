@@ -107,12 +107,12 @@ func TestProductRuntimeE3VerdictInsertOnly(t *testing.T) {
 		}
 	}
 	for _, table := range []string{"diagnostic_candidate_verification_requests", "diagnostic_candidate_verification_events"} {
-		var apiSelect, apiInsert, apiUpdate, apiDelete, apiTruncate, runtimeInsert bool
-		if err := installer.QueryRowContext(t.Context(), `SELECT has_table_privilege('product_api',$1,'SELECT'),has_table_privilege('product_api',$1,'INSERT'),has_table_privilege('product_api',$1,'UPDATE'),has_table_privilege('product_api',$1,'DELETE'),has_table_privilege('product_api',$1,'TRUNCATE'),has_table_privilege('product_runtime',$1,'INSERT')`, table).Scan(&apiSelect, &apiInsert, &apiUpdate, &apiDelete, &apiTruncate, &runtimeInsert); err != nil {
+		var apiSelect, apiInsert, apiUpdate, apiDelete, apiTruncate, runtimeInsert, runtimeUpdate, runtimeDelete bool
+		if err := installer.QueryRowContext(t.Context(), `SELECT has_table_privilege('product_api',$1,'SELECT'),has_table_privilege('product_api',$1,'INSERT'),has_table_privilege('product_api',$1,'UPDATE'),has_table_privilege('product_api',$1,'DELETE'),has_table_privilege('product_api',$1,'TRUNCATE'),has_table_privilege('product_runtime',$1,'INSERT'),has_table_privilege('product_runtime',$1,'UPDATE'),has_table_privilege('product_runtime',$1,'DELETE')`, table).Scan(&apiSelect, &apiInsert, &apiUpdate, &apiDelete, &apiTruncate, &runtimeInsert, &runtimeUpdate, &runtimeDelete); err != nil {
 			t.Fatal(err)
 		}
-		if !apiSelect || !apiInsert || apiUpdate || apiDelete || apiTruncate || runtimeInsert {
-			t.Fatalf("%s must be append-only for product_api and unavailable to runtime", table)
+		if !apiSelect || !apiInsert || apiUpdate || apiDelete || apiTruncate || runtimeInsert != (table == "diagnostic_candidate_verification_events") || runtimeUpdate || runtimeDelete {
+			t.Fatalf("%s must remain append-only for narrowly assigned API/runtime writers", table)
 		}
 	}
 	{

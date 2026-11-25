@@ -93,41 +93,82 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 			Method: row.Method, EvidenceDigest: row.OriginalDigest, RequestedAt: row.RequestedAt,
 		}
 		entry := &out.Entries[index]
+		var latestID int64
+		if _, err := fmt.Sscanf(row.ID, "%d", &latestID); err != nil || latestID <= 0 {
+			return errCandidateVerificationHistory
+		}
+		// A later stored review or failed run does not erase a prior sealed
+		// confirmation. Read and validate the previous completed active event,
+		// then display it separately from the most recent attempt.
+		earlier, earlierStep, earlierBinding, earlierErr := scanCandidateVerificationAttempt(tx.QueryRowContext(ctx, `SELECT q.id,q.candidate_id,q.request_key,q.method,q.original_evidence_digest,q.original_evidence_version,q.original_run_ref,q.requested_at,e.step,e.process_state,e.verdict,e.reason,e.sources,e.sources_digest,e.rule_version,e.execution_ref,e.approval_ref,e.event_at,p.plan,p.plan_digest,d.decision,d.plan_digest,x.followup_task_id,x.run_ref
+FROM diagnostic_candidate_verification_requests q
+JOIN LATERAL (SELECT * FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON e.process_state='completed' AND e.verdict IN ('confirmed','negative')
+JOIN diagnostic_candidate_verification_plans p ON p.request_id=q.id
+JOIN diagnostic_candidate_verification_decisions d ON d.request_id=q.id
+JOIN diagnostic_candidate_verification_executions x ON x.request_id=q.id AND x.plan_digest=p.plan_digest
+WHERE q.task_id=$1 AND q.candidate_id=$2 AND q.id<$3 AND q.method='active/v1'
+ORDER BY q.id DESC LIMIT 1`, taskID, candidateID, latestID))
+		if earlierErr != nil && !errors.Is(earlierErr, sql.ErrNoRows) {
+			return errCandidateVerificationHistory
+		}
+		if earlierErr == nil {
+			if err := validateCandidateVerificationAttempt(earlier, earlierStep, earlierBinding, candidateRow.Candidate, assessment); err != nil {
+				return errCandidateVerificationHistory
+			}
+			if err := validateCandidateActiveEvidence(ctx, tx, earlier, earlierBinding, candidateRow.Candidate); err != nil || earlier.Latest.Verdict == nil {
+				return errCandidateVerificationHistory
+			}
+			latest.EarlierVerdict, latest.EarlierReason, latest.EarlierRequestedAt = *earlier.Latest.Verdict, earlier.Latest.Reason, earlier.RequestedAt
+			var refs []candidateVerificationSourceRef
+			if json.Unmarshal(earlier.Latest.Sources, &refs) != nil || len(refs) != 2 {
+				return errCandidateVerificationHistory
+			}
+			for _, ref := range refs {
+				latest.EarlierSources = append(latest.EarlierSources, report.DiagnosticVerificationSourceRef{CallRef: ref.CallRef, AttemptRef: ref.AttemptRef, ObservationDigest: ref.ObservationDigest})
+			}
+		}
 		if row.Method == "active/v1" {
 			latest.InitialVerdict, latest.InitialReason = assessment.Status, assessment.Reason
-			if row.Latest.State == "completed" {
-				var refs []candidateVerificationSourceRef
-				if err := json.Unmarshal(row.Latest.Sources, &refs); err != nil {
-					return errCandidateVerificationHistory
-				}
+		}
+		activeRow := row
+		applyActive := row.Method == "active/v1" && row.Latest.State == "completed"
+		if row.Method == "stored/v1" && earlierErr == nil {
+			activeRow, applyActive = earlier, true
+		}
+		if applyActive {
+			var refs []candidateVerificationSourceRef
+			if err := json.Unmarshal(activeRow.Latest.Sources, &refs); err != nil {
+				return errCandidateVerificationHistory
+			}
+			if row.Method == "active/v1" {
 				for _, ref := range refs {
 					latest.Sources = append(latest.Sources, report.DiagnosticVerificationSourceRef{
 						CallRef: ref.CallRef, AttemptRef: ref.AttemptRef, ObservationDigest: ref.ObservationDigest,
 					})
 				}
-				entry.AssessmentStatus, entry.AssessmentReason = verdict, row.Latest.Reason
-				switch verdict {
-				case "confirmed":
-					entry.Outcome, entry.Verification = "confirmed", "active_observation_v1"
-					entry.Severity, entry.SeveritySource, entry.SeverityRationale = "info", "", ""
-					if candidateRow.Candidate.VerificationClaim == "html_nosniff_missing" {
-						entry.Title = "HTML 문서 보안 헤더 누락"
-						entry.Summary = "사용자가 승인한 추가 검증에서 동일한 정확한 HTML 경로를 독립적으로 두 번 조회해 X-Content-Type-Options: nosniff 설정 누락을 확인했습니다. 악용 가능성은 별도 판단 대상입니다."
-						entry.Remediation = "해당 HTML 응답에 X-Content-Type-Options: nosniff를 설정하고 배포 범위를 확인하세요."
-						entry.Report = "수정 후 해당 경로의 정상 HTML 응답에서 nosniff 헤더가 일관되게 반환되는지 확인하세요."
-					} else {
-						entry.Title = "Server 응답 헤더의 버전 노출"
-						entry.Summary = "사용자가 승인한 추가 검증에서 동일한 정확한 경로의 독립 응답 두 건에서 Server 헤더의 소프트웨어 버전 표기를 확인했습니다. 해당 버전의 취약성은 주장하지 않습니다."
-						entry.Remediation = "Server 응답 헤더에서 상세 버전 표기를 제거할지 운영 정책에 따라 검토하고 설정을 적용하세요."
-						entry.Report = "수정 후 해당 경로의 정상 응답에서 Server 헤더에 상세 버전이 남지 않는지 확인하세요."
-					}
-				case "negative":
-					entry.Outcome = "negative"
-				case "insufficient":
-					entry.Outcome = "review"
-				default:
-					return errCandidateVerificationHistory
+			}
+			entry.AssessmentStatus, entry.AssessmentReason = *activeRow.Latest.Verdict, activeRow.Latest.Reason
+			switch *activeRow.Latest.Verdict {
+			case "confirmed":
+				entry.Outcome, entry.Verification = "confirmed", "active_observation_v1"
+				entry.Severity, entry.SeveritySource, entry.SeverityRationale = "info", "", ""
+				if candidateRow.Candidate.VerificationClaim == "html_nosniff_missing" {
+					entry.Title = "HTML 문서 보안 헤더 누락"
+					entry.Summary = "사용자가 승인한 추가 검증에서 동일한 정확한 HTML 경로를 독립적으로 두 번 조회해 X-Content-Type-Options: nosniff 설정 누락을 확인했습니다. 악용 가능성은 별도 판단 대상입니다."
+					entry.Remediation = "해당 HTML 응답에 X-Content-Type-Options: nosniff를 설정하고 배포 범위를 확인하세요."
+					entry.Report = "수정 후 해당 경로의 정상 HTML 응답에서 nosniff 헤더가 일관되게 반환되는지 확인하세요."
+				} else {
+					entry.Title = "Server 응답 헤더의 버전 노출"
+					entry.Summary = "사용자가 승인한 추가 검증에서 동일한 정확한 경로의 독립 응답 두 건에서 Server 헤더의 소프트웨어 버전 표기를 확인했습니다. 해당 버전의 취약성은 주장하지 않습니다."
+					entry.Remediation = "Server 응답 헤더에서 상세 버전 표기를 제거할지 운영 정책에 따라 검토하고 설정을 적용하세요."
+					entry.Report = "수정 후 해당 경로의 정상 응답에서 Server 헤더에 상세 버전이 남지 않는지 확인하세요."
 				}
+			case "negative":
+				entry.Outcome = "negative"
+			case "insufficient":
+				entry.Outcome = "review"
+			default:
+				return errCandidateVerificationHistory
 			}
 		}
 		entry.LatestVerification = latest

@@ -59,4 +59,38 @@ func TestActiveCandidateVerdictCountsAndExports(t *testing.T) {
 	if _, err := PrepareDiagnostic(wrong); err != ErrExportBlocked {
 		t.Fatal("active confirmation without bound evidence exported", err)
 	}
+	storedAfterActive := base
+	storedAfterActive.Entries = append([]DiagnosticEntry(nil), base.Entries...)
+	storedAfterActive.Entries[0].LatestVerification = &DiagnosticLatestVerification{
+		State: "completed", Verdict: "insufficient", Reason: "independent_observation_missing", Method: "stored/v1",
+		EvidenceDigest: hex.EncodeToString(sum[:]), RequestedAt: now.Add(time.Second),
+		EarlierVerdict: "confirmed", EarlierReason: "html_nosniff_missing_followup_twice", EarlierRequestedAt: now,
+		EarlierSources: base.Entries[0].LatestVerification.Sources,
+	}
+	if got, err := PrepareDiagnostic(storedAfterActive); err != nil || got.Confirmed != 1 {
+		t.Fatalf("stored review erased previous active confirmation: %+v %v", got, err)
+	}
+	if html, err := DiagnosticHTML(storedAfterActive); err != nil || !strings.Contains(string(html), "이전 유효 추가 검증") {
+		t.Fatal("HTML omitted earlier active confirmation", err)
+	}
+	if docx, err := DiagnosticDOCX(storedAfterActive); err != nil || !strings.Contains(string(readWord(t, docx)["word/document.xml"]), "이전 유효 추가 검증") {
+		t.Fatal("DOCX omitted earlier active confirmation", err)
+	}
+	failedAfterActive := storedAfterActive
+	failedAfterActive.Entries = append([]DiagnosticEntry(nil), storedAfterActive.Entries...)
+	failedAfterActive.Entries[0].Outcome = "review"
+	failedAfterActive.Entries[0].Verification = "manual_review_required"
+	failedAfterActive.Entries[0].AssessmentStatus = "insufficient"
+	failedAfterActive.Entries[0].AssessmentReason = "independent_observation_missing"
+	failedAfterActive.Entries[0].LatestVerification = &DiagnosticLatestVerification{}
+	*failedAfterActive.Entries[0].LatestVerification = *storedAfterActive.Entries[0].LatestVerification
+	failedAfterActive.Entries[0].LatestVerification.State = "failed"
+	failedAfterActive.Entries[0].LatestVerification.Verdict = ""
+	failedAfterActive.Entries[0].LatestVerification.Reason = "execution_interrupted"
+	failedAfterActive.Entries[0].LatestVerification.Method = "active/v1"
+	failedAfterActive.Entries[0].LatestVerification.InitialVerdict = "insufficient"
+	failedAfterActive.Entries[0].LatestVerification.InitialReason = "independent_observation_missing"
+	if got, err := PrepareDiagnostic(failedAfterActive); err != nil || got.Confirmed != 0 || got.Inconclusive != 1 {
+		t.Fatalf("failed latest attempt presented historical confirmation as current: %+v %v", got, err)
+	}
 }

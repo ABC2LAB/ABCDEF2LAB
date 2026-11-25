@@ -450,7 +450,7 @@ running:
 	}
 	exec("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA " + ident(schema) + " FROM " + ident(role))
 	exec("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA " + ident(schema) + " FROM " + ident(role))
-	for _, table := range []string{"tasks", "task_archives", "findings", "task_control_modes", "exploration_nodes", "settings", "assets", "task_asset_links", "exploration_anchors", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links", "diagnostic_candidate_verification_requests", "diagnostic_candidate_verification_events"} {
+	for _, table := range []string{"tasks", "task_archives", "findings", "task_control_modes", "exploration_nodes", "settings", "assets", "task_asset_links", "exploration_anchors", "e3_evidence_manifests", "e3_oracle_verdicts", "e3_verdict_issuances", "e3_verdict_links", "e3_seal_checks", "diagnostic_candidate_verification_requests", "diagnostic_candidate_verification_events", "diagnostic_candidate_verification_plans", "diagnostic_candidate_verification_decisions", "diagnostic_candidate_verification_executions", "diagnostic_candidate_observations_v2"} {
 		exec("GRANT SELECT ON " + ident(table) + " TO " + ident(role))
 	}
 	exec("GRANT INSERT ON exploration_nodes TO " + ident(role))
@@ -511,7 +511,12 @@ running:
 		Entries []diagnosticRemediationEntryDTO
 	}
 	if code != 200 || json.Unmarshal(body, &list) != nil || len(list.Entries) != 1 {
-		t.Fatal("실제 저장 후보 보고서 누락")
+		var failure struct {
+			Error      string `json:"error"`
+			ReasonCode string `json:"reason_code"`
+		}
+		_ = json.Unmarshal(body, &failure)
+		t.Fatalf("실제 저장 후보 보고서 누락: status=%d entries=%d error=%s reason=%s", code, len(list.Entries), failure.Error, failure.ReasonCode)
 	}
 	if browser {
 		ui.run("report")

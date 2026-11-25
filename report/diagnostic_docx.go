@@ -222,6 +222,12 @@ func DiagnosticDOCX(input DiagnosticReport) ([]byte, error) {
 			for _, source := range v.Sources {
 				w.paragraph("Normal", "추가 감사 관찰: 호출 "+source.CallRef+" · 시도 "+source.AttemptRef+" · digest "+source.ObservationDigest)
 			}
+			if v.EarlierVerdict != "" {
+				w.paragraph("Normal", "이전 유효 추가 검증: "+v.EarlierVerdict+" · "+v.EarlierReason+" · 요청 "+v.EarlierRequestedAt.UTC().Format(time.RFC3339))
+				for _, source := range v.EarlierSources {
+					w.paragraph("Normal", "이전 감사 관찰: 호출 "+source.CallRef+" · 시도 "+source.AttemptRef+" · digest "+source.ObservationDigest)
+				}
+			}
 		}
 		if review := e.BusinessRuleReview; review != nil {
 			w.paragraph("Heading2", "업무 규칙 미확인 · 판정 보류")

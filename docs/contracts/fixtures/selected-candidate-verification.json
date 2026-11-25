@@ -1,5 +1,5 @@
 {
-  "fixture_version": "selected-candidate-verification/stored-v1",
+  "fixture_version": "selected-candidate-verification/active-v1",
   "synthetic_only": true,
   "implemented_responses": {
     "automatic_confirmed_before_request": {
@@ -75,14 +75,37 @@
     "all_inconclusive": { "found": 2, "inconclusive": 2, "confirmed": 0, "html_status": 200, "docx_status": 200 },
     "all_negative": { "found": 2, "negative": 2, "confirmed": 0, "html_status": 200, "docx_status": 200 }
   },
-  "future_states_not_implemented": [
-    "awaiting_approval",
-    "running",
-    "failed",
-    "cancelled",
-    "expired",
-    "new_e2_execution_confirmed",
-    "new_e2_execution_negative",
-    "prior_confirmed_latest_inconclusive"
-  ]
+  "active_examples": {
+    "create_request": { "request_id": "synthetic-active-001", "evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "method": "active/v1" },
+    "awaiting_approval": {
+      "id": "1202", "candidate_id": "902", "request_id": "synthetic-active-001", "method": "active/v1",
+      "original_evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "original_evidence_version": 1, "original_run_ref": "synthetic-run-41", "requested_at": "2026-11-25T00:01:00Z",
+      "plan": { "version": "candidate-active/v1", "task_id": 41, "candidate_id": 902,
+        "evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "original_run_ref": "synthetic-run-41",
+        "target_id": "synthetic-target", "target_revision": 3, "origin": "https://owned.example", "method": "GET", "exact_path": "/documents",
+        "claim": "html_nosniff_missing", "max_requests": 2, "duration_seconds": 60, "model_cost_micros": 0,
+        "target_approved_at": "2026-11-25T00:00:00Z", "expires_at": "2026-11-25T00:11:00Z", "needs_new_evidence": true },
+      "plan_digest": "cb9c4d803cd0cc71b90417c74c3309f685d8b4d7fa0a3950ff98f85930b0aa91",
+      "latest": { "process_state": "awaiting_approval", "verdict": null, "reason": "independent_observation_missing", "rule_version": "candidate-active/v1",
+        "sources": [], "sources_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", "at": "2026-11-25T00:01:00Z" }
+    },
+    "approval_request": { "plan_digest": "cb9c4d803cd0cc71b90417c74c3309f685d8b4d7fa0a3950ff98f85930b0aa91", "decision": "approved" },
+    "approval_response": { "request_id": "1202", "process_state": "approved", "plan_digest": "cb9c4d803cd0cc71b90417c74c3309f685d8b4d7fa0a3950ff98f85930b0aa91",
+      "approval_ref": "approval-candidate-1202-cb9c4d803cd0cc71", "execution_start": "scheduled" },
+    "running": { "process_state": "running", "verdict": null, "reason": "execution_started", "rule_version": "candidate-active/v1",
+      "sources": [], "sources_digest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "execution_ref": "run-candidate-1202-cb9c4d803cd0cc71", "at": "2026-11-25T00:01:10Z" },
+    "completed_confirmed": { "process_state": "completed", "verdict": "confirmed", "reason": "html_nosniff_missing_followup_twice",
+      "rule_version": "candidate-active/v1", "sources": [
+        { "call_ref": "synthetic-call-1", "attempt_ref": "synthetic-attempt-1", "observation_digest": "1111111111111111111111111111111111111111111111111111111111111111" },
+        { "call_ref": "synthetic-call-2", "attempt_ref": "synthetic-attempt-2", "observation_digest": "2222222222222222222222222222222222222222222222222222222222222222" }
+      ], "execution_ref": "run-candidate-1202-cb9c4d803cd0cc71", "at": "2026-11-25T00:01:30Z" },
+    "completed_negative": { "process_state": "completed", "verdict": "negative", "reason": "html_nosniff_present_followup_twice",
+      "rule_version": "candidate-active/v1", "execution_ref": "run-candidate-1202-cb9c4d803cd0cc71", "at": "2026-11-25T00:01:30Z" },
+    "completed_insufficient": { "process_state": "completed", "verdict": "insufficient", "reason": "observations_inconsistent",
+      "rule_version": "candidate-active/v1", "execution_ref": "run-candidate-1202-cb9c4d803cd0cc71", "at": "2026-11-25T00:01:30Z" },
+    "failed": { "process_state": "failed", "verdict": null, "reason": "execution_interrupted", "rule_version": "candidate-active/v1" },
+    "cancelled": { "process_state": "cancelled", "verdict": null, "reason": "user_cancelled", "rule_version": "candidate-active/v1" }
+  }
 }

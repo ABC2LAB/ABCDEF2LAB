@@ -223,6 +223,39 @@ VALUES($1,3,'running','execution_started',$2,'candidate-active/v1','run-syntheti
 			t.Fatalf("latest report omitted active evidence: %s", suffix)
 		}
 	}
+	// A later check of the unchanged original observations cannot erase a
+	// completed, independently sealed active verification from the report.
+	beforeStored, err := loadDiagnosticReport(t.Context(), s.m.pg, taskID, time.Now())
+	if err != nil || beforeStored.Run == nil || len(beforeStored.Run.CandidateAssessments) != 1 {
+		t.Fatal("saved automatic assessment unavailable", err)
+	}
+	storedTx, err := s.m.pg.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := createCandidateVerification(t.Context(), storedTx, candidateVerificationRoute{task: taskID, candidate: candidate.ID}, candidate, "ARTEX", "synthetic-stored-after-active", beforeStored.Run.CandidateAssessments[0]); err != nil {
+		storedTx.Rollback()
+		t.Fatal(err)
+	}
+	if err := storedTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadDiagnosticReport(t.Context(), s.m.pg, taskID, time.Now()); err != nil {
+		t.Fatalf("stored review report assembly: %T %v", err, err)
+	}
+	for _, suffix := range []string{"", "&format=docx"} {
+		got := reportRequest(http.MethodGet, fmt.Sprintf("/api/report/diagnostic?task=%d&audience=internal%s", taskID, suffix), "")
+		if got.Code != 200 {
+			t.Fatalf("stored review after active %s: %d %s", suffix, got.Code, got.Body.String())
+		}
+		content := got.Body.String()
+		if suffix != "" {
+			content = diagnosticWordText(t, wordParts(t, got.Body.Bytes())["word/document.xml"])
+		}
+		if !strings.Contains(content, "이전 유효 추가 검증") || !strings.Contains(content, "followup-attempt-2") || !strings.Contains(content, "confirmed") {
+			t.Fatalf("stored recheck erased sealed active verdict: %s", suffix)
+		}
+	}
 	if _, err := s.m.pg.ExecContext(t.Context(), `UPDATE e3_seal_checks SET checks='[]'::jsonb WHERE task_id=$1 AND run_ref=$2`, followup.ID, "run-synthetic-followup"); err == nil {
 		t.Fatal("immutable active audit seal was changed")
 	}
