@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/report"
@@ -84,6 +85,25 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 			validateCandidateActiveEvidence(ctx, tx, row, binding, candidateRow.Candidate) != nil {
 			return errCandidateVerificationHistory
 		}
+		var analysis *candidateAnalysisView
+		var answers []candidateBusinessAnswer
+		if row.Method == "llm/v1" {
+			requestID, parseErr := strconv.ParseInt(row.ID, 10, 64)
+			if parseErr != nil {
+				return errCandidateVerificationHistory
+			}
+			var readErr error
+			analysis, readErr = readCandidateAnalysis(ctx, tx, requestID, candidateID)
+			if readErr != nil || (row.Latest.State == "analysis_ready" || row.Latest.State == "cancelled" && step == 4) != (analysis != nil) {
+				return errCandidateVerificationHistory
+			}
+			if analysis != nil {
+				answers, readErr = readCandidateBusinessAnswers(ctx, tx, requestID, *analysis)
+				if readErr != nil {
+					return errCandidateVerificationHistory
+				}
+			}
+		}
 		verdict := ""
 		if row.Latest.Verdict != nil {
 			verdict = *row.Latest.Verdict
@@ -91,6 +111,19 @@ ORDER BY q.candidate_id LIMIT $2`, taskID, report.MaxFindings+1)
 		latest := &report.DiagnosticLatestVerification{
 			State: row.Latest.State, Verdict: verdict, Reason: row.Latest.Reason,
 			Method: row.Method, EvidenceDigest: row.OriginalDigest, RequestedAt: row.RequestedAt,
+		}
+		if analysis != nil {
+			byIndex := make(map[int]candidateBusinessAnswer, len(answers))
+			for _, answer := range answers {
+				byIndex[answer.QuestionIndex] = answer
+			}
+			for i, question := range analysis.Proposal.BusinessQuestions {
+				item := report.DiagnosticBusinessQuestion{QuestionIndex: i + 1, Question: question}
+				if answer, found := byIndex[i+1]; found {
+					item.Answer, item.Answered, item.AnsweredAt = answer.Answer, true, answer.AnsweredAt
+				}
+				latest.BusinessQuestions = append(latest.BusinessQuestions, item)
+			}
 		}
 		entry := &out.Entries[index]
 		var latestID int64

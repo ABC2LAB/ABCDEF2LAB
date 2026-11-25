@@ -120,6 +120,8 @@ type candidateVerificationAttempt struct {
 	Plan            *candidateActivePlan       `json:"plan,omitempty"`
 	PlanDigest      string                     `json:"plan_digest,omitempty"`
 	Latest          candidateVerificationEvent `json:"latest"`
+	Analysis        *candidateAnalysisView     `json:"analysis,omitempty"`
+	BusinessAnswers []candidateBusinessAnswer  `json:"business_answers,omitempty"`
 }
 
 type candidateVerificationPage struct {
@@ -386,6 +388,28 @@ func candidateVerificationHTTP(w http.ResponseWriter, r *http.Request, pool *sql
 		candidateVerificationError(w, 503, "verification_storage_unavailable")
 		return
 	}
+	if r.Method == http.MethodPost && run.VerificationVersion == diagnosisVerificationSelected {
+		var selectedID string
+		for _, attempt := range page.Verifications {
+			if attempt.RequestKey == input.RequestID && attempt.Method == "llm/v1" {
+				selectedID = attempt.ID
+				break
+			}
+		}
+		if selectedID == "" {
+			candidateVerificationError(w, 503, "analysis_schedule_unavailable")
+			return
+		}
+		command := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "candidate-analysis-schedule", Command: diagnosisprep.ProductControl,
+			Principal: owner, Product: &diagnosisprep.ProductRequest{Operation: "candidate_analyze", JobID: selectedID, CommandKey: candidate.EvidenceDigest}}
+		result, callErr := endpoint.Call(ctx, command)
+		if callErr != nil || diagnosisprep.ValidateResponse(command, result) != nil || result.Error != "" || result.Product == nil || result.Product.Reason == "" {
+			// The durable requested event remains retryable; no target action is
+			// authorized by a scheduling failure.
+			candidateVerificationError(w, 503, "analysis_schedule_unavailable")
+			return
+		}
+	}
 	writeJSON(w, 200, page)
 }
 
@@ -405,7 +429,7 @@ func createCandidateLLMVerification(ctx context.Context, tx *sql.Tx, route candi
 		return err
 	}
 	var pending int64
-	err = tx.QueryRowContext(ctx, `SELECT q.id FROM diagnostic_candidate_verification_requests q JOIN LATERAL (SELECT process_state FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON true WHERE q.task_id=$1 AND q.candidate_id=$2 AND e.process_state IN ('requested','checking_stored_evidence','awaiting_approval','approved','running') LIMIT 1`, route.task, route.candidate).Scan(&pending)
+	err = tx.QueryRowContext(ctx, `SELECT q.id FROM diagnostic_candidate_verification_requests q JOIN LATERAL (SELECT process_state FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON true WHERE q.task_id=$1 AND q.candidate_id=$2 AND e.process_state IN ('requested','checking_stored_evidence','analysis_ready','awaiting_approval','approved','running') LIMIT 1`, route.task, route.candidate).Scan(&pending)
 	if err == nil {
 		return errCandidateVerificationPending
 	}
@@ -551,6 +575,22 @@ func listCandidateVerifications(ctx context.Context, tx *sql.Tx, route candidate
 			validateCandidateActiveEvidence(ctx, tx, pendingRow.row, pendingRow.binding, candidate) != nil {
 			return nil, false, db.ErrDiagnosticCandidate
 		}
+		if pendingRow.row.Method == "llm/v1" {
+			id, err := strconv.ParseInt(pendingRow.row.ID, 10, 64)
+			if err != nil {
+				return nil, false, db.ErrDiagnosticCandidate
+			}
+			pendingRow.row.Analysis, err = readCandidateAnalysis(ctx, tx, id, candidate.ID)
+			if err != nil || (pendingRow.row.Latest.State == "analysis_ready" || pendingRow.row.Latest.State == "cancelled" && pendingRow.step == 4) != (pendingRow.row.Analysis != nil) {
+				return nil, false, db.ErrDiagnosticCandidate
+			}
+			if pendingRow.row.Analysis != nil {
+				pendingRow.row.BusinessAnswers, err = readCandidateBusinessAnswers(ctx, tx, id, *pendingRow.row.Analysis)
+				if err != nil {
+					return nil, false, db.ErrDiagnosticCandidate
+				}
+			}
+		}
 		items = append(items, pendingRow.row)
 	}
 	truncated := len(items) > candidateVerificationHistoryLimit
@@ -614,9 +654,15 @@ func validateCandidateVerificationAttempt(row candidateVerificationAttempt, step
 	}
 	if row.Method == "llm/v1" {
 		if row.Plan != nil || row.PlanDigest != "" || binding.Decision.Valid || binding.DecisionDigest.Valid || binding.FollowupTask.Valid || binding.RunRef.Valid ||
-			(step != 1 && step != 2) ||
+			(step < 1 || step > 4) ||
 			(step == 1 && (row.Latest.State != "requested" || row.Latest.Reason != "selected_by_user")) ||
-			(step == 2 && (row.Latest.State != "cancelled" || row.Latest.Reason != "user_cancelled")) ||
+			(step == 2 && !(row.Latest.State == "cancelled" && row.Latest.Reason == "user_cancelled" ||
+				row.Latest.State == "failed" && (row.Latest.Reason == "analysis_unavailable" || row.Latest.Reason == "analysis_interrupted" || row.Latest.Reason == "budget_unavailable") ||
+				row.Latest.State == "checking_stored_evidence" && row.Latest.Reason == "analysis_started")) ||
+			(step == 3 && !(row.Latest.State == "cancelled" && row.Latest.Reason == "user_cancelled" ||
+				row.Latest.State == "analysis_ready" && row.Latest.Reason == "analysis_available" ||
+				row.Latest.State == "failed" && (row.Latest.Reason == "analysis_unavailable" || row.Latest.Reason == "analysis_interrupted" || row.Latest.Reason == "budget_unavailable"))) ||
+			(step == 4 && (row.Latest.State != "cancelled" || row.Latest.Reason != "user_cancelled")) ||
 			row.Latest.Verdict != nil ||
 			row.Latest.RuleVersion != diagnosisVerificationSelected || row.Latest.ExecutionRef != "" || row.Latest.ApprovalRef != "" ||
 			string(row.Latest.Sources) != "[]" {

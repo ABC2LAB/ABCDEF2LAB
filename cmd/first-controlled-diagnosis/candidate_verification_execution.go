@@ -169,7 +169,7 @@ WHERE q.method='active/v1' AND e.process_state IN ('approved','running') ORDER B
 			log.Printf("[candidate-verification] request %d recovery schedule unavailable", item.id)
 		}
 	}
-	return nil
+	return b.recoverCandidateAnalyses(ctx, pool)
 }
 
 func candidateTerminalEvent(ctx context.Context, pool *sql.DB, requestID int64, state, reason string) error {

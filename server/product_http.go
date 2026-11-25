@@ -141,6 +141,10 @@ func NewProductDiagnosisHandler(ctx context.Context, pool *sql.DB, keyDir, dataD
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, candidateVerificationPrefix) && strings.Contains(r.URL.Path, "/verifications") {
+			if strings.HasSuffix(r.URL.Path, "/answers") {
+				candidateVerificationAnswerHTTP(w, r, pool, authenticate, endpoint)
+				return
+			}
 			if strings.HasSuffix(r.URL.Path, "/decision") {
 				candidateVerificationDecisionHTTP(w, r, pool, authenticate, endpoint)
 				return

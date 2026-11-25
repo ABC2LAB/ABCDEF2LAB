@@ -62,7 +62,7 @@ func candidateVerificationCancelHTTP(w http.ResponseWriter, r *http.Request, poo
 	defer tx.Rollback()
 	var requester, method, digest, state string
 	var step int
-	err = tx.QueryRowContext(ctx, `SELECT q.requester,q.method,COALESCE(p.plan_digest,''),e.step,e.process_state
+	err = tx.QueryRowContext(ctx, `SELECT q.requester,q.method,COALESCE(p.plan_digest,q.original_evidence_digest),e.step,e.process_state
 FROM diagnostic_candidate_verification_requests q
 LEFT JOIN diagnostic_candidate_verification_plans p ON p.request_id=q.id
 JOIN LATERAL (SELECT step,process_state FROM diagnostic_candidate_verification_events WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON true
@@ -81,15 +81,15 @@ WHERE q.id=$1 AND q.task_id=$2 AND q.candidate_id=$3 AND q.method IN ('active/v1
 			candidateVerificationError(w, 409, "verification_plan_changed")
 			return
 		}
-		if state != "requested" && state != "cancelled" {
+		if state != "requested" && state != "checking_stored_evidence" && state != "analysis_ready" && state != "cancelled" {
 			candidateVerificationError(w, 409, "verification_cancel_unavailable")
 			return
 		}
-		if state == "requested" && step == 1 {
+		if state != "cancelled" && (step == 1 || step == 2 || step == 3) {
 			emptySources := []byte("[]")
 			sum := sha256.Sum256(emptySources)
 			_, err = tx.ExecContext(ctx, `INSERT INTO diagnostic_candidate_verification_events(request_id,step,process_state,reason,sources,sources_digest,rule_version)
-VALUES($1,2,'cancelled','user_cancelled',$2,$3,'selected/llm-v1')`, requestID, emptySources, hex.EncodeToString(sum[:]))
+VALUES($1,$2,'cancelled','user_cancelled',$3,$4,'selected/llm-v1')`, requestID, step+1, emptySources, hex.EncodeToString(sum[:]))
 			if err != nil {
 				candidateVerificationError(w, 503, "verification_storage_unavailable")
 				return
@@ -99,6 +99,11 @@ VALUES($1,2,'cancelled','user_cancelled',$2,$3,'selected/llm-v1')`, requestID, e
 		if tx.Commit() != nil {
 			candidateVerificationError(w, 503, "verification_storage_unavailable")
 			return
+		}
+		if step == 2 && state == "cancelled" {
+			command := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "candidate-analysis-cancel", Command: diagnosisprep.ProductControl,
+				Principal: owner, Product: &diagnosisprep.ProductRequest{Operation: "candidate_analysis_cancel", JobID: strconv.FormatInt(requestID, 10), CommandKey: digest}}
+			_, _ = endpoint.Call(ctx, command)
 		}
 		writeJSON(w, 200, map[string]string{"request_id": strconv.FormatInt(requestID, 10), "process_state": state})
 		return

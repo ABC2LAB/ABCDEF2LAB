@@ -70,6 +70,9 @@ type Service struct {
 	// 확인 시각 전용의 신뢰된 프로세스 시계다. RPC·환경 변수로 지정하지 않는다.
 	now        func() time.Time
 	executions map[string]executionHandle
+	// Candidate work has its own immutable DB reservation, counted with Start.
+	// This live gate prevents Start from racing an in-progress follow-up.
+	candidateActive map[int64]bool
 	// 이 서비스가 PID 1일 때만 채운다. 비어 있으면 init 증거를 쓰지도 남기지도 않는다.
 	initInstance string
 	// boot는 이 서비스가 읽은 boot ID다. 해제 완료 증거(release_linux.go)에 쓴다.
@@ -150,7 +153,7 @@ func newServiceForRuntime(ctx context.Context, root string, backend Backend, boo
 		return nil, err
 	}
 	lifetime, cancel := context.WithCancel(ctx)
-	s := &Service{ctx: lifetime, cancel: cancel, backend: backend, journal: j, jobs: map[string]receipt{}, executions: map[string]executionHandle{}, now: time.Now, initInstance: initInstance,
+	s := &Service{ctx: lifetime, cancel: cancel, backend: backend, journal: j, jobs: map[string]receipt{}, executions: map[string]executionHandle{}, candidateActive: map[int64]bool{}, now: time.Now, initInstance: initInstance,
 		boot: boot, quiet: DefaultReleaseQuiet, updatedAt: map[string]time.Time{}, restart: make(chan struct{}), restartGrace: restartResponseGrace, releaseClock: time.Now}
 	fail := func() (*Service, error) { cancel(); _ = j.close(); return nil, errStorage }
 	jobs, err := replayPreparationReceipts(ctx, records, j.snapshotCount)
@@ -524,6 +527,9 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		}
 		var used Budget
 		var runs int64
+		if len(s.candidateActive) != 0 {
+			return responseError(r, "busy"), nil
+		}
 		for _, other := range s.jobs {
 			// 상태 게시와 실제 backend 반환은 별개다. 종료와 drain 증거를 모두 요구한다.
 			if blocksStart(other) {
@@ -537,6 +543,13 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 				}
 				used = addBudget(used, b)
 			}
+		}
+		if ledger, ok := s.backend.(candidateBudgetBackend); ok {
+			candidateUsed, candidateRuns, err := ledger.CandidateBudgetUsage(ctx, inspect.DelegationRef)
+			if err != nil || candidateRuns < 0 || !withinBudget(used, candidateUsed, inspect.AggregateBudget) {
+				return responseError(r, "unavailable"), nil
+			}
+			used, runs = addBudget(used, candidateUsed), runs+candidateRuns
 		}
 		if runs >= inspect.MaxRuns || !withinBudget(used, inspect.Scope.Budget, inspect.AggregateBudget) {
 			return responseError(r, "budget_exhausted"), nil

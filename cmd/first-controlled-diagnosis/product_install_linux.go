@@ -775,12 +775,16 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow 
 	}
 	if exec("GRANT SELECT ON diagnostic_candidate_verification_executions TO product_api") != nil ||
 		exec("GRANT SELECT, INSERT ON diagnostic_candidate_verification_executions TO product_runtime") != nil ||
+		exec("GRANT SELECT, INSERT ON diagnostic_candidate_budget_reservations TO product_runtime") != nil ||
+		exec("GRANT SELECT ON diagnostic_candidate_verification_analyses TO product_api") != nil ||
+		exec("GRANT SELECT, INSERT ON diagnostic_candidate_verification_analyses TO product_runtime") != nil ||
+		exec("GRANT SELECT, INSERT ON diagnostic_candidate_verification_answers TO product_api") != nil ||
 		exec("GRANT SELECT ON diagnostic_candidate_verification_requests TO product_runtime") != nil ||
 		exec("GRANT SELECT, INSERT ON diagnostic_candidate_verification_events TO product_runtime") != nil ||
 		exec("GRANT USAGE ON SEQUENCE diagnostic_candidate_verification_events_id_seq TO product_runtime") != nil {
 		return errPreparation
 	}
-	if exec("GRANT INSERT ON diagnostic_candidate_observations_v2 TO product_runtime") != nil ||
+	if exec("GRANT SELECT, INSERT ON diagnostic_candidate_observations_v2 TO product_runtime") != nil ||
 		exec("GRANT SELECT ON diagnostic_candidate_observations_v2 TO product_api") != nil {
 		return errPreparation
 	}

@@ -29,6 +29,9 @@ type verificationOwnerEndpoint struct {
 
 func (e *verificationOwnerEndpoint) Call(_ context.Context, req diagnosisprep.Request) (diagnosisprep.Response, error) {
 	e.calls.Add(1)
+	if req.Command == diagnosisprep.ProductControl && req.Principal == "ARTEX" && req.Product != nil && req.Product.Operation == "candidate_analyze" {
+		return diagnosisprep.Response{Version: req.Version, RequestID: req.RequestID, Product: &diagnosisprep.ProductResponse{Reason: "scheduled"}}, nil
+	}
 	allowed := req.Command == diagnosisprep.AuthorizeTask && req.Principal == "ARTEX" && req.TaskID == e.task
 	out := diagnosisprep.Response{Version: req.Version, RequestID: req.RequestID, Authorized: &allowed}
 	if allowed {

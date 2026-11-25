@@ -125,6 +125,15 @@ type DiagnosticLatestVerification struct {
 	EarlierSuperseded                              bool
 	EarlierSources                                 []DiagnosticVerificationSourceRef
 	EarlierRequestedAt                             time.Time
+	BusinessQuestions                              []DiagnosticBusinessQuestion
+}
+
+type DiagnosticBusinessQuestion struct {
+	QuestionIndex int
+	Question      string
+	Answer        string
+	Answered      bool
+	AnsweredAt    time.Time
 }
 
 type DiagnosticVerificationSourceRef struct {
@@ -281,6 +290,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		}
 		if e.LatestVerification != nil {
 			latest := *e.LatestVerification
+			latest.BusinessQuestions = append([]DiagnosticBusinessQuestion(nil), latest.BusinessQuestions...)
 			if e.Kind != "candidate" || in.Run == nil ||
 				(in.Run.VerificationVersion != "passive/v2" && in.Run.VerificationVersion != "selected/llm-v1") ||
 				latest.EvidenceDigest != e.Digest || latest.RequestedAt.IsZero() || latest.Reason == "" {
@@ -298,13 +308,35 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 				// Selection is a request for analysis, never a verdict or a
 				// target execution. Preserve the original suspect assessment.
 				if in.Run.VerificationVersion != "selected/llm-v1" ||
-					(latest.State != "requested" && latest.State != "cancelled") ||
+					(latest.State != "requested" && latest.State != "checking_stored_evidence" && latest.State != "analysis_ready" && latest.State != "failed" && latest.State != "cancelled") ||
 					latest.Verdict != "" || latest.InitialVerdict != "" || latest.InitialReason != "" ||
 					latest.EarlierVerdict != "" || len(latest.Sources) != 0 ||
 					e.AssessmentStatus != "insufficient" ||
 					(e.AssessmentReason != "selected_verification_required" && e.AssessmentReason != "source_unavailable") ||
 					(e.Outcome != "review" && e.Outcome != "unknown") {
 					return DiagnosticReport{}, ErrExportBlocked
+				}
+				if latest.State != "analysis_ready" && latest.State != "cancelled" && len(latest.BusinessQuestions) != 0 {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
+				if len(latest.BusinessQuestions) > 4 {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
+				for i := range latest.BusinessQuestions {
+					q := &latest.BusinessQuestions[i]
+					if q.QuestionIndex != i+1 || q.Question == "" || len(q.Question) > 1024 || len(q.Answer) > 4096 ||
+						(q.Answered && (q.Answer == "" || q.AnsweredAt.IsZero()) || !q.Answered && (q.Answer != "" || !q.AnsweredAt.IsZero())) {
+						return DiagnosticReport{}, ErrExportBlocked
+					}
+					size += len(q.Question) + len(q.Answer)
+					if size > MaxDiagnosticReportBytes {
+						return DiagnosticReport{}, ErrExportBlocked
+					}
+					var count int
+					q.Question, count = dlp.DiagnosticTextCounted(q.Question)
+					in.ExposedCredentialValues += count
+					q.Answer, count = dlp.DiagnosticTextCounted(q.Answer)
+					in.ExposedCredentialValues += count
 				}
 			case "stored/v1":
 				if in.Run.VerificationVersion != "passive/v2" {
@@ -516,6 +548,14 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		}
 		if in.Shared {
 			e.BusinessRuleReview = nil
+			if e.LatestVerification != nil {
+				for i := range e.LatestVerification.BusinessQuestions {
+					e.LatestVerification.BusinessQuestions[i].Question = "[REDACTED]"
+					if e.LatestVerification.BusinessQuestions[i].Answered {
+						e.LatestVerification.BusinessQuestions[i].Answer = "[REDACTED]"
+					}
+				}
+			}
 			e.RemediationBundle = nil
 			e.RemediationSource = nil
 			e.Status = "[REDACTED]"
@@ -731,7 +771,7 @@ dt{font-weight:700}dd{margin-left:0;margin-bottom:8px;overflow-wrap:anywhere}
 {{range .Entries}}<article id="{{.ID}}"><h3>{{.ID}} · {{.Title}}</h3>
 <dl><dt>유형</dt><dd>{{.VulnClass}}</dd><dt>현재 판정</dt><dd>{{.VerdictText}}</dd><dt>원본 결과 구분</dt><dd>{{.Outcome}}</dd>
 <dt>검증 방법</dt><dd>{{.Verification}}</dd><dt>검증 결과·사유</dt><dd>{{if .AssessmentStatus}}{{.AssessmentStatus}} / {{.AssessmentReason}}{{else}}추가 검증 기록 없음{{end}}</dd><dt>심각도</dt><dd>{{.SeverityText}}</dd>{{if .SeverityRationale}}<dt>예상 심각도 근거 · 모델 제안</dt><dd>{{.SeverityRationale}}</dd>{{end}}<dt>원본 처리/실행 상태</dt><dd>{{.Status}}</dd>
-{{with .LatestVerification}}<dt>최근 선택 검증</dt><dd>{{.State}} · {{if .Verdict}}{{.Verdict}}{{else}}판정 없음{{end}} · {{.Reason}} · {{.Method}} · 요청 {{.RequestedAt}}</dd>{{if .InitialVerdict}}<dt>최초 자동 검증</dt><dd>{{.InitialVerdict}} · {{.InitialReason}}</dd>{{end}}{{range .Sources}}<dt>추가 감사 관찰</dt><dd>호출 {{.CallRef}} · 시도 {{.AttemptRef}} · digest {{.ObservationDigest}}</dd>{{end}}{{if .EarlierVerdict}}<dt>이전 유효 추가 검증</dt><dd>{{.EarlierVerdict}} · {{.EarlierReason}} · 요청 {{.EarlierRequestedAt}}{{if .EarlierSuperseded}} · 이후 추가 검증으로 현재 집계에서 제외{{end}}</dd>{{range .EarlierSources}}<dt>이전 감사 관찰</dt><dd>호출 {{.CallRef}} · 시도 {{.AttemptRef}} · digest {{.ObservationDigest}}</dd>{{end}}{{end}}{{end}}
+{{with .LatestVerification}}<dt>최근 선택 검증</dt><dd>{{.State}} · {{if .Verdict}}{{.Verdict}}{{else}}판정 없음{{end}} · {{.Reason}} · {{.Method}} · 요청 {{.RequestedAt}}</dd>{{range .BusinessQuestions}}<dt>업무 사실 질문 {{.QuestionIndex}}</dt><dd>{{.Question}}</dd>{{if .Answered}}<dt>사용자 답변 (송신 승인 아님)</dt><dd>{{.Answer}}</dd>{{end}}{{end}}{{if .InitialVerdict}}<dt>최초 자동 검증</dt><dd>{{.InitialVerdict}} · {{.InitialReason}}</dd>{{end}}{{range .Sources}}<dt>추가 감사 관찰</dt><dd>호출 {{.CallRef}} · 시도 {{.AttemptRef}} · digest {{.ObservationDigest}}</dd>{{end}}{{if .EarlierVerdict}}<dt>이전 유효 추가 검증</dt><dd>{{.EarlierVerdict}} · {{.EarlierReason}} · 요청 {{.EarlierRequestedAt}}{{if .EarlierSuperseded}} · 이후 추가 검증으로 현재 집계에서 제외{{end}}</dd>{{range .EarlierSources}}<dt>이전 감사 관찰</dt><dd>호출 {{.CallRef}} · 시도 {{.AttemptRef}} · digest {{.ObservationDigest}}</dd>{{end}}{{end}}{{end}}
 <dt>회차 / intent</dt><dd>{{if .Run}}{{.Run}}{{else}}회차 미기록{{end}} / {{if .IntentID}}{{.IntentID}}{{else}}intent 미기록{{end}}</dd><dt>관찰 시각</dt><dd>{{if .ObservedAt.IsZero}}미기록{{else}}{{.ObservedAt}}{{end}}</dd>
 <dt>증거 버전 / digest</dt><dd>{{.EvidenceVersion}} / {{.Digest}}</dd></dl>
 {{if .LanguageMixed}}<p>다른 언어 섞임: 모델이 쓴 이름·설명·조치·근거에 한자·가나가 섞여 있습니다. 섞인 부분을 짚어 한국어로 다시 쓰게 했지만 남았습니다.</p>{{end}}
