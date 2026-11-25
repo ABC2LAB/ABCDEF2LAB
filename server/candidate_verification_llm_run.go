@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log"
 	"strconv"
 	"time"
 
@@ -94,15 +95,20 @@ func ExecuteSelectedCandidateActions(ctx context.Context, manager *Manager, opti
 	pauseErr := manager.SetTaskPaused(id, true)
 	closeErr := runtime.Close(cleanup)
 	if pauseErr != nil || closeErr != nil || runErr != nil || len(results) != len(plan.Actions) {
+		log.Printf("[candidate-e2] action finalization unavailable: paused=%t closed=%t run=%t count=%t",
+			pauseErr == nil, closeErr == nil, runErr == nil, len(results) == len(plan.Actions))
 		return nil, errors.Join(ErrCandidateExecutionBinding, pauseErr, closeErr, runErr)
 	}
 	for _, result := range results {
 		if !result.Final || !result.ProcessDrained || !result.ProxyDrained || !result.Execution.AuditComplete || result.Classification != "completed" {
+			log.Printf("[candidate-e2] result incomplete: final=%t process=%t proxy=%t audit=%t classified=%t",
+				result.Final, result.ProcessDrained, result.ProxyDrained, result.Execution.AuditComplete, result.Classification == "completed")
 			return nil, ErrCandidateExecutionBinding
 		}
 	}
 	projected, err := candidateverify.ProjectTrustedSelected(taskID, runRef, results)
 	if err != nil || len(projected) != len(plan.Actions) {
+		log.Printf("[candidate-e2] observation projection unavailable: valid=%t count=%t", err == nil, len(projected) == len(plan.Actions))
 		return nil, ErrCandidateExecutionBinding
 	}
 	if won, err := manager.SetTaskStatusGuarded(id, "done"); err != nil || !won {

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log"
 	"regexp"
 	"strconv"
 
@@ -34,6 +35,7 @@ func (r *E2HTTPRuntime) runSelectedCandidateGET(ctx context.Context, task *Task,
 	}
 	defer func() {
 		if closeErr := finish(); closeErr != nil {
+			log.Print("[candidate-e2] work drain unavailable")
 			resultErr = errors.Join(resultErr, errCandidateE2Execution)
 		}
 	}()
@@ -105,18 +107,23 @@ func (r *E2HTTPRuntime) runSelectedCandidateActions(ctx context.Context, task *T
 		}
 		command := "curl --silent --show-error --max-time 15 --output /dev/null --request " + action.Method + " --url " + strconv.Quote(origin+action.ExactPath)
 		result, runErr := lease.Runner.RunForIntent(bound, intent.ID, command)
-		if err := r.observeResult(bound, t, lease, intent.ID, result); err != nil || runErr != nil {
+		observeErr := r.observeResult(bound, t, lease, intent.ID, result)
+		if observeErr != nil || runErr != nil {
+			log.Printf("[candidate-e2] action result unavailable: observed=%t runner=%t", observeErr == nil, runErr == nil)
 			return nil, errCandidateE2Execution
 		}
 		if lease.VerifySelected != nil {
 			if len(result.Trusted.Call.Observations) != 1 {
+				log.Print("[candidate-e2] action observation count invalid")
 				return nil, errCandidateE2Execution
 			}
 			observation := result.Trusted.Call.Observations[0]
 			verified, err := lease.VerifySelected(bound, e2host.ObservationRef{
 				CallRef: result.Trusted.Call.CallRef, AttemptID: observation.AttemptRef, Sequence: observation.Sequence,
 			})
-			if err != nil || !selectedVerifiedResult(result.Trusted, verified) {
+			matched := err == nil && selectedVerifiedResult(result.Trusted, verified)
+			if !matched {
+				log.Printf("[candidate-e2] host verification unavailable: proof=%t matched=%t", err == nil, matched)
 				return nil, errCandidateE2Execution
 			}
 			result.Trusted.SelectedProof = &e2runner.SelectedAuditProof{Event: verified.Event, Checkpoint: verified.Checkpoint}
