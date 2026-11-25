@@ -19,6 +19,7 @@ func TestRequestApprovalWaitCarriesCloseCause(t *testing.T) {
 		{"model_stage_closed", ErrModelStageClosed},
 		{"call_deadline", context.DeadlineExceeded},
 		{"caller_cancel", context.Canceled},
+		{"request_deadline", context.DeadlineExceeded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("승인 전에 대상에 감") }))
@@ -38,6 +39,10 @@ func TestRequestApprovalWaitCarriesCloseCause(t *testing.T) {
 			})
 			e, c := coreOpen(t, cfg)
 			ctx, cancel := context.WithCancel(context.Background())
+			if tc.name == "request_deadline" {
+				// 요청 문맥의 기한(E③ 확정 요청처럼 요청 기한이 있는 경우)은 승인 대기 문맥에 DeadlineExceeded로 실린다.
+				ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
+			}
 			defer cancel()
 			done := make(chan Receipt, 1)
 			go func() { _, r, _ := c.Do(ctx, coreRequest(t, "GET", target.URL+"/allowed")); done <- r }()

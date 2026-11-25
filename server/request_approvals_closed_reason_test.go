@@ -107,6 +107,22 @@ func TestRequestApprovalStoresAndProjectsClosedReason(t *testing.T) {
 			t.Fatalf("%s(%s)에 closed_reason %q", row.ID, got.State, got.ClosedReason)
 		}
 	}
+	// 운영자 종료로 결속이 끝난 뒤 읽으면 투영으로 닫힌 대기 건과 까닭 없는 취소 기록은 operator_stopped다.
+	stopped, _ := approvalReviewFixture(t, &approvalReviewStore{})
+	b := stopped.bindings[1]
+	b.stopRequested = true
+	stopped.bindings[1] = b
+	for _, row := range []db.RequestApproval{
+		{ID: "orphan", TaskID: 1, RunRef: "run", State: "pending", ExpiresAt: future},
+		{ID: "legacy", TaskID: 1, RunRef: "run", State: "cancelled", ExpiresAt: future},
+	} {
+		stopped.mu.Lock()
+		got := stopped.decorate(row)
+		stopped.mu.Unlock()
+		if got.State != "cancelled" || got.ClosedReason != approvalClosedOperator {
+			t.Fatalf("운영자 종료 뒤 %s: state=%q closed_reason=%q", row.ID, got.State, got.ClosedReason)
+		}
+	}
 	// 대기자가 없는(재시작 등으로 투영으로 닫힌) 대기 건과 이 칸 이전 취소 기록은 run_closed다.
 	for _, row := range []db.RequestApproval{
 		{ID: "orphan", TaskID: 1, RunRef: "run", State: "pending", ExpiresAt: future},
