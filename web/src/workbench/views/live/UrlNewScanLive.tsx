@@ -1307,9 +1307,11 @@ export function UrlNewScanLive() {
             </p>
             {accountConsentBox}
             <ApprovedWriteNotice scope={scope} />
-            {handle ? action : null}
             <UrlNotices />
           </div>
+          {/* 범위 확인 뒤 다음 단계(시작 동의 · [점검 시작] · 승인 대기 · 점검 보기)는 패널 바닥에 붙인다 — 위 요약 · 안전 장치가
+              길어져도 패널을 끝까지 내리지 않고 바로 동의 · 시작한다(사용자 11/25) */}
+          {handle && action ? <div className={s.vistick}>{action}</div> : null}
         </aside>
         <PaneToggle />
       </div>

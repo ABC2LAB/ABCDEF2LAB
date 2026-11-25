@@ -1650,6 +1650,22 @@ a.ph:hover {
   margin-top: 10px;
   font-size: 13px;
 }
+/*
+ * 오른쪽 패널 바닥에 붙는 다음 단계 칸(새 점검 범위 확인 뒤 시작 동의 · [점검 시작], 사용자 11/25).
+ * 패널(.vi)이 스크롤 칸이라 내용이 길면 바닥에 붙고, 짧으면 내용 바로 밑에 놓인다. 패널 아래 여백(48px)까지 덮어 바닥에 닿게 한다
+ */
+.vistick {
+  position: sticky;
+  bottom: -48px;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 16px -18px -48px -20px;
+  padding: 12px 18px 16px 20px;
+  border-top: 1px solid var(--rule);
+  background: var(--well);
+}
 .isec {
   border-top: 1px solid var(--rule);
   padding-top: 14px;
