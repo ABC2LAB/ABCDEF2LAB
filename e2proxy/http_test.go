@@ -185,6 +185,12 @@ func (r *proxyTestRecorder) Record(_ context.Context, event Event) error {
 }
 func proxyTestCall(t *testing.T, target string, roots *x509.CertPool) (*Execution, *Call, *proxyTestRecorder) {
 	t.Helper()
+	return proxyTestCallWith(t, target, roots, nil)
+}
+
+// proxyTestCallWith는 proxyTestCall과 같고, 실행을 열기 전에 설정을 바꿀 수 있다(승인 모드 시험 등).
+func proxyTestCallWith(t *testing.T, target string, roots *x509.CertPool, adjust func(*Config)) (*Execution, *Call, *proxyTestRecorder) {
+	t.Helper()
 	u, err := url.Parse(target)
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +206,7 @@ func proxyTestCall(t *testing.T, target string, roots *x509.CertPool) (*Executio
 		t.Fatal(err)
 	}
 	rec := &proxyTestRecorder{}
-	exec, err := NewExecution(t.Context(), Config{ApprovalMode: ApprovalPreauthorizedScope, HeaderMode: HeaderProtectedSessionProposal,
+	cfg := Config{ApprovalMode: ApprovalPreauthorizedScope, HeaderMode: HeaderProtectedSessionProposal,
 		Scope:    transmit.Scope{TaskRef: key.TaskRef, RunRef: "run_proxy", CaseRef: "case_proxy", ResetRef: binding.ResetRef, PolicyRef: binding.PolicyRef},
 		IntentID: 1, OwnerRef: "ARTEX", PolicyRevision: "revision_proxy", AccountRef: "account_proxy", SessionRef: "session_proxy",
 		ExpiresAt: now.Add(time.Minute), RootCAs: roots, Recorder: rec,
@@ -210,7 +216,11 @@ func proxyTestCall(t *testing.T, target string, roots *x509.CertPool) (*Executio
 		Budget: transmit.CumulativeBudget{Ledger: ledger, Key: key, Binding: binding},
 		Limits: Limits{MaxAttempts: 100, MaxCalls: 8, MaxConcurrent: 8, MaxBodyBytes: 8192,
 			RequestTimeout: 2 * time.Second, CallTimeout: 30 * time.Second, MaxDenials: 20, MaxTransient: 20, MaxUnknown: 20},
-	})
+	}
+	if adjust != nil {
+		adjust(&cfg)
+	}
+	exec, err := NewExecution(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +242,16 @@ func proxyTestCall(t *testing.T, target string, roots *x509.CertPool) (*Executio
 }
 func proxyTestListener(t *testing.T, call *Call) (*Proxy, string, *x509.CertPool) {
 	t.Helper()
+	return proxyTestListenerWith(t, call, nil)
+}
+
+// proxyTestListenerWith는 proxyTestListener와 같고, 프록시를 열기 전에 설정을 바꿀 수 있다(요청 상한 시험 등).
+func proxyTestListenerWith(t *testing.T, call *Call, adjust func(*ProxyConfig)) (*Proxy, string, *x509.CertPool) {
+	t.Helper()
 	cfg, roots := proxyTestConfig(t)
+	if adjust != nil {
+		adjust(&cfg)
+	}
 	p, err := NewProxy(call, cfg)
 	if err != nil {
 		t.Fatal(err)
