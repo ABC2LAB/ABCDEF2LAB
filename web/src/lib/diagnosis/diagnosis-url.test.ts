@@ -16,6 +16,9 @@ import {
 } from "./diagnosis-url";
 import { catalog, draft, envelope, handle, owner, ready, running, scope } from "./diagnosis-url-fixtures";
 
+/** 서버 RFC3339Nano UTC 시각(인증 준비 끝난 시각 예). */
+const AT = "2026-11-24T04:51:09Z";
+
 vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), apiFetch: vi.fn() }));
 beforeEach(() => {
   vi.resetAllMocks();
@@ -397,8 +400,67 @@ describe("실행 결과 칸(docs/contracts/run-outcome-states.md §3.2)", () => 
     { ...completed, account_auth: { "acct-a": 1 } }, // 비문자 값
     { ...completed, account_auth: ["authenticated"] }, // 배열
     { ...completed, account_auth: "authenticated" }, // 문자열
-    { ...running, account_auth: { "acct-a": "authenticated" } }, // "있는 state" 밖(running)
+    { ...running, account_auth: { "acct-a": "authenticated" } }, // 실행 중인데 변경 시각 없음(#936: 실행 중엔 둘 다)
+    {
+      ...running,
+      state: "preparing",
+      account_auth: { "acct-a": "authenticated" },
+      account_auth_updated_at: { "acct-a": AT },
+    }, // 준비 중(인증 준비 전)
   ])("account_auth 계약 밖은 fail closed 한다: %o", (value) => {
+    expect(() => parseURLJob(envelope(value), owner)).toThrow();
+  });
+
+  // #936: 인증 준비가 끝난 뒤 running · stopping 에도 싣고, 계정별 마지막 변경 시각(account_auth_updated_at)을 더한다
+  it.each(["running", "stopping"] as const)("실행 중(%s)에도 account_auth 와 계정별 변경 시각을 받는다", (state) => {
+    const account_auth = { rh_tester_a: "authenticated", rh_tester_b: "session_not_found" };
+    const account_auth_updated_at = { rh_tester_a: AT, rh_tester_b: "2026-11-24T04:51:09.123456789Z" };
+    const job = parseURLJob(envelope({ ...running, state, account_auth, account_auth_updated_at }), owner);
+    expect(job.account_auth).toEqual(account_auth);
+    expect(job.account_auth_updated_at).toEqual(account_auth_updated_at);
+  });
+
+  it("끝난 상태는 변경 시각이 있어도 받고, 칸이 생기기 전 기록(시각 없음)도 받는다", () => {
+    const account_auth = { "acct-a": "authenticated" };
+    expect(
+      parseURLJob(envelope({ ...completed, account_auth, account_auth_updated_at: { "acct-a": AT } }), owner)
+        .account_auth_updated_at,
+    ).toEqual({ "acct-a": AT });
+    expect(parseURLJob(envelope({ ...completed, account_auth }), owner).account_auth_updated_at).toBeUndefined();
+  });
+
+  it.each([
+    { ...completed, account_auth_updated_at: { "acct-a": AT } }, // account_auth 없이 시각만
+    { ...running, account_auth: { "acct-a": "authenticated" }, account_auth_updated_at: {} }, // 키 빠짐
+    {
+      ...running,
+      account_auth: { "acct-a": "authenticated" },
+      account_auth_updated_at: { "acct-a": AT, "acct-b": AT },
+    }, // 키 더 있음
+    { ...running, account_auth: { "acct-a": "authenticated" }, account_auth_updated_at: { "acct-b": AT } }, // 다른 키
+    {
+      ...running,
+      account_auth: { "acct-a": "authenticated" },
+      account_auth_updated_at: { "acct-a": "2026-11-24T13:51:09+09:00" },
+    }, // UTC 아님
+    {
+      ...running,
+      account_auth: { "acct-a": "authenticated" },
+      account_auth_updated_at: { "acct-a": "0001-01-01T00:00:00Z" },
+    }, // 0 시각
+    {
+      ...running,
+      account_auth: { "acct-a": "authenticated" },
+      account_auth_updated_at: { "acct-a": "2026-02-30T00:00:00Z" },
+    }, // 없는 날짜
+    { ...running, account_auth: { "acct-a": "authenticated" }, account_auth_updated_at: { "acct-a": 1 } }, // 비문자
+    { ...running, account_auth: { "acct-a": "authenticated" }, account_auth_updated_at: [AT] }, // 배열
+    {
+      ...running,
+      account_auth: { "acct-a": "authenticated" },
+      account_auth_updated_at: JSON.parse(`{"__proto__":"${AT}","acct-a":"${AT}"}`),
+    }, // 프로토타입 키
+  ])("account_auth_updated_at 계약 밖은 fail closed 한다: %o", (value) => {
     expect(() => parseURLJob(envelope(value), owner)).toThrow();
   });
 });
