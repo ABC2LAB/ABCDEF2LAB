@@ -224,6 +224,10 @@ async function bootJob(owner: string): Promise<void> {
     accept(next, saved ?? recoveredHandle(next, owner));
   } catch (cause) {
     if (current !== generation) return;
+    if (cause instanceof ApiError && cause.status === 404) {
+      releaseStaleBinding(saved, created);
+      return;
+    }
     const patch: Partial<UrlStore> = { error: urlDiagnosisError(cause) };
     if (cause instanceof ApiError && cause.status === 403) {
       forgetSelectedCreation();
@@ -236,6 +240,31 @@ async function bootJob(owner: string): Promise<void> {
       useUrl.setState({ busy: false });
     }
   }
+}
+
+/** 이 브라우저에 남은 진단을 서버(이 주체)가 모를 때의 안내. 실행 여부는 단정하지 않는다. */
+export const STALE_BINDING_TEXT =
+  "이 브라우저에 남아 있던 점검을 서버에서 찾지 못해 이어 보기를 풀었어요(재설치 · 초기화 등). 실행되지 않았다고 단정하지 않아요 — 서버 점검 목록에서 다시 고를 수 있어요.";
+
+/**
+ * 새로고침 때 다시 읽은 저장 핸들 · 조회 선택이 404 면(이 주체에게 그런 진단 · 영수증이 없음) 그 결속을 푼다.
+ * 소유 문맥은 사용자 이름의 해시라 재설치 · DB 초기화 뒤에도 같아서, 앞 설치 때 열린 탭의 핸들이 그대로 통과한 채
+ * 결과 불명(uncertain)으로 멈춰 새 점검 · 범위 확인이 막히고, 레일이 서버의 끝난 점검을 세지 않았다(11/24 화면 VAmPI 발견 5).
+ * 서버에 다시 보내는 것은 없다 — 이 탭의 이어 보기만 푼다. 404 가 아닌 실패(연결 · 503 등)는 지금처럼 결과 불명으로 둔다.
+ */
+function releaseStaleBinding(saved: URLDiagnosisHandle | null, created: URLDiagnosisHandle | null): void {
+  // 404 가 난 것이 생성 핸들이면 그것까지, 조회 선택만이면 다른 생성 핸들은 남긴다
+  const keep = saved ? null : created;
+  storeURLHandle(keep);
+  useUrl.setState({
+    handle: null,
+    createdHandle: keep,
+    selectedID: null,
+    job: null,
+    verified: false,
+    uncertain: false,
+    error: STALE_BINDING_TEXT,
+  });
 }
 
 function recoveredHandle(job: URLDiagnosisJob, owner: string): URLRecoveredHandle {
