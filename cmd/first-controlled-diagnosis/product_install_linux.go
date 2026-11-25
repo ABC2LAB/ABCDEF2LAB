@@ -782,7 +782,7 @@ func productGrantRoles(ctx context.Context, pool *sql.DB, name string, workflow 
 		exec("GRANT SELECT, INSERT ON diagnostic_candidate_verification_verdicts TO product_runtime") != nil ||
 		exec("GRANT SELECT, INSERT ON diagnostic_candidate_verification_answers TO product_api") != nil ||
 		exec("GRANT SELECT ON diagnostic_candidate_verification_answers TO product_runtime") != nil ||
-		exec("GRANT SELECT ON diagnostic_candidate_verification_requests TO product_runtime") != nil ||
+		exec("GRANT SELECT, UPDATE(id) ON diagnostic_candidate_verification_requests TO product_runtime") != nil ||
 		exec("GRANT SELECT, INSERT ON diagnostic_candidate_verification_events TO product_runtime") != nil ||
 		exec("GRANT USAGE ON SEQUENCE diagnostic_candidate_verification_events_id_seq TO product_runtime") != nil {
 		return errPreparation

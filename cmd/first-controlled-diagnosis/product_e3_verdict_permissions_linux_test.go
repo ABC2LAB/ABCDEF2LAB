@@ -153,6 +153,19 @@ func TestProductRuntimeE3VerdictInsertOnly(t *testing.T) {
 	if err := runtime.QueryRowContext(t.Context(), "SELECT current_user").Scan(&current); err != nil || current != "product_runtime" {
 		t.Fatalf("실행 역할로 접속하지 못함: %q %v", current, err)
 	}
+	// The worker serializes its append-only events on the immutable request.
+	// PostgreSQL requires UPDATE on one column even for a read-only row lock.
+	var lockID, otherUpdate bool
+	if err := installer.QueryRowContext(t.Context(), `SELECT
+has_column_privilege('product_runtime','diagnostic_candidate_verification_requests','id','UPDATE'),
+has_column_privilege('product_runtime','diagnostic_candidate_verification_requests','requester','UPDATE')`).Scan(&lockID, &otherUpdate); err != nil || !lockID || otherUpdate {
+		t.Fatalf("selected request lock grant invalid: id=%v requester=%v err=%v", lockID, otherUpdate, err)
+	}
+	rows, err := runtime.QueryContext(t.Context(), `SELECT id FROM diagnostic_candidate_verification_requests WHERE false FOR UPDATE`)
+	if err != nil {
+		t.Fatal("selected request row lock unavailable", err)
+	}
+	rows.Close()
 	taskID := task.ID
 	v := db.ProductVerdict{TaskID: taskID,
 		Binding: db.ProductBinding{JobRef: "job-store", RunRef: "run-store", E2PolicyRef: "e2-policy-store", GenerationRef: "generation-store",
