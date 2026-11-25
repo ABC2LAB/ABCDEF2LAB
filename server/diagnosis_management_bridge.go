@@ -142,7 +142,16 @@ func managementLiveViewTask(r *http.Request) (string, bool) {
 		return "", false
 	}
 	parts := strings.Split(tail, "/")
-	if len(parts) != 2 || parts[1] != "control-policy" && parts[1] != "e2-flow" {
+	// 받는 경로: 통제 정책·전송 통제 흐름(after), 요청 전체 기록(cursor·limit), 요청 상세(호출·시도 식별자, 조회 조건 없음).
+	keys := map[string]bool{}
+	switch {
+	case len(parts) == 2 && parts[1] == "control-policy":
+	case len(parts) == 2 && parts[1] == "e2-flow":
+		keys["after"] = true
+	case len(parts) == 3 && parts[1] == "e2-flow" && parts[2] == "requests":
+		keys["cursor"], keys["limit"] = true, true
+	case len(parts) == 5 && parts[1] == "e2-flow" && parts[2] == "requests" && managementLiveRef.MatchString(parts[3]) && managementLiveAttempt.MatchString(parts[4]):
+	default:
 		return "", false
 	}
 	n, err := strconv.ParseInt(parts[0], 10, 64)
@@ -154,12 +163,19 @@ func managementLiveViewTask(r *http.Request) (string, bool) {
 		return "", false
 	}
 	for key, values := range query {
-		if parts[1] != "e2-flow" || key != "after" || len(values) != 1 {
+		if !keys[key] || len(values) != 1 {
 			return "", false
 		}
 	}
 	return parts[0], true
 }
+
+// 요청 상세 경로의 호출 식별자(E② call_ref)와 시도 식별자(16바이트 소문자 16진수) 형식이다. 값 검사는 실행 쪽도 한다.
+var (
+	managementLiveRef     = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	managementLiveAttempt = regexp.MustCompile(`^[0-9a-f]{32}$`)
+)
+
 func (b *diagnosisManagementBridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	graphTask, graphRead := reportGraphRequestTask(r)

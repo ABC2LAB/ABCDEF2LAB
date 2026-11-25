@@ -505,6 +505,7 @@ export function UrlDashboardLive() {
         onApprovals={first ? () => pick({ kind: "approval", id: first.id }) : undefined}
         result={result}
         coverage={coverage}
+        e2Flow={e2Task && !e2.error ? (e2.data ?? null) : null}
       />
     );
   } else {

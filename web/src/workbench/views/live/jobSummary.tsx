@@ -15,6 +15,7 @@ import {
   diagnosticOutcomeLabels,
   summarizeDiagnosticEntries,
 } from "@/lib/diagnosis/diagnostic-results";
+import type { E2Flow } from "@/lib/diagnosis/e2flow";
 import type { RemediationEntry } from "@/lib/diagnosis/remediation";
 import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
 
@@ -52,6 +53,7 @@ import { HelpTip, InspHead, Isec, Kv } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import type { Approvals } from "./approvals";
 import { useHideRunConfirm } from "./hideRunConfirm";
+import { SentRequestsValue, useE2FlowFor } from "./sentRequests";
 import { UrlNotices, UrlPill, UrlRefreshButton } from "./urlParts";
 
 /** 진행 중 경과를 다시 세는 주기(ms). 서버 시각이 기준이라 주기는 표시 갱신 간격일 뿐이다. */
@@ -216,6 +218,8 @@ export function JobRow({
   result?: JobResult | null;
   /** 끝난 점검의 자산 커버리지 % (모르면 null) */
   coverage?: number | null;
+  /** 부모가 이미 읽은 e2-flow(대시보드). 주지 않으면 여기서 읽는다(목록 기록 화면) */
+  e2Flow?: E2Flow | null;
 }) {
   const handle = useUrl((st) => st.handle);
   const job = useUrl((st) => st.job);
@@ -365,6 +369,7 @@ export function JobSummary({
   onApprovals,
   result,
   coverage,
+  e2Flow,
 }: {
   /** 보낼 요청 승인 대기 줄 (모르면 null) */
   approvals?: readonly RequestApproval[] | null;
@@ -374,6 +379,8 @@ export function JobSummary({
   result?: JobResult | null;
   /** 끝난 점검의 자산 커버리지 % (모르면 null) */
   coverage?: number | null;
+  /** 부모가 이미 읽은 e2-flow(대시보드). 주지 않으면 여기서 읽는다(목록 기록 화면) */
+  e2Flow?: E2Flow | null;
 }) {
   const { goTo } = useShell();
   const handle = useUrl((st) => st.handle);
@@ -385,6 +392,14 @@ export function JobSummary({
   const error = useUrl((st) => st.error);
   // 경과는 서버 started_at 기준이라 새로고침해도 0 으로 돌아가지 않는다. 화면은 이 주기로만 다시 센다.
   const now = useNow(ELAPSED_TICK_MS);
+  // '보낸 요청' 총계(#929 target_requests). 대시보드는 이미 읽은 값을 넘기고, 목록 기록 화면은 여기서 읽는다
+  const sentTask = job?.started && job.task_id ? job.task_id : null;
+  const ownE2 = useE2FlowFor(
+    e2Flow === undefined ? sentTask : null,
+    true,
+    !!job && URL_ENDED_STATES.includes(job.state),
+  );
+  const sentFlow = e2Flow ?? ownE2.data;
   // 끝난 점검만 목록에서 숨길 수 있다(화면 표시만, 기록은 그대로). 확인 상자는 버튼 줄 아래에 둔다(사용자 11/23)
   const hideRun = useHideRunConfirm(
     handle && job && URL_ENDED_STATES.includes(job.state) && cap.kind === "v2"
@@ -448,7 +463,9 @@ export function JobSummary({
     ...(ended ? [] : [["단계", stageText] as const]),
     // 서버가 이 점검을 실제로 돌릴 때 붙인 작업 번호(task). 끝난 점검이 많아져도 목록 줄과 같은 번호로 가린다(사용자 11/18)
     ["작업", job?.task_id ? `#${job.task_id}` : "아직 없음"],
-    ...(flow ? [["보낸 요청", `${flow.counts.sent}건`] as const] : []),
+    // 숫자는 대상에 나간 요청 총계, 마우스를 올리면 '모델 · 로그인 · 확정 · 탐색' 내역(사용자 11/25). 진단 흐름의
+    // counts.sent(모델 진단 요청만)는 쓰지 않는다 — 11/24 화면 50건 vs 저널 56건(로그인 6)이 그 차이였다
+    ...(sentTask ? [["보낸 요청", <SentRequestsValue key="sent" flow={sentFlow} />] as const] : []),
     ...(outcomeText ? [["실행 결과", outcomeText] as const] : []),
   ];
 

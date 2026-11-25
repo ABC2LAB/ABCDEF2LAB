@@ -349,6 +349,24 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		log.Print("첫 진단 대상 자산 등록 실패, 진단은 계속한다")
 	}
 	diagnostics.next("task_binding", "task_binding_failed")
+	// 재시작 정리: 이전 회차가 Execute를 마치지 못하고(준비 서비스 종료) 남긴 작업 결속이 있으면, 그 작업만 마감 상태로
+	// 돌린다. 그대로 두면 아래 준비 서버가 시작을 거부한다(#912 재현). 그 뒤 이 회차의 결속을 남기고 돌아올 때 지운다.
+	bound, boundErr := newURLBoundTaskStore(b.config.StateDir)
+	if boundErr == nil {
+		boundErr = bound.bind(urlBoundTask{JobID: execution.Job.ID, TaskID: actual.TaskID, ExplorationID: actual.ExplorationID}, func(previous []server.FirstDiagnosisBoundTask) error {
+			released, err := server.ReleaseInterruptedFirstDiagnosisTasks(ctx, pool, actual.TaskID, previous)
+			if err == nil && released > 0 {
+				log.Printf("재시작 정리: 이전 회차가 마감하지 못한 작업 %d개를 마감 상태로 돌리고 끊김 표지를 남김", released)
+			}
+			return err
+		})
+	}
+	if boundErr != nil {
+		diagnostics.reason = "preparation_interrupted_task_release_failed"
+		_ = pool.Close()
+		return knownFailure("preparation_host_failed", true)
+	}
+	defer bound.unbind(execution.Job.ID)
 	taskID := strconv.FormatInt(actual.TaskID, 10)
 	flow, flowPool, err = b.createWorkflow(ctx, l, execution, taskID, check)
 	if err != nil {
@@ -871,7 +889,7 @@ func (b *urlPreparationRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 	// 작업대 실데이터(통제 정책·전송 통제 흐름)는 실행 결속 디렉터리에서 직접 읽는다(계약 workbench-live-data §3·§4).
 	if view := liveDataView(r.URL.Path); view != "" {
-		serveLiveData(w, r, b.config.RunsDir, auth.Job.ID, view)
+		serveLiveDataWith(w, r, b.config.RunsDir, auth.Job.ID, view, b.liveExplorationRequests)
 		return
 	}
 	if auth.Job.Scope != nil {
