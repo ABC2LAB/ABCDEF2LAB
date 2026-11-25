@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 )
@@ -99,8 +100,24 @@ func TestSelectedVerificationKeepsCandidateWithoutAutomaticVerdictPostgres(t *te
 		t.Fatal(err)
 	}
 	context, err := ReadCandidateSelectedContext(t.Context(), s.m.pg.DB, selectedID)
-	if err != nil || context.Candidate.ID != id || len(context.Observations) != 2 || context.RunRef != passiveRunRef {
+	if err != nil || context.Candidate.ID != id || len(context.Observations) != 2 || context.RunRef != passiveRunRef ||
+		context.OriginalObservation == nil || context.OriginalObservation.Source.CallRef != context.Candidate.CallRef {
 		t.Fatalf("selected context did not bind original evidence: count=%d err=%v", len(context.Observations), err)
+	}
+	changed := append([]candidateverify.StoredObservationV2(nil), context.Observations...)
+	var withoutOriginal []candidateverify.StoredObservationV2
+	for i := range changed {
+		if changed[i].Source.CallRef == context.Candidate.CallRef {
+			changed[i].Source.Observation.StatusCode++
+		} else {
+			withoutOriginal = append(withoutOriginal, context.Observations[i])
+		}
+	}
+	if _, err := selectedOriginalObservation(context.Candidate, changed); err == nil {
+		t.Fatal("candidate's original call accepted with changed observation")
+	}
+	if missing, err := selectedOriginalObservation(context.Candidate, withoutOriginal); err != nil || missing != nil {
+		t.Fatal("missing original call was represented as available")
 	}
 	if retry := invoke("POST", selectedBody); retry.Code != 200 {
 		t.Fatalf("idempotent retry status=%d", retry.Code)
@@ -218,7 +235,7 @@ func TestSelectedContextMarksUnavailableOriginalObservationPostgres(t *testing.T
 		t.Fatal(err)
 	}
 	context, err := ReadCandidateSelectedContext(t.Context(), s.m.pg.DB, selectedID)
-	if err != nil || !context.SourceUnavailable || len(context.Observations) != 0 {
+	if err != nil || !context.SourceUnavailable || len(context.Observations) != 0 || context.OriginalObservation != nil {
 		t.Fatalf("unavailable original observation misrepresented: count=%d err=%v", len(context.Observations), err)
 	}
 }

@@ -3,10 +3,14 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"reflect"
+	"strconv"
 
 	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/report"
 )
 
@@ -22,6 +26,40 @@ type CandidateSelectedContext struct {
 	RunRef            string
 	SourceUnavailable bool
 	Observations      []candidateverify.StoredObservationV2
+	// OriginalObservation is present only when the candidate's own call is
+	// independently present in the sealed E² projection and both copies agree.
+	// A nil value must not be replaced with a guessed replay path.
+	OriginalObservation *candidateverify.StoredObservationV2
+}
+
+func selectedOriginalObservation(candidate db.DiagnosticCandidate, rows []candidateverify.StoredObservationV2) (*candidateverify.StoredObservationV2, error) {
+	var original struct {
+		Trusted e2runner.TrustedResult `json:"trusted"`
+	}
+	if json.Unmarshal([]byte(candidate.Evidence), &original) != nil {
+		return nil, ErrCandidateSelectedContext
+	}
+	var bound *candidateverify.StoredObservationV2
+	for i := range rows {
+		source := rows[i].Source
+		if source.CallRef != candidate.CallRef {
+			continue
+		}
+		if bound != nil || source.IntentID != candidate.IntentID || source.TaskRef != strconv.FormatInt(candidate.TaskID, 10) ||
+			source.RunRef != candidate.RunRef || original.Trusted.Call.CallRef != candidate.CallRef ||
+			len(original.Trusted.Call.Observations) != 1 ||
+			!reflect.DeepEqual(source.Observation, original.Trusted.Call.Observations[0]) ||
+			source.PolicyRevision != original.Trusted.Execution.PolicyRevision ||
+			rows[i].HeaderMode != original.Trusted.Execution.HeaderMode {
+			return nil, ErrCandidateSelectedContext
+		}
+		scope, err := json.Marshal(original.Trusted.Execution.Scope)
+		if err != nil || source.ScopeDigest != db.DiagnosticEvidenceDigest(string(scope)) {
+			return nil, ErrCandidateSelectedContext
+		}
+		bound = &rows[i]
+	}
+	return bound, nil
 }
 
 // ReadCandidateSelectedContext reads one selected request and the immutable
@@ -86,6 +124,10 @@ WHERE q.id=$1 AND q.method='llm/v1'`, requestID).Scan(&out.TaskID, &candidateID,
 			if !candidateverify.ValidSelectedStoredObservation(out.TaskID, run.RunRef, observation) {
 				return CandidateSelectedContext{}, ErrCandidateSelectedContext
 			}
+		}
+		out.OriginalObservation, err = selectedOriginalObservation(candidate, out.Observations)
+		if err != nil {
+			return CandidateSelectedContext{}, ErrCandidateSelectedContext
 		}
 	}
 	out.RequestID, out.Candidate, out.RunRef, out.SourceUnavailable = requestID, candidate, run.RunRef, run.VerificationSourceUnavailable
