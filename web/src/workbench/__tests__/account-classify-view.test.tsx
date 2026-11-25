@@ -157,6 +157,20 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
     expect(box.getByLabelText("계정 B 비밀번호")).toHaveValue("");
   });
 
+  // 사용자 11/25: 11/24 B 계정 아이디 끝 공백으로 로그인이 실패했다 — 아이디 칸은 공백을 아예 받지 않는다
+  it("시험 계정 A · B 아이디 칸은 공백을 넣지 못한다(타이핑 · 붙여넣기 모두, 비밀번호는 그대로)", async () => {
+    serve();
+    render(withRoute("classify"));
+    await pickTarget();
+    const box = within(screen.getByRole("region", { name: "시험 계정" }));
+    const user = box.getByLabelText("계정 B 아이디") as HTMLInputElement;
+    fireEvent.input(user, { target: { value: " u b\t\u3000-1 " } });
+    expect(user.value).toBe("ub-1");
+    const pass = box.getByLabelText("계정 B 비밀번호") as HTMLInputElement;
+    fireEvent.input(pass, { target: { value: "pass word" } });
+    expect(pass.value).toBe("pass word");
+  });
+
   it("시험 표시: 진술 동의 뒤에만 POST mark-test", async () => {
     serve();
     render(withRoute("classify"));
@@ -349,6 +363,16 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
   const loginSection = () => within(screen.getByRole("region", { name: "대상 로그인 방식" }));
   const row = (label: string) =>
     within(screen.getByLabelText("계정 목록")).getByText(label).closest("li") as HTMLElement;
+
+  it("자격 입력의 사용자명 칸도 공백을 넣지 못한다(사용자 11/25)", async () => {
+    serveLogin({ configuredAfterWrite: true });
+    render(withRoute("classify"));
+    await pickTarget();
+    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 입력" }));
+    const user = within(row("legacy")).getByLabelText("사용자명") as HTMLInputElement;
+    fireEvent.input(user, { target: { value: "synthetic user " } });
+    expect(user.value).toBe("syntheticuser");
+  });
 
   it("저장된 로그인 방식을 칸에 채우고, 고쳐 저장하면 PUT login(자격 값 없음)", async () => {
     serveLogin({ login: SAVED_LOGIN });
