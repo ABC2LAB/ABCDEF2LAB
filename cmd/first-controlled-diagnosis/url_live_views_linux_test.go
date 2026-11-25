@@ -73,7 +73,8 @@ func liveRunFixtureWith(t *testing.T, events func(record func(e2proxy.Event)), c
 		t.Fatal(err)
 	}
 	if events != nil {
-		j, err := e2proxy.CreateJournal(state, "events.jsonl", key)
+		// Host 모드 실행의 로컬 저널(화면 사본)과 같게 만든다. 일반 행은 일반 v2 저널과 같고, 확정 단계 투영도 받는다.
+		j, err := e2proxy.CreateScreenJournal(state, "events.jsonl", key)
 		if err != nil {
 			t.Fatal(err)
 		}

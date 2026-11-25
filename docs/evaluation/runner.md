@@ -136,6 +136,7 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   engine-end.json                엔진 끝 신호: 창 동안 첫 끝 상태·시각, down 전 마지막 작업 상태 칸(값 원본 그대로)
   cli-observed-lines.json        (분리 배치 B, B 전용 CLI 이름이 관측된 때만) 관측된 명령마다 한 줄의 모양(따옴표 밖의 관측 이름과 셸 연산자만 그대로, 나머지 낱말은 값·옵션·경로·따옴표 문자열 모두 `<인자>`, 원문 없음, 사람 확인용). 셸 낱말로 못 나누거나 64KiB를 넘는 원문은 보류 표시만
   fault-stall.json               제공자 장애 멈춤(결정안 §7): 장애별 무활동 길이·창 끝까지 이어졌는지·끝 신호, 최장 무활동, T가 설정되면 판정
+  end-idle.json                  (T가 설정된 회차) 끝 신호 뒤 무활동 유예: T·끝 신호·마지막 활동·끝낸 시각(창 기준 초), 모델 호출 관찰 여부·읽기 실패 수, 정리 끝 필요 여부, 끝낸 시각에 진행 중이던 호출 수
   early-end.json                 러너 상한 전에 일찍 끝난 회차의 분류(고정 초안 §26): first_limit·끝 상태·제품 사유, 분류(provider_fault·config·ended_valid·없음)와 근거 호출(순번·결정·상태·끝 모양·시각) 또는 승인 예산 대조·시작 거부 사유
   intercept-summary.json         엔진 승인 기록의 건수: 상태별, 차단 출처별(파일 규칙·내장 규칙·모델·그 밖), 도구별(도구 입력 원문 없음)
   engine-rules.json              `engine_rules`가 있을 때만: 파일 SHA-256, 주입·내장 규칙 수, 내장 통제를 앞지를 수 있는 파일 allow 수, 내장·전체 규칙 해시, 적용 전후 도구 목록(규칙 본문 없음)
@@ -207,9 +208,19 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
   새 읽기를 띄운다. 그래서 상태 API가 느리거나 답하지 않아도 예산 종료 시각은 관찰이 없을 때와 같다. 창이 끝났을 때 진행 중인
   읽기는 읽기 시한(`task_create_timeout_seconds`)만큼 기다리고, 그래도 안 끝나면 `engine_task_status_pending`으로 세고 결과를 버린다.
   읽기 실패는 회차를 무효로 하지 않고 `window_read_failures`·`final_error`(고정 코드)로 센다. 이 파일은 서명되는 근거 목록에
-  들어간다. 엔진이 끝 상태가 돼도 러너는 회차를 일찍 끝내지 않는다(기록만, 종료 규칙은 바꾸지 않음).
+  들어간다. 끝 상태만으로는 회차를 끝내지 않는다. 다음 항목의 무활동 유예만 회차를 일찍 끝낸다.
+- **끝 신호 뒤 무활동 유예(`end-idle.json`, 고정 초안 §4 (다), 2026-11-25 사용자):** 정상 완료 끝 신호(B `done`·O `completed`, O 목표
+  달성 마감 포함)를 읽은 뒤 `run.fault_stall_seconds`(T, 공식 180초)초 동안 대상 요청(계측기 전달 수)·모델 호출(B 게이트웨이 행 수)이
+  늘지 않으면 예산 감시 루프가 회차를 끝낸다(`stop_reason` `engine_completed`, `first_limit.runner_limit` `runner_engine_idle`). 수가 바뀐
+  것을 본 폴링 시각부터 다시 세고, 모델 호출 수를 못 읽은 폴링은 활동으로 본다. 처음 세기 시작은 끝 신호를 거둔 첫 표본 시각이다(끝
+  신호와 첫 표본 사이 활동은 수로 가를 수 없어서, #951 리뷰). O는 창 동안 모델 호출을 볼 수 없어 제품 상태의
+  `drain_complete`가 참일 때만 끝낸다. T가 없으면 유예 종료도 없고, 정상 완료가 아닌 끝 상태는 러너 상한까지 간다. 유예로 끝낸 회차는
+  창 뒤 호출 기록(B 게이트웨이 행·O 제품 호출 기록)으로 끝낸 시각에 진행 중이던 호출(`inflight_at_stop`)을 세고, 하나라도 있거나
+  셀 수 없으면 `end_idle_inflight_model_call`로 무효다(합성 O는 호출 기록이 없어 정리 끝만 근거). 판단에 쓰는 읽기는 bind 파일과
+  이미 돌던 상태 읽기뿐이라 창 동안 회차 컨테이너에 손대지 않는다.
 - **먼저 걸린 상한(`first_limit`, 결정안 §3 B(a) 표):** 결과 기록에 `first_limit`을 남긴다. `value`는 `engine_completed`(엔진 끝
-  신호의 첫 끝 상태가 러너 상한보다 먼저) 또는 `runner_request_budget`·`runner_time_budget`(계측기 종료 사유)이다. 러너 상한 시각은
+  신호의 첫 끝 상태가 러너 상한보다 먼저) 또는 `runner_request_budget`·`runner_time_budget`(계측기 종료 사유)이다. 무활동 유예로 끝낸
+  회차의 `runner_limit`은 `runner_engine_idle`이고 값은 늘 엔진 쪽(`engine_completed`·`product_limit:budget_limited`)이다. 러너 상한 시각은
   시간 예산이면 그 문턱 값, 요청 예산이면 러너가 알아챈 시각(폴링이라 최대 한 간격 늦음)이고, 엔진 끝 시각은 상태 읽기가 끝 상태를
   돌려준 시각이다. 같거나 엔진이 이르면 `engine_completed`다. 판정을 다시 계산할 수 있게 두 시각(`runner_limit_elapsed_seconds`·
   `engine_terminal_elapsed_seconds`, 작업 생성 요청 직전부터 잰 초)과 러너 쪽 상한(`runner_limit`)을 같이 남긴다. 창이 끝난 뒤 거둔

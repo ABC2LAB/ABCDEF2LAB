@@ -7,7 +7,7 @@
 | 파일 | 내용 |
 |---|---|
 | `official-35b.json` | 공식 비교 프로파일 v5(fixture·environment·scope). 예산(`time_budget_seconds`·`request_budget`)은 시범 회차 뒤 한 번만 조정한다 |
-| `official-split-35b.json` | 공식 측정(탐색 분리 배치) 프로파일. `official-35b.json`과 같고 예산(요청 300·1500초)과 개선 후 승인 메서드 5개(GET·HEAD·POST·PUT·PATCH, 프로토콜 §5.1)만 다르다(`test_official_profile.py`가 묶는다). 사용 절차는 [실행 절차](../official-run.md) 4절 6번 |
+| `official-split-35b.json` | 공식 측정(탐색 분리 배치) 프로파일. `official-35b.json`과 같고 예산(요청 300·1800초, 2026-11-25 1500→1800초)과 개선 후 승인 메서드 5개(GET·HEAD·POST·PUT·PATCH, 프로토콜 §5.1)만 다르다(`test_official_profile.py`가 묶는다). 사용 절차는 [실행 절차](../official-run.md) 4절 6번 |
 | `official-e2-policy.json` | 개선 후 회차의 E② 정책 의미 템플릿. 범위는 위 프로파일의 scope, 한도는 러너 예산보다 크게 둔다. 바이트 해시와 내용 지문은 [실행 절차](../official-run.md) 4절에 있다 |
 | `official-e2-declared-differences.json` | 개선 후 회차가 원본과 다른 점 중 맞추지 못해 선언하는 목록. 러너가 해시를 대조해 회차 기록에 남긴다. PM 확정 전에는 `status`가 `proposed`다 |
 | `evidence/openrouter-endpoints-*.json` | 고정 제공자 slug가 엔드포인트 하나·정밀도 하나에만 매칭됐다는 조회 근거(조회 시각·원문 응답 SHA-256 포함) |

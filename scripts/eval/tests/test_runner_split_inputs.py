@@ -66,7 +66,7 @@ class TestPrepare(unittest.TestCase):
 
     def prepare(self, openssl=None, **changes):
         options = dict(manifest=MANIFEST, meter_port=8080, explore_port=8081, evidence_max_bytes=4 << 20,
-                       workflow_defaults=self.defaults, wide_writes=True, valid_for_hours=4, max_runs=2, path_key=PATH_KEY,
+                       workflow_defaults=self.defaults, wide_writes=True, valid_for_hours=4, max_runs=2, run_seconds=2100, path_key=PATH_KEY,
                        openssl=openssl or FakeOpenssl(), random_bytes=counter_bytes())
         options.update(changes)
         return prepare_split_inputs(self.run_dir, **options)

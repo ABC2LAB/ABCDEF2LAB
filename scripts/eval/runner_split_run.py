@@ -24,6 +24,12 @@ def product_status_view(driver: ProductDriver, draft_id: str) -> dict:
     return {name: draft.get(name) for name in PRODUCT_END_FIELDS}
 
 
+def product_drained(view: dict | None) -> bool:
+    """O 끝 신호 뒤 무활동 유예의 조건: 제품이 회차를 정상 완료(completed)로 닫고 정리(drain)를 끝냈다고 알린 상태다.
+    O 모델 호출은 창 동안 러너가 볼 수 없어(호출 기록은 창 뒤 복사) 제품의 정리 끝 표시를 진행 중 호출이 없다는 근거로 쓴다."""
+    return isinstance(view, dict) and view.get("state") == "completed" and view.get("drain_complete") is True
+
+
 def product_end_watch(ports, driver: ProductDriver, draft_id: str, task_id: str, clock: Clock, started: float,
                       wait_seconds: float) -> _EngineEndWatch:
     """O 끝 신호 감시. 읽기 실패는 제품 구동기의 고정 code로 센다(비밀·응답 원문 없음)."""
@@ -45,6 +51,7 @@ from runner import (  # noqa: E402
     CLI_LINES_NAME, CLI_USAGE_NAME, INVALID, RECORD_NAME, RESULT_FORMAT, RESULT_NAME, RunFailure, _check_subnets, check_request_cap, _event_time, _meter_preflight,
     _ns, _stamp, _step, _stop_events, _stop_watch,
     _wait_budget, _wait_drained, check_meter_logs, first_limit,
+    END_IDLE_NAME, STOP_ENGINE_IDLE, _EndIdle, end_idle_reason, inflight_at_stop,
 )
 from preservation_record import (  # noqa: E402
     LLM_NOT_APPLICABLE, LLM_VERIFIED, NAME as PRESERVATION_NAME, build_payload_v3 as preservation_payload_v3, digest,
@@ -714,7 +721,11 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         "format": SPLIT_TASK_FORMAT, "draft_id": draft_id, "task_id": task_id, "target": prepared["target"],
         "catalog_profile": prepared["catalog_profile"], "requested_at": requested_at, "created_at": _stamp(clock)}))
     watch = product_end_watch(ports, _StatusReader(ports), draft_id, task_id, clock, started, spec.task_status_wait_seconds)
-    stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started, watch)
+    # 끝 신호 뒤 무활동 유예(B와 같은 T·같은 규칙). O는 제품 정리 끝(drain_complete)이 있어야 끝낸다.
+    idle = None if spec.fault_stall_seconds is None else _EndIdle(spec.fault_stall_seconds, clock, started,
+                                                                    ready=product_drained)
+    stop_reason, forwarded_at_stop = _wait_budget(spec, meter, clock, state, started, watch, idle)
+    idle_stopped_at = _stamp(clock)  # 유예로 끝냈을 때 진행 중 호출을 셀 기준 시각
     stop_elapsed = clock.monotonic() - started
     _step(state, "seal_failed", lambda: ports.seal(pre["services"][METER]["id"]))
     sealed_at = _stamp(clock)  # 멈춤 집계 창 끝(B의 engine_end_at과 같은 자리: 계측기 봉인 직후)
@@ -829,6 +840,8 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
         _step(state, "evidence_write_failed", lambda: evidence.write_json("llm-summary.json", dict(llm_summary, reasons=[])))
         # 합성 회차는 호출 기록이 없어 제공자 장애·설정 오류 근거가 없다. 일찍 끝났으면 유효로 두고 끝 상태만 남는다.
         _split_early_end(spec, evidence, state, limit, engine_end, None, None)
+        if idle is not None:  # 호출 기록이 없어 진행 중 호출은 모름(null), 근거는 제품 정리 끝뿐이다
+            _step(state, "evidence_write_failed", lambda: evidence.write_json(END_IDLE_NAME, idle.record(None)))
         _finish_split_summary(spec, state, stop_reason, forwarded_at_stop, limit, drained, settled, pre_board, post_board,
                               goal, window, usage, task_id, draft_id, files, fingerprint, entered, closed)
         _split_record(spec, evidence, state, llm_summary, **record_inputs)
@@ -852,6 +865,11 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     _step(state, "evidence_write_failed", lambda: evidence.write_json(FAULT_STALL_NAME, state.summary["fault_stall"]))
     # 러너 상한 전에 일찍 끝난 회차의 분류(평가 프로토콜 §5.1·고정 초안 §26). 근거 호출은 제품 호출 기록, 승인 예산은 장부와 manifest다.
     early = _split_early_end(spec, evidence, state, limit, engine_end, calls, ledger)
+    # 유예로 끝낸 회차면 그 시각에 진행 중이던 모델 호출을 제품 호출 기록으로 센다(B 게이트웨이 행과 같은 칸).
+    idle_inflight = inflight_at_stop(_call_rows(calls), idle_stopped_at) if stop_reason == STOP_ENGINE_IDLE else None
+    if idle is not None:
+        _step(state, "evidence_write_failed", lambda: evidence.write_json(END_IDLE_NAME, idle.record(idle_inflight)))
+    idle_reason = end_idle_reason(stop_reason, idle_inflight)
     if early["reason"] == CONFIG_END_REASON:
         # 설정 오류는 세션이 시도로 세지 않고 멈춘다. 사후 검증(제공자 조회)을 하지 않고 여기서 끝낸다.
         raise RunFailure(CONFIG_END_REASON, (stall_reason,) if stall_reason else ())
@@ -877,6 +895,8 @@ def _run_split_steps(spec: SplitRunSpec, ports: SplitRunPorts, meter: MeterFiles
     if early["reason"] == PROVIDER_FAULT_END_REASON:
         # 제공자 장애로 끝남은 멈춤과 같은 부류다(B와 같은 순서: 멈춤 다음, 모델 호출 검증 사유 앞).
         raise RunFailure(PROVIDER_FAULT_END_REASON, tuple(llm_reasons))
+    if idle_reason:
+        raise RunFailure(idle_reason, tuple(llm_reasons))
     if llm_reasons:
         raise RunFailure(llm_reasons[0])
     llm_summary = dict(llm_summary, verification=LLM_VERIFIED)

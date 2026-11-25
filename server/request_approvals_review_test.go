@@ -26,6 +26,7 @@ type approvalReviewStore struct {
 	row    db.RequestApproval
 	insert func(context.Context) error
 	get    func()
+	getErr error
 	swap   func(context.Context, db.RequestApproval, bool) error
 }
 
@@ -47,6 +48,9 @@ func (s *approvalReviewStore) GetRequestApproval(ctx context.Context, _ int64, _
 	}
 	if s.get != nil {
 		s.get()
+	}
+	if s.getErr != nil {
+		return db.RequestApproval{}, s.getErr
 	}
 	return s.row, nil
 }
