@@ -182,7 +182,8 @@ e2-flow와 같은 결속·정책 확인을 지나, 검증한 E② 저널만 읽�
 
 **요청 상세** `GET /api/tasks/{id}/e2-flow/requests/{call_ref}/{attempt_id}` (형식 `abc2lab.e2-flow-request/v1`, 조회 조건 없음)
 
-- 칸: `kind`·`index`·`at`·`method`·`path_pattern`·`rule_ref`·`decision`·`reason`·`status_code`·`forward_attempted`·`request_written`·`response_received`·`response_complete`·`response_truncated`. 그 시도의 마지막 결과 행(없으면 의도 행)이다. 보내지 않은 시도도 저널에 있으면 열린다.
+- 칸: `kind`·`index`·`at`·`method`·`path_pattern`·`path_detail_state`·`rule_ref`·`decision`·`reason`·`status_code`·`forward_attempted`·`request_written`·`response_received`·`response_complete`·`response_truncated`. 그 시도의 마지막 결과 행(없으면 의도 행)이다. 보내지 않은 시도도 저널에 있으면 열린다.
+- `path_detail_state`는 전체 요청 기록의 각 줄과 요청 상세에서 같은 기준으로 실린다. 표시 패턴이 있으면 `"pattern_only"`다. 패턴이 없거나 길이 상한 표식 `/{too_long}`만 있으면 `"unavailable"`이다. 기존 목록의 `path`와 상세의 `path_pattern`은 그대로 전달한다. 값을 조회 시 계산하며 과거 기록의 원문은 복원하지 않는다. 화면은 상태 필드가 없는 이전 서버 응답도 받는다. 흐름 `GET …/e2-flow`는 기존 엄격 파서를 위해 응답을 유지한다.
 - `request_headers`·`request_body`·`response_headers`·`response_body`: 늘 `{"state":"not_stored"}`다. E② 저널은 헤더·본문·크기·경로 원문을 저장하지 않는다. 저장 기록 가림(시험 계정 비밀번호 정확값·세션 토큰·쿠키)이 걸릴 값 자체가 응답에 없다.
 
 **못 읽는 경우의 이유 코드** (JSON `{"reason": ...}`)
