@@ -33,3 +33,5 @@
 `BuildCandidateAnalysisRequest`는 검증된 선택 문맥을 도구 없는 모델 입력으로 제한하고 비밀 형식을 다시 가린다. `ParseCandidateAnalysisProposal`은 후보 ID와 실제 제시한 `call_ref`를 확인하고, 모델이 이 단계에서 `verdict`를 추가하면 거부하며, 반환 설명·질문·행동 문구에도 DLP를 적용한다. 제안된 업무 질문과 행동은 아직 답변·승인·실행 이력이 아니며, 이 함수들은 현재 제품 요청 처리기에서 모델 호출로 연결되지 않았다.
 
 정상 완료 보고서의 HTML·DOCX에는 의심 후보와 `selected_verification_required`가 남고, 후보 선택 요청이 있으면 최근 처리 상태를 별도로 투영한다. 모델이 주장한 문장만으로 확정 수를 늘리지 않는다. 기존 보고서와 이행점검의 원본 근거는 수정하지 않는다.
+
+`llm/v1` 선택 요청 직후와 취소 뒤에도 내부용·공유용 HTML 및 DOCX 보고서는 계속 발행한다. 선택만 한 후보의 `insufficient/selected_verification_required`는 아직 검증을 시도해 판단 불가가 된 결과가 아니므로 보고서 요약의 **의심** 수에 포함한다. 선택 요청의 `requested`·`cancelled` 처리 상태는 후보 판정과 별도로 표시한다. 이 단계에는 최종 검증 판정이나 신규 대상 송신이 없으며, 이 상태로 `confirmed`·`negative`를 출력하면 보고서 출력이 차단된다.

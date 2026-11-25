@@ -95,6 +95,12 @@ func TestSelectedVerificationKeepsCandidateWithoutAutomaticVerdictPostgres(t *te
 		page.Verifications[0].Latest.Verdict != nil {
 		t.Fatalf("selected request not stored as unassessed: status=%d", selected.Code)
 	}
+	for _, suffix := range []string{"&audience=internal", "&audience=shared", "&audience=internal&format=docx"} {
+		response := request("GET", fmt.Sprintf("/api/report/diagnostic?task=%d%s", taskID, suffix), "")
+		if response.Code != 200 {
+			t.Fatalf("selected request blocked completed report %s: status=%d body=%s", suffix, response.Code, response.Body.String())
+		}
+	}
 	selectedID, err := strconv.ParseInt(page.Verifications[0].ID, 10, 64)
 	if err != nil {
 		t.Fatal(err)

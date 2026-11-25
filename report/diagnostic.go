@@ -281,7 +281,9 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 		}
 		if e.LatestVerification != nil {
 			latest := *e.LatestVerification
-			if e.Kind != "candidate" || in.Run == nil || in.Run.VerificationVersion != "passive/v2" || latest.EvidenceDigest != e.Digest || latest.RequestedAt.IsZero() || latest.Reason == "" {
+			if e.Kind != "candidate" || in.Run == nil ||
+				(in.Run.VerificationVersion != "passive/v2" && in.Run.VerificationVersion != "selected/llm-v1") ||
+				latest.EvidenceDigest != e.Digest || latest.RequestedAt.IsZero() || latest.Reason == "" {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
 			if latest.EarlierVerdict != "" {
@@ -292,7 +294,22 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 				return DiagnosticReport{}, ErrExportBlocked
 			}
 			switch latest.Method {
+			case "llm/v1":
+				// Selection is a request for analysis, never a verdict or a
+				// target execution. Preserve the original suspect assessment.
+				if in.Run.VerificationVersion != "selected/llm-v1" ||
+					(latest.State != "requested" && latest.State != "cancelled") ||
+					latest.Verdict != "" || latest.InitialVerdict != "" || latest.InitialReason != "" ||
+					latest.EarlierVerdict != "" || len(latest.Sources) != 0 ||
+					e.AssessmentStatus != "insufficient" ||
+					(e.AssessmentReason != "selected_verification_required" && e.AssessmentReason != "source_unavailable") ||
+					(e.Outcome != "review" && e.Outcome != "unknown") {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
 			case "stored/v1":
+				if in.Run.VerificationVersion != "passive/v2" {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
 				current := latest.Verdict
 				if latest.EarlierVerdict != "" && !latest.EarlierSuperseded {
 					current = latest.EarlierVerdict
@@ -301,6 +318,9 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 					return DiagnosticReport{}, ErrExportBlocked
 				}
 			case "active/v1":
+				if in.Run.VerificationVersion != "passive/v2" {
+					return DiagnosticReport{}, ErrExportBlocked
+				}
 				if latest.EarlierSuperseded || latest.InitialVerdict == "" || latest.InitialReason == "" || len(latest.Sources) > 2 {
 					return DiagnosticReport{}, ErrExportBlocked
 				}
@@ -367,7 +387,7 @@ func PrepareDiagnostic(in DiagnosticReport) (DiagnosticReport, error) {
 			in.Confirmed++
 		case "review":
 			in.Review++
-			if e.AssessmentStatus == "insufficient" {
+			if e.AssessmentStatus == "insufficient" && e.AssessmentReason != "selected_verification_required" {
 				in.Inconclusive++
 			} else {
 				in.Suspected++
