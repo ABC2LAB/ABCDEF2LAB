@@ -78,6 +78,7 @@ import { PriceCapsNotice } from "./PriceCapsNotice";
 import { ProductVerdictReport, productConfirmationSummary, useProductVerdicts } from "./productVerdictViews";
 import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
+import { useE2FlowFor } from "./sentRequests";
 import { TaskActivity } from "./TaskActivity";
 import { AccessMapPanel } from "./UrlAccessMapLive";
 import {
@@ -91,7 +92,7 @@ import {
   useUrlHost,
 } from "./urlParts";
 import { VerdictDetailCard } from "./VerdictDetailCard";
-import { crawlPct, PauseButton, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
+import { CrawlMeters, crawlPct, PauseButton, useStopConfirm, WorkflowNotice, WorkflowReport } from "./workflowViews";
 
 /** 보고서 위치의 상위 화면 (작업대 / 끝난 점검 / 주소 / 보고서) */
 const FINISHED = { href: "#finished", label: "끝난 점검" };
@@ -1764,6 +1765,9 @@ export function UrlReportLive() {
   const verdicts = useProductVerdicts(taskId, visible);
   const { confirmed: productConfirmed, notice: productConfirmationNotice } = productConfirmationSummary(verdicts);
   // 저장된 실행 기록(diagnosis-run)은 보고서에서 더 쓰지 않는다(사용자 11/19 — 실행 종료 기록 · 요청 수를 뺌)
+  // 자산 탐색 숫자 칸 3개(발견한 API · 보낸 요청 · 막은 요청)를 보고서에도(사용자 11/25). 보고서는 끝난 점검이라 전송 기록을
+  // 한 번만 읽는다. 탐색 흐름이 없는 점검(flow 없음)은 칸을 두지 않는다
+  const crawlE2 = useE2FlowFor(flow ? taskId : null, visible, true);
   // 자산 커버리지 (요약 칸): 서버 task 의 방문 · 검사한 자산 비율(판정 커버리지 아님 · 리뷰 #479).
   // 꺼졌거나 못 읽으면 값을 만들지 않고 "—"
   const covOff = useCoverageForbidden(taskId);
@@ -2059,6 +2063,7 @@ export function UrlReportLive() {
                 </div>
               </section>
             ) : null}
+            {flow ? <CrawlMeters flow={flow} e2={crawlE2.data} /> : null}
             <section className={s.sec}>
               <div className={s["seg-tabs"]} role="tablist" aria-label="보고서 내용" id="rTabs">
                 {R_TABS.map(([k, label], i) => (

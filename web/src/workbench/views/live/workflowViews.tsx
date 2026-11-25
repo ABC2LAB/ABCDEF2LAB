@@ -7,6 +7,8 @@
 
 import { Fragment, type ReactElement, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 
+import type { E2Flow } from "@/lib/diagnosis/e2flow";
+
 import { cx } from "../../lib/cx";
 import { clockOf } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
@@ -668,6 +670,48 @@ export function logRawOf(events: readonly FlowEvent[], i: number, endpoint: Work
  */
 const LOG_SYSTEM_KINDS: ReadonlySet<string> = new Set(["created", "completed", "stopped", "failed"]);
 
+/**
+ * 자산 탐색 숫자 칸 3개(발견한 API · 보낸 요청 · 막은 요청). 자산 탐색 화면과 보고서가 같이 쓴다(사용자 11/25 — 보고서에도).
+ * 보고서 판정 집계 · 점검 진행 전송 통제와 같은 모양: 이름 · 수 · 설명. 발견한 API 설명은 경로 종류(조회 · 데이터 변경 · 제외)로
+ * 나눠 합이 발견 수와 맞게 적는다. '승인 후 전송'은 데이터 변경과 같은 경로를 다시 센 수라 두지 않는다
+ */
+export function CrawlMeters({ flow, e2 }: { flow: WorkflowSnapshot; e2: E2Flow | null | undefined }) {
+  const count = (k: Kind) => flow.endpoints.filter((e) => kindOf(e) === k).length;
+  // 탐색 단계에서는 GET 만 보낸다(서버 Controller.Before). 심화 점검이 시작되면 보낸 요청에 그 요청도 들어간다
+  const readOnly = flow.deep_runs === 0 && (flow.stage === "crawling" || flow.stage === "awaiting_selection");
+  return (
+    <div className={cx(s.meters, s.m3)}>
+      {(
+        [
+          [
+            "cFound",
+            "발견한 API",
+            flow.counts.found,
+            `조회 ${count("get")} · 데이터 변경 ${count("ap")} · 제외 ${count("ex")}`,
+          ],
+          [
+            "cSent",
+            "보낸 요청",
+            // 대상에 나간 요청 총계(탐색 경계 + E② 모델 · 로그인 · 확정), 마우스 올리면 내역(사용자 11/25)
+            <SentRequestsValue key="sent" flow={e2} />,
+            `${readOnly ? "조회만" : "심화 점검 포함"}${flow.counts.unknown ? ` · 결과 불명 ${flow.counts.unknown}` : ""}`,
+          ],
+          // 서버 counts.blocked 는 경로 수가 아니라 전송 통제가 거부 · 미지원으로 막은 요청 수
+          ["cSkip", "막은 요청", flow.counts.blocked, "범위 밖 · 안전 규칙"],
+        ] as const
+      ).map(([id, label, value, sub]) => (
+        <div className={s.cell} key={id}>
+          <div className={s.k}>{label}</div>
+          <div className={s.v} id={id}>
+            {value}
+          </div>
+          <div className={s.sub}>{sub}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** 탐색 기록 줄을 가리키는 키. 서버 기록에 id 가 없어 시각 · 종류 · 메서드 · 경로로 가리킨다. */
 const logKeyOf = (ev: FlowEvent) => `${ev.at}:${ev.kind}:${ev.method}:${ev.path}`;
 
@@ -1040,7 +1084,6 @@ export function WorkflowCrawlLive() {
   );
   const endpoints = flow?.endpoints ?? [];
   const events = flow?.events ?? [];
-  const count = (k: Kind) => endpoints.filter((e) => kindOf(e) === k).length;
   const logAt = logKey ? events.findIndex((ev) => logKeyOf(ev) === logKey) : -1;
   const logEvent = logAt >= 0 ? events[logAt] : undefined;
   const logEndpoint = logEvent
@@ -1061,8 +1104,6 @@ export function WorkflowCrawlLive() {
   const explore = flow ? exploreState(flow) : null;
   // 막대는 아래 flow 가 있을 때만 그린다(없을 때 값은 쓰이지 않음)
   const bar = flow ? crawlBar(flow) : { fill: 0, pct: 0, tone: "run" as const, text: "" };
-  // 탐색 단계에서는 GET 만 보낸다(서버 Controller.Before). 심화 점검이 시작되면 보낸 요청에 그 요청도 들어간다
-  const readOnly = !!flow && flow.deep_runs === 0 && (crawling || flow.stage === "awaiting_selection");
   // 탐색 줄: 탐색 중이면 새로 찾은 경로('… 찾음', 같은 조회에서 여럿이면 '외 N개'), 끝났으면 '탐색을 마쳤습니다'
   // (다 돌지 못했으면 같은 줄에 그 사실까지, crawlEndText). AI 자동 모드는 끝나자마자 심화 진단으로 넘어가고(서버
   // diagnosisflow crawl.go) 그 요청도 아래 기록에 이어서 쌓여, 끝 글만 두면 탐색이 계속되는 것처럼 보여 지금 하는 일을 같이 적는다
@@ -1149,38 +1190,8 @@ export function WorkflowCrawlLive() {
                 {/* 다 돌지 못한 끝(부분 완료 · 중지 · 탐색 안 함 · 상태 없음)은 막대 아래 따로 두지 않고 위 탐색 줄에 붙인다
                     (crawlEndText, 사용자 11/19) */}
               </div>
-              {/* 숫자 칸 상자 (보고서 판정 집계 · 점검 진행 전송 통제와 같은 모양): 이름 · 수 · 설명.
-                  발견한 API 설명은 경로 종류(조회 · 데이터 변경 · 제외)로 나눠 합이 발견 수와 맞게 적는다.
-                  '승인 후 전송'은 데이터 변경과 같은 경로를 다시 센 수라 두지 않는다(탐색 중엔 승인 대기 요청도 없음) */}
-              <div className={cx(s.meters, s.m3)}>
-                {(
-                  [
-                    [
-                      "cFound",
-                      "발견한 API",
-                      flow.counts.found,
-                      `조회 ${count("get")} · 데이터 변경 ${count("ap")} · 제외 ${count("ex")}`,
-                    ],
-                    [
-                      "cSent",
-                      "보낸 요청",
-                      // 대상에 나간 요청 총계(탐색 경계 + E② 모델 · 로그인 · 확정), 마우스 올리면 내역(사용자 11/25)
-                      <SentRequestsValue key="sent" flow={e2.data} />,
-                      `${readOnly ? "조회만" : "심화 점검 포함"}${flow.counts.unknown ? ` · 결과 불명 ${flow.counts.unknown}` : ""}`,
-                    ],
-                    // 서버 counts.blocked 는 경로 수가 아니라 전송 통제가 거부 · 미지원으로 막은 요청 수
-                    ["cSkip", "막은 요청", flow.counts.blocked, "범위 밖 · 안전 규칙"],
-                  ] as const
-                ).map(([id, label, value, sub]) => (
-                  <div className={s.cell} key={id}>
-                    <div className={s.k}>{label}</div>
-                    <div className={s.v} id={id}>
-                      {value}
-                    </div>
-                    <div className={s.sub}>{sub}</div>
-                  </div>
-                ))}
-              </div>
+              {/* 숫자 칸 3개(발견한 API · 보낸 요청 · 막은 요청) — 보고서도 같은 부품을 쓴다 */}
+              <CrawlMeters flow={flow} e2={e2.data} />
               <section className={s.sec} aria-labelledby="cLogH">
                 <div className={s.sh}>
                   <h2 id="cLogH">탐색 기록</h2>
