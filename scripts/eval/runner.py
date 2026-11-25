@@ -624,7 +624,8 @@ class _EndIdle:
     bind 파일과 이미 돌고 있는 상태 읽기의 마지막 값뿐이라 회차 컨테이너에 손대지 않는다.
 
     활동은 폴링 사이의 수 변화로 본다: 대상 요청(계측기 전달 수)과 모델 호출(model_calls, B 게이트웨이 행 수). 바뀐 것을
-    본 시각을 활동 시각으로 잡으므로 실제보다 늦게 잡을 수는 있어도 이르게 잡지 않는다(유예가 짧아지지 않는다). 모델 호출
+    본 시각을 활동 시각으로 잡으므로 실제보다 늦게 잡을 수는 있어도 이르게 잡지 않는다(유예가 짧아지지 않는다). 세기 시작은
+    끝 신호를 본 뒤 첫 표본 시각이다(끝 신호와 첫 표본 사이 활동은 수로 가를 수 없다). 모델 호출
     수를 못 읽으면 그 폴링을 활동으로 본다. ready가 있으면(O: 제품 정리 끝 drain_complete) 그것이 참일 때만 끝낸다.
 
     진행 중인 모델 호출은 창 동안 보이지 않는다(게이트웨이는 호출이 끝나야 행을 쓰고, O 호출 기록은 창 뒤에 복사한다).
@@ -657,7 +658,11 @@ class _EndIdle:
         now = round(self.clock.monotonic() - self.started, 3)
         calls = self._read_calls()
         if self.end_at is None:
-            self.end_at = self.last_activity_at = terminal["elapsed_seconds"]
+            # 끝 신호 시각과 이 첫 표본 사이에 생긴 활동은 첫 표본 값에 묻혀 보이지 않는다(#951 이동찬 P2: 끝 신호 100초·요청
+            # 103초·첫 표본 105초면 끝 신호부터 세면 마지막 요청 뒤 177초에 끝난다). 그 구간의 무활동은 입증할 수 없으므로
+            # 첫 표본 시각부터 센다. 끝 신호를 거둔 바로 그 폴링이면 차이는 상태 읽기 한 번 늦음 정도다.
+            self.end_at = terminal["elapsed_seconds"]
+            self.last_activity_at = max(self.end_at, now)
             self.forwarded, self.calls = forwarded, calls
         if (forwarded != self.forwarded or calls is None or calls != self.calls
                 or self.ready is not None and not self.ready(watch.last_view)):

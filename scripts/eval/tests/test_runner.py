@@ -3435,7 +3435,11 @@ class TestEndIdleRun(unittest.TestCase):
         idle = evidence.files["end-idle.json"]
         self.assertEqual((idle["stopped"], idle["inflight_at_stop"], idle["model_calls_watched"], idle["drain_required"]),
                          (True, 0, True, False))
-        self.assertEqual(round(idle["stopped_elapsed_seconds"] - idle["end_signal_elapsed_seconds"], 3), 5.0)
+        # 세기 시작은 끝 신호를 거둔 첫 표본(끝 신호 읽기 뒤 한 폴링 안)이고, 그때부터 T초 뒤에 끝낸다.
+        self.assertEqual(round(idle["stopped_elapsed_seconds"] - idle["last_activity_elapsed_seconds"], 3), 5.0)
+        self.assertLessEqual(idle["end_signal_elapsed_seconds"], idle["last_activity_elapsed_seconds"])
+        # 끝 신호 읽기는 한 폴링 뒤에 거두므로(가짜 포트는 읽기를 바로 끝냄) 첫 표본은 끝 신호 뒤 정확히 한 예산 확인 간격이다.
+        self.assertEqual(round(idle["last_activity_elapsed_seconds"] - idle["end_signal_elapsed_seconds"], 3), make_spec().poll_seconds)
         self.assertEqual(result["first_limit"]["engine_terminal_elapsed_seconds"], idle["end_signal_elapsed_seconds"])
         self.assertLess(result["first_limit"]["runner_limit_elapsed_seconds"], result["meter"]["time_budget_seconds"])
 

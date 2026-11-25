@@ -1369,7 +1369,8 @@ class TestProductFaultStall(unittest.TestCase):
         idle = evidence.files["end-idle.json"]
         self.assertEqual((idle["stopped"], idle["drain_required"], idle["model_calls_watched"], idle["inflight_at_stop"]),
                          (True, True, False, 0))
-        self.assertEqual(round(idle["stopped_elapsed_seconds"] - idle["end_signal_elapsed_seconds"], 3), 5.0)
+        self.assertEqual(round(idle["stopped_elapsed_seconds"] - idle["last_activity_elapsed_seconds"], 3), 5.0)
+        self.assertLessEqual(idle["end_signal_elapsed_seconds"], idle["last_activity_elapsed_seconds"])
 
     def test_o_call_still_running_at_the_grace_stop_invalidates(self):
         result, _, evidence = run(lambda ports: self.goal_met_round(ports, late_end=3600), fault_stall_seconds=5)

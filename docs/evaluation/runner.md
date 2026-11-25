@@ -212,7 +212,8 @@ python3 -I -B scripts/eval/runner.py --config /private/eval/runner.json --prefli
 - **끝 신호 뒤 무활동 유예(`end-idle.json`, 고정 초안 §4 (다), 2026-11-25 사용자):** 정상 완료 끝 신호(B `done`·O `completed`, O 목표
   달성 마감 포함)를 읽은 뒤 `run.fault_stall_seconds`(T, 공식 180초)초 동안 대상 요청(계측기 전달 수)·모델 호출(B 게이트웨이 행 수)이
   늘지 않으면 예산 감시 루프가 회차를 끝낸다(`stop_reason` `engine_completed`, `first_limit.runner_limit` `runner_engine_idle`). 수가 바뀐
-  것을 본 폴링 시각부터 다시 세고, 모델 호출 수를 못 읽은 폴링은 활동으로 본다. O는 창 동안 모델 호출을 볼 수 없어 제품 상태의
+  것을 본 폴링 시각부터 다시 세고, 모델 호출 수를 못 읽은 폴링은 활동으로 본다. 처음 세기 시작은 끝 신호를 거둔 첫 표본 시각이다(끝
+  신호와 첫 표본 사이 활동은 수로 가를 수 없어서, #951 리뷰). O는 창 동안 모델 호출을 볼 수 없어 제품 상태의
   `drain_complete`가 참일 때만 끝낸다. T가 없으면 유예 종료도 없고, 정상 완료가 아닌 끝 상태는 러너 상한까지 간다. 유예로 끝낸 회차는
   창 뒤 호출 기록(B 게이트웨이 행·O 제품 호출 기록)으로 끝낸 시각에 진행 중이던 호출(`inflight_at_stop`)을 세고, 하나라도 있거나
   셀 수 없으면 `end_idle_inflight_model_call`로 무효다(합성 O는 호출 기록이 없어 정리 끝만 근거). 판단에 쓰는 읽기는 bind 파일과

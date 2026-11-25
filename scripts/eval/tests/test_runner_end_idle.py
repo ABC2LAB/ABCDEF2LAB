@@ -96,12 +96,24 @@ class TestEndIdleUnit(unittest.TestCase):
                                   "model_calls_watched": True, "model_read_failures": 0, "drain_required": False,
                                   "inflight_at_stop": 0})
 
-    def test_end_signal_read_late_counts_from_its_own_elapsed(self):
-        # 끝 신호 시각은 그 읽기가 끝난 시각(elapsed_seconds)이다. 늦게 거둬도 그 시각부터 센다.
+    def test_counts_from_the_first_sample_after_the_end_signal(self):
+        # #951 이동찬 P2: 끝 신호 100초, 대상 요청 103초, 첫 표본 105초. 103초 요청은 첫 표본 값에 묻혀 수 변화로 안 보이므로
+        # 끝 신호부터 세면 280초(마지막 요청 뒤 177초)에 끝난다. 첫 표본 시각부터 세야 마지막 활동 뒤 T 이상 기다린다.
         idle = self.idle(model_calls=lambda: 0)
         self.clock.t = 105.0
         self.watch.end("done", 100.0)
-        self.assertEqual(step(idle, self.watch, self.clock, 0, 2000), 100.0 + T)
+        stopped = step(idle, self.watch, self.clock, 4, 2000)  # 끝 신호 때 3이었고 103초에 4가 됐다(첫 표본은 4)
+        self.assertEqual(stopped, 105.0 + T)
+        self.assertGreaterEqual(stopped - 103.0, T)
+        record = idle.record(0)
+        self.assertEqual((record["end_signal_elapsed_seconds"], record["last_activity_elapsed_seconds"]), (100.0, 105.0))
+
+    def test_model_call_between_the_end_signal_and_the_first_sample_is_covered(self):
+        # 같은 경계에서 모델 호출이 끝난 경우(게이트웨이 행이 첫 표본 전에 하나 늘어남)도 첫 표본부터 센다.
+        idle = self.idle(model_calls=lambda: 8)
+        self.clock.t = 101.5
+        self.watch.end("done", 100.0)
+        self.assertEqual(step(idle, self.watch, self.clock, 0, 2000), 101.5 + T)
 
     def test_target_request_after_the_end_restarts_the_grace(self):
         idle = self.idle(model_calls=lambda: 0)
@@ -220,7 +232,9 @@ class TestGoalMetO(unittest.TestCase):
         self.assertEqual(watch.first_terminal["status"], "completed")
         self.assertEqual(stop, (STOP_ENGINE_IDLE, 17))
         end = watch.first_terminal["elapsed_seconds"]
-        self.assertEqual(at, end + T)
+        first = idle.record(0)["last_activity_elapsed_seconds"]  # 끝 신호를 거둔 폴링(상태 읽기 한 번 뒤)
+        self.assertTrue(end <= first <= end + 1.0)
+        self.assertEqual(at, first + T)
         limit = first_limit(stop[0], at, 1800, watch.first_terminal)
         self.assertEqual((limit["value"], limit["runner_limit"]), ("engine_completed", FIRST_LIMIT_ENGINE_IDLE))
         self.assertEqual(expected_first_limit(stop[0], limit["runner_limit_elapsed_seconds"], 1800,
