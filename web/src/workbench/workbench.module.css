@@ -5600,6 +5600,42 @@ button.smm:hover {
 .app.insp-min .vb.solo {
   grid-template-columns: minmax(0, 1fr);
 }
+
+/*
+ * 전송 통제 정책 화면 두 단(사용자 11/25, 새 점검 .fgrid 처럼 스크롤 없이 한눈에): 왼쪽 요약 · 승인 · 감사 · 상한, 오른쪽 범위.
+ * 단 안의 섹션은 위 구분 줄 · 여백을 줄여 붙이고, 가운데 칸이 좁으면 한 줄로 이어진다.
+ */
+.polgrid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.polcol {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.polcol > .isec {
+  margin-top: 0;
+}
+.polcol:first-child > .isec:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+@container (min-width: 900px) {
+  .polgrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 32px;
+    align-items: start;
+  }
+  .polcol > .isec:first-child {
+    border-top: 0;
+    padding-top: 0;
+  }
+}
 /* 대시보드 원형 게이지 줄(사용자 11/24): 카드 4개(넓으면 한 줄, 좁으면 2 · 1 줄). 카드 = 제목 · 원 + 범례 · 작은 글 */
 .drings {
   display: grid;
