@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -80,8 +81,11 @@ func (b *urlPreparationRuntime) productExplorationOptions(l *urlLoadedProfile, e
 }
 
 func (b *urlPreparationRuntime) productExplorationStage(l *urlLoadedProfile, e diagnosisprep.Execution, taskID string, flow *diagnosisflow.Controller) server.ExplorationStageFactory {
+	// 작업대 '보낸 요청' 총계의 탐색 몫(url_target_requests.go). 탐색 단계가 없는 회차도 없음을 기록한다(기록이 없으면 모름).
+	stateDir := filepath.Join(b.config.RunsDir, e.Job.ID, "state")
 	options, ok := b.productExplorationOptions(l, e, taskID, flow)
 	if !ok {
+		recordExplorationStage(stateDir, explorationKnown(explorationNone, 0))
 		return nil
 	}
 	return func(host *server.Server) server.E2HTTPExplorationStage {
@@ -89,7 +93,9 @@ func (b *urlPreparationRuntime) productExplorationStage(l *urlLoadedProfile, e d
 			if task == nil || task.ID != taskID {
 				return server.ExplorationCharge{}, exploration.ErrBinding
 			}
+			recordExplorationStage(stateDir, explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationRunning})
 			result, err := host.RunExplorationPipeline(ctx, task, options)
+			recordExplorationStage(stateDir, explorationResultRecord(result.Status == "NOT_RUN", result.Charge.Known, result.Charge.Requests))
 			return result.Charge, err
 		}
 	}
