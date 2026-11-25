@@ -71,6 +71,14 @@ func newURLDiagnosisManagementHandler(ctx context.Context, pool *sql.DB, keyDir,
 		defer cancel()
 		stop := context.AfterFunc(ctx, cancel)
 		defer stop()
+		if strings.HasSuffix(r.URL.Path, followupSuffix) {
+			if runtimeBridge == nil {
+				http.NotFound(w, r)
+				return
+			}
+			runtimeBridge.serveRemediationFollowup(w, r.WithContext(requestContext))
+			return
+		}
 		if ProductCandidatePath(r) && runtimeBridge != nil {
 			runtimeBridge.serveProductCandidates(w, r.WithContext(requestContext))
 			return

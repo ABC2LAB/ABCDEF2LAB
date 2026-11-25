@@ -111,12 +111,18 @@ func loadDiagnosticReport(ctx context.Context, pg *db.DB, taskID int64, at time.
 	return loadDiagnosticReportWithCaptures(ctx, pg, taskID, at, true)
 }
 func loadDiagnosticReportWithCaptures(ctx context.Context, pg *db.DB, taskID int64, at time.Time, images bool) (report.DiagnosticReport, error) {
-	tx, err := pg.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	return loadDiagnosticSnapshot(ctx, pg.DB, taskID, func(tx *sql.Tx) (report.DiagnosticReport, error) {
+		return readDiagnosticReportWithCaptures(ctx, tx, taskID, at, images)
+	})
+}
+
+func loadDiagnosticSnapshot(ctx context.Context, pool *sql.DB, taskID int64, read func(*sql.Tx) (report.DiagnosticReport, error)) (report.DiagnosticReport, error) {
+	tx, err := pool.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return report.DiagnosticReport{}, err
 	}
 	defer tx.Rollback()
-	out, err := readDiagnosticReportWithCaptures(ctx, tx, taskID, at, images)
+	out, err := read(tx)
 	if err != nil {
 		return out, err
 	}
@@ -134,15 +140,23 @@ func readDiagnosticReport(ctx context.Context, tx *sql.Tx, taskID int64, at time
 	return readDiagnosticReportWithCaptures(ctx, tx, taskID, at, true)
 }
 func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID int64, at time.Time, images bool) (report.DiagnosticReport, error) {
+	out, err := readDiagnosticEntries(ctx, tx, taskID, at, images, false)
+	if err == nil {
+		err = readDiagnosticOverview(ctx, tx, taskID, &out)
+	}
+	if err == nil {
+		err = readWorkflowReport(ctx, tx, taskID, &out)
+	}
+	return out, err
+}
+
+func readDiagnosticEntries(ctx context.Context, tx *sql.Tx, taskID int64, at time.Time, images, includeMissingActions bool) (report.DiagnosticReport, error) {
 	out := report.DiagnosticReport{TaskID: taskID, GeneratedAt: at}
 	if taskID <= 0 {
 		return out, errDiagnosticReportScope
 	}
 	var expID int64
 	if err := tx.QueryRowContext(ctx, `SELECT exploration_id FROM tasks WHERE id=$1 AND deleted_at IS NULL`, taskID).Scan(&expID); err != nil {
-		return out, err
-	}
-	if err := readDiagnosticOverview(ctx, tx, taskID, &out); err != nil {
 		return out, err
 	}
 	// 원문 TEXT를 드라이버로 읽기 전에 DB에서 총 바이트를 검사한다.
@@ -296,7 +310,7 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 		return out, err
 	}
 	rows.Close()
-	if err := attachDiagnosticRemediations(ctx, tx, taskID, &out); err != nil {
+	if err := attachDiagnosticRemediations(ctx, tx, taskID, &out, includeMissingActions); err != nil {
 		return out, err
 	}
 	var captureBytes int64
@@ -346,9 +360,6 @@ func readDiagnosticReportWithCaptures(ctx context.Context, tx *sql.Tx, taskID in
 		if err := attachDiagnosticCaptures(ctx, tx, taskID, entry, &captureBytes, images); err != nil {
 			return out, err
 		}
-	}
-	if err := readWorkflowReport(ctx, tx, taskID, &out); err != nil {
-		return out, err
 	}
 	return out, nil
 }
