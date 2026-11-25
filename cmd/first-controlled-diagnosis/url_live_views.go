@@ -234,7 +234,9 @@ type e2FlowView struct {
 	OmittedCalls int            `json:"omitted_calls"`
 	Counts       e2FlowCounts   `json:"counts"`
 	ModelWrites  *e2ModelWrites `json:"model_writes,omitempty"`
-	Calls        []e2FlowCall   `json:"calls"`
+	// TargetRequests는 대상에 나간 요청 내역이다(url_target_requests.go). 검증한 저널이 있을 때만 싣는다.
+	TargetRequests *e2FlowTargetRequests `json:"target_requests,omitempty"`
+	Calls          []e2FlowCall          `json:"calls"`
 }
 
 // e2FlowEvents는 결속 디렉터리의 감사 기록을 실행 감사 키로 끝까지 검증하고 사건을 돌려준다. 키가 pin과 다르거나
@@ -400,6 +402,11 @@ func e2FlowOf(events []e2proxy.Event, after *uint64) e2FlowView {
 // serveLiveData는 작업 결속을 확인한 task의 실데이터 읽기 API다. 실행 결속 전이면 404, 정책 파일이 승인 해시와
 // 다르면 409다.
 func serveLiveData(w http.ResponseWriter, r *http.Request, runsDir, jobID, view string) {
+	serveLiveDataWith(w, r, runsDir, jobID, view, nil)
+}
+
+// serveLiveDataWith는 탐색 중 경계가 보고하는 지금 요청 수(live)를 함께 쓴다. live가 nil이면 기록만 쓴다.
+func serveLiveDataWith(w http.ResponseWriter, r *http.Request, runsDir, jobID, view string, live liveExploration) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "읽기만 받습니다", http.StatusMethodNotAllowed)
 		return
@@ -439,6 +446,13 @@ func serveLiveData(w http.ResponseWriter, r *http.Request, runsDir, jobID, view 
 			out = e2FlowView{Format: e2FlowViewFormat, Journal: "invalid", Calls: []e2FlowCall{}}
 		default:
 			flow := withAttemptPatterns(e2FlowOf(events, after), attemptPatterns(b))
+			// 세 내역(저널 두 갈래·탐색)은 이 응답 하나에서 같은 시점에 읽는다. 탐색 기록을 못 읽으면 탐색 수는 모름이다.
+			exploration, readErr := readExplorationRequests(b)
+			if readErr != nil {
+				exploration = explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationUnknown}
+			}
+			requests := targetRequestsOf(events, explorationNow(r.Context(), exploration, jobID, live))
+			flow.TargetRequests = &requests
 			if r.Header.Get(server.E2ModelWritesHeader) == "1" {
 				writes := summarizeE2ModelWrites(events)
 				flow.ModelWrites = &writes
