@@ -100,12 +100,12 @@
 | `confirmation` | 확정 단계(E③) 요청 | 같은 저널, 같은 기준. E③ 확정 호출 행(E③ 감사 칸 또는 E③ 프로그램 호출)이 이 저널에 있을 때만 센다 |
 | `unclassified` | 이 판이 모르는 프로그램 호출 종류가 보낸 요청 | 같은 저널. 0이 아니면 `total`은 `null`이다(모르는 종류를 다른 내역에 넣지 않는다) |
 | `exploration` | 탐색 단계에서 탐색 경계를 지난 대상 요청 | 회차 상태 디렉터리의 `exploration-requests.json`(탐색 경계가 세션 마감 때 확정한 `target_requests`, 진단 E② 예산에서 빼는 그 몫). 탐색 중이면 경계가 지금 보고하는 수 |
-| `exploration_state` | `none`(탐색 단계 없음, 0) · `pending`(시작 전, 0) · `running`(탐색 중) · `closed`(경계 확정) · `not_run`(열지 않음, 0) · `unknown`(경계가 확정하지 못했거나 기록을 못 읽음) | |
+| `exploration_state` | `none`(탐색 단계 없음을 기록함, 0) · `pending`(시작 전, 0) · `running`(탐색 중) · `closed`(경계 확정) · `not_run`(열지 않음, 0) · `unknown`(경계가 확정하지 못함, 기록이 없거나 못 읽음) | 탐색 단계가 없는 회차도 `none`을 기록한다. 기록이 없으면 쓰기 실패이거나 이 칸 이전 회차라 `unknown`이다 |
 | `total` | `model + login + confirmation + exploration` | 탐색 수를 모르거나 `unclassified`가 0이 아니면 `null` |
 
 - 세 갈래는 이 응답 하나에서 같은 시점에 읽는다(저널 검증·탐색 기록·경계 조회를 한 요청 안에서). 시도마다 결과 행 하나만 센다(`counts`와 같은 규칙).
 - 모르는 수는 0으로 바꾸지 않는다: `running`인데 경계가 이 회차 세션을 보고하지 않거나, `unknown`이면 `exploration`·`total`은 `null`이다.
-- `exploration-requests.json`은 감사 기록이 아니라 표시용이다. 기록을 쓰지 못해도 진단은 멈추지 않고 화면 총계만 모름으로 보인다.
+- `exploration-requests.json`은 감사 기록이 아니라 표시용이다. 기록을 쓰지 못해도 진단은 멈추지 않고 화면 총계만 모름으로 보인다. 단계 기록을 쓰지 못하면 앞 단계 기록을 지워, 지난 `pending`(0건)이 확정 0으로 읽히지 않게 한다(시험 `TestExplorationStageWriteFailureReadsUnknown`).
 - 시험: `TestE2FlowTargetRequestsMatchJournalAndExplorationRecord`(내역이 저널에서 따로 센 수·탐색 기록과 같고 합이 맞음), `TestE2FlowTargetRequestsExplorationStates`.
 
 그 task의 전송 통제 감사 기록(실행 결속 디렉터리의 저널, HMAC 체인 검증 뒤)을 호출(call) 단위로 묶은 투영이다. 저널 검증이 실패하면 사건을 하나도 보이지 않고 `journal: "invalid"`로 답한다(일부만 보이고 "정상"으로 보이게 하지 않는다).

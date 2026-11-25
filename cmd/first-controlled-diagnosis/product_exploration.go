@@ -81,12 +81,13 @@ func (b *urlPreparationRuntime) productExplorationOptions(l *urlLoadedProfile, e
 }
 
 func (b *urlPreparationRuntime) productExplorationStage(l *urlLoadedProfile, e diagnosisprep.Execution, taskID string, flow *diagnosisflow.Controller) server.ExplorationStageFactory {
+	// 작업대 '보낸 요청' 총계의 탐색 몫(url_target_requests.go). 탐색 단계가 없는 회차도 없음을 기록한다(기록이 없으면 모름).
+	stateDir := filepath.Join(b.config.RunsDir, e.Job.ID, "state")
 	options, ok := b.productExplorationOptions(l, e, taskID, flow)
 	if !ok {
+		recordExplorationStage(stateDir, explorationKnown(explorationNone, 0))
 		return nil
 	}
-	// 작업대 '보낸 요청' 총계의 탐색 몫(url_target_requests.go). 탐색 단계가 있는 회차는 시작 전부터 기록을 둔다.
-	stateDir := filepath.Join(b.config.RunsDir, e.Job.ID, "state")
 	recordExplorationStage(stateDir, explorationKnown(explorationPending, 0))
 	return func(host *server.Server) server.E2HTTPExplorationStage {
 		return func(ctx context.Context, task *server.Task) (server.ExplorationCharge, error) {
