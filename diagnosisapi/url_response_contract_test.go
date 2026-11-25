@@ -28,6 +28,9 @@ func TestURLResponseFieldSetsRequireWebContractReview(t *testing.T) {
 			"id", "revision", "source_digest", "input", "state", "phase", "reason_code", "scope", "task_id",
 			"preparation_started", "authority_state", "started", "drain_complete", "started_at", "finished_at",
 			"result_ready", "model_usage", "outcome", "closing_reason", "intent_outcomes", "diagnostic_log_incomplete", "account_auth",
+			// 2026-11-25 #936: 실행 중 account_auth의 계정별 변경 시각. 웹 parseURLJob은 #937에서 받는다. 공유 예시에는 계정이
+			// 없어 이 칸이 나오지 않는다(omitempty).
+			"account_auth_updated_at",
 		}},
 		{"RunSummary", diagnosisprep.RunSummary{}, []string{
 			"id", "revision", "display_name", "state", "phase", "reason_code", "task_id", "started", "drain_complete",

@@ -11,6 +11,7 @@ import { cx } from "../../lib/cx";
 import { clockOf } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { retryWorkflowAction, runUrlAction, runWorkflowAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
+import { URL_ENDED_STATES } from "../../live/urlMap";
 import { flowStageText, type WorkflowEndpoint, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
@@ -1031,7 +1032,12 @@ export function WorkflowCrawlLive() {
   const [logKey, setLogKey] = useState<string | null>(null);
   const stop = useStopConfirm("점검 취소");
   const found = useLatestFound(flow);
-  const e2 = useE2FlowFor(job?.started && job.task_id ? job.task_id : null, true, false);
+  // 끝난 점검은 한 번만 읽는다(진행 중일 때만 주기 조회, #938 윤재상 P3)
+  const e2 = useE2FlowFor(
+    job?.started && job.task_id ? job.task_id : null,
+    true,
+    !!job && URL_ENDED_STATES.includes(job.state),
+  );
   const endpoints = flow?.endpoints ?? [];
   const events = flow?.events ?? [];
   const count = (k: Kind) => endpoints.filter((e) => kindOf(e) === k).length;
