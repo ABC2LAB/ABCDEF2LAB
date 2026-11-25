@@ -27,7 +27,7 @@
     "target_image": "bkimminich/juice-shop:v15.0.0@sha256:fe8cecfec60f7856a02b52072c879b1baf73f5a97faafdeb12ed9e8eaccc0c3d",
     "worker_count": 3,
     "context_window_k": 200,
-    "time_budget_seconds": 1500,
+    "time_budget_seconds": 1800,
     "request_budget": 300,
     "run_storage": {
       "engine_db_tmpfs": "1g",

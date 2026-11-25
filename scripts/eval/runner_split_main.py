@@ -29,7 +29,8 @@ from runner_docker import Docker, DockerError, client_environment, run_docker
 from runner_evidence import EvidenceDir, MeterFiles
 from runner_product import ModelKey, ProductAPIError, ProductDriver, loopback_send
 from runner_split import (
-    EXPLORATION_BLOCK, SCRIPTED_MODEL_BASE_URL, SCRIPTED_MODEL_HOST, SCRIPTED_MODEL_IP, read_workflow_defaults, synthetic_local_model,
+    EXPLORATION_BLOCK, SCRIPTED_MODEL_BASE_URL, SCRIPTED_MODEL_HOST, SCRIPTED_MODEL_IP, SplitInputError, product_run_seconds,
+    read_workflow_defaults, synthetic_local_model,
 )
 from preservation_record import digest
 from scripted_product_llm import PlanError, load_plan
@@ -215,7 +216,8 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int
         inputs = prepare_split_inputs(directory.run, manifest=manifest, meter_port=plan.meter_port, explore_port=split.explore_port,
                                       evidence_max_bytes=split.evidence_max_bytes, workflow_defaults=defaults,
                                       wide_writes=split.wide_writes, valid_for_hours=split.install_valid_hours,
-                                      max_runs=split.max_runs, path_key=path_key, openssl=run_openssl, local_model=local_model,
+                                      max_runs=split.max_runs, run_seconds=product_run_seconds(declared.time_budget_seconds),
+                                      path_key=path_key, openssl=run_openssl, local_model=local_model,
                                       e2_audit_key_variable=None if split.e2_v3 is None else split.e2_v3.audit_key_variable)
         if split.observer_password_file is not None:
             write_observer_password(split.observer_password_file, inputs.admin)
@@ -248,7 +250,7 @@ def run_split_ours(config: RunnerConfig, preflight: object, *, repeat_index: int
         if isinstance(exc, (RunnerConfigError, SplitConfigError)):
             print("\n".join(exc.errors), file=sys.stderr)
             return 2
-        if isinstance(exc, (SplitInputsError, DockerError, ProductAPIError, ObserverFileError)):
+        if isinstance(exc, (SplitInputsError, SplitInputError, DockerError, ProductAPIError, ObserverFileError)):
             print(str(exc), file=sys.stderr)
             return 2
         if isinstance(exc, Exception):
