@@ -25,6 +25,9 @@ type requestClock struct {
 	deadline time.Time
 	paused   bool
 	timer    *time.Timer
+	// gen은 지금 걸린 타이머의 세대다. 멈추기 전에 이미 떠난 타이머가 다시 잰 뒤에 늦게 돌아도 새 기한을 끝내지 못하게
+	// 세대를 맞춰 본다(#946 윤재상 P3).
+	gen uint64
 	// stopParent는 부모 문맥 취소를 따라가는 등록을 푼다.
 	stopParent func() bool
 }
@@ -37,7 +40,7 @@ var _ context.Context = (*requestClock)(nil)
 func startRequestClock(parent context.Context, conn net.Conn, timeout time.Duration) *requestClock {
 	c := &requestClock{parent: parent, conn: conn, timeout: timeout, done: make(chan struct{}), deadline: time.Now().Add(timeout)}
 	c.mu.Lock()
-	c.timer = time.AfterFunc(timeout, c.expire)
+	c.armLocked()
 	c.mu.Unlock()
 	c.stopParent = context.AfterFunc(parent, func() { c.end(parent.Err()) })
 	return c
@@ -49,12 +52,19 @@ func requestClockFrom(ctx context.Context) *requestClock {
 	return c
 }
 
-func (c *requestClock) expire() {
+// armLocked는 지금부터 timeout 뒤에 끝나는 새 세대 타이머를 건다. c.mu를 쥐고 부른다.
+func (c *requestClock) armLocked() {
+	c.gen++
+	gen := c.gen
+	c.timer = time.AfterFunc(c.timeout, func() { c.expire(gen) })
+}
+
+func (c *requestClock) expire(gen uint64) {
 	c.mu.Lock()
-	// 멈춘 뒤에 늦게 불린 타이머는 기한이 아니다(멈춤과 타이머가 경합한 경우).
-	paused := c.paused
+	// 멈춘 동안이나 다시 잰 뒤에 늦게 불린 지난 세대 타이머는 기한이 아니다(멈춤과 타이머가 경합한 경우).
+	stale := c.paused || gen != c.gen
 	c.mu.Unlock()
-	if !paused {
+	if !stale {
 		c.end(context.DeadlineExceeded)
 	}
 }
@@ -109,7 +119,7 @@ func (c *requestClock) restart() {
 	c.deadline = time.Now().Add(c.timeout)
 	// 닫힌 연결이면 기한을 못 바꾸지만, 그때는 이 요청이 이미 끝나 쓸 일이 없다.
 	_ = c.conn.SetDeadline(c.deadline)
-	c.timer.Reset(c.timeout)
+	c.armLocked()
 }
 
 // Deadline은 지금 흐르는 요청 기한이다. 멈춘 동안은 부모 기한만 있다.

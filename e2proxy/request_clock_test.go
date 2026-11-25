@@ -153,12 +153,22 @@ func TestRequestClockPauseRestartAndParent(t *testing.T) {
 			t.Fatal("끝난 시계가 다시 열림")
 		}
 	})
-	t.Run("멈춘 뒤 늦게 불린 타이머는 기한이 아님", func(t *testing.T) {
+	t.Run("멈춘 뒤·다시 잰 뒤 늦게 불린 지난 타이머는 기한이 아님", func(t *testing.T) {
 		c, _ := newClock(context.Background())
+		old := c.currentGen()
 		c.pause()
-		c.expire() // 멈춤과 경합해 이미 떠난 타이머
+		c.expire(old) // 멈춤과 경합해 이미 떠난 타이머
 		if c.Err() != nil {
 			t.Fatalf("멈춘 시계가 끝남: %v", c.Err())
+		}
+		c.restart()
+		c.expire(old) // 다시 잰 뒤에야 돈 지난 세대 타이머(#946 윤재상 P3)
+		if c.Err() != nil {
+			t.Fatalf("다시 잰 시계가 지난 타이머로 끝남: %v", c.Err())
+		}
+		c.expire(c.currentGen())
+		if !errors.Is(c.Err(), context.DeadlineExceeded) {
+			t.Fatalf("지금 세대 타이머로 끝나지 않음: %v", c.Err())
 		}
 	})
 	t.Run("값과 프록시 밖 요청", func(t *testing.T) {
@@ -176,6 +186,12 @@ func TestRequestClockPauseRestartAndParent(t *testing.T) {
 }
 
 type clockTestKey struct{}
+
+func (c *requestClock) currentGen() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.gen
+}
 
 func clockTestProxy(c *ProxyConfig) {
 	c.RequestTimeout, c.HeaderTimeout = clockTestTimeout, clockTestTimeout
