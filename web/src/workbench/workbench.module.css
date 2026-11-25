@@ -2161,8 +2161,13 @@ a.ph:hover {
   padding-top: 22px;
   border-top: 1px solid var(--rule);
 }
+/* 섹션 제목(대상 · 분석 모델 · 로그인 · 점검 설정)은 칸 이름(.lbl 13px)과 확실히 다르게: 크게 · 굵게 · 왼쪽 강조 막대(사용자 11/25) */
 .fsec-h h2 {
-  font-size: 14.5px;
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.3;
+  padding-left: 10px;
+  border-left: 3px solid var(--accent);
 }
 /* 제목 · 칸 이름 옆 작은 딱지 (예: 로그인 · 연결 전). 칸 높이만큼 늘어나지 않게 위에 붙인다 */
 .fsec-ht {
@@ -2265,7 +2270,8 @@ a.ph:hover {
   }
   .fgrp.fgrid .fsec {
     grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
+    /* 섹션 제목과 첫 칸 사이(사용자 11/25: 너무 붙어 보임) */
+    gap: 16px;
     padding-top: 12px;
   }
   .fgrp.fgrid > .fcol > .fsec:first-child {
