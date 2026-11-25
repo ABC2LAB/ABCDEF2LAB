@@ -18,6 +18,7 @@ import {
   isValidAccountLabel,
   MIN_USABLE_PASSWORD_BYTES,
   markTestAccount,
+  NO_SPACE_USERNAME,
   type ProductTargetRef,
   passwordTooShortForRun,
   registerAccount,
@@ -261,6 +262,7 @@ export function QuickTestAccount({
                 type="text"
                 aria-label={`계정 ${x.key} 아이디`}
                 placeholder="아이디"
+                {...NO_SPACE_USERNAME}
                 autoComplete="off"
                 data-1p-ignore
                 data-lpignore="true"

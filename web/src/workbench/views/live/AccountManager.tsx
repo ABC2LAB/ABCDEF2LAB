@@ -19,6 +19,7 @@ import {
   getAccounts,
   MIN_USABLE_PASSWORD_BYTES,
   markTestAccount,
+  NO_SPACE_USERNAME,
   type ProductTargetRef,
   passwordTooShortForRun,
   setAccountCredential,
@@ -287,6 +288,7 @@ export function AccountManager({
                               className={s.inp}
                               type="text"
                               aria-label="사용자명"
+                              {...NO_SPACE_USERNAME}
                               autoComplete="off"
                               data-1p-ignore
                               data-lpignore="true"
