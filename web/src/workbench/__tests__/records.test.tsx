@@ -433,8 +433,13 @@ describe("레일 → 진행 중인 점검 · 끝난 점검", () => {
     expect(screen.getByRole("button", { name: /target\.example/ })).not.toHaveAttribute("aria-current");
   });
 
-  it("끝난 점검 줄을 누르면 끝난 점검으로 간다", () => {
-    useUrl.setState({ handle, job: { ...completed, state: "cancelled", result_ready: false }, verified: true });
+  // 끝난 점검 줄은 끝난 점검 전체 목록이 아니라 그 점검으로(사용자 11/25): 결과가 저장됐으면 보고서, 저장 전에 끝났으면
+  // 보고서가 나오지 않아 끝난 까닭이 보이는 점검 진행으로
+  it.each([
+    ["결과 없이 중지", { state: "cancelled", result_ready: false }, "live"],
+    ["결과 저장됨", { state: "completed", result_ready: true }, "report"],
+  ] as const)("끝난 점검 줄(%s)을 누르면 그 점검 화면으로 간다", (_name, over, to) => {
+    useUrl.setState({ handle, job: { ...completed, ...over }, verified: true });
     const goTo = vi.fn<(v: View) => void>();
     render(
       <ShellContext.Provider value={shell("finished", { goTo })}>
@@ -444,7 +449,8 @@ describe("레일 → 진행 중인 점검 · 끝난 점검", () => {
     const row = screen.getByRole("button", { name: /target\.example/ });
     expect(row).toHaveAttribute("aria-current", "true");
     fireEvent.click(row);
-    expect(goTo).toHaveBeenCalledWith("finished");
+    expect(goTo).toHaveBeenCalledWith(to);
+    expect(goTo).not.toHaveBeenCalledWith("finished");
   });
 });
 
