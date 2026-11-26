@@ -53,6 +53,8 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 
 탐색 실패(`failed` + `planning_exploration_failed`)·시간 상한(`completed` + `budget_limited`)·운영자 중지(`cancelled` + `stop_requested`)는 이 세 칸으로 구분된다. 화면 문구는 이경준 몫이다.
 
+진단 로그와의 관계: `failed`의 사유는 감독자 `run_finished`와 같은 값이다. `cancelled`의 사유는 진단 로그와 어휘가 다르다. 감독자는 실행 문맥이 취소된 것만 알아 원인과 관계없이 `user_cancelled`(기존 어휘)로 남기고, 원인 이름(`stop_requested`·`target_ended`·`authority_recheck_failed` 등)은 진단 준비 서비스와 URL 실행기가 알아 상태 칸에만 싣는다(2026-11-27 러너 합성에서 확인).
+
 설치·위임 재확인 실패·진행 저장 실패·실행 시간 한도는 운영자 중지가 아닌데도 지금은 `cancelled`다. 사유로 운영자 중지와 구분하고, 상태 값을 바꿀지는 측정 뒤에 정한다(2026-11-26 사용자 결정).
 
 실행 시간 한도(`run_time_limit_reached`)는 시간 상한 마감(3.5, `completed` + `budget_limited`, #830·#964)과 다른 경로다. 감독자는 실행 끝 시각에서 확정 단계 몫·진행 중 작업 유예·결과 저장 여유를 뺀 때 마감을 시작해 보통 `budget_limited`로 끝낸다(범위 선택 대기 중이어도 #964). 그 마감이 남긴 여유 안에 끝나지 않으면 실행 문맥 기한(설치 승인 실행 시간)이 실행을 끊고, 그때 `cancelled` + `run_time_limit_reached`(마감을 확인하지 못하면 `unknown`)다.
