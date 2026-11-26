@@ -26,7 +26,6 @@ import { cx } from "../../lib/cx";
 import { fetchRemediation, fetchRequestApprovals } from "../../live/api";
 import { useHiddenRunIDs } from "../../live/hiddenRuns";
 import { dateTimeOf, fmtDur, sevKey } from "../../live/map";
-import { maskSecrets } from "../../live/mask";
 import { fetchProductVerdicts, type ProductVerdictShown } from "../../live/productVerdicts";
 import { useRunInput } from "../../live/runInput";
 import { runDurationSec, runElapsedSec } from "../../live/runTiming";
@@ -145,7 +144,7 @@ async function readEnded(task: string, signal: AbortSignal): Promise<EndedStat> 
   const items: Confirmed[] = [
     ...confirmedEntries.map((e) => ({
       key: e.entry_id,
-      title: maskSecrets(e.title),
+      title: e.title,
       sev: sevOf(e),
       at: e.observed_at,
       where: entryEp(e),
@@ -154,10 +153,10 @@ async function readEnded(task: string, signal: AbortSignal): Promise<EndedStat> 
       .filter((r) => r.oracleValue === "confirmed")
       .map((r) => ({
         key: r.verdictId,
-        title: `${maskSecrets(r.resourceType)} · 교차 계정 조회`,
+        title: `${r.resourceType} · 교차 계정 조회`,
         sev: "none" as const,
         at: r.observedAt,
-        where: { m: null, p: maskSecrets(r.resourceRef), more: 0 },
+        where: { m: null, p: r.resourceRef, more: 0 },
       })),
   ];
   return {
@@ -281,7 +280,7 @@ function RunName({ row }: { row: URLRunSummary }) {
   return (
     <span className={s["ov-name"]}>
       {row.task_id ? <span className={s["r-no"]}>{`${row.task_id}.`}</span> : null}
-      <b>{info ? info.host : maskSecrets(row.display_name?.trim() || row.id)}</b>
+      <b>{info ? info.host : row.display_name?.trim() || row.id}</b>
       {info?.mode ? <span className={s["ov-mut"]}>{info.mode}</span> : null}
     </span>
   );
@@ -428,8 +427,7 @@ export type TrendGroup = { key: string; host: string; cols: TrendCol[] };
 
 /** 점검의 대상 열쇠 · 이름: 주소를 읽었으면 주소, 못 읽었으면 그 점검 하나가 한 묶음 */
 const targetKey = (row: URLRunSummary, run: EndedRun | undefined) => run?.host ?? `run:${row.id}`;
-const targetName = (row: URLRunSummary, run: EndedRun | undefined) =>
-  run?.host ?? maskSecrets(row.display_name?.trim() || row.id);
+const targetName = (row: URLRunSummary, run: EndedRun | undefined) => run?.host ?? (row.display_name?.trim() || row.id);
 
 /**
  * 시간 순 점검 줄을 대상별로 묶는다. 대상이 섞인 한 줄 시간 축은 막대 높낮이가 '추이'가 아니라 대상 차이로 읽혀서
@@ -697,7 +695,7 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
   const groupMap = new Map<string, TargetGroup>();
   for (const r of doneRows) {
     const run = runOf(r);
-    const host = run?.host ?? maskSecrets(r.display_name?.trim() || r.id);
+    const host = run?.host ?? (r.display_name?.trim() || r.id);
     const key = run?.host ?? `run:${r.id}`;
     const g = groupMap.get(key) ?? { key, host, rows: [], latest: null, stat: null };
     g.rows.push(r);
@@ -1089,9 +1087,7 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
                     {e2Shown.map(({ row, e2 }) => (
                       <li key={row.id}>
                         <span className={s["ov-mut"]}>{monthDay(row.finished_at) ?? "—"}</span>
-                        <span className={s["ov-en"]}>
-                          {runOf(row)?.host ?? maskSecrets(row.display_name?.trim() || row.id)}
-                        </span>
+                        <span className={s["ov-en"]}>{runOf(row)?.host ?? (row.display_name?.trim() || row.id)}</span>
                         <ThinBar parts={E2_PARTS.map(([k, , cls]) => ({ cls, n: e2[k] }))} max={e2Max} />
                         <span className={s["ov-ef"]}>{`허용 ${e2.allowed} · 막음 ${e2Blocked(e2)}`}</span>
                       </li>

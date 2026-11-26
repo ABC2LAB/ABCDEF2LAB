@@ -379,7 +379,7 @@ function RunOption({ row, owner }: { row: URLRunSummary; owner: string | null })
   return (
     <option value={row.id}>
       {[
-        `${row.task_id ? `${row.task_id}. ` : ""}${info ? info.host : maskSecrets(row.display_name?.trim() || row.id)}`,
+        `${row.task_id ? `${row.task_id}. ` : ""}${info ? info.host : row.display_name?.trim() || row.id}`,
         urlStateText(row.state),
         when ? dateTimeOf(when).slice(5, 16).replace("-", "/") : null,
       ]
