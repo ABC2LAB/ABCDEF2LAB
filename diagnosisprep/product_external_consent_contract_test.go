@@ -1,15 +1,17 @@
 package diagnosisprep
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
 
 // 설치 단위 외부 전송 동의(사용자 결정 2026-11-26)의 제품 제어 요청 · 응답 모양.
 func TestProductExternalConsentRequestValidation(t *testing.T) {
+	digest := strings.Repeat("a", 64)
 	ok := []ProductRequest{
 		{Operation: "external_consent"},
-		{Operation: "external_consent_record", ExternalConsent: &ExternalConsentRequest{StatementConfirmed: true}},
+		{Operation: "external_consent_record", ExternalConsent: &ExternalConsentRequest{StatementConfirmed: true, StatementSHA256: digest}},
 	}
 	for _, r := range ok {
 		if !validProductRequest(&r) {
@@ -19,7 +21,10 @@ func TestProductExternalConsentRequestValidation(t *testing.T) {
 	bad := map[string]ProductRequest{
 		"read with input":         {Operation: "external_consent", ExternalConsent: &ExternalConsentRequest{StatementConfirmed: true}},
 		"record without input":    {Operation: "external_consent_record"},
-		"record without consent":  {Operation: "external_consent_record", ExternalConsent: &ExternalConsentRequest{}},
+		"record without consent":  {Operation: "external_consent_record", ExternalConsent: &ExternalConsentRequest{StatementSHA256: digest}},
+		"record without digest":   {Operation: "external_consent_record", ExternalConsent: &ExternalConsentRequest{StatementConfirmed: true}},
+		"record upper digest":     {Operation: "external_consent_record", ExternalConsent: &ExternalConsentRequest{StatementConfirmed: true, StatementSHA256: strings.ToUpper(digest)}},
+		"record short digest":     {Operation: "external_consent_record", ExternalConsent: &ExternalConsentRequest{StatementConfirmed: true, StatementSHA256: digest[:63]}},
 		"record with target":      {Operation: "external_consent_record", TargetID: "target-abc", ExternalConsent: &ExternalConsentRequest{StatementConfirmed: true}},
 		"read with profile":       {Operation: "external_consent", ProfileID: "product-model-openrouter"},
 		"read with job":           {Operation: "external_consent", JobID: "job-1"},
@@ -40,7 +45,7 @@ func TestProductExternalConsentResponseValidation(t *testing.T) {
 	request := func(op string) Request {
 		p := &ProductRequest{Operation: op}
 		if op == "external_consent_record" {
-			p.ExternalConsent = &ExternalConsentRequest{StatementConfirmed: true}
+			p.ExternalConsent = &ExternalConsentRequest{StatementConfirmed: true, StatementSHA256: strings.Repeat("a", 64)}
 		}
 		return Request{Version: Version, RequestID: "product-control", Principal: "ARTEX", Command: ProductControl, Product: p}
 	}

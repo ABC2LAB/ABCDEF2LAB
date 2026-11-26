@@ -833,9 +833,17 @@ export async function commandURLDiagnosis(
   action: "validate" | "start" | "stop",
   owner: string,
   key?: string,
+  confirmation?: { externalTransferConfirmed?: boolean },
 ): Promise<URLDiagnosisJob> {
   if (action === "start" && !ref(key)) return invalid();
-  // 외부 모델 회차의 외부 전송 동의는 설치 단위 기록으로 서버가 확인한다(2026-11-26) — 회차 시작에 싣지 않는다.
+  // 외부 모델 회차의 시작은 운영자의 시작 확인을 external_transfer_confirmed 로 싣는다(호출 화면이 명시적으로 공급, scope 에서
+  // 만들지 않음). 제품 설치는 외부 전송 동의를 설치 단위 기록으로 판정해 이 칸으로 동의를 대신하지 않고(2026-11-26),
+  // 제품이 아닌 URL 준비 경로(개발 · 평가)는 지금처럼 이 칸을 회차 확인으로 쓴다(#965 리뷰 최민준 P2).
+  const externalStart = action === "start" && current.scope?.model?.external_transfer === true;
+  const externalTransferConfirmed = confirmation?.externalTransferConfirmed === true;
+  if (externalStart && !externalTransferConfirmed) {
+    throw new ApiError(400, "external_transfer_confirmation_required");
+  }
   const result = matchURLJob(
     parseURLJob(
       await apiFetch<unknown>(
@@ -844,7 +852,11 @@ export async function commandURLDiagnosis(
           method: "POST",
           redirect: "error",
           ...(key ? { headers: { "Idempotency-Key": key } } : {}),
-          body: JSON.stringify({ version, expected_revision: current.revision }),
+          body: JSON.stringify({
+            version,
+            expected_revision: current.revision,
+            ...(externalStart ? { external_transfer_confirmed: externalTransferConfirmed } : {}),
+          }),
         },
         false,
       ),
@@ -1027,6 +1039,8 @@ export function urlDiagnosisError(cause: unknown): string {
       return "저장된 요청을 찾지 못했어요. 실행되지 않았다고 단정하거나 자동 재전송하지 않아요.";
     if (cause.message === "budget_exhausted")
       return "승인된 실행·모델 예산이 소진됐어요. 새 실행을 자동으로 만들지 않아요.";
+    if (cause.message === "external_transfer_confirmation_required")
+      return "외부 모델 점검은 비용 상한 · 범위 시작 확인에 체크해야 시작할 수 있어요.";
     if (cause.message === "approval_required")
       return "설치자 승인이 필요해요. URL 입력이나 사용자 확인만으로 실행 권위가 생기지 않아요.";
     if (cause.status === 409) return "승인 범위·설정 세대·실행 상태가 바뀌었어요. 현재 상태를 다시 조회해 주세요.";

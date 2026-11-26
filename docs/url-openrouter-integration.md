@@ -24,7 +24,7 @@ Transport는 유일한 OpenRouter 승인 원장이다. URL 원장은 별도 범�
 
 키는 backend DB 조회에만 사용한다. 실제 task/profile chain과 역할 pin, 매 호출의 최신 DB config(키 포함)를 다시 대조한다. 키 교체·빈 키·프로필 교체는 현재 회차의 다음 호출을 차단하며 재시작/새 승인으로 설치를 다시 확인한다. provider가 반환한 401/429/5xx는 재시도하지 않고 비용 불명으로 처리한다. provider의 실제 계정 키 만료 시점은 호출 전 로컬 검사만으로 확인할 수 없다.
 
-**2026-11-26부터 외부 전송 동의는 설치 단위로 한 번이다**(`deploy/product/README.md` '외부 전송 동의'). 제품 설치는 준비 단계 검토(Inspect)가 설치 동의 기록을 확인해, 없으면 `external_transfer_consent_required`로 막고 있으면 회차별 확인 없이 시작한다(receipt의 `external_transfer_confirmed`에는 적용된 동의가 남는다). 아래 두 문단의 회차별 칸(Start의 `external_transfer_confirmed: true`, 초안 입력 `external_test_accounts`)은 제품 설치 밖의 경로(개발·평가 러너)와 이미 저장된 회차를 위해 그대로 받는다. 제품 설치의 결속은 설치 동의가 정한다.
+**2026-11-26부터 외부 전송 동의는 설치 단위로 한 번이다**(`deploy/product/README.md` '외부 전송 동의'). 제품 설치는 준비 단계 검토(Inspect)가 설치 동의 기록을 확인해, 없으면 `external_transfer_consent_required`로 막고 있으면 회차별 확인 없이 시작한다(receipt의 `external_transfer_confirmed`에는 적용된 동의가 남는다). Start의 `external_transfer_confirmed: true`는 화면이 시작 확인으로 계속 보내고, 제품 설치 밖의 URL 준비 경로(개발·평가)는 이 칸을 회차 확인으로 쓴다(제품 설치는 이 칸으로 동의를 대신하지 않음). 초안 입력 `external_test_accounts`는 화면이 더 만들지 않고 이미 저장된 회차를 위해 받기만 한다. 제품 설치의 결속은 설치 동의가 정한다.
 
 Start 요청은 비용·외부 전송 동의를 `external_transfer_confirmed: true`로 보내며 서버가 scope와 revision에 대조해 영속 receipt에 저장한다.
 

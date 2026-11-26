@@ -73,10 +73,10 @@ OpenRouter는 운영자가 `openrouter_manifest`에 [기존 보호 승인 JSON �
 **외부 전송 동의(설치 때 한 번, 2026-11-26 사용자 결정).** 외부 모델(OpenRouter) 점검은 대상 응답·도구 출력, 등록한 시험 계정의 아이디·비밀번호, 대상이 발급한 세션을 가리지 않고 제공자에게 보낸다. 그래서 회차마다 묻지 않고 설치 조직이 아래 문장에 한 번 동의한다. 동의가 없는 설치의 외부 모델 점검은 검토 사유 `external_transfer_consent_required`로 시작하지 않는다(로컬 모델 점검은 상관없다).
 
 - 새 설치: 설치 입력에 `"external_transfer_consent": {"statement": "<문장>"}`을 넣는다. 문장은 `cmd/first-controlled-diagnosis/product_external_consent.go`의 `productExternalTransferStatement`와 글자 그대로 같아야 하고, `openrouter_manifest`가 있는 설치만 받는다(다르면 설치 입력 오류).
-- 이미 설치된 곳(`update.sh`는 설치 입력을 다시 읽지 않는다): 관리자가 새 점검 화면에서 외부 모델을 고르면 문장이 보이고, 체크 뒤 [동의 남기기]로 한 번 남긴다(`POST /api/product/external-transfer-consent {"statement_confirmed": true}`, 조회는 `GET`).
-- 기록은 상태 디렉터리의 `external-transfer-consent-<문장 해시 앞 16자>.json`(0600) 하나이고 한 번 만들면 바꾸지 않는다(먼저 남긴 동의가 이긴다). 문장의 SHA-256·출처(`install`·`admin`)·주체·시각만 남긴다. 문장이 바뀌면 파일 이름이 달라 다시 한 번 동의받는다.
+- 이미 설치된 곳(`update.sh`는 설치 입력을 다시 읽지 않는다): 관리자가 새 점검 화면에서 외부 모델을 고르면 문장이 보이고, 체크 뒤 [동의 남기기]로 한 번 남긴다(`POST /api/product/external-transfer-consent {"statement_confirmed": true, "statement_sha256": "<화면이 보인 문장의 SHA-256>"}`, 조회는 `GET`). 조회와 동의 사이에 업데이트로 문장이 바뀌었으면 409 `statement_changed`로 남기지 않는다.
+- 기록은 상태 디렉터리의 `external-transfer-consent-<문장 해시 앞 16자>.json`(0600, 보호 파일 읽기 — 링크·다른 소유자 거부) 하나이고 한 번 만들면 바꾸지 않는다(먼저 남긴 동의가 이긴다). 문장의 SHA-256·출처(`install`·`admin`)·주체·시각만 남긴다. 문장이 바뀌면 파일 이름이 달라 다시 한 번 동의받는다. 문장을 바꿀 때는 바꾸기 전 해시를 `productExternalTransferStatementHistory`에 남긴다(옛 문장으로 남은 회차 감사 줄 재생, 시험이 지금 해시를 고정).
 - 시험 계정을 쓴 외부 모델 회차는 지금처럼 대상 계정 저널에 `external_consent` 줄(이번 문장 해시·주체·시각·작업)을 남긴다(감사).
-- 회차별 칸(초안 입력 `external_test_accounts`, 시작 `external_transfer_confirmed`)은 옛 클라이언트·평가 러너를 위해 받기만 하고 제품 설치의 결정에는 쓰지 않는다.
+- 시작의 `external_transfer_confirmed`는 화면이 시작 확인으로 계속 싣는다. 제품 설치는 이 칸으로 동의를 대신하지 않고 설치 동의로 판정하며, 제품이 아닌 URL 준비 경로(개발·평가)는 지금처럼 이 칸을 회차 확인으로 쓴다. 초안 입력 `external_test_accounts`는 더 만들지 않고, 이미 저장된 회차와 옛 클라이언트를 위해 받기만 한다.
 
 유료 승인(OpenRouter manifest)은 v4면 총량이 **점검 하나의 상한**이다: 설치 하나가 `max_runs`까지 점검을 돌리고, 점검마다 예약 기록(`.openrouter-<승인 해시>.run-<…>.ledger`)을 따로 두어 그 점검이 승인 총량을 넘지 않게 한다(점검마다 새 승인을 받지 않는다). v1~v3은 승인 총량·만료 안에서 여러 회차가 이어 쓴다. 같은 v4 승인 파일을 CLI 두 프로세스 경로와 제품 URL 진단에 함께 쓰지 않는다. 두 경로의 장부는 서로 합산되지 않는다. 기록은 보호 manifest 디렉터리에 두고, 매 요청 전에 잠금 안에서 다시 읽어 승인 총량을 넘지 않을 때만 예약한다. 응답을 확인한 호출은 실제 사용량으로 정산해 남은 예약을 다시 쓴다(P3 결정안 C07, `docs/openrouter-first-diagnosis.md`). v1~v3의 한도·만료·누적 예산 소진, v4의 만료·위임 실행 횟수 소진 후에는 기존 운영자 재승인이 필요하다. 예전 1회용 표식(`.used`)·`.ledger`·journal을 지우거나 고쳐 재승인하지 않는다. `.ledger`를 지우면 그 기록의 합계가 0으로 돌아가 총량 보장이 깨진다(점검 하나 안에서 지우거나 고쳐 재시도하지 않는다). 사용자 모델 입력은 설치된 승인 모델에 한정된다.
 

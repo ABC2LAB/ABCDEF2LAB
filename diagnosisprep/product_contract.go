@@ -55,6 +55,8 @@ type ProductRequest struct {
 // 설치가 한 번 남긴다). 문장 자체는 서버 상수이고 기록에는 그 SHA-256만 남는다.
 type ExternalConsentRequest struct {
 	StatementConfirmed bool `json:"statement_confirmed"`
+	// StatementSHA256은 관리자가 화면에서 본 문장의 SHA-256(소문자 16진수)이다. 지금 문장과 다르면 동의를 남기지 않는다.
+	StatementSHA256 string `json:"statement_sha256"`
 }
 
 // ProductExternalConsent는 이 설치의 외부 전송 동의 상태다(사용자 결정 2026-11-26: 외부 전송 동의는 설치 때 한 번).
@@ -281,7 +283,7 @@ func validProductRequest(r *ProductRequest) bool {
 		case "external_consent":
 			return r.ExternalConsent == nil
 		case "external_consent_record":
-			return r.ExternalConsent != nil && r.ExternalConsent.StatementConfirmed
+			return r.ExternalConsent != nil && r.ExternalConsent.StatementConfirmed && digestPattern.MatchString(r.ExternalConsent.StatementSHA256)
 		}
 		return false
 	}

@@ -121,3 +121,33 @@ func TestProductInstallConsentInput(t *testing.T) {
 		}
 	}
 }
+
+// 지금 설치 문장의 해시를 고정한다. 문장을 바꾸면 이 시험이 먼저 깨진다 — 바꾸기 전 해시를
+// productExternalTransferStatementHistory에 남겨 옛 회차 감사 줄이 계속 재생되게 한 뒤 이 값을 고친다(#965 리뷰 최민준 P2).
+func TestExternalTransferStatementPinned(t *testing.T) {
+	const pinned = "196eacb25b3086e967dd66f2b00e5e9b308ba1ede48d489dbc20d06ce144f16e"
+	if productExternalTransferStatementSHA256() != pinned {
+		t.Fatal("install consent statement changed: keep the old digest in productExternalTransferStatementHistory, then update this pin")
+	}
+	for _, old := range productExternalTransferStatementHistory {
+		if old == pinned || !knownExternalConsentStatementSHA256(old) {
+			t.Fatal("statement history must list earlier digests that still replay")
+		}
+	}
+}
+
+// 동의 기록은 링크를 따라가지 않는다(보호 파일 읽기, #965 리뷰 최민준 P3).
+func TestProductExternalConsentRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	other := filepath.Join(t.TempDir(), "elsewhere.json")
+	raw, _ := json.Marshal(productExternalConsentRecord{Format: productExternalConsentFormat, StatementSHA256: productExternalTransferStatementSHA256(), Source: productExternalConsentAdmin, Actor: "ARTEX", At: time.Now().UTC()})
+	if err := os.WriteFile(other, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, productExternalConsentPath(dir)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readProductExternalConsent(dir); err == nil || errors.Is(err, errExternalConsentMissing) {
+		t.Fatalf("symlinked consent read as %v", err)
+	}
+}

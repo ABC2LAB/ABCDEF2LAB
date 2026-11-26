@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"io/fs"
 	"log"
 	"os"
@@ -57,20 +56,16 @@ func productExternalConsentPath(stateDir string) string {
 // 틀리면 errPreparation이다(동의 없음으로 읽지 않는다 — 둘 다 외부 회차를 시작하지 않는 것은 같다).
 func readProductExternalConsent(stateDir string) (productExternalConsentRecord, error) {
 	var rec productExternalConsentRecord
-	f, err := os.Open(productExternalConsentPath(stateDir))
-	if errors.Is(err, fs.ErrNotExist) {
+	path := productExternalConsentPath(stateDir)
+	// 없음만 따로 가른다. 있으면 보호 파일 읽기(링크를 따라가지 않음 · 소유자 · 권한 검사)로 읽는다(#965 리뷰 최민준 P3).
+	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
 		return rec, errExternalConsentMissing
-	}
-	if err != nil {
+	} else if err != nil {
 		return rec, errPreparation
 	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
-		return rec, errPreparation
-	}
-	raw, err := io.ReadAll(io.LimitReader(f, productExternalConsentMaxBytes+1))
-	if err != nil || len(raw) > productExternalConsentMaxBytes || decodeLaunchJSON(raw, &rec) != nil {
+	raw, err := readPrivateFile(path, productExternalConsentMaxBytes)
+	defer clear(raw)
+	if err != nil || decodeLaunchJSON(raw, &rec) != nil {
 		return productExternalConsentRecord{}, errPreparation
 	}
 	if rec.Format != productExternalConsentFormat || rec.StatementSHA256 != productExternalTransferStatementSHA256() ||
@@ -123,20 +118,28 @@ func writeProductExternalConsent(stateDir, source, actor string, at time.Time) (
 	return rec, nil
 }
 
-// externalTransferRequired는 이 설치에 외부 모델 프로필이 있는지다(없으면 동의가 필요 없다).
-func (p *productRuntime) externalTransferRequired() bool {
+// externalTransferRequired는 이 설치에 외부 모델 프로필이 있는지다(없으면 동의가 필요 없다). 프로필을 읽지 못하면 오류다 —
+// '외부 모델 없음'으로 보이지 않는다(#965 리뷰 최민준 P3).
+func (p *productRuntime) externalTransferRequired() (bool, error) {
 	for _, m := range productModels(p.config) {
 		_, cfg, _, _, err := p.model(m.ID)
-		if err == nil && cfg.ModelExecutionMode == "openrouter" {
-			return true
+		if err != nil {
+			return false, err
+		}
+		if cfg.ModelExecutionMode == "openrouter" {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 // externalConsent는 화면에 보이는 설치의 외부 전송 동의 상태다. 기록을 읽을 수 없으면 오류다(동의 없음으로 보이지 않는다).
 func (p *productRuntime) externalConsent() (*diagnosisprep.ProductExternalConsent, error) {
-	if !p.externalTransferRequired() {
+	required, err := p.externalTransferRequired()
+	if err != nil {
+		return nil, err
+	}
+	if !required {
 		return &diagnosisprep.ProductExternalConsent{}, nil
 	}
 	out := &diagnosisprep.ProductExternalConsent{Required: true, Statement: productExternalTransferStatement}
@@ -153,12 +156,21 @@ func (p *productRuntime) externalConsent() (*diagnosisprep.ProductExternalConsen
 }
 
 // recordExternalConsent는 관리자 화면의 동의를 남긴다. 외부 모델이 없는 설치는 남길 것이 없다(external_transfer_not_installed).
-func (p *productRuntime) recordExternalConsent(principal string, confirmed bool, now time.Time) (*diagnosisprep.ProductExternalConsent, string, error) {
+// statementSHA256은 관리자가 화면에서 본 문장의 해시다 — 조회와 동의 사이에 업데이트로 문장이 바뀌었으면 보지 않은 문장에
+// 동의를 남기지 않는다(statement_changed, #965 리뷰 최민준 P3).
+func (p *productRuntime) recordExternalConsent(principal string, confirmed bool, statementSHA256 string, now time.Time) (*diagnosisprep.ProductExternalConsent, string, error) {
 	if !confirmed {
 		return nil, "statement_required", nil
 	}
-	if !p.externalTransferRequired() {
+	required, err := p.externalTransferRequired()
+	if err != nil {
+		return nil, "", err
+	}
+	if !required {
 		return nil, "external_transfer_not_installed", nil
+	}
+	if statementSHA256 != productExternalTransferStatementSHA256() {
+		return nil, "statement_changed", nil
 	}
 	p.consentMu.Lock()
 	defer p.consentMu.Unlock()

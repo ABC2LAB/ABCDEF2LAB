@@ -705,7 +705,7 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 		case "external_consent":
 			control.ExternalConsent, err = p.externalConsent()
 		case "external_consent_record":
-			control.ExternalConsent, control.Reason, err = p.recordExternalConsent(r.Principal, r.Product.ExternalConsent.StatementConfirmed, time.Now())
+			control.ExternalConsent, control.Reason, err = p.recordExternalConsent(r.Principal, r.Product.ExternalConsent.StatementConfirmed, r.Product.ExternalConsent.StatementSHA256, time.Now())
 		case "declaration":
 			var d diagnosisprep.ProductDeclaration
 			if d, err = p.targets.declaration(r.Principal, r.Product.TargetID); err == nil {

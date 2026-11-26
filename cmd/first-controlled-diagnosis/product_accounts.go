@@ -41,10 +41,23 @@ func statementSHA256(statement string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// knownExternalConsentStatementSHA256은 저널 재생이 받는 동의 진술 해시다(지금 설치 단위 문장 + 이전 회차별 진술 둘).
+// productExternalTransferStatementHistory는 예전 설치 단위 동의 문장들의 SHA-256이다. 설치 문장을 바꾸면 바꾸기 전 해시를 여기에
+// 남긴다 — 그 문장으로 남은 회차 감사 줄(external_consent)을 재생할 수 있어야 대상 레지스트리가 열린다(#965 리뷰 최민준 P2).
+// 지금 문장 해시는 시험(TestExternalTransferStatementPinned)이 고정해, 문장만 바꾸고 여기를 빠뜨리면 시험이 먼저 깨진다.
+var productExternalTransferStatementHistory = []string{}
+
+// knownExternalConsentStatementSHA256은 저널 재생이 받는 동의 진술 해시다(지금 · 예전 설치 단위 문장 + 이전 회차별 진술 둘).
 func knownExternalConsentStatementSHA256(digest string) bool {
-	return digest == productExternalConsentStatementSHA256() || digest == statementSHA256(productExternalConsentStatementV2) ||
-		digest == statementSHA256(productExternalConsentStatementV1)
+	if digest == productExternalConsentStatementSHA256() || digest == statementSHA256(productExternalConsentStatementV2) ||
+		digest == statementSHA256(productExternalConsentStatementV1) {
+		return true
+	}
+	for _, old := range productExternalTransferStatementHistory {
+		if digest == old {
+			return true
+		}
+	}
+	return false
 }
 
 func productAccountStatementSHA256() string {

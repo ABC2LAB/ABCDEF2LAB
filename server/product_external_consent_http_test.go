@@ -40,8 +40,10 @@ func TestProductExternalConsentRouteRefusals(t *testing.T) {
 		{"post unknown field", "POST", productExternalConsentPath, `{"statement_confirmed":true,"source":"install"}`, "application/json", 400, "invalid_consent_request"},
 		{"post not json", "POST", productExternalConsentPath, `statement_confirmed=true`, "application/x-www-form-urlencoded", 400, "invalid_consent_request"},
 		{"post too large", "POST", productExternalConsentPath, `{"statement_confirmed":true,"x":"` + strings.Repeat("a", productExternalConsentBodyBytes) + `"}`, "application/json", 400, "invalid_consent_request"},
-		{"post with query", "POST", productExternalConsentPath + "?x=1", `{"statement_confirmed":true}`, "application/json", 400, "invalid_consent_request"},
-		{"put", "PUT", productExternalConsentPath, `{"statement_confirmed":true}`, "application/json", 405, "method_not_allowed"},
+		{"post with query", "POST", productExternalConsentPath + "?x=1", `{"statement_confirmed":true,"statement_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, "application/json", 400, "invalid_consent_request"},
+		{"post without digest", "POST", productExternalConsentPath, `{"statement_confirmed":true}`, "application/json", 400, "invalid_consent_request"},
+		{"post bad digest", "POST", productExternalConsentPath, `{"statement_confirmed":true,"statement_sha256":"ABC"}`, "application/json", 400, "invalid_consent_request"},
+		{"put", "PUT", productExternalConsentPath, `{"statement_confirmed":true,"statement_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, "application/json", 405, "method_not_allowed"},
 	}
 	for _, c := range cases {
 		status, out := consentCall(t, e, c.method, c.target, c.body, c.media)
@@ -68,20 +70,20 @@ func TestProductExternalConsentRouteCallsPreparation(t *testing.T) {
 	if status != 200 || consent["required"] != true || consent["consented"] != false || len(out) != 1 {
 		t.Fatalf("read: %d %v", status, out)
 	}
-	status, out = consentCall(t, e, "POST", productExternalConsentPath, `{"statement_confirmed":true}`, "application/json")
+	status, out = consentCall(t, e, "POST", productExternalConsentPath, `{"statement_confirmed":true,"statement_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, "application/json")
 	consent, _ = out["external_consent"].(map[string]any)
 	if status != 200 || consent["consented"] != true || consent["source"] != "admin" {
 		t.Fatalf("record: %d %v", status, out)
 	}
 	if len(e.requests) != 2 || e.requests[0].Product.Operation != "external_consent" || e.requests[1].Product.Operation != "external_consent_record" ||
-		e.requests[1].Product.ExternalConsent == nil || !e.requests[1].Product.ExternalConsent.StatementConfirmed || e.requests[1].Principal != "ARTEX" {
+		e.requests[1].Product.ExternalConsent == nil || !e.requests[1].Product.ExternalConsent.StatementConfirmed || e.requests[1].Product.ExternalConsent.StatementSHA256 != strings.Repeat("a", 64) || e.requests[1].Principal != "ARTEX" {
 		t.Fatalf("preparation requests: %+v", e.requests)
 	}
 	// 외부 모델이 없는 설치의 동의는 그 사유로 409다.
 	e.reply = func(r diagnosisprep.Request) (diagnosisprep.Response, error) {
 		return diagnosisprep.Response{Version: diagnosisprep.Version, RequestID: r.RequestID, Product: &diagnosisprep.ProductResponse{Reason: "external_transfer_not_installed"}}, nil
 	}
-	if status, out = consentCall(t, e, "POST", productExternalConsentPath, `{"statement_confirmed":true}`, "application/json"); status != 409 || out["error"] != "external_transfer_not_installed" {
+	if status, out = consentCall(t, e, "POST", productExternalConsentPath, `{"statement_confirmed":true,"statement_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, "application/json"); status != 409 || out["error"] != "external_transfer_not_installed" {
 		t.Fatalf("not installed: %d %v", status, out)
 	}
 }

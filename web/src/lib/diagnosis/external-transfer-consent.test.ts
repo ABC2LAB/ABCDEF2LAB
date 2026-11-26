@@ -7,6 +7,7 @@ import {
   readExternalTransferConsent,
   recordExternalTransferConsent,
 } from "./external-transfer-consent";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -86,13 +87,17 @@ it("조회 · 동의는 정해진 경로 하나만 쓰고, 동의 응답이 동�
   await readExternalTransferConsent();
   expect(vi.mocked(apiFetch).mock.calls[0][0]).toBe(EXTERNAL_TRANSFER_CONSENT_PATH);
   vi.mocked(apiFetch).mockResolvedValueOnce({ external_consent: consented });
-  expect((await recordExternalTransferConsent()).required).toBe(true);
+  expect((await recordExternalTransferConsent(statement)).required).toBe(true);
   const [path, init] = vi.mocked(apiFetch).mock.calls[1];
   expect(path).toBe(EXTERNAL_TRANSFER_CONSENT_PATH);
   expect(init?.method).toBe("POST");
-  expect(JSON.parse(String(init?.body))).toEqual({ statement_confirmed: true });
+  // 화면이 보인 문장의 해시(서버 statementSHA256 과 같은 UTF-8 SHA-256)를 같이 보낸다
+  expect(JSON.parse(String(init?.body))).toEqual({
+    statement_confirmed: true,
+    statement_sha256: createHash("sha256").update(statement, "utf8").digest("hex"),
+  });
   vi.mocked(apiFetch).mockResolvedValueOnce({ external_consent: { required: true, statement, consented: false } });
-  await expect(recordExternalTransferConsent()).rejects.toThrow();
+  await expect(recordExternalTransferConsent(statement)).rejects.toThrow();
 });
 
 it("서버 경로 · 출처 값과 화면이 같다", () => {

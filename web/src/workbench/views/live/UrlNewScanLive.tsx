@@ -14,6 +14,7 @@
 
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
+import { ApiError } from "@/lib/diagnosis/api";
 import {
   type URLDiagnosisInput,
   type URLDiagnosisModel,
@@ -437,7 +438,6 @@ export function UrlNewScanLive() {
     let current = true;
     setTransferConsent({ state: "loading" });
     setConsentChecked(false);
-    setConsentError("");
     void readExternalTransferConsent(controller.signal)
       .then((value) => {
         if (current) setTransferConsent({ state: "ready", value });
@@ -673,13 +673,17 @@ export function UrlNewScanLive() {
 
   // 이 설치의 외부 전송 동의(사용자 결정 2026-11-26: 설치 때 한 번). 오른쪽 요약 '약관 동의'에 둔다. 외부 모델을 골랐을 때만
   // 보이고, 동의는 서버 문장을 그대로 보여 주고 관리자가 한 번 남긴다(그 뒤로는 다시 묻지 않음). 범위 확인 뒤에는 두지 않는다
-  const recordConsent = async () => {
+  const recordConsent = async (shown: string) => {
     setConsentSaving(true);
     setConsentError("");
     try {
-      setTransferConsent({ state: "ready", value: await recordExternalTransferConsent() });
-    } catch {
-      setConsentError("동의를 남기지 못했습니다. 동의 상태를 다시 확인해 주세요.");
+      setTransferConsent({ state: "ready", value: await recordExternalTransferConsent(shown) });
+    } catch (cause) {
+      // 조회 뒤 서버 문장이 바뀌었으면(업데이트) 보인 문장에 동의를 남기지 않는다 — 새 문장을 다시 읽어 보인다
+      if (cause instanceof ApiError && cause.message === "statement_changed") {
+        setConsentSeq((n) => n + 1);
+        setConsentError("동의 문장이 바뀌었습니다. 새 문장을 읽고 다시 동의해 주세요.");
+      } else setConsentError("동의를 남기지 못했습니다. 동의 상태를 다시 확인해 주세요.");
     } finally {
       setConsentSaving(false);
     }
@@ -721,7 +725,7 @@ export function UrlNewScanLive() {
             className={cx(s.btn, s.sm)}
             type="button"
             disabled={!consentChecked || consentSaving}
-            onClick={() => void recordConsent()}
+            onClick={() => void recordConsent(consentValue.statement)}
           >
             {consentSaving ? "남기는 중…" : "동의 남기기"}
           </button>

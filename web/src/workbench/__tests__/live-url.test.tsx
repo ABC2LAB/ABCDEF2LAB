@@ -8,6 +8,8 @@ import { useState } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createHash } from "node:crypto";
+
 // 제품 판정 목록(#801)은 이 시험 범위가 아니다 — 제품 관리 중계가 아닌 서버처럼(404) 구획을 두지 않게 한다.
 // vi.fn 이 아니어서 resetAllMocks 에도 그대로다. 보고서 요약 칸 시험만 pv.reply 로 판정 응답을 준다(afterEach 가 되돌림)
 const pv = vi.hoisted(() => ({ reply: null as null | (() => Promise<unknown>) }));
@@ -975,8 +977,8 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(screen.queryByRole("button", { name: "점검 시작" })).toBeNull();
   });
 
-  // 외부 전송 동의는 설치 단위(2026-11-26)라 시작 확인은 비용 상한 · 범위만 받고 회차별 외부 전송 동의를 lib에 넘기지 않는다.
-  it("외부 모델 시작은 비용 · 범위 확인만 받고 회차별 외부 전송 동의를 넘기지 않는다", async () => {
+  // 외부 전송 동의는 설치 단위(2026-11-26)라 시작 확인 문구는 비용 상한 · 범위만 말한다.
+  it("외부 모델 시작 확인은 비용 · 범위만 말하고 그 확인을 lib에 넘긴다", async () => {
     saveHandle();
     u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
     u.readURLStatus.mockResolvedValue(externalReady);
@@ -995,10 +997,14 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(u.commandURLDiagnosis).not.toHaveBeenCalled();
     fireEvent.click(consent);
     fireEvent.click(start);
+    // 시작 확인은 external_transfer_confirmed 로 실린다 — 제품 설치는 설치 동의로 판정하고, 제품이 아닌 URL 준비 경로는
+    // 이 칸을 회차 확인으로 쓴다(#965 리뷰 최민준 P2)
     await waitFor(() =>
-      expect(u.commandURLDiagnosis).toHaveBeenCalledWith(externalReady, "start", owner, expect.any(String)),
+      expect(u.commandURLDiagnosis).toHaveBeenCalledWith(externalReady, "start", owner, expect.any(String), {
+        externalTransferConfirmed: true,
+      }),
     );
-    expect(u.commandURLDiagnosis.mock.calls[0]).toHaveLength(4);
+    expect(sessionStorage.getItem("abc2lab.urlDiagnosisHandle.v2")).not.toContain("externalTransferConfirmed");
   });
   it("외부 모델 + 탐색 프로필이면 외부 CDN 사전고지를 띄운다", async () => {
     const limits = {
@@ -3234,7 +3240,7 @@ describe("외부 전송 동의(설치 때 한 번, 2026-11-26)", () => {
   /** 외부 모델 하나 · 대상 승인 · 시험 계정. consent 는 서버 동의 상태, "fail" 이면 조회 실패. */
   async function externalTarget(
     consent: "open" | "install" | "admin" | "none" | "fail",
-    opts: { postFails?: boolean } = {},
+    opts: { postFails?: boolean; postChanged?: boolean } = {},
   ) {
     let state = consent;
     u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
@@ -3243,6 +3249,7 @@ describe("외부 전송 동의(설치 때 한 번, 2026-11-26)", () => {
       if (isConsentPath(p)) {
         if (init?.method === "POST") {
           if (opts.postFails) throw new Error("fixed-consent-unavailable");
+          if (opts.postChanged) throw new ApiError(409, "statement_changed");
           state = "admin";
           return consentBody("admin") as never;
         }
@@ -3280,7 +3287,10 @@ describe("외부 전송 동의(설치 때 한 번, 2026-11-26)", () => {
     fireEvent.click(save);
     expect(await screen.findByText(/외부 전송 동의됨 · 관리자 화면 · 2026-11-26/)).toBeInTheDocument();
     expect(consentPosts()).toHaveLength(1);
-    expect(JSON.parse(String(consentPosts()[0][1]?.body))).toEqual({ statement_confirmed: true });
+    expect(JSON.parse(String(consentPosts()[0][1]?.body))).toEqual({
+      statement_confirmed: true,
+      statement_sha256: createHash("sha256").update(TRANSFER_STATEMENT, "utf8").digest("hex"),
+    });
     expect(screen.queryByRole("checkbox", { name: TRANSFER_STATEMENT })).toBeNull();
     await waitFor(() => expect(rangeButton()).toBeEnabled());
     fireEvent.click(rangeButton());
@@ -3313,6 +3323,20 @@ describe("외부 전송 동의(설치 때 한 번, 2026-11-26)", () => {
     expect(
       await within(summary()).findByText("동의를 남기지 못했습니다. 동의 상태를 다시 확인해 주세요."),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/외부 전송 동의됨/)).toBeNull();
+    expect(rangeButton()).toBeDisabled();
+  });
+  it("동의 사이에 서버 문장이 바뀌면 동의로 보이지 않고 새 문장을 다시 읽는다", async () => {
+    await externalTarget("open", { postChanged: true });
+    fireEvent.click(await within(summary()).findByRole("checkbox", { name: TRANSFER_STATEMENT }));
+    const reads = () =>
+      vi.mocked(teamApi.apiFetch).mock.calls.filter(([p, init]) => isConsentPath(p) && !init?.method).length;
+    const before = reads();
+    fireEvent.click(screen.getByRole("button", { name: "동의 남기기" }));
+    expect(
+      await within(summary()).findByText("동의 문장이 바뀌었습니다. 새 문장을 읽고 다시 동의해 주세요."),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(reads()).toBe(before + 1));
     expect(screen.queryByText(/외부 전송 동의됨/)).toBeNull();
     expect(rangeButton()).toBeDisabled();
   });

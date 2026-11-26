@@ -79,8 +79,7 @@ function check(value, code) {
         if (phase === "url-lost-start" && requestPath.endsWith("/start") && !droppedStartResponse) {
           check(params.responseStatusCode >= 200 && params.responseStatusCode < 300, "start_not_accepted_before_loss");
           const body = JSON.parse(params.request.postData);
-          // 외부 전송 동의는 설치 단위(2026-11-26)라 외부 모델 시작에도 회차별 동의 칸 · 자격을 싣지 않는다.
-          if (OPENROUTER) check(Object.keys(body).sort().join(",") === "expected_revision,version", "external_consent_body_or_credentials");
+          if (OPENROUTER) check(body.external_transfer_confirmed === true && Object.keys(body).sort().join(",") === "expected_revision,external_transfer_confirmed,version", "external_consent_body_or_credentials");
           const key = Object.entries(params.request.headers).find(
             ([name]) => name.toLowerCase() === "idempotency-key",
           )?.[1];

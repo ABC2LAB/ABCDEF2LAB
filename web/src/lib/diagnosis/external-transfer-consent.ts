@@ -81,8 +81,17 @@ export async function readExternalTransferConsent(signal?: AbortSignal): Promise
   );
 }
 
-/** 관리자 동의를 한 번 남긴다. 이미 있으면 서버는 먼저 남긴 동의를 그대로 돌려준다. */
-export async function recordExternalTransferConsent(): Promise<ExternalTransferConsent> {
+/** 문장 → SHA-256 소문자 16진수(서버 statementSHA256 과 같음, UTF-8 바이트). */
+export async function statementDigest(statement: string): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(statement));
+  return Array.from(new Uint8Array(hash), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * 관리자 동의를 한 번 남긴다. 이미 있으면 서버는 먼저 남긴 동의를 그대로 돌려준다. 화면이 보인 문장의 해시를 같이 보내,
+ * 조회와 동의 사이에 문장이 바뀌었으면 서버가 409 statement_changed 로 거절한다(보지 않은 문장에 동의하지 않음, #965 리뷰).
+ */
+export async function recordExternalTransferConsent(shownStatement: string): Promise<ExternalTransferConsent> {
   const result = parseExternalTransferConsent(
     await apiFetch<unknown>(
       EXTERNAL_TRANSFER_CONSENT_PATH,
@@ -90,7 +99,7 @@ export async function recordExternalTransferConsent(): Promise<ExternalTransferC
         method: "POST",
         redirect: "error",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ statement_confirmed: true }),
+        body: JSON.stringify({ statement_confirmed: true, statement_sha256: await statementDigest(shownStatement) }),
       },
       false,
     ),

@@ -543,7 +543,8 @@ async function runUrlActionNow(
           return true;
         }
         next = await commandURLDiagnosis(fresh, "stop", owner);
-      } else next = await commandURLDiagnosis(job, kind, owner, saved.startKey);
+      } else
+        next = await commandURLDiagnosis(job, kind, owner, saved.startKey, { externalTransferConfirmed: st.confirmed });
     }
     if (current !== generation || !saved) return false;
     if (job) {

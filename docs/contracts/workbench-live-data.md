@@ -28,7 +28,7 @@
 |---|---|
 | `GET /api/product/targets/{id}/accounts` | 목록 `{"accounts": ProductAccount[], "account_statement": "..."}`(계정이 없으면 `accounts` 칸 없음). `account_statement`는 시험 계정 표시 때 화면이 그대로 띄워 동의받는 진술 문장이다. 외부 전송 동의 문장은 2026-11-26부터 이 목록에 싣지 않는다(설치 단위 동의, 아래 `external-transfer-consent`). 문장이 없으면 동의 칸을 보이지 않는다 |
 | `GET /api/product/external-transfer-consent` | 설치 단위 외부 전송 동의 상태(관리자) `{"external_consent": {"required", "statement"?, "consented", "source"?, "consented_by"?, "consented_at"?}}`. `required`가 거짓이면(외부 모델 없음) 나머지 칸 없음. 동의했으면 `source`는 `install`(설치 입력)·`admin`(관리자 화면). 화면 파서 `lib/diagnosis/external-transfer-consent.ts`는 서버 `validProductExternalConsent`와 같은 규칙으로 닫는다. 외부 모델 점검은 동의가 있어야 시작한다(없으면 검토 사유 `external_transfer_consent_required`) |
-| `POST /api/product/external-transfer-consent` `{"statement_confirmed": true}` | 관리자 동의를 한 번 남긴다(이미 있으면 먼저 남긴 동의 그대로). 거짓·빈 본문은 409 `statement_required`, 외부 모델이 없는 설치는 409 `external_transfer_not_installed` |
+| `POST /api/product/external-transfer-consent` `{"statement_confirmed": true, "statement_sha256": "…"}` | 관리자 동의를 한 번 남긴다(이미 있으면 먼저 남긴 동의 그대로). `statement_sha256`은 화면이 보인 문장의 SHA-256(소문자 16진수) — 지금 문장과 다르면 409 `statement_changed`(화면은 새 문장을 다시 읽음). 거짓·빈 본문은 409 `statement_required`, 해시 형식 밖은 400, 외부 모델이 없는 설치는 409 `external_transfer_not_installed`. 설치 프로필을 읽지 못하면 조회 · 동의 모두 오류(외부 모델 없음으로 보이지 않음) |
 | `POST /api/product/targets/{id}/accounts` `{"label": "..."}` | 등록(분류 `real`). 라벨은 소문자·숫자·`_`·`-`만(사용자명·이메일 원문 금지) |
 | `POST …/accounts/{label}/mark-test` `{"statement_confirmed": true}` | 시험 계정 표시(본인 진술 동의 필수, 없으면 409 `statement_required`) |
 | `POST …/accounts/{label}/unmark` `{}` | 표시 해제 |
