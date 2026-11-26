@@ -106,6 +106,32 @@ describe("actual request approval API", () => {
     vi.mocked(apiFetch).mockResolvedValue(value);
     await expect(getRequestApproval("42", "a/b")).rejects.toThrow("확인할 수 없어요");
   });
+  it.each([
+    { ...approval, state: "expired", closed_reason: "approval_expired" },
+    ...["model_stage_closed", "request_timeout", "operator_stopped", "run_closed"].map((closed_reason) => ({
+      ...approval,
+      state: "cancelled",
+      closed_reason,
+    })),
+    { ...approval, state: "cancelled" },
+    { ...approval, state: "expired" },
+  ])("closed_reason: 서버가 싣는 짝과 이전 서버(칸 없음)를 받는다 %j", async (value) => {
+    vi.mocked(apiFetch).mockResolvedValue(value);
+    expect(await getRequestApproval("42", "a/b")).toEqual(value);
+  });
+  it.each([
+    { ...approval, state: "pending", closed_reason: "run_closed" },
+    { ...approval, state: "allowed", closed_reason: "operator_stopped" },
+    { ...approval, state: "denied", closed_reason: "request_timeout" },
+    { ...approval, state: "expired", closed_reason: "run_closed" },
+    { ...approval, state: "cancelled", closed_reason: "approval_expired" },
+    { ...approval, state: "cancelled", closed_reason: "superseded" },
+    { ...approval, state: "cancelled", closed_reason: "" },
+    { ...approval, state: "cancelled", closed_reason: null },
+  ])("closed_reason: 서버가 만들 수 없는 짝은 거부한다 %j", async (value) => {
+    vi.mocked(apiFetch).mockResolvedValue(value);
+    await expect(getRequestApproval("42", "a/b")).rejects.toThrow("확인할 수 없어요");
+  });
   it("rejects a list row from another run", async () => {
     vi.mocked(apiFetch).mockResolvedValue({ run, approvals: [{ ...approval, run_ref: "other" }] });
     await expect(readRequestApprovalState("42")).rejects.toThrow("확인할 수 없어요");
