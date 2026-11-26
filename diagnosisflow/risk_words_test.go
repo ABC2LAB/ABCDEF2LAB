@@ -108,3 +108,39 @@ func TestCrawlSkipsCamelCaseLogout(t *testing.T) {
 		t.Fatalf("logout endpoint not kept as blocked (blocked=%v items=%v): %+v", blocked, items, s.Endpoints)
 	}
 }
+
+// 계정을 닫거나 지우는 쓰기(탈퇴·해지)는 쓰기 메서드에서만 정확한 단어로 막는다(2026-11-26 팀 합의, 모델 직접 로그인의
+// 남는 위험 보조). 읽기와 부분 문자열(closet·disclose·eraser)은 막지 않는다. 탐색 경계 위험 단어(DestructiveWords)에는
+// 넣지 않는다.
+func TestAccountClosureWordsOnlyForWrites(t *testing.T) {
+	for _, tc := range []struct {
+		method, path string
+		risky        bool
+	}{
+		{"POST", "/account/close", true},
+		{"POST", "/account/closeAccount", true},
+		{"PUT", "/users/me/deactivate", true},
+		{"POST", "/membership/withdraw", true},
+		{"POST", "/api/unregister", true},
+		{"PATCH", "/subscription/terminate", true},
+		{"DELETE", "/data/erase", true},
+		{"POST", "/account/deactivate-now", true},
+		{"GET", "/account/close", false},
+		{"HEAD", "/membership/withdraw", false},
+		{"POST", "/closet/items", false},
+		{"POST", "/disclose/report", false},
+		{"POST", "/tools/eraser", false},
+		{"POST", "/login", false},
+	} {
+		if got := riskyRequest(tc.method, tc.path, nil); got != tc.risky {
+			t.Errorf("%s %s risky=%v, want %v", tc.method, tc.path, got, tc.risky)
+		}
+	}
+	for _, word := range DestructiveWords() {
+		for _, closure := range accountClosureWords {
+			if word == closure {
+				t.Fatalf("계정 닫기 단어 %q가 탐색 경계 위험 단어로 넘어감", word)
+			}
+		}
+	}
+}
