@@ -154,6 +154,10 @@ type e2HTTPSessionStore struct {
 	// 상한)이고, 확정 몫을 쓰는 호출로 연다. 시험 계정 실행이고 인증된 계정이 있을 때만 채운다(저장소를 넘기기 전에 정하고
 	// 바꾸지 않는다).
 	relogin func(context.Context, string) (http.Header, string)
+	// learned·contrast는 확정 단계 학습 로그인 재사용과 세션 없는 대조 요청이다(e2_http_learned_login.go). relogin과 같은
+	// 때에 같은 조건으로 채운다.
+	learned  func(context.Context, E2HTTPLearnedLoginRequest) (E2HTTPLearnedLoginResult, http.Header)
+	contrast func(context.Context, string) E2HTTPLoginContrastResult
 }
 
 var (

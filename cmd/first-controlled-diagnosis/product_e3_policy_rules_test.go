@@ -120,7 +120,7 @@ func TestIssueE3RulesUseCurrentConnectionPin(t *testing.T) {
 	loaded.policy.Auth = &server.E2HTTPFileAuth{Accounts: []server.E2HTTPFileAuthAccount{{Label: "tester-a"}, {Label: "tester-b"}}}
 	loaded.launch.E2HostSocket = "/run/e2-host/audit.sock"
 	loaded.launch.ShutdownTimeoutSeconds = 1
-	loaded.profile = urlPreparationProfile{ValidFrom: time.Now().Add(-time.Minute), ValidUntil: time.Now().Add(time.Hour), Budget: diagnosisprep.Budget{DurationSeconds: 400}}
+	loaded.profile = urlPreparationProfile{ValidFrom: time.Now().Add(-time.Minute), ValidUntil: time.Now().Add(time.Hour), Budget: diagnosisprep.Budget{DurationSeconds: 600}}
 	if err := loaded.prepareTargetConnection(t.Context(), nil, "job-e3-live"); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestIssueE3RulesUseCurrentConnectionPin(t *testing.T) {
 	if err := json.Unmarshal(raw, &issued); err != nil {
 		t.Fatal(err)
 	}
-	if len(issued.Rules) != 4 || issued.Limits.E3ConfirmationRequests == nil || *issued.Limits.E3ConfirmationRequests != 8 ||
+	if len(issued.Rules) != 4 || issued.Limits.E3ConfirmationRequests == nil || *issued.Limits.E3ConfirmationRequests != uint64(server.E3ConfirmationFixedRequests+server.E3ConfirmationRequestsPerType) ||
 		!issued.E3WriteConsent || !issued.E3Resettable {
 		t.Fatalf("확정 규칙 또는 몫 미발급: rules=%d", len(issued.Rules))
 	}

@@ -1256,6 +1256,27 @@ func (e *Execution) matchPurposeLocked(req *http.Request, purpose string) (compi
 	return compiledRule{}, false
 }
 
+// matchLearnedLoginLocked는 확정 단계 학습 로그인 요청을 Worker 승인 규칙으로 본다(§6-2). 로그인 POST는 그 경로에 POST를
+// 승인한 규칙(쓰기 승인 범위)이, 로그인 화면·대조 GET은 GET을 승인한 규칙이 있어야 한다. 질의가 있거나 운영자 제외 경로면
+// 맞지 않는다(모델 요청과 같은 한 번 푼 경로로 본다).
+func (e *Execution) matchLearnedLoginLocked(req *http.Request, purpose string) (compiledRule, bool) {
+	if req == nil || req.URL == nil || req.URL.RawQuery != "" || req.URL.ForceQuery || req.URL.Fragment != "" {
+		return compiledRule{}, false
+	}
+	want := http.MethodGet
+	if purpose == PurposeLearnedLogin {
+		want = http.MethodPost
+	}
+	if req.Method != want {
+		return compiledRule{}, false
+	}
+	p, ok := requestPath(req.URL)
+	if !ok || len(e.cfg.ExcludedPaths) > 0 && pathscope.ExcludedAny(p, e.cfg.ExcludedPaths) {
+		return compiledRule{}, false
+	}
+	return e.matchLocked(req)
+}
+
 func matchE3ReadPath(template, actual string) bool {
 	want, got := strings.Split(template, "/"), strings.Split(actual, "/")
 	if len(want) != len(got) {
@@ -1341,6 +1362,20 @@ func (c *Call) AuthPrep(ctx context.Context, req *http.Request, extract AuthExtr
 	return session, r, err
 }
 
+// LearnedLogin은 확정 단계 다시 로그인 호출(BeginE3ReloginCall)이 학습한 로그인 방법의 요청 하나를 보낸다(계약
+// docs/contracts/model-login-attempts.md §6-2). purpose는 PurposeLearnedLogin(로그인 POST) 또는 PurposeLoginPrep(로그인 화면·
+// 세션 없는 대조 GET)이다. 전용 규칙이 아니라 그 실행의 Worker 승인 규칙이 메서드·경로를 덮어야 하고(쓰기 승인 범위),
+// 운영자 제외 경로에 들면 보내지 않는다. 질의는 받지 않는다. 대상·IP·TLS·감사·예산(확정 몫) 계수와 결과 불명 처리는
+// AuthPrep와 같고, 응답은 inspect만 본다(도구·모델로 가지 않음). inspect가 돌려준 헤더(세션·로그인 전 쿠키)는 보호 비밀번호가
+// 들어 있지 않은지 확인한 뒤에만 돌려준다. 자동 재시도는 없다.
+func (c *Call) LearnedLogin(ctx context.Context, req *http.Request, purpose string, inspect AuthExtractor) (http.Header, Receipt, error) {
+	if inspect == nil || !learnedLoginPurpose(purpose) {
+		return nil, Receipt{}, ErrConfig
+	}
+	_, session, r, err := c.do(ctx, req, purpose, inspect)
+	return session, r, err
+}
+
 func (c *Call) do(ctx context.Context, req *http.Request, purpose string, extract AuthExtractor) (*http.Response, http.Header, Receipt, error) {
 	return c.doWithE3(ctx, req, purpose, extract, nil)
 }
@@ -1353,8 +1388,12 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		e3 != nil && !c.program.isE3() {
 		return nil, nil, Receipt{}, ErrE3JournalUnavailable
 	}
+	// 학습 로그인 목적은 확정 단계 다시 로그인 호출만 쓴다. Worker의 refresh_session·처음 인증 준비는 지금처럼 인증 준비
+	// 규칙 하나뿐이다.
+	learned := learnedLoginPurpose(purpose)
 	if c.program == "" && purpose != "" ||
-		(c.program == ProgramAuthPrep || c.program == ProgramRefreshSession) && purpose != PurposeAuthPrep {
+		(c.program == ProgramAuthPrep || c.program == ProgramRefreshSession) && purpose != PurposeAuthPrep &&
+			!(learned && c.program == ProgramRefreshSession && c.e3Share) {
 		return nil, nil, Receipt{}, ErrConfig
 	}
 	method := ""
@@ -1434,9 +1473,12 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	}
 	var rule compiledRule
 	var ok bool
-	if purpose == "" {
+	switch {
+	case purpose == "":
 		rule, ok = e.matchLocked(req)
-	} else {
+	case learned:
+		rule, ok = e.matchLearnedLoginLocked(req, purpose)
+	default:
 		rule, ok = e.matchPurposeLocked(req, purpose)
 	}
 	revision := e.cfg.PolicyRevision
@@ -1476,7 +1518,8 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	var body []byte
 	if req.Body != nil {
 		body, err = io.ReadAll(io.LimitReader(req.Body, e.cfg.Limits.MaxBodyBytes+1))
-		if e3 != nil {
+		// 학습 로그인 본문에는 등록 자격이 들어 있다. 보낸 뒤 이 사본도 지운다.
+		if e3 != nil || learned {
 			defer clear(body)
 		}
 		if err != nil || int64(len(body)) > e.cfg.Limits.MaxBodyBytes {
@@ -1484,6 +1527,11 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 			r.Reason = Unsupported
 			return finish(nil, ErrDenied)
 		}
+	}
+	// 로그인 화면·대조 GET은 본문이 없다.
+	if purpose == PurposeLoginPrep && len(body) > 0 {
+		r.Decision, r.Reason = "unsupported", Unsupported
+		return finish(nil, ErrDenied)
 	}
 	r.RuleRef = rule.Ref
 	r.PolicyRevision = revision
@@ -1883,6 +1931,24 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		session = extracted
 		return finish(nil, nil)
 	}
+	if learned {
+		// 학습 로그인 응답도 도구·모델로 가지 않는다. 끝까지 받은 같은 표현의 본문만 판정 함수에 준다(잘림·부분·압축 응답은
+		// 판정할 수 없으니 보류: 대상은 답했으므로 결과 불명이 아니다).
+		if oversized || resp.StatusCode == http.StatusPartialContent || resp.Header.Get("Content-Range") != "" ||
+			resp.Header.Get("Content-Encoding") != "" && !strings.EqualFold(resp.Header.Get("Content-Encoding"), "identity") {
+			clear(responseBody)
+			r.Reason, r.ResponseTruncated = Withheld, oversized
+			return finish(nil, ErrWithheld)
+		}
+		inspected, inspectErr := extract(resp, responseBody)
+		clear(responseBody)
+		r.ResponseComplete, r.Reason = true, Complete
+		if inspectErr != nil || !e.authSessionSafe(inspected) {
+			return finish(nil, ErrAuthSession)
+		}
+		session = inspected
+		return finish(nil, nil)
+	}
 	if e3 != nil {
 		if oversized || resp.StatusCode == http.StatusPartialContent || resp.Header.Get("Content-Range") != "" ||
 			resp.Header.Get("Content-Encoding") != "" && !strings.EqualFold(resp.Header.Get("Content-Encoding"), "identity") {
@@ -1953,13 +2019,17 @@ func (e *Execution) needsRequestApproval(purpose, method string, body []byte, vi
 	if e.cfg.RequestApproval == nil {
 		return false
 	}
-	if purpose == PurposeE3Create {
+	// 확정 단계 학습 로그인은 Worker 승인 규칙(쓰기 승인 범위)으로 나가므로 그 범위의 건별 승인도 같이 따른다(모델 로그인
+	// 계약 §2-2·§6-2): 로그인 POST는 E③ 생성처럼 늘 승인을 받고, 로그인 화면·대조 GET은 모델 GET과 같은 미리 승인한 읽기만
+	// 승인 없이 나간다(Codex 리뷰). 인증 준비(로그인 설정 9칸)는 지금처럼 승인 대기가 없다.
+	if purpose == PurposeE3Create || purpose == PurposeLearnedLogin {
 		return true
 	}
-	if purpose != "" {
+	if purpose != "" && purpose != PurposeLoginPrep {
 		return false
 	}
-	return !(e.cfg.ApprovalMode == ApprovalWorkbenchV1 && (method == "GET" || method == "HEAD") && len(body) == 0 && e.cfg.RequestBoundary.PreapprovedRead(view))
+	return !(e.cfg.ApprovalMode == ApprovalWorkbenchV1 && (method == "GET" || method == "HEAD") && len(body) == 0 && e.cfg.RequestBoundary != nil &&
+		e.cfg.RequestBoundary.PreapprovedRead(view))
 }
 func stripHeaders(h http.Header) {
 	for key := range h {

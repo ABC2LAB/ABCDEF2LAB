@@ -127,6 +127,22 @@ type Rule struct {
 // PurposeAuthPrep은 인증 준비(로그인) 전용 규칙 표시다.
 const PurposeAuthPrep = "auth_prep"
 
+// 확정 단계 학습 로그인 재사용(docs/contracts/model-login-attempts.md §6-2)의 송신 목적이다. 규칙에 적는 표시가 아니라
+// 호출 때만 쓰는 목적이고, 확정 단계 다시 로그인 호출(BeginE3ReloginCall)만 쓸 수 있다. 전용 규칙 대신 그 실행의 Worker
+// 승인 규칙(대상 승인 경로·메서드 = 쓰기 승인 범위)과 운영자 제외 경로를 그대로 적용한다(§2-2: 확정 단계 로그인은 예외 없이
+// 쓰기 승인 범위를 따른다). 응답은 도구·모델로 가지 않고 호출자의 판정 함수만 본다.
+const (
+	// PurposeLearnedLogin은 학습한 방법으로 다시 만든 로그인 POST다(질의 없음).
+	PurposeLearnedLogin = "learned_login"
+	// PurposeLoginPrep은 로그인 전 로그인 화면 GET(CSRF·로그인 전 쿠키)과 세션 없는 대조 GET이다(본문·질의 없음).
+	PurposeLoginPrep = "login_prep"
+)
+
+// learnedLoginPurpose는 Worker 승인 규칙으로 판정하는 확정 단계 로그인 목적인지다.
+func learnedLoginPurpose(purpose string) bool {
+	return purpose == PurposeLearnedLogin || purpose == PurposeLoginPrep
+}
+
 const (
 	PurposeE3Identity = "e3_identity"
 	PurposeE3Create   = "e3_create"
