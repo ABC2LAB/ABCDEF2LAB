@@ -10,8 +10,6 @@ func TestProductAccountRequestValidation(t *testing.T) {
 	ok := []ProductRequest{
 		{Operation: "accounts", TargetID: id},
 		{Operation: "account_register", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
-		{Operation: "account_mark_test", TargetID: id, Account: &AccountRequest{Label: "tester-a", StatementConfirmed: true}},
-		{Operation: "account_unmark", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
 	}
 	for _, r := range ok {
 		r := r
@@ -23,12 +21,12 @@ func TestProductAccountRequestValidation(t *testing.T) {
 		"list with account":       {Operation: "accounts", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
 		"register without target": {Operation: "account_register", Account: &AccountRequest{Label: "tester-a"}},
 		"register bad label":      {Operation: "account_register", TargetID: id, Account: &AccountRequest{Label: "user@example.test"}},
-		"register with statement": {Operation: "account_register", TargetID: id, Account: &AccountRequest{Label: "tester-a", StatementConfirmed: true}},
-		"mark without statement":  {Operation: "account_mark_test", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
-		"unmark with statement":   {Operation: "account_unmark", TargetID: id, Account: &AccountRequest{Label: "tester-a", StatementConfirmed: true}},
-		"unknown account op":      {Operation: "account_delete", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
-		"account on target op":    {Operation: "approve", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
-		"account with job":        {Operation: "accounts", TargetID: id, JobID: "job-1"},
+		// 계정 분류 폐지(2026-11-26): 시험 계정 표시 · 해제 작업은 없다
+		"mark test removed":    {Operation: "account_mark_test", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
+		"unmark removed":       {Operation: "account_unmark", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
+		"unknown account op":   {Operation: "account_delete", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
+		"account on target op": {Operation: "approve", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
+		"account with job":     {Operation: "accounts", TargetID: id, JobID: "job-1"},
 	}
 	for name, r := range bad {
 		r := r
@@ -40,22 +38,20 @@ func TestProductAccountRequestValidation(t *testing.T) {
 
 func TestProductAccountResponseValidation(t *testing.T) {
 	now := time.Now()
-	good := ProductAccount{Label: "tester-a", Classification: "real", RegisteredBy: "ARTEX", RegisteredAt: now}
-	test := ProductAccount{Label: "tester-b", Classification: "test", RegisteredBy: "ARTEX", RegisteredAt: now, ClassifiedBy: "ARTEX", ClassifiedAt: now, MarkedRevision: 2}
+	good := ProductAccount{Label: "tester-a", RegisteredBy: "ARTEX", RegisteredAt: now}
+	withCredential := ProductAccount{Label: "tester-b", RegisteredBy: "ARTEX", RegisteredAt: now, CredentialConfigured: true, LoginMethodMissing: true}
 	request := Request{Version: Version, RequestID: "product-control", Principal: "ARTEX", Command: ProductControl, Product: &ProductRequest{Operation: "accounts", TargetID: "target-abc"}}
 	respond := func(p *ProductResponse) error {
 		return ValidateResponse(request, Response{Version: Version, RequestID: "product-control", Product: p})
 	}
-	if err := respond(&ProductResponse{Accounts: []ProductAccount{good, test}}); err != nil {
+	if err := respond(&ProductResponse{Accounts: []ProductAccount{good, withCredential}}); err != nil {
 		t.Fatal("valid accounts rejected:", err)
 	}
 	for name, a := range map[string]ProductAccount{
-		"unknown classification": {Label: "tester-a", Classification: "trusted", RegisteredBy: "ARTEX", RegisteredAt: now},
-		"test without marker":    {Label: "tester-a", Classification: "test", RegisteredBy: "ARTEX", RegisteredAt: now},
-		"test with reason":       {Label: "tester-a", Classification: "test", Reason: "manual_unmark", RegisteredBy: "ARTEX", RegisteredAt: now, ClassifiedBy: "ARTEX", ClassifiedAt: now, MarkedRevision: 2},
-		"unknown reason":         {Label: "tester-a", Classification: "real", Reason: "expired", RegisteredBy: "ARTEX", RegisteredAt: now},
-		"username label":         {Label: "user@example.test", Classification: "real", RegisteredBy: "ARTEX", RegisteredAt: now},
-		"no registrar":           {Label: "tester-a", Classification: "real", RegisteredAt: now},
+		"username label":               {Label: "user@example.test", RegisteredBy: "ARTEX", RegisteredAt: now},
+		"no registrar":                 {Label: "tester-a", RegisteredAt: now},
+		"no registered time":           {Label: "tester-a", RegisteredBy: "ARTEX"},
+		"login missing w/o credential": {Label: "tester-a", RegisteredBy: "ARTEX", RegisteredAt: now, LoginMethodMissing: true},
 	} {
 		if respond(&ProductResponse{Accounts: []ProductAccount{a}}) == nil || respond(&ProductResponse{Account: &a}) == nil {
 			t.Errorf("%s accepted", name)
@@ -121,23 +117,6 @@ func TestProductLoginResponseValidation(t *testing.T) {
 	bad.Header = "Authorization"
 	if ValidateResponse(request, Response{Version: Version, RequestID: "product-control", Product: &ProductResponse{Login: &bad}}) == nil {
 		t.Fatal("invalid login response accepted")
-	}
-}
-
-func TestProductAccountStatementOnlyOnList(t *testing.T) {
-	respond := func(op string, statement string) error {
-		p := &ProductRequest{Operation: op, TargetID: "target-abc"}
-		if op == "account_register" {
-			p.Account = &AccountRequest{Label: "tester-a"}
-		}
-		request := Request{Version: Version, RequestID: "product-control", Principal: "ARTEX", Command: ProductControl, Product: p}
-		return ValidateResponse(request, Response{Version: Version, RequestID: "product-control", Product: &ProductResponse{AccountStatement: statement}})
-	}
-	if err := respond("accounts", "이 계정은 시험 계정이다."); err != nil {
-		t.Fatal("statement on list rejected:", err)
-	}
-	if respond("account_register", "이 계정은 시험 계정이다.") == nil || respond("accounts", "line\nbreak") == nil {
-		t.Fatal("statement outside the list or with control characters accepted")
 	}
 }
 

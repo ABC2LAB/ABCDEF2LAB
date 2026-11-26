@@ -492,7 +492,7 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 			}
 			clear(raw)
 		}
-		// 시험 계정 자격 사본을 결속 디렉터리에 고정한다(해시 대조). 해제·철회·자격 교체 때 removeBindingCredentials가 지운다.
+		// 시험 계정 자격 사본을 결속 디렉터리에 고정한다(해시 대조). 철회·자격 교체 때 removeBindingCredentials가 지운다.
 		for _, a := range accounts.Accounts {
 			raw, e := readPrivateFile(a.credentialPath, maxCredentialFileBytes)
 			if e != nil {
@@ -703,9 +703,6 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			control.Credential, err = p.credential(ctx, r.Product.ProfileID)
 		case "accounts":
 			control.Accounts, err = p.targets.listAccounts(r.Principal, r.Product.TargetID)
-			if err == nil {
-				control.AccountStatement = productAccountStatement
-			}
 		case "external_consent":
 			control.ExternalConsent, err = p.externalConsent()
 		case "external_consent_record":
@@ -750,19 +747,9 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			if err == nil {
 				control.Account = &a
 			}
-		case "account_register", "account_mark_test", "account_unmark":
+		case "account_register":
 			var a diagnosisprep.ProductAccount
-			switch r.Product.Operation {
-			case "account_register":
-				a, err = p.targets.registerAccount(r.Principal, r.Product.TargetID, r.Product.Account.Label)
-			case "account_mark_test":
-				a, err = p.targets.markTestAccount(r.Principal, r.Product.TargetID, r.Product.Account.Label, r.Product.Account.StatementConfirmed)
-			default:
-				a, err = p.targets.unmarkAccount(r.Principal, r.Product.TargetID, r.Product.Account.Label)
-				if err == nil {
-					p.removeBindingCredentials(r.Product.TargetID, r.Product.Account.Label)
-				}
-			}
+			a, err = p.targets.registerAccount(r.Principal, r.Product.TargetID, r.Product.Account.Label)
 			if err == nil {
 				control.Account = &a
 			}

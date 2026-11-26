@@ -163,25 +163,17 @@ func ValidAccountCredential(c AccountCredential) bool {
 }
 
 // AccountRequest는 대상에 붙인 계정 하나를 가리킨다. Label은 화면·감사용 이름이고 사용자명 원문이 아니다.
-// StatementConfirmed는 시험 계정 표시(account_mark_test) 때 승인자가 진술에 동의했다는 뜻이다.
 type AccountRequest struct {
-	Label              string `json:"label"`
-	StatementConfirmed bool   `json:"statement_confirmed,omitempty"`
+	Label string `json:"label"`
 }
 
-// ProductAccount는 계정 하나의 분류 상태다. Classification은 test 또는 real이고 기본은 real이다. test는 표시한 대상 판이
-// 지금도 같은 승인 판이고 승인이 만료되지 않았을 때만이다. Reason은 real로 돌아간 사유다: target_reapproved(대상 판이 바뀜 —
-// 재승인·철회 포함), target_expired(승인 만료), manual_unmark(사람이 뗌). 표시한 적이 없으면 비어 있다.
+// ProductAccount는 대상에 등록된 계정 하나다. 프로그램은 계정을 시험·실계정으로 분류하지 않는다(사용자 결정 2026-11-26,
+// CLAUDE.md 절대규칙 2: 시험 계정만 등록하라는 공지는 사용자 책임). 예전 분류 칸(classification·reason·classified_by·
+// classified_at·marked_revision)은 싣지 않는다.
 type ProductAccount struct {
-	Label          string    `json:"label"`
-	Classification string    `json:"classification"`
-	Reason         string    `json:"reason,omitempty"`
-	RegisteredBy   string    `json:"registered_by"`
-	RegisteredAt   time.Time `json:"registered_at"`
-	ClassifiedBy   string    `json:"classified_by,omitempty"`
-	ClassifiedAt   time.Time `json:"classified_at,omitempty"`
-	// MarkedRevision은 시험 계정으로 표시한 대상 판이다(표시한 적 없으면 0).
-	MarkedRevision uint64 `json:"marked_revision,omitempty"`
+	Label        string    `json:"label"`
+	RegisteredBy string    `json:"registered_by"`
+	RegisteredAt time.Time `json:"registered_at"`
 	// CredentialConfigured는 보호 파일에 자격이 있다는 뜻이다. 값·해시는 내보내지 않는다.
 	CredentialConfigured bool `json:"credential_configured,omitempty"`
 	// LoginMethodMissing은 자격이 등록돼 있지만 대상의 로그인 방식이 설정되지 않은 경우다.
@@ -235,9 +227,6 @@ type ProductResponse struct {
 	Accounts   []ProductAccount        `json:"accounts,omitempty"`
 	Account    *ProductAccount         `json:"account,omitempty"`
 	Login      *TargetLogin            `json:"login,omitempty"`
-	// AccountStatement는 accounts 목록과 함께 주는 시험 계정 표시 진술 문장이다. 화면은 이 문장을 그대로 보여 주고 동의를
-	// 받는다(저널에는 이 문장의 SHA-256만 남는다).
-	AccountStatement string `json:"account_statement,omitempty"`
 	// ExternalConsent는 external_consent·external_consent_record의 결과다(설치 단위 외부 전송 동의).
 	ExternalConsent *ProductExternalConsent `json:"external_consent,omitempty"`
 	Reason          string                  `json:"reason,omitempty"`
@@ -254,16 +243,7 @@ type ProductResponse struct {
 }
 
 func validProductAccount(a ProductAccount) bool {
-	if !ValidAccountLabel(a.Label) || !reference.MatchString(a.RegisteredBy) || a.RegisteredAt.IsZero() || (a.LoginMethodMissing && !a.CredentialConfigured) {
-		return false
-	}
-	switch a.Classification {
-	case "test":
-		return a.Reason == "" && reference.MatchString(a.ClassifiedBy) && !a.ClassifiedAt.IsZero() && a.MarkedRevision > 0
-	case "real":
-		return a.Reason == "" || a.Reason == "target_reapproved" || a.Reason == "target_expired" || a.Reason == "manual_unmark"
-	}
-	return false
+	return ValidAccountLabel(a.Label) && reference.MatchString(a.RegisteredBy) && !a.RegisteredAt.IsZero() && (!a.LoginMethodMissing || a.CredentialConfigured)
 }
 
 func validProductRequest(r *ProductRequest) bool {
@@ -333,12 +313,10 @@ func validProductRequest(r *ProductRequest) bool {
 		switch r.Operation {
 		case "accounts":
 			return r.Account == nil && r.Login == nil && r.Credential == nil
-		case "account_register", "account_unmark":
-			return r.Account != nil && ValidAccountLabel(r.Account.Label) && !r.Account.StatementConfirmed && r.Login == nil && r.Credential == nil
-		case "account_mark_test":
-			return r.Account != nil && ValidAccountLabel(r.Account.Label) && r.Account.StatementConfirmed && r.Login == nil && r.Credential == nil
+		case "account_register":
+			return r.Account != nil && ValidAccountLabel(r.Account.Label) && r.Login == nil && r.Credential == nil
 		case "account_credential_set":
-			return r.Account != nil && ValidAccountLabel(r.Account.Label) && !r.Account.StatementConfirmed && r.Login == nil && r.Credential != nil && ValidAccountCredential(*r.Credential)
+			return r.Account != nil && ValidAccountLabel(r.Account.Label) && r.Login == nil && r.Credential != nil && ValidAccountCredential(*r.Credential)
 		}
 		return false
 	}
