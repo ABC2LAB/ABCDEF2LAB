@@ -329,7 +329,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	copy.Header.Set("Authorization", r.Header.Get("Authorization"))
 	resp, err := t.base.RoundTrip(copy)
 	if err != nil || resp == nil {
-		callerStopped = r.Context().Err() != nil
+		callerStopped = openRouterCallerStopped(r.Context())
 		diagnostic.ReasonCode = openRouterDiagnosticTransportReason(err, r.Context())
 		transient = openRouterTransientError(err)
 		providerFault = transient
@@ -348,7 +348,7 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 	record.ResponseBytes = int64(len(data))
 	// 상한을 넘은 본문은 이쪽이 읽기를 멈춘 것이라 호출자 쪽 끝이다.
 	complete = readErr == nil && len(data) <= openRouterResponseLimit
-	callerStopped = !complete && (r.Context().Err() != nil || len(data) > openRouterResponseLimit)
+	callerStopped = !complete && (openRouterCallerStopped(r.Context()) || len(data) > openRouterResponseLimit)
 	if complete {
 		record.GenerationID = openRouterGenerationID(data)
 	}
