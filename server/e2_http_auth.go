@@ -36,8 +36,6 @@ type E2HTTPFileAuth struct {
 	// 잡을 때 프로그램이 로그인하지 않고 결속 계정의 자격을 Worker 지침으로 준다. 끈 정책(선택 후보 검증 회차·이전 결속)은
 	// 지금처럼 프로그램이 인증 준비로 로그인한다. 확정 단계 다시 로그인은 둘 다 프로그램이 한다.
 	ModelLogin bool `json:"model_login,omitempty"`
-	// LoginAttempts는 모델 로그인 회차의 로그인 시도 판정 설정이다(계약 §4·§5). model_login일 때만 있고 그때는 반드시 있다.
-	LoginAttempts *E2HTTPLoginAttemptLimits `json:"login_attempts,omitempty"`
 }
 
 type E2HTTPFileAuthAccount struct {
@@ -99,7 +97,7 @@ func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2H
 			found = r.Purpose == e2proxy.PurposeAuthPrep && r.PathPrefix == a.Login.Path && len(r.Methods) == 1 && r.Methods[0] == a.Login.Method
 		}
 	}
-	if !found || a.ModelLogin != a.LoginAttempts.valid() || !a.ModelLogin && a.LoginAttempts != nil {
+	if !found {
 		return false
 	}
 	seen := map[string]bool{}

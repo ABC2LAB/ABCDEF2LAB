@@ -43,15 +43,25 @@ func (l *E2HTTPLoginAttemptLimits) valid() bool {
 
 var errLoginAttempts = errors.New("server: login attempt tracker unavailable")
 
+// validE2HTTPLoginAttempts는 판정 설정이 있으면 맞는 값인지, 모델 로그인 인증 칸에 판정 설정이 있는지 본다(상한 없이 로그인이
+// 나가지 않게). 정책 문서 검증과 실행 정책 읽기가 같이 쓴다.
+func validE2HTTPLoginAttempts(policy E2HTTPFilePolicy) bool {
+	if policy.LoginAttempts != nil && !policy.LoginAttempts.valid() {
+		return false
+	}
+	return policy.Auth == nil || !policy.Auth.ModelLogin || policy.LoginAttempts != nil
+}
+
 // newE2HTTPLoginAttempts는 모델 직접 로그인 회차의 진단 단계 판정기를 만든다. 성공한 등록 계정 로그인의 세션은 세션
 // 저장소에 넣어 확정 단계 계정 결속(E③)과 보낸 요청의 계정 귀속에 쓴다. 기록 파일의 앞 단계 행으로 연속 실패 수를 잇는다.
 func newE2HTTPLoginAttempts(ctx context.Context, policy E2HTTPFilePolicy, credentials []agent.E2HTTPAccountCredential, store *e2HTTPSessionStore, prober *loginContrastProber) (*loginattempt.Tracker, error) {
-	if policy.Auth == nil || !policy.Auth.LoginAttempts.valid() || store == nil {
+	if !policy.LoginAttempts.valid() || store == nil {
 		return nil, errLoginAttempts
 	}
+	// 판정 기준 origin: 인증 칸이 있으면 그 로그인 규칙, 없으면 모델 요청 규칙(목적 없음)의 origin이다.
 	origin := ""
 	for _, rule := range policy.Rules {
-		if rule.Ref == policy.Auth.RuleRef {
+		if policy.Auth != nil && rule.Ref == policy.Auth.RuleRef || policy.Auth == nil && rule.Purpose == "" && origin == "" {
 			origin = rule.Origin
 		}
 	}
@@ -76,7 +86,7 @@ func newE2HTTPLoginAttempts(ctx context.Context, policy E2HTTPFilePolicy, creden
 	if unavailable {
 		log.Print("[e2-http] 앞 단계 로그인 기록을 넘겨받지 못함: 이 실행은 로그인 시도를 보내지 않음(일반 요청은 계속)")
 	}
-	limits := policy.Auth.LoginAttempts
+	limits := policy.LoginAttempts
 	tracker, err := loginattempt.New(loginattempt.Config{RunRef: policy.RunRef, Stage: loginattempt.StageDiagnosis, Origin: u, Accounts: accounts,
 		MaxConsecutiveFailures: limits.MaxConsecutiveFailures, MaxContrastProbes: limits.MaxContrastProbes, TokenMinBytes: limits.TokenMinBytes,
 		Sink:        func(row loginattempt.Row) { appendLoginAttemptRow(ctx, path, row) },

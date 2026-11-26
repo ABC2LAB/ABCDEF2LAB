@@ -233,6 +233,9 @@ func (p E2HTTPFilePolicy) excludedPaths() []string {
 }
 
 type E2HTTPFilePolicy struct {
+	// LoginAttempts는 제품 회차의 로그인 시도 판정 설정이다(계약 docs/contracts/model-login-attempts.md §4·§5). 계정을 등록하지
+	// 않은 회차도 등록 밖 아이디(기본 계정 시험 등)의 연속 실패 상한을 지키도록 인증 칸과 따로 둔다(사용자 결정 2026-11-26).
+	LoginAttempts      *E2HTTPLoginAttemptLimits        `json:"login_attempts,omitempty"`
 	Workflow           *E2HTTPWorkflowPolicy            `json:"workflow,omitempty"`
 	ApprovalMode       e2proxy.ApprovalMode             `json:"approval_mode"`
 	Format             string                           `json:"format"`
@@ -347,7 +350,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	if strictJSON(raw, &policy) != nil || !validE2HTTPRuleSelectorFields(raw) || !validE2HTTPPasswordResponseField(raw) || policy.Format != E2HTTPFilePolicyFormat || len(policy.Rules) == 0 || len(policy.Rules) > 256 || policy.MaxRequests == 0 || !policy.ValidUntil.After(policy.ValidFrom) || !policy.ValidUntil.After(time.Now()) || policy.ValidFrom.After(time.Now()) || privateinput.CheckDirectory(policy.StateDir, true) != nil {
 		return empty, ErrE2HTTPHost
 	}
-	if !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) {
+	if !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) || !validE2HTTPLoginAttempts(policy) {
 		return empty, ErrE2HTTPHost
 	}
 	if policy.Workflow != nil {
@@ -794,7 +797,8 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		// 첫 요청을 보내기 전에 붙인다. 판정기를 못 만들면 상한을 지킬 수 없으므로 실행을 열지 않는다.
 		var loginAttempts *loginattempt.Tracker
 		var prober *loginContrastProber
-		if policy.Auth != nil && policy.Auth.ModelLogin && policy.SelectedAccountRef == "" {
+		// 계정 등록 여부와 상관없이 판정 설정이 있는 제품 회차면 붙인다. 이전 결속(프로그램 로그인)과 선택 후보 검증 회차는 제외다.
+		if policy.LoginAttempts != nil && policy.SelectedAccountRef == "" && (policy.Auth == nil || policy.Auth.ModelLogin) {
 			var trackerErr error
 			prober = newLoginContrastProber(nil)
 			loginAttempts, trackerErr = newE2HTTPLoginAttempts(taskctx, policy, credentials, sessionStore, prober)

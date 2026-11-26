@@ -45,7 +45,7 @@ func TestLoginHistoryUnavailableRefusesLogins(t *testing.T) {
 	open := func(t *testing.T, dir string) *loginattempt.Tracker {
 		t.Helper()
 		policy := E2HTTPFilePolicy{RunRef: "run-1", StateDir: dir, Rules: []E2HTTPFileRule{{Ref: "auth-login", Origin: "http://target.test"}},
-			Auth: &E2HTTPFileAuth{RuleRef: "auth-login", ModelLogin: true, LoginAttempts: &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}}}
+			Auth: &E2HTTPFileAuth{RuleRef: "auth-login", ModelLogin: true}, LoginAttempts: &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}}
 		tr, err := newE2HTTPLoginAttempts(t.Context(), policy, nil, newE2HTTPSessionStore(nil, "run-1", nil), newLoginContrastProber(nil))
 		if err != nil {
 			t.Fatal(err)

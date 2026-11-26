@@ -79,6 +79,10 @@ func TestProductRunBindsRegisteredAccountsAndStopsOnUnmark(t *testing.T) {
 	if plain.policy.Auth != nil || len(plain.productAccounts) != 0 || plain.policy.HeaderMode != e2proxy.HeaderPreserve {
 		t.Fatal("run without test accounts got an auth section or another header mode")
 	}
+	// 계정이 없는 회차도 로그인 시도 판정 설정을 받는다(등록 밖 아이디의 연속 실패 상한, 사용자 결정 2026-11-26).
+	if plain.policy.LoginAttempts == nil || plain.policy.LoginAttempts.MaxConsecutiveFailures != productLoginConsecutiveFailures {
+		t.Fatal("계정 없는 회차에 로그인 시도 판정 설정이 없음")
+	}
 	login := diagnosisprep.TargetLogin{Method: "POST", Path: "/read/login", Format: "json", UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}
 	if _, err := r.setTargetLogin("ARTEX", target.ID, login); err != nil {
 		t.Fatal(err)
@@ -103,7 +107,7 @@ func TestProductRunBindsRegisteredAccountsAndStopsOnUnmark(t *testing.T) {
 		t.Fatal("등록 계정 목록", err)
 	}
 	auth := loaded.policy.Auth
-	if auth == nil || !auth.ModelLogin || auth.LoginAttempts == nil || auth.LoginAttempts.MaxConsecutiveFailures != productLoginConsecutiveFailures || auth.PasswordResponse != e2proxy.PasswordResponseModelVisible || len(auth.Accounts) != 2 || auth.Accounts[0].Label != "real-b" || auth.Accounts[1].Label != "tester-a" || auth.Login.Path != "/read/login" || loaded.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough {
+	if auth == nil || !auth.ModelLogin || loaded.policy.LoginAttempts == nil || loaded.policy.LoginAttempts.MaxConsecutiveFailures != productLoginConsecutiveFailures || auth.PasswordResponse != e2proxy.PasswordResponseModelVisible || len(auth.Accounts) != 2 || auth.Accounts[0].Label != "real-b" || auth.Accounts[1].Label != "tester-a" || auth.Login.Path != "/read/login" || loaded.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough {
 		t.Fatalf("auth section: %+v mode=%s", auth, loaded.policy.HeaderMode)
 	}
 	var rule bool
