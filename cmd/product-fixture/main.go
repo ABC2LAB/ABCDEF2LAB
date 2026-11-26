@@ -213,8 +213,9 @@ func selectedGoalProof(messages []fixtureMessage, target string) (int64, int64, 
 				Text  string `json:"text"`
 			} `json:"goals"`
 			RecentFacts []struct {
-				ID         int64 `json:"id"`
-				FromIntent int64 `json:"from_intent"`
+				ID         int64  `json:"id"`
+				FromIntent int64  `json:"from_intent"`
+				Summary    string `json:"summary"`
 			} `json:"recent_facts"`
 			RecentDoneIntents []struct {
 				ID      int64   `json:"id"`
@@ -236,11 +237,12 @@ func selectedGoalProof(messages []fixtureMessage, target string) (int64, int64, 
 			continue
 		}
 		for _, intent := range overview.RecentDoneIntents {
-			if intent.State != "done" || !strings.HasPrefix(intent.Summary, "Observe "+target+"/rest/products/search through the enforced Bash boundary") {
+			if intent.State != "done" && intent.State != "blocked" ||
+				!strings.HasPrefix(intent.Summary, "Observe "+target+"/rest/products/search through the enforced Bash boundary") {
 				continue
 			}
 			for _, fact := range overview.RecentFacts {
-				if fact.ID <= 0 || fact.FromIntent != intent.ID {
+				if fact.ID <= 0 || fact.FromIntent != intent.ID || fact.Summary != "Unconfirmed diagnostic candidate; manual review required" {
 					continue
 				}
 				for _, yielded := range intent.Yields {

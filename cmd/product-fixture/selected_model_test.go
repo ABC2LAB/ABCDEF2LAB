@@ -75,8 +75,8 @@ func TestSelectedFixtureCompletesOnlyObservedFreshGoal(t *testing.T) {
 	}
 	graph := map[string]any{
 		"goals":               []any{map[string]any{"id": 12, "state": "open", "text": "Observe approved products at https://juice.test:9443 and save a manual-review candidate."}},
-		"recent_done_intents": []any{map[string]any{"id": 13, "state": "done", "summary": "Observe https://juice.test:9443/rest/products/search through the enforced Bash boundary, preserve a manual-review candidate, and verify denial of /outside-approved.", "yields": []int{14}}},
-		"recent_facts":        []any{map[string]any{"id": 14, "from_intent": 13, "summary": "Synthetic approved read observed"}},
+		"recent_done_intents": []any{map[string]any{"id": 13, "state": "blocked", "summary": "Observe https://juice.test:9443/rest/products/search through the enforced Bash boundary, preserve a manual-review candidate, and verify denial of /outside-approved.", "yields": []int{14}}},
+		"recent_facts":        []any{map[string]any{"id": 14, "from_intent": 13, "summary": "Unconfirmed diagnostic candidate; manual review required"}},
 	}
 	graphJSON, _ := json.Marshal(graph)
 	withGraph := append(append([]any{}, withResult...), map[string]any{"role": "system", "content": fixtureGraphOverviewMarker + string(graphJSON)})
