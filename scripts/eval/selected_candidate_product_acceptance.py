@@ -9,6 +9,7 @@ import argparse
 import datetime
 import io
 import json
+import os
 import re
 import secrets
 import subprocess
@@ -62,16 +63,45 @@ def await_fixture_count(base, field, minimum, timeout=30):
     raise RuntimeError("fixture_event_not_observed:" + field)
 
 
-def kill_and_restart_owned_preparation(project):
+def kill_and_restart_owned_preparation(project, install, head, allow_open_head=False):
     name = f"{project}-preparation-1"
     for command in (["docker", "kill", "--signal=KILL", name], ["docker", "start", name]):
         done = subprocess.run(command, capture_output=True, text=True, check=False, timeout=40)
         if done.returncode != 0:
             raise RuntimeError("owned_preparation_restart_failed")
+    # API, E2 Host and workbench share preparation's network namespace. A plain
+    # docker restart leaves them bound to the old namespace after preparation
+    # is recreated, so the owned Compose sidecars must be recreated as well.
+    directory = Path(__file__).resolve().parents[2] / "deploy" / "product"
+    files = [directory / f".compose.pr950-{part}-local.yaml"
+             for part in ("base", "acceptance", "selected", "scenario")]
+    if not all(path.is_file() for path in files):
+        raise RuntimeError("owned_compose_files_unavailable")
+    image = subprocess.run(["docker", "inspect", "--format", "{{.Config.Image}}", name],
+                           capture_output=True, text=True, check=False, timeout=10)
+    if image.returncode != 0 or not image.stdout.strip().startswith("abc2lab-product:"):
+        raise RuntimeError("owned_product_image_unavailable")
+    environment = os.environ.copy()
+    environment.update({"PRODUCT_SOURCE_SHA": head, "PRODUCT_TAG": image.stdout.strip().split(":", 1)[1],
+                        "PRODUCT_INSTALL_FILE": str(install),
+                        "PRODUCT_POSTGRES_PASSWORD_FILE": str(install.parent / "postgres-password")})
+    command = ["docker", "compose", "-p", project]
+    for path in files:
+        command += ["-f", str(path)]
+    command += ["up", "-d", "--no-deps", "--force-recreate", "--wait", "e2-host", "api", "workbench"]
+    done = subprocess.run(command, capture_output=True, text=True, check=False, timeout=120, env=environment)
+    if done.returncode != 0:
+        if allow_open_head:
+            host_log = subprocess.run(["docker", "logs", "--tail", "20", f"{project}-e2-host-1"],
+                                      capture_output=True, text=True, check=False, timeout=10)
+            if host_log.returncode == 0 and "E② 현재 epoch를 확인할 수 없습니다" in host_log.stderr:
+                return False  # Unverified in-flight intent keeps Host admission closed.
+        raise RuntimeError("owned_sidecar_rebind_failed")
+    return True
 
 
 def verify_new_selection_after_restart(product, token, route, evidence_digest, previous_id, target_stats, model_stats,
-                                       expected_requests):
+                                       expected_requests, host_recovered=True):
     before_target = request(target_stats, "/stats")["allowed_received"]
     before_model = request(model_stats, "/stats")["model_calls"]
     selected = request(product, route, token, body={"request_id": "recovery-" + secrets.token_hex(8),
@@ -99,6 +129,15 @@ def verify_new_selection_after_restart(product, token, route, evidence_digest, p
         if item["latest"]["process_state"] in ("completed", "failed", "cancelled", "expired"):
             break
         time.sleep(.5)
+    if not host_recovered:
+        if item["latest"]["process_state"] != "failed" or item["latest"].get("reason") != "candidate_execution_unavailable":
+            raise RuntimeError("open_head_did_not_block_new_execution")
+        target_sends = request(target_stats, "/stats")["allowed_received"] - before_target
+        model_calls = request(model_stats, "/stats")["model_calls"] - before_model
+        if target_sends != 0 or model_calls != 1 or item["latest"].get("verdict") in ("model_supported", "model_refuted"):
+            raise RuntimeError("open_head_failure_sent_or_promoted")
+        return {"new_verification_id": item["id"], "approved_target_sends": 0,
+                "model_calls": model_calls, "reason": item["latest"]["reason"], "host_recovered": False}
     if item["latest"]["process_state"] != "completed" or item["latest"].get("verdict") != "model_supported":
         raise RuntimeError("recovery_followup_not_completed:" + item["latest"]["process_state"])
     target_sends = request(target_stats, "/stats")["allowed_received"] - before_target
@@ -313,10 +352,10 @@ def main():
                 if cancelled.get("process_state") != "cancelled":
                     raise RuntimeError("active_cancel_not_recorded")
             elif args.scenario == "S09R":
-                kill_and_restart_owned_preparation(args.project)
+                host_recovered = kill_and_restart_owned_preparation(args.project, args.install, args.head, allow_open_head=True)
             elif args.scenario == "S09M":
                 await_fixture_count(model_stats, "held_final_models", 1, timeout=90)
-                kill_and_restart_owned_preparation(args.project)
+                host_recovered = kill_and_restart_owned_preparation(args.project, args.install, args.head)
     deadline = time.monotonic() + 180
     while args.scenario not in ("S06", "S07", "S07B", "S07P", "S09") and (args.scenario != "S04" or decision_status == 200) and latest["process_state"] != "completed" and time.monotonic() < deadline:
         try:
@@ -415,10 +454,12 @@ def main():
     recovery = None
     if args.scenario in ("S09R", "S09M"):
         recovery = verify_new_selection_after_restart(product, token, route, history["evidence_digest"], verification,
-                                                      target_stats, model_stats, 2 if args.scenario == "S09R" else 1)
+                                                      target_stats, model_stats, 2 if args.scenario == "S09R" else 1,
+                                                      host_recovered=host_recovered)
         updated = request(product, "/api/report/diagnostic/remediation?task=" + task + "&audience=internal", token)
         recovered_candidate = next((row for row in updated["entries"] if row.get("entry_id") == "candidate-" + candidate_id), None)
-        if recovered_candidate is None or recovered_candidate.get("outcome") != "model_supported":
+        if recovered_candidate is None or (host_recovered and recovered_candidate.get("outcome") != "model_supported") or (
+                not host_recovered and recovered_candidate.get("outcome") in ("model_supported", "model_refuted")):
             raise RuntimeError("recovery_verdict_missing_from_report")
     print(json.dumps({"scenario": args.scenario, "head": args.head, "status": "PASS", "initial_candidates": len(candidates),
         "before_approval_target_sends": pending_target - after_diagnosis_target, "initial_target_sends": None if args.resume_task else after_diagnosis_target - before_target,
