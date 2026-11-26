@@ -87,12 +87,6 @@ type Execution struct {
 	// redactOnly는 출력에서만 가리는 값이다(인증 준비가 받은 시험 계정 세션, C14 구현 설계 4). 응답 표현 보류(반사 검사)에는
 	// 쓰지 않는다.
 	redactOnly [][]byte
-	// sessionRedactions·issuedRedactions는 redactOnly에 든 값을 출처별로 센다(시험 계정 세션 / 대상 발급 세션). 두 칸은
-	// 따로 차서 모델이 받은 발급 토큰이 계정 세션 칸(확정 몫 포함)을 먹지 않는다. sessionRedactRefusals는 계정 세션 칸이
-	// 모자라 새 세션을 받지 않은 횟수다.
-	sessionRedactions     int
-	issuedRedactions      int
-	sessionRedactRefusals int
 	// marker는 확정 단계의 보호 표식이다. 일반 보호 값의 응답 보류 정책과 구분한다.
 	marker        []byte
 	secretHeaders map[string]struct{}
@@ -147,10 +141,6 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 		cfg.AuditVersion = Version
 	}
 	if cfg.AuditVersion != Version && cfg.AuditVersion != JournalVersionV3 {
-		return nil, ErrConfig
-	}
-	if cfg.SessionRedactCapacity < 0 || cfg.SessionRedactCapacity > MaxSessionRedactValues || cfg.ConfirmationRedactReserve < 0 ||
-		cfg.ConfirmationRedactReserve > sessionRedactCapacity(cfg)/2 {
 		return nil, ErrConfig
 	}
 	if (cfg.SelectedSessionHeaders != nil || cfg.SelectedAccountRef != "") && (cfg.SelectedSessionHeaders == nil || cfg.SelectedAccountRef == "" ||
@@ -2022,11 +2012,8 @@ func (e *Execution) redact(b []byte, record bool) []byte {
 // 출력 가림 전용 값의 하한·상한이다. 짧은 값은 흔한 문자열까지 가려 출력이 망가지므로 받지 않는다.
 const (
 	minRedactValueBytes = 8
-	// MaxSessionRedactValues는 계정 세션 칸의 상한이다. 출력 가림은 값마다 출력을 한 번 훑으므로(값 수 × 출력 크기),
-	// 쌓인 값이 이만큼이어도 대조 비용이 감당되는 선으로 둔다(측정은 도입 PR 본문). 칸은 서버가 회차 조건으로 계산해 넣는다.
-	MaxSessionRedactValues = 4096
-	maxRedactValueBytes    = 8 << 10
-	maxRedactValues        = 64
+	maxRedactValueBytes = 8 << 10
+	maxRedactValues     = 64
 )
 
 // 응답 보류(반사 검사)와 출력 가림에 함께 쓰는 보호 값의 하한이다. 짧은 값은 흔한 문자열과 겹쳐 응답을 과하게 보류한다.
@@ -2103,24 +2090,6 @@ func (e *Execution) AddRedactValues(values ...[]byte) error {
 		e.redactOnly = append(e.redactOnly, bytes.Clone(v))
 	}
 	return nil
-}
-
-// SessionRedactRefusals는 계정 세션 칸이 모자라 새 세션을 받지 않은 횟수다(회차 기록용).
-func (e *Execution) SessionRedactRefusals() int {
-	if e == nil {
-		return 0
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.sessionRedactRefusals
-}
-
-// sessionRedactCapacity는 설정의 계정 세션 칸이다(0이면 기본 maxRedactValues).
-func sessionRedactCapacity(cfg Config) int {
-	if cfg.SessionRedactCapacity == 0 {
-		return maxRedactValues
-	}
-	return cfg.SessionRedactCapacity
 }
 
 func credentialValues(rules []compiledRule) [][]byte {

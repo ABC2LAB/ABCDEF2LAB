@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
 )
 
@@ -120,39 +118,5 @@ func TestE2HTTPRefreshUnusableSessionCountsAsFailure(t *testing.T) {
 				t.Fatalf("HTTP requests=%d want=%d (no automatic retry)", sends, want)
 			}
 		})
-	}
-}
-
-// 시험 계정 세션 가림 칸 계산: 계정마다 승인 구간 ÷ 최소 재로그인 간격 + 1개 세션, 세션마다 값 셋(쿠키 방식은 쿠키마다),
-// 확정 단계가 켜진 실행만 계정마다 다시 로그인 한 번 몫을 더한다. 시험 계정이 없는 실행(공식 측정 O 등)은 0이다.
-func TestE2HTTPSessionRedactLimits(t *testing.T) {
-	header := &E2HTTPFileAuth{Login: diagnosisprep.TargetLogin{Header: "Authorization", Prefix: "Bearer "},
-		Accounts: []E2HTTPFileAuthAccount{{Label: "owner-a"}, {Label: "cross-b"}}}
-	cookies := &E2HTTPFileAuth{Login: diagnosisprep.TargetLogin{Cookies: []string{"sid", "csrf"}}, Accounts: header.Accounts}
-	many := &E2HTTPFileAuth{Login: header.Login}
-	for i := 0; i < 16; i++ {
-		many.Accounts = append(many.Accounts, E2HTTPFileAuthAccount{Label: fmt.Sprintf("acct-%02d", i)})
-	}
-	for _, tc := range []struct {
-		name              string
-		auth              *E2HTTPFileAuth
-		window            time.Duration
-		e3                uint64
-		capacity, reserve int
-	}{
-		{name: "no accounts", auth: nil, window: 30 * time.Minute, e3: 8},
-		{name: "header 1800s confirmation", auth: header, window: 1800 * time.Second, e3: 8, capacity: 2*3*181 + 6, reserve: 6},
-		{name: "header 1800s no confirmation", auth: header, window: 1800 * time.Second, capacity: 2 * 3 * 181},
-		{name: "two cookies", auth: cookies, window: 1800 * time.Second, e3: 8, capacity: 2*6*181 + 12, reserve: 12},
-		{name: "clamped", auth: many, window: 3660 * time.Second, e3: 8, capacity: e2proxy.MaxSessionRedactValues, reserve: 48},
-	} {
-		capacity, reserve := e2HTTPSessionRedactLimits(tc.auth, tc.window, tc.e3)
-		if capacity != tc.capacity || reserve != tc.reserve {
-			t.Errorf("%s: 칸 %d·몫 %d, 기대 %d·%d", tc.name, capacity, reserve, tc.capacity, tc.reserve)
-		}
-	}
-	// 토큰 60초 대상의 1800초 회차는 계정마다 세션 31개(값 93개)로 칸에 한참 못 미친다.
-	if capacity, _ := e2HTTPSessionRedactLimits(header, 1800*time.Second, 8); 2*3*(1800/60+1)+6 > capacity {
-		t.Fatal("현실적인 회차가 칸에 닿음")
 	}
 }

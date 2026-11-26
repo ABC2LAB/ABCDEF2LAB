@@ -251,49 +251,6 @@ func (e *Execution) protectedHTTPValuesSafeLocked(response *http.Response, body 
 	return true
 }
 
-// maxIssuedRedactValues는 실행 하나가 가릴 수 있는 세션 값 수의 상한이다(인증 준비 세션 + 대상이 새로 발급한 세션).
-// 세션을 요청마다 회전하는 대상도 회차 하나는 버티게 넉넉히 두고, 넘으면 그 응답을 보류한다.
-const maxIssuedRedactValues = 1024
-
-// issuedSessionValues는 응답이 새로 발급한 자격 값이다: Set-Cookie·Set-Cookie2의 쿠키 값, Authentication-Info·
-// Proxy-Authentication-Info 값 전체. 같은 값은 한 번만 낸다. 가림 하한(8바이트)보다 짧거나 상한보다 긴 값이 있으면
-// short가 참이다(값으로 가릴 수 없어 응답을 보류한다).
-func issuedSessionValues(response *http.Response) (out [][]byte, short bool) {
-	seen := map[string]bool{}
-	add := func(v string) {
-		switch {
-		case v == "":
-			// 빈 값(쿠키 지우기)은 비밀이 없다.
-		case len(v) < minRedactValueBytes || len(v) > maxRedactValueBytes:
-			short = true
-		case !seen[v]:
-			seen[v] = true
-			out = append(out, []byte(v))
-		}
-	}
-	for _, fields := range []http.Header{response.Header, response.Trailer} {
-		for name, values := range fields {
-			switch strings.ToLower(name) {
-			case "set-cookie", "set-cookie2":
-				for _, line := range values {
-					if c, err := http.ParseSetCookie(line); err == nil {
-						add(c.Value)
-					} else if _, rest, ok := strings.Cut(line, "="); ok {
-						// 형식이 어긋난 줄도 값 자리는 가린다(파싱 실패를 이유로 값을 기록에 남기지 않는다).
-						v, _, _ := strings.Cut(rest, ";")
-						add(strings.TrimSpace(v))
-					}
-				}
-			case "authentication-info", "proxy-authentication-info":
-				for _, v := range values {
-					add(strings.TrimSpace(v))
-				}
-			}
-		}
-	}
-	return out, short
-}
-
 func (Config) String() string   { return "e2proxy.Config[protected]" }
 func (Config) GoString() string { return "e2proxy.Config[protected]" }
 func (Rule) String() string     { return "e2proxy.Rule[protected]" }

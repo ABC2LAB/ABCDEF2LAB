@@ -378,28 +378,6 @@ const (
 	minSessionRefreshInterval           = 10 * time.Second
 )
 
-// e2HTTPRedactValuesPerSessionPart는 시험 계정 세션 값 하나가 남기는 출력 가림 값 수의 상한이다. 정규 JWT면 토큰·payload·
-// signature 셋이다(머리는 가리지 않음, e2proxy sessionRedactionValues). 쿠키 방식은 쿠키마다 이만큼 생긴다.
-const e2HTTPRedactValuesPerSessionPart = 3
-
-// e2HTTPSessionRedactLimits는 한 실행의 시험 계정 세션 가림 칸과 확정 단계 다시 로그인 몫이다. 재로그인은 계정마다
-// 최소 간격(minSessionRefreshInterval)보다 자주 일어나지 않으므로(성공 횟수는 제한 없음), 승인 구간 동안 계정마다 생길 수
-// 있는 세션은 구간 ÷ 간격 + 1(인증 준비)개다. 칸 = 계정 수 × 세션당 값 수 × 그 세션 수 + 확정 몫. 확정 몫(계정마다 다시
-// 로그인 한 번)은 확정 단계가 켜진 실행(확정 요청 몫 > 0)에만 둔다. 칸은 e2proxy 상한에서 자르고, 몫은 칸의 절반을 넘지
-// 않는다. 시험 계정이 없는 실행(공식 측정 O 등)은 0이다(세션 가림 등록이 없다).
-func e2HTTPSessionRedactLimits(auth *E2HTTPFileAuth, window time.Duration, e3Requests uint64) (capacity, reserve int) {
-	if auth == nil || len(auth.Accounts) == 0 || window <= 0 {
-		return 0, 0
-	}
-	perSession := e2HTTPRedactValuesPerSessionPart * max(1, len(auth.Login.Cookies))
-	sessions := int(window/minSessionRefreshInterval) + 1
-	if e3Requests > 0 {
-		reserve = len(auth.Accounts) * perSession
-	}
-	capacity = min(len(auth.Accounts)*perSession*sessions+reserve, e2proxy.MaxSessionRedactValues)
-	return capacity, min(reserve, capacity/2)
-}
-
 // E2HTTPRefreshLimit는 계정별 연속 실패 상한이다. E2HTTPRefreshCooldown은 짧은 간격/실행 중 거부다.
 // 둘 다 새 로그인 요청을 보내지 않고 해당 명령만 실패시킨다.
 const E2HTTPRefreshLimit = "refresh_limit"
@@ -662,19 +640,10 @@ func authPrepOne(ctx context.Context, call *e2proxy.Call, execution *e2proxy.Exe
 		reason = "auth_session_value_missing"
 		return E2HTTPAuthSessionNotFound
 	}
+	// 시험 계정 실행은 세션을 모델에 주고 기록에서도 가리지 않아 값을 받기만 한다(절대규칙 2, 2026-11-26 DLP 폐기). 시험 계정
+	// 실행이 아닌 실행에서 출력 가림 목록에 넣지 못한 세션(길이·개수 상한)은 모델용 세션으로 내보내지 않는다.
 	if err := execution.AddRedactValues(values...); err != nil {
-		// 가릴 수 없는 세션(길이·JWT 조각까지 포함한 개수 상한)은 모델용 세션으로 내보내지 않는다. 계정 세션 칸이 모자란
-		// 경우는 사유와 누적 횟수를 회차 진단 기록에 남긴다(값·라벨은 남기지 않음).
-		if errors.Is(err, e2proxy.ErrSessionRedactCapacity) {
-			reason = "session_redaction_capacity"
-			refusals := execution.SessionRedactRefusals()
-			log.Printf("[e2-http] 시험 계정 세션 가림 칸이 모자라 새 세션을 받지 않음(누적 %d번)", refusals)
-			_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "service_request_finished", Stage: "execution",
-				Status: "failed", ReasonCode: "session_redaction_capacity", Count: refusals, CountKnown: true})
-		}
-		if reason == "" {
-			reason = "auth_session_redact_failed"
-		}
+		reason = "auth_session_redact_failed"
 		return E2HTTPAuthSessionNotFound
 	}
 	sessions[account.Label] = session
@@ -732,8 +701,8 @@ func authExtractor(login diagnosisprep.TargetLogin) e2proxy.AuthExtractor {
 	}
 }
 
-// authSessionValues는 인증 준비가 추출한 세션 값이다(쿠키 각각 또는 접두 없는 토큰). AddRedactValues가 시험 계정
-// 실행에서만 유효한 JWT의 payload·signature를 출력 전용 가림에 더한다. 응답 보류용 보호 값에는 넣지 않는다.
+// authSessionValues는 인증 준비가 추출한 세션 값이다(쿠키 각각 또는 접두 없는 토큰). 시험 계정 실행이 아닌 실행에서만
+// 출력 전용 가림에 들어간다(AddRedactValues). 응답 보류용 보호 값에는 넣지 않는다.
 func authSessionValues(login diagnosisprep.TargetLogin, session http.Header) [][]byte {
 	var values []string
 	if len(login.Cookies) > 0 {
