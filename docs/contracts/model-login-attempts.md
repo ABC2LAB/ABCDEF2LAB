@@ -258,11 +258,98 @@
 - **계정 목록 응답**: 계정별 `login_method: {state: "none"|"learned"|"verified", run_ref, at}` 칸을 싣는다. 방법의 칸 이름까지 화면에 보일지는 화면 PR에서 정한다. 이 칸을 싣는 서버 PR은 웹 파서(닫힌 칸 목록)를 같은 PR에서 고친다(§4 규칙).
 - 저장·갱신은 로그인 시도 기록을 구현하는 모델 로그인 PR(최민준)이, `verified` 표시는 E③ 재사용 PR(이동찬)이 한다.
 
+### 6-2. 확정 단계 로그인 재사용 (E③ 재사용 PR, 이동찬)
+
+§6·§6-1을 구현할 때 정한 세부다. 코드: `learnedlogin/`(순수 판정), `server/e2_http_learned_login.go`(E② 송신), `cmd/first-controlled-diagnosis/product_learned_login.go`(계정 저널·확정 단계 연결).
+
+**배우는 시도(§6 "마지막 시도"의 뜻)**
+- 같은 `attempt_ref`의 마지막 행이 그 시도의 지금 값이고, 시도 순서는 `attempt_ref`가 처음 나온 순서다(파일 마지막 행 순서가 아님).
+- 적격: 이 회차 `run_ref`, `actor: model`, `stage`가 `exploration`·`diagnosis`, 이 회차에 결속된 계정 `account_label`, `password_registered: true`, `transport: sent`, `outcome: succeeded`, `followup: authenticated_contrast`, `transport_ref` 있음, 상태 100~399, `login_form_returned: false`, `session_source`가 `none`이 아님.
+- 계정마다 적격 시도 가운데 가장 늦게 시작한 것 하나만 본다. 그 방법을 재현할 수 없으면(아래 지원 범위 밖) 더 앞의 성공으로 돌아가지 않고 사유를 남긴다.
+- 한 시도의 고정 칸(회차·단계·주체·시각·라벨·아이디·메서드·경로·형식·칸 이름·`transport_ref`)이 행마다 다르면, 그 시도의 어느 행에든 나온 이 회차 결속 라벨은 이 회차에서 배우지 않는다(`learned_login_record_invalid`).
+- 중복 JSON 키(대소문자 변형 포함)나 잘못된 JSON이 있는 행은 기록 전체를 무효로 본다. 같은 시도의 이전 행을 최신 값으로 쓰지 않는다.
+- 기록 파일은 회차 상태 디렉터리의 보호 파일(0600·실행 uid·링크 아님·읽는 동안 안 바뀜)만 읽는다. 파일이 없으면 배운 것이 없고, 보호 파일이 아니거나 읽지 못하는 줄(JSON 오류·뒤에 붙은 값·같은 키 중복·대소문자 별칭·잘못된 UTF-8·상한 초과)이 하나라도 있으면 기록 전체를 쓰지 않는다(`learned_login_record_invalid`). 손상된 갱신 행을 건너뛰면 그 시도의 이전 행이 최신 값으로 골라질 수 있기 때문이다. 이 파일은 서명 저널이 아니므로 기록의 `succeeded`만으로 실행 권한을 주지 않는다: 재현 요청은 아래 E② 허용을 따로 지나고, `verified`는 프로그램이 직접 대조를 세웠을 때만이다.
+
+**확정 단계 재사용 순서와 로그인 설정(9칸)**
+- 이 회차 적격 성공 → 계정 저널의 유효한 저장 방법(지금 실행에 결속한 대상 판·자격 판과 같을 때) → 둘 다 없으면 로그인 설정 다시 로그인(전환 기간 호환, §7).
+- 이 회차 인증 결과(`account_auth`)가 `authenticated`가 아니어도 쓸 배운 방법(이 회차 성공·저장된 방법)이 있는 계정은 확정 단계 계정 역할(A·B)로 쓴다(§6·§6-1 "둘 다 없으면 쓰지 않는다"). 실제 인증은 확정 직전 다시 로그인과 바로 뒤 신원 확인이 정하고, 실패하면 신원 미확인 UNDECIDABLE이다.
+- 저장 방법은 `learned` 저장(모델 로그인 PR ⑤-B)이 대상 레지스트리에 읽기 경계(`learnedLoginMethod(대상, 라벨, 대상 판, 자격 해시)`, `cmd/first-controlled-diagnosis/product_learned_login.go`의 `productLearnedMethodReader`)를 구현할 때부터 쓴다. 그 전에는 이 회차 성공만 쓴다.
+- 배운 방법이 있는데 재현에 실패하면 로그인 설정으로 대신하지 않는다(실패 사유를 숨기지 않음). 그 계정은 확정 단계 신원 확인에서 `product_identity_unverified`가 된다.
+
+**E② 허용(§2-2 "확정 단계 로그인은 쓰기 승인 범위를 따른다")**
+- 확정 단계 다시 로그인 호출(`BeginE3ReloginCall`, 확정 몫)만 쓰는 송신 목적 둘: `learned_login`(로그인 POST), `login_prep`(로그인 화면 GET, 세션 없는 대조 GET). Worker `refresh_session`·모델 요청·처음 인증 준비는 쓰지 못한다.
+- 전용 규칙이 아니라 그 실행의 Worker 승인 규칙이 메서드·경로를 덮어야 한다. 쓰기 승인이 없는 실행(Worker 규칙이 GET뿐)은 로그인 POST를 보내지 않는다. 질의가 있는 요청, 운영자 제외 경로, 모델 단계 진단 쓰기 정책의 위험 동작 단어(삭제·로그아웃·탈퇴 등) 경로는 보내지 않는다. 위험 단어는 원래 경로와 한 번 푼 경로(E②가 범위를 볼 때와 같은 해석) 둘 다에서 보고, 풀 수 없는 경로는 보내지 않는다. 건별 승인을 받는 실행(수동·사용자 승인)에서는 쓰기 승인 범위의 건별 승인도 따른다: 로그인 POST는 E③ 생성 요청처럼 늘 승인을 받고, 로그인 화면·대조 GET은 모델 GET과 같이 미리 승인한 읽기만 승인 없이 나간다. 승인이 거절·만료되면 보내지 않는다(`learned_login_not_sent`). 처음 인증 준비(로그인 설정 9칸)는 지금처럼 승인 대기가 없다.
+- 응답은 도구·모델로 가지 않고 프로그램 판정만 본다. 잘림·부분·압축 응답은 보류한다. 돌려줄 세션·쿠키에 보호 비밀번호가 들어 있으면 받지 않는다. 비밀번호는 보내기 전에 보호 값으로 등록하고, 새 세션 값은 출력 가림에 등록한다(인증 준비와 같음).
+- 같은 계정 다시 로그인 줄 세우기, 계정별 연속 실패 3회(`refresh_limit`)·간격 10초(`refresh_cooldown`)를 지금 다시 로그인과 같이 쓴다. §5 연속 실패는 회차 기록에서 아이디별로 다시 세어 3에 닿았으면 보내지 않는다(`login_attempts_exhausted`). 결과 불명 로그인은 다시 보내지 않는다.
+- 확정 몫(요청): 다시 로그인 5 = 계정 둘 × (로그인 화면 GET 1 + 로그인 POST 1) + 세션 없는 대조 GET 1. 고정 몫은 신원 2를 더해 7이다([E③ 제품 계약](e3-product-confirmation-interface.md) §7.1).
+
+**요청 재구성**
+- 형식: `form`(URL 인코딩), `json`(객체, 점 경로는 중첩 객체), `multipart`(파일 부분 없음). 칸 순서는 아이디·비밀번호·나머지 칸(기록 순서)이다.
+- 아이디·비밀번호 값은 그 실행에 결속한 자격 파일에서만 읽는다. 아이디 칸이 없는 방법은 비밀번호만 보낸다.
+- 나머지 칸 값은 지어내지 않는다. `fields_from_response` 칸은 로그인 화면 응답의 HTML 입력 칸 값(같은 이름 값이 여럿이면 모두 같아야 함) 또는 JSON 응답의 같은 점 경로 문자열이다. 그 밖의 나머지 칸은 HTML 로그인 화면의 숨은 칸·제출 단추에 적힌 값만 쓴다(사람이 입력하는 칸·체크 칸 값은 모름). 값이 없거나 모호하면 보내지 않는다.
+- 다시 만들 수 없는 것: 질의가 있던 로그인(`query_keys` 있음, 값 미기록), 나머지 칸이 32개(판정기가 잘랐을 수 있음), JSON 칸 경로가 겹침(`a`와 `a.b`), 비밀번호 칸 없음, 메서드가 POST가 아님. 모두 보내지 않는다.
+
+**로그인 화면(CSRF·로그인 전 쿠키) 재수집**
+- 로그인 화면은 로그인 경로의 GET이다(§6 "로그인 화면을 먼저 받아"). 나머지 칸이 있거나 `session_source: continued`이면 받는다. 응답이 2xx HTML이면 비밀번호 칸이 있어야(로그인 화면) 칸 값을 꺼낸다. 2xx JSON이면 `fields_from_response`만 꺼낸다.
+- §3 기록에는 값이 나온 응답의 경로가 없다. 그래서 로그인 경로와 다른 경로가 발급하는 CSRF(예: `GET /api/csrf`), 헤더로 보내는 CSRF, 메타 태그만 있는 CSRF는 재현하지 않는다(`learned_login_prep_unavailable`·`learned_login_prep_field_missing`). 지원하려면 §3에 값 출처 경로 칸이 필요하다(§7).
+- 로그인 화면의 Set-Cookie는 그 계정·그 다시 로그인 한 번만의 쿠키 문맥에 담아 로그인 요청에 싣는다. 브라우저가 싣지 않을 쿠키(경로가 로그인 경로를 덮지 않음, Domain이 대상 호스트를 덮지 않음, https가 아닌 origin의 Secure)와 만료·삭제 쿠키는 빼고, 한 응답이 같은 이름을 다른 값으로 둘 이상 주면 그 이름은 쓰지 않는다. 같은 키가 둘인 JSON 응답(로그인 화면·로그인 응답)은 값을 꺼내지 않는다. 다른 계정·예전 시도의 쿠키·CSRF 값은 쓰지 않는다.
+
+**로그인 응답 판정과 세션**
+- 실패 신호(§4): 400 이상, HTML의 비밀번호 칸, 로그인 화면 경로로의 같은 origin 리다이렉트 → `failed`(`learned_login_rejected`).
+- 세션 쿠키(`set_cookie`·`continued`)는 유효 경로가 `/`여야 한다(`Path` 속성, 없으면 그 응답 요청 경로의 기본 경로, RFC 6265 5.1.4). 확정 단계의 다른 경로 요청(신원·생성·조회)에 싣기 때문이다. 아니면 `learned_login_format_unsupported`다.
+- 세션: `set_cookie`는 배운 쿠키 이름을 이 응답이 모두 새로 줘야 한다. `continued`는 로그인 요청에 실린 그 쿠키가 응답 뒤에도 남아 있어야 한다. `json_field`·`header`는 배운 자리 하나의 토큰 모양 값(§3)이어야 한다. 뒤 요청에 싣는 방식은 배운 `session_sent_as`다. 찾지 못하면 `failed`(`learned_login_session_not_found`, `account_auth`의 `session_not_found`).
+- 응답을 끝까지 판정할 수 없으면(보류) 실패 신호가 아니므로 `unconfirmed`이고 연속 실패에 세지 않는다.
+
+**성공(`succeeded`)과 `verified`**
+- 세션을 받은 것만으로는 `unconfirmed`다. 아래가 모두일 때만 `succeeded`이고 그 방법을 `verified`로 남긴다.
+  - 세션 없는 대조 GET(동결 선언의 신원 경로, 인증 헤더 없음, 회차에 한 번)이 막힘(§4)이다.
+  - 그 계정의 확정 단계 신원 요청(E③, 이 세션으로 나감)이 열림이고 정상 응답에 신원 값이 있다.
+  - 두 계정(A·B) 모두 정상 신원 관찰(2xx·신원 값 있음)이 있고 그 값이 서로 다르다. 상대 계정 관찰이 없으면 다르다는 근거가 아니다.
+  - 확정 단계가 끝까지 돌았고(`completed`), 그 신원 관찰이 신원 확인을 통과시킨 판정(`identity_check: yes`)의 근거 호출에 들어 있다. 신원 관찰은 E② 봉인 대조·관찰 검증을 지난 것만 근거가 되므로, 봉인 조회가 확정 시한에 걸려 버려진 관찰·진위 실패·중단·꺼진 회차로는 성공을 세우지 않는다.
+  - 신원 응답은 2xx다(신원 관찰에는 리다이렉트 목적지가 없어 3xx를 열림으로 보지 않는다).
+  - 다시 로그인 뒤 확정 단계가 끝날 때까지 그 계정 결속 참조(세션)가 바뀌지 않았다.
+- HTTP 200, 쿠키·토큰을 받음, 모델의 성공 기록, 지난 회차 성공, 저장소에 세션이 있음은 성공 근거가 아니다. 재사용 성공은 E③ 취약점 판정과 상관없다(신원·객체·증거 판정은 그대로).
+- 프로그램 로그인은 같은 기록 파일에 `actor: program`, `stage: confirmation`, `attempt_ref: confirmation-N` 행으로 남긴다. 로그인 응답 판정 뒤 한 행, 대조로 성공이 정해지면 같은 시도 행을 덧붙인다(`followup: authenticated_contrast`, `contrast_source: probe`). 이 행은 다음 회차 학습 대상이 아니다(`actor: model`만 배움).
+
+**`verified` 기록(계정 저널 `login_method_verified`)과 방법 해시**
+- 방법 객체·`method_sha256`은 §6-1-2를 따른다(§6-1-1~§6-1-3은 모델 로그인 PR #969 `cdf1ae9f`의 계약 갱신이고, 그 PR이 들어오면 이 문서에 합쳐진다): 칸 이름 `http_method`·`path`·`format`·`identifier_field`·`password_field`·`other_fields`·`fields_from_response`·`session_source`·`session_names`·`session_sent_as`를 이 순서로 둔 JSON(빈 목록은 `[]`)의 SHA-256이다. `learned` 저장과 `verified`가 같은 값을 쓰도록 `learnedlogin.Method.Digest()` 하나로 계산한다(칸 이름·순서는 `TestMethodObjectMatchesContract`가 고정).
+- 위 성공 조건을 모두 채운 계정마다 `login_method_verified` 줄 하나를 쓴다. 칸: `target_id`·`label`·`action`·`actor`(대상 승인자)·`at`(성공을 판정한 시각, UTC. 기록 행의 `at`=보낸 시각과 다름)·`target_revision`·`credential_sha256`(그 회차에 결속한 대상 판·자격 해시)·`method_sha256`(재현한 방법)·`run_ref`·`stage: confirmation`·`attempt_ref`(`confirmation-N`)·`evidence: e3_relogin`. 값은 없다.
+- 쓰기 전에 레지스트리 잠금 안에서 그 회차가 결속한 대상 판·자격 해시가 지금도 같은지 본다. 다르면(재현 도중 재승인·자격 변경) 쓰지 않는다. `verified` 줄은 방법 해시마다 따로 둔다(다른 방법의 결과가 지금 방법의 검증을 덮지 않음). 같은 방법·판·자격의 `verified`가 이미 있거나 같은 방법의 더 뒤 결과가 있으면 쓰지 않는다.
+- 상태 반영은 계산 때 한다(§6-1-2 "지금 `learned` 방법의 해시와 같을 때만"): 지금 `learned` 방법 해시의 `verified` 줄이 지금 대상 판·지금 자격 해시와 같고, 그 방법이 지금 것이 된 시각(다른 방법에서 바뀐 시각. 같은 방법을 다시 배우면 그대로) 뒤에 검증됐을 때만 `verified`다(`loginMethodVerifiedFor(…, methodSince)`). 그래서 "A 검증 → B 배움 → A 다시 배움"에서 옛 A 검증은 다시 보이지 않는다(§6-1-1). 따로 지우는 사건은 없다.
+- 다시 열 때(재시작) `login_method_verified` 줄을 검증한다: 칸 모양(`stage`·`evidence`·`attempt_ref`·해시·회차 참조), 그때 계정이 있고 그때 자격 해시와 같음, 같은 방법의 앞선 줄보다 대상 판·시각이 뒤임. 다른 동작 줄에 이 칸들이 붙으면 저널 손상으로 본다.
+- 계정 목록 API `login_method`(§6-1-3)는 `learned`를 싣는 모델 로그인 PR이 웹 파서와 같이 낸다. 이 PR은 API 칸을 바꾸지 않는다.
+
+**실패 사유(고정 코드, 값 없음)** — 회차 기록 `refusal`(보내지 않았을 때)과 진단 로그 `reason_code`에 남긴다.
+
+| 상황 | 사유 |
+|---|---|
+| 배운 방법 없음 | `learned_login_none` |
+| 기록·출처 검증 실패 | `learned_login_record_invalid` |
+| 대상 승인 판 불일치 | `learned_login_target_changed` |
+| 자격 판 불일치 | `learned_login_credential_changed` |
+| 결속 자격을 읽지 못함·보호할 수 없는 비밀번호 | `learned_login_credential_unavailable` |
+| 지원하지 않는 형식·세션 자리·전달 방식 | `learned_login_format_unsupported` |
+| 칸 값을 다시 만들 수 없음 | `learned_login_input_unavailable` |
+| 로그인 화면(CSRF 발급 경로) 확인 불가 | `learned_login_prep_unavailable` |
+| CSRF 등 응답 칸 값 추출 실패 | `learned_login_prep_field_missing` |
+| 승인 범위 밖(쓰기 승인·제외 경로·위험 단어) | `learned_login_scope_denied` |
+| 연속 실패 상한 | `login_attempts_exhausted`(기록) · `learned_login_attempts_exhausted`(진단 로그) |
+| 결과 불명 | `learned_login_result_unknown` |
+| 로그인 응답 실패 신호 | `learned_login_rejected` |
+| 세션 추출 실패 | `learned_login_session_not_found` |
+| 인증 성공 근거 부족 | `learned_login_auth_unconfirmed` |
+| 확정 몫·시간 소진 | `learned_login_budget_exhausted` |
+| 그 밖의 E② 거부 | `learned_login_not_sent` |
+
+재현 실패는 취약점 부정·정상 인증으로 올리지 않는다. 그 계정은 확정 단계 신원 확인이 판정 근거를 정한다.
+
 ## 7. 열린 것과 순서
 
 - 다단계 로그인(MFA·OTP·캡차)은 범위 밖이다(사용자 결정: 향후).
 - Basic 인증 로그인은 v1 범위 밖이다(§2-1). 지원하려면 Basic 전용 성공 규칙(세션 대신 자격 헤더 자체로 대조)과 E③ 재사용 규칙이 따로 필요하다.
 - 비밀번호 이름 규칙·아이디 이름 규칙에 맞지 않는 로그인 칸(예: 앱 고유 이름)은 등록 값 일치로만 잡는다. 기본 계정 시험처럼 등록 값이 없고 이름도 안 맞으면 로그인 시도로 보지 않는다. 탐색 경계는 그 POST를 지금처럼 쓰기로 다룬다.
 - 탐색 단계 로그인은 모델이 브라우저(MCP)에서 직접 한다(절대규칙 1). 브라우저가 폼을 채워 보낸 요청도 경계가 같은 모양으로 보므로 같은 규칙을 쓴다. 브라우저가 받은 세션 쿠키를 뒤 요청과 대조하는 것도 같다.
-- 로그인 설정 9칸을 서버가 그만 받는 시점은 따로 정한다. 모델 로그인 PR(최민준)과 E③ 재사용 PR(이동찬)이 둘 다 들어간 뒤 한 PR에서 그만 받는다. 모델 로그인 PR 뒤에도 E③ 재사용 PR 전까지는 확정 단계가 지금 로그인 설정으로 다시 로그인한다.
+- 로그인 설정 9칸을 서버가 그만 받는 시점은 따로 정한다. 모델 로그인 PR(최민준)과 E③ 재사용 PR(이동찬)이 둘 다 들어간 뒤 한 PR에서 그만 받는다. E③ 재사용 PR 뒤에는 확정 단계가 배운 방법을 먼저 쓰고, 배운 방법이 없는 계정만 지금 로그인 설정으로 다시 로그인한다(§6-2).
+- §3에 `fields_from_response` 값이 나온 응답 경로 칸이 없어, 로그인 경로와 다른 경로가 발급하는 CSRF는 재현하지 않는다. 지원하려면 판정기가 그 경로(질의 값 없음)를 남기는 칸을 계약에 더해야 한다(§6-2).
+- 9칸 폐지 PR은 결속 조건("대상에 로그인 방식이 있어야 계정 결속", §0)과 확정 단계 다시 로그인 연결 조건(지금은 처음 인증 준비로 인증된 계정이 있을 때만 다시 로그인 경로가 열림)을 같이 바꾼다.
   - 화면 정리(새 점검 '로그인' 칸, `TargetLoginForm`, 진행 화면 `login_method_missing` 경고)는 그 PR 순서에 맞춘다(경준님).
