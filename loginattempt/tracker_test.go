@@ -430,3 +430,21 @@ func TestConfigValidation(t *testing.T) {
 		}
 	}
 }
+
+// 로그인 응답이 로그인 시도 경로로 리다이렉트하면 로그인 화면을 다시 준 것이라 실패다(새 쿠키가 있어도).
+func TestLoginRedirectBackToLoginPathFails(t *testing.T) {
+	tr, rec := newTracker(t, false)
+	login := formLogin("user2", "nope")
+	p := tr.Prepare(login, true)
+	tr.Complete(p, "1", login, redirect("http://target.test:4000/login?error=1", "Set-Cookie", "sid=flash-session-0001"))
+	r := rec.last("exploration-1")
+	if r.Outcome != OutcomeFailed || !r.LoginFormReturned || r.RedirectPath != "/login" || r.ConsecutiveFailures != 1 {
+		t.Fatalf("로그인 경로로 되돌림: %+v", r)
+	}
+	other := formLogin("user2", "nope2")
+	p = tr.Prepare(other, true)
+	tr.Complete(p, "2", other, redirect("https://elsewhere.test/login", "Set-Cookie", "sid=flash-session-0002"))
+	if r := rec.last("exploration-2"); r.RedirectPath != "" || r.LoginFormReturned {
+		t.Fatalf("다른 origin 리다이렉트를 같은 경로로 봄: %+v", r)
+	}
+}
