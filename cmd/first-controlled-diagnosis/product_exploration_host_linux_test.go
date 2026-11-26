@@ -469,10 +469,18 @@ func TestExplorationLoginHandoverKeepsMarkerUntilConfirmed(t *testing.T) {
 				}
 			}
 			if tc.readOnly {
+				// 표지 파일도 읽기 전용으로 둬야 이미 있는 표지 다시 쓰기가 실패한다(디렉터리만 0500이면 0600 표지는 다시
+				// 써진다, #969 동찬 리뷰 P3). 기록 생성과 표지 다시 쓰기가 둘 다 실패하는지 먼저 확인한다.
+				if err := os.Chmod(filepath.Join(dir, server.E2HTTPLoginHistoryUnavailableFile), 0o400); err != nil {
+					t.Fatal(err)
+				}
 				if err := os.Chmod(dir, 0o500); err != nil {
 					t.Fatal(err)
 				}
 				t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+				if server.MarkLoginHistoryUnavailable(dir) == nil || server.AppendLoginAttemptRows(dir, rows) == nil {
+					t.Fatal("시험 조건: 기록 생성과 표지 다시 쓰기가 둘 다 실패해야 함")
+				}
 			}
 			if got := handOverExplorationLogins(dir, tc.read, []string{"tester-a"}); got != tc.handedOver || marker(dir) == tc.handedOver {
 				t.Fatalf("인계 %v·표지 %v, 기대 인계 %v", got, marker(dir), tc.handedOver)
