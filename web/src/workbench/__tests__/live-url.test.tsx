@@ -2372,6 +2372,26 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-reference-mask|&#/);
   });
 
+  // #975 이동찬 리뷰: 보고서 탭 복사도 상세 보고와 같은 복사 처리 — 표 칸 · 줄 경계로 갈린 값이 화면엔 보이고 클립보드엔 없다
+  it.each([
+    ["엔티티 줄바꿈으로 키 · 값 가름", "password:&#10;synthetic-report-newline-27", "synthetic-report-newline-27"],
+    ["표 칸", "| 이름 | 값 |\n| --- | --- |\n| a | api_key=synthetic-report-table |", "synthetic-report-table"],
+  ])("보고서 탭: %s — 화면에는 보이고 복사에는 없다", async (_, summary, secret) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [{ ...candidate(1), summary }] });
+    mount("report");
+    fireEvent.click(await screen.findByRole("tab", { name: "보고서" }));
+    const doc = screen.getByRole("region", { name: "취약점 점검 보고서" });
+    expect(doc).toHaveTextContent(secret);
+    fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
+    await within(doc).findByText("보고서 글을 복사했습니다.");
+    expect(writeText.mock.calls[0][0]).not.toContain(secret);
+    expect(writeText.mock.calls[0][0]).toContain("[REDACTED]");
+  });
+
   it("보고서 탭: 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });

@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { maskForCopy, maskSecrets, REDACTED, UNVERIFIED_LINE } from "../live/copyMask";
+import { maskForCopy, maskSecrets, REDACTED, renderedCopyText, UNVERIFIED_LINE } from "../live/copyMask";
 import { MARKUP_HIDDEN_SECRETS } from "./mask-fixtures";
 
 const JWT =
@@ -192,5 +192,39 @@ describe("maskForCopy — 클립보드로 나가는 글 (#709 리뷰)", () => {
     expect(maskForCopy("")).toBe("");
     const once = maskForCopy(`${ENTITY_KEY}=synthetic-entity-secret`);
     expect(maskForCopy(once)).toBe(once);
+  });
+});
+
+// #975: 화면은 가리지 않으므로 그려진 Markdown 상자의 글을 블록 · 표 줄 단위로 모아 가린다(innerText 에 기대지 않음)
+describe("renderedCopyText — 그려진 상자 복사", () => {
+  const box = (html: string) => {
+    const el = document.createElement("div");
+    el.innerHTML = html;
+    return el;
+  };
+  it("문단 안 줄바꿈으로 갈린 키 · 값을 한 덩어리로 가린다", () => {
+    const out = renderedCopyText(box("<p>password:\nsynthetic-copy-newline</p><p>다음 문단</p>"));
+    expect(out).not.toContain("synthetic-copy-newline");
+    expect(out).toContain(REDACTED);
+    expect(out.split("\n")).toEqual(["password: [REDACTED]", "다음 문단"]);
+  });
+  it("표는 줄마다 칸을 탭으로 갈라 붙은 칸 글에 숨은 키도 가린다", () => {
+    const out = renderedCopyText(
+      box(
+        "<table><thead><tr><th>이름</th><th>값</th></tr></thead><tbody><tr><td>a</td><td>api_key=synthetic-copy-cell</td></tr></tbody></table>",
+      ),
+    );
+    expect(out).not.toContain("synthetic-copy-cell");
+    expect(out.split("\n")).toEqual(["이름\t값", `a\tapi_key=${REDACTED}`]);
+  });
+  it("코드 상자는 줄 모양을 지키고 줄마다 가린다", () => {
+    const out = renderedCopyText(box("<pre><code>GET / HTTP/1.1\nCookie: s=synthetic-copy-cookie\nX: y</code></pre>"));
+    expect(out.split("\n")).toEqual(["GET / HTTP/1.1", `Cookie: s=${REDACTED}`, "X: y"]);
+  });
+  it("목록 칸 안의 문단은 문단 단위로, 숨길 것 없는 글은 그대로", () => {
+    const out = renderedCopyText(
+      box("<h2>재현 요약</h2><ul><li><p>계정 B로 주문 조회</p></li><li>token=synthetic-copy-li</li></ul>"),
+    );
+    expect(out.split("\n")).toEqual(["재현 요약", "계정 B로 주문 조회", `token=${REDACTED}`]);
   });
 });

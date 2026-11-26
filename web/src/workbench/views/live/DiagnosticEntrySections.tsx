@@ -11,7 +11,7 @@ import { entrySeverityLabel } from "@/lib/diagnosis/severity";
 
 import { cx } from "../../lib/cx";
 import { type BusinessRuleReview, fetchBusinessRuleReviews, reviewUnsupported } from "../../live/businessRuleReview";
-import { maskForCopy } from "../../live/copyMask";
+import { maskForCopy, renderedCopyText } from "../../live/copyMask";
 import { Markdown } from "../../ui/Markdown";
 import { Isec } from "../../ui/parts";
 import s from "../../workbench.module.css";
@@ -228,12 +228,12 @@ export function DiagnosticEntrySections({
   const reportBox = useRef<HTMLDivElement>(null);
   // 상세 보고 복사: 원문 Markdown 이 아니라 화면에 그려진 글을 가려서 복사한다. 화면은 가리지 않지만 클립보드는 화면 밖(팀 채팅 ·
   // 이슈)으로 나가므로 가린다(#975 이동찬 P2, 사용자 결정 2026-11-26). 원문을 복사하면 붙여 넣은 곳의 Markdown 이 엔티티(&#112;…)를
-  // 다시 풀어 값이 되살아날 수 있어 그려진 글을 maskForCopy 로 가린다(#677 · #709 리뷰)
+  // 다시 풀어 값이 되살아날 수 있어 그려진 글을 블록 · 표 줄 단위로 모아 가린다(renderedCopyText, #677 · #709 리뷰)
   async function copyReport() {
     const box = reportBox.current;
-    const shown = box ? box.innerText || box.textContent || "" : "";
     try {
-      await navigator.clipboard.writeText(maskForCopy(shown));
+      // 블록 · 표 줄 단위로 모아 가린다 — 줄바꿈 · 칸 경계로 갈린 값도 잡는다(#975 윤재상 · 이동찬 리뷰)
+      await navigator.clipboard.writeText(box ? renderedCopyText(box) : "");
       setReportMsg("상세 보고를 복사했습니다.");
     } catch (error) {
       console.warn("상세 보고 복사 실패", error);

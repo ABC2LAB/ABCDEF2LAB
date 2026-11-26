@@ -173,7 +173,8 @@ it.each(
   vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
   render(<DiagnosticEntrySections task="42" entry={{ ...fixture(), report }} onReload={vi.fn()} />);
   const card = screen.getByRole("region", { name: "상세 보고" });
-  // 복사는 화면에 그려진 글을 가린 것이라 원문(엔티티)도 값도 클립보드로 나가지 않는다
+  // 화면에는 그대로 보이고(DLP 폐기), 복사는 블록 · 표 줄 단위로 모아 가려 원문(엔티티)도 값도 클립보드로 나가지 않는다
+  expect(card).toHaveTextContent(secret);
   fireEvent.click(within(card).getByRole("button", { name: "복사" }));
   await within(card).findByText("상세 보고를 복사했습니다.");
   expect(writeText.mock.calls[0][0]).not.toContain(secret);

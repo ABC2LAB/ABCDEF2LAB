@@ -238,3 +238,56 @@ function maskAcrossBreaks(text: string): string | null {
   const masked = maskSecrets(joined);
   return masked === joined ? null : masked;
 }
+
+/**
+ * 줄을 이어 붙여 한 덩어리로 보이는 블록(Markdown 이 그리는 문단 · 제목 · 목록 칸 · 표 칸). 이 안에서 서식 · 엔티티 줄바꿈으로
+ * 갈린 키와 값도 한 덩어리로 보고 가린다(예전 화면 가림 remarkMaskSecrets 의 블록 규칙과 같다, #677 · #709 리뷰).
+ */
+const JOIN_BLOCKS = new Set(["P", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "DT", "DD", "TD", "TH"]);
+/** 안에 이런 블록이 있으면 그 블록 단위로 내려간다(목록 칸 안의 문단 등). */
+const BLOCK_TAGS = new Set([...JOIN_BLOCKS, "PRE", "TABLE", "UL", "OL", "DL", "BLOCKQUOTE", "DIV", "SECTION"]);
+const TEXT_NODE = 3;
+
+/** 블록 하나: 줄바꿈을 이어 붙여 가릴 게 있으면 이어 붙인 채 가린 글, 없으면 줄 단위 가림(maskForCopy). */
+function blockCopy(text: string): string {
+  return maskForCopy(maskAcrossBreaks(text) ?? text);
+}
+
+function collectCopy(el: Element, out: string[]): void {
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeType === TEXT_NODE) {
+      const t = node.textContent ?? "";
+      if (t.trim()) out.push(maskForCopy(t));
+      continue;
+    }
+    if (!(node instanceof Element)) continue;
+    const tag = node.tagName;
+    if (tag === "TR") {
+      // 표 한 줄: 칸을 탭으로 갈라 한 줄로(칸 글이 서로 붙어 키를 못 알아보지 않게). 칸마다 이어 붙여 가린 뒤 다시 본다
+      const cells = Array.from(node.children).map((c) => maskAcrossBreaks(c.textContent ?? "") ?? c.textContent ?? "");
+      out.push(maskForCopy(cells.join("\t")));
+      continue;
+    }
+    if (tag === "PRE") {
+      // 코드 상자는 줄 모양을 지킨다(줄 단위 가림)
+      out.push(maskForCopy(node.textContent ?? ""));
+      continue;
+    }
+    if (JOIN_BLOCKS.has(tag) && !Array.from(node.children).some((c) => BLOCK_TAGS.has(c.tagName))) {
+      out.push(blockCopy(node.textContent ?? ""));
+      continue;
+    }
+    collectCopy(node, out);
+  }
+}
+
+/**
+ * 화면에 그려진 Markdown 상자(보고서 탭 · 상세 보고)를 클립보드용 글로 만들고 가린다(#975 이동찬 P2). 화면은 가리지 않으므로
+ * 그려진 글을 그대로 복사하면 블록 안 줄바꿈 · 표 칸 경계로 갈린 값을 줄 단위 가림이 놓친다 — 블록 · 표 줄 단위로 모아 가린다.
+ * innerText 에 기대지 않아 브라우저 · 시험 환경(jsdom)에서 같은 글이 나온다.
+ */
+export function renderedCopyText(root: Element): string {
+  const out: string[] = [];
+  collectCopy(root, out);
+  return out.join("\n");
+}

@@ -36,7 +36,7 @@ import { entrySeverity, entrySeverityLabel, type SeverityLevel } from "@/lib/dia
 import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import { downloadDiagnostic, fetchCoverage, fetchRemediation, type Remediation } from "../../live/api";
-import { maskForCopy } from "../../live/copyMask";
+import { renderedCopyText } from "../../live/copyMask";
 import {
   candidateCountText,
   candidateErrorText,
@@ -1686,9 +1686,9 @@ function PocReport({ entries, info }: { entries: readonly RemediationEntry[]; in
   // 붙여 넣은 곳의 Markdown 이 서식으로 쪼갠 값을 다시 이어 붙이지 않게 그려진 글을 쓴다
   async function copy() {
     const el = box.current;
-    const shown = el ? el.innerText || el.textContent || "" : "";
     try {
-      await navigator.clipboard.writeText(maskForCopy(shown));
+      // 상세 보고와 같은 복사 처리: 블록 · 표 줄 단위로 모아 가린다(#975 이동찬 리뷰)
+      await navigator.clipboard.writeText(el ? renderedCopyText(el) : "");
       setMsg("보고서 글을 복사했습니다.");
     } catch (error) {
       console.warn("보고서 글 복사 실패", error);
