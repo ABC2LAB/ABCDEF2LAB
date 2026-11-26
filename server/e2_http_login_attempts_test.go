@@ -66,6 +66,13 @@ func TestLoginHistoryUnavailableRefusesLogins(t *testing.T) {
 	if p := open(t, marked).Prepare(login, true); p.Refusal != loginattempt.RefusalHistoryUnavailable {
 		t.Fatalf("인계 실패 표지가 있는데 로그인을 보냄: %+v", p)
 	}
+	// 인계가 확인되면 표지를 지우고 로그인을 다시 연다. 이미 없는 표지 지우기는 성공이다.
+	if err := ClearLoginHistoryUnavailable(marked); err != nil || ClearLoginHistoryUnavailable(marked) != nil || ClearLoginHistoryUnavailable("") == nil {
+		t.Fatal("표지 지우기", err)
+	}
+	if p := open(t, marked).Prepare(login, true); p.Refusal != "" {
+		t.Fatalf("표지를 지운 뒤에도 로그인을 막음: %+v", p)
+	}
 	broken := t.TempDir()
 	if err := os.WriteFile(filepath.Join(broken, E2HTTPLoginAttemptsFile), []byte("{not json\n"), 0o600); err != nil {
 		t.Fatal(err)

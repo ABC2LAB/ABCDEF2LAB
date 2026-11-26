@@ -428,3 +428,43 @@ func TestWriteLoginSummaryFromExplorationRows(t *testing.T) {
 		t.Fatalf("요약: %s", raw)
 	}
 }
+
+// 탐색 로그인 기록 인계(#969 동찬 리뷰 P2): 표지는 탐색 시작 때 쓰고 모두 넘겼을 때만 지운다. 경계 조회 실패·빠진 행·기록
+// 쓰기 실패면 표지가 남고, 기록과 표지 저장이 모두 실패해도 시작 때 표지가 남아 진단 단계가 로그인 시도를 보내지 않는다.
+func TestExplorationLoginHandoverKeepsMarkerUntilConfirmed(t *testing.T) {
+	rows := []loginattempt.Row{{Schema: loginattempt.Schema, AttemptRef: "exploration-1", Identifier: "tester@owned.test", AccountLabel: "tester-a", Outcome: loginattempt.OutcomeFailed}}
+	marker := func(dir string) bool {
+		_, err := os.Lstat(filepath.Join(dir, server.E2HTTPLoginHistoryUnavailableFile))
+		return err == nil
+	}
+	ok := func() ([]loginattempt.Row, uint64, error) { return rows, 0, nil }
+	for _, tc := range []struct {
+		name       string
+		read       func() ([]loginattempt.Row, uint64, error)
+		readOnly   bool
+		handedOver bool
+	}{
+		{"handed over", ok, false, true},
+		{"no attempts", func() ([]loginattempt.Row, uint64, error) { return nil, 0, nil }, false, true},
+		{"read failure", func() ([]loginattempt.Row, uint64, error) { return nil, 0, errors.New("boundary unavailable") }, false, false},
+		{"omitted rows", func() ([]loginattempt.Row, uint64, error) { return rows, 1, nil }, false, false},
+		// 기록 쓰기와 표지 다시 쓰기·지우기가 모두 실패한다(디렉터리 쓰기 불가).
+		{"record and marker writes fail", ok, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := server.MarkLoginHistoryUnavailable(dir); err != nil {
+				t.Fatal(err)
+			}
+			if tc.readOnly {
+				if err := os.Chmod(dir, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+			}
+			if got := handOverExplorationLogins(dir, tc.read, []string{"tester-a"}); got != tc.handedOver || marker(dir) == tc.handedOver {
+				t.Fatalf("인계 %v·표지 %v, 기대 인계 %v", got, marker(dir), tc.handedOver)
+			}
+		})
+	}
+}

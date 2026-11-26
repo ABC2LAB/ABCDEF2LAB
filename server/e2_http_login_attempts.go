@@ -20,8 +20,9 @@ import (
 // 파일에 쓰고, 진단 단계는 시작 때 앞 단계 행으로 연속 실패 수를 잇는다(§5 회차당).
 const E2HTTPLoginAttemptsFile = "login-attempts.jsonl"
 
-// E2HTTPLoginHistoryUnavailableFile은 앞 단계(탐색)의 로그인 기록을 넘겨받지 못했다는 표지(0600)다. 있으면 진단 단계는
-// 회차 공통 연속 실패 상한을 지킬 수 없으므로 로그인 시도만 보내지 않는다(계약 §5, #969 동찬 리뷰 P2).
+// E2HTTPLoginHistoryUnavailableFile은 앞 단계(탐색)의 로그인 기록 인계가 확인되지 않았다는 표지(0600)다. 탐색이 경계를 열기
+// 전에 쓰고 인계가 확인될 때만 지운다. 있으면 진단 단계는 회차 공통 연속 실패 상한을 지킬 수 없으므로 로그인 시도만 보내지
+// 않는다(계약 §5, #969 동찬 리뷰 P2 두 번: 인계 뒤 기록·표지 저장이 모두 실패해도 표지가 남는다).
 const E2HTTPLoginHistoryUnavailableFile = "login-attempts.unavailable"
 
 // maxLoginAttemptRowBytes는 기록 한 줄 상한이다. 넘는 줄은 읽지 않는다(행은 칸 이름·상한 있는 목록뿐이라 닿지 않는다).
@@ -130,12 +131,24 @@ func readLoginAttemptRows(path string) (rows []loginattempt.Row, complete bool, 
 	return rows, skipped == 0, nil
 }
 
-// MarkLoginHistoryUnavailable은 앞 단계 로그인 기록을 넘겨받지 못했다고 남긴다(표지 파일, 0600). 쓰지 못하면 오류다.
+// MarkLoginHistoryUnavailable은 앞 단계 로그인 기록 인계가 확인되지 않았다고 남긴다(표지 파일, 0600). 쓰지 못하면 오류다.
 func MarkLoginHistoryUnavailable(stateDir string) error {
 	if stateDir == "" {
 		return errLoginAttempts
 	}
 	return os.WriteFile(filepath.Join(stateDir, E2HTTPLoginHistoryUnavailableFile), []byte("unavailable\n"), 0o600)
+}
+
+// ClearLoginHistoryUnavailable은 앞 단계 로그인 기록 인계가 확인됐을 때 표지를 지운다. 이미 없으면 성공이다. 지우지 못하면
+// 오류다(표지가 남아 진단 단계가 로그인 시도를 보내지 않는다).
+func ClearLoginHistoryUnavailable(stateDir string) error {
+	if stateDir == "" {
+		return errLoginAttempts
+	}
+	if err := os.Remove(filepath.Join(stateDir, E2HTTPLoginHistoryUnavailableFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // appendLoginAttemptRow는 행 하나를 덧붙인다. 쓰지 못해도 송신은 멈추지 않는다(감사 기록이 아님). 로그와 진단 사건만 남긴다.
