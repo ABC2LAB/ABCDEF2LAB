@@ -7,6 +7,7 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/norma/llm"
 	"iter"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -202,8 +203,12 @@ func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.Comp
 	// rateLimited는 이 호출의 마지막 실패가 제공자 요청 한도(429, 청구 없음)였는지다. 그때는 더 길게 기다렸다 다시 보낸다.
 	// rejected는 마지막 실패가 요청 내용 거부(400 등)였는지다. 그때는 다시 보내지 않는다.
 	rateLimited, rejected := false, false
+	// retryAfter는 마지막 요청 한도 응답의 Retry-After다(있을 때만). 다시 보낼 때 그 값을 따른다.
+	var retryAfter time.Duration
+	hasRetryAfter := false
 	once := func() (llm.Message, string, llm.Usage, error, error) {
 		rateLimited, rejected = false, false
+		retryAfter, hasRetryAfter = 0, false
 		// 제공자가 연속 일시 오류로 쉬는 중이면 쉬는 시간이 끝날 때까지 여기서 기다린다(예약 전이라 회계는 그대로다).
 		// 기다리다 호출 문맥이 끝나면 그 호출만 실패하고, 쉬는 시간이 끝날 때 Planner를 한 번 깨운다.
 		releaseProbe, err := budget.awaitProviderCooldown(ctx, p.wakePlanner)
@@ -221,10 +226,14 @@ func (p *firstDiagnosisModelProvider) Complete(ctx context.Context, req llm.Comp
 		settleErr := budget.settle(reserved, usage, callErr)
 		rateLimited = callErr != nil && budget.callRateLimited(reserved)
 		rejected = callErr != nil && budget.callRejected(reserved)
+		if rateLimited {
+			retryAfter, hasRetryAfter = reserved.retryAfter()
+		}
 		return message, reason, usage, callErr, settleErr
 	}
 	retryable := func() bool { return !rejected && budget.retryable() }
-	return firstDiagnosisRetryModelCallWith(ctx, budget.retryDelays, budget.rateLimitDelays, func() bool { return rateLimited }, once, retryable)
+	return firstDiagnosisRetryModelCallAfter(ctx, budget.retryDelays, budget.rateLimitDelays, func() bool { return rateLimited },
+		func() (time.Duration, bool) { return retryAfter, hasRetryAfter }, once, retryable)
 }
 
 // firstDiagnosisModelRetryDelays는 실패한 모델 호출을 다시 보내기 전 기다리는 시간이다(429·5xx·연결 실패 등). 원본 SDK가
@@ -236,7 +245,11 @@ var firstDiagnosisModelRetryDelays = []time.Duration{2 * time.Second, 6 * time.S
 // 청구되지 않으므로(#584) 더 오래·더 여러 번 기다려도 승인 예산이 줄지 않는다. 2026-11-14 점검 회차에서 2초·6초 두 번으로는
 // 요청 한도 구간을 넘기지 못해 준비 계획이 실패했고(429 여섯 번), 수십 분 뒤 같은 요청은 정상이었다. 합계는 준비 계획 상한
 // (2분)보다 짧게 둔다.
-var firstDiagnosisRateLimitRetryDelays = []time.Duration{2 * time.Second, 6 * time.Second, 15 * time.Second, 30 * time.Second}
+//
+// 2026-11-26 사용자 결정(NodeGoat 회차 2: 429 40%, 계획 호출 하나가 5번째 시도에서 겨우 성공): 다시 보내기를 한 번 늘려 최대
+// 5번으로 하고, 응답에 Retry-After가 있으면 이 표의 그 칸과 Retry-After 중 큰 쪽을 기다린다(위는 이 표의 가장 긴 간격 30초,
+// 2026-11-27 결정 (나)). 최악 합계(5×30초)도 준비 단계 상한(FirstDiagnosisPreparationTimeout)보다 짧다.
+var firstDiagnosisRateLimitRetryDelays = []time.Duration{2 * time.Second, 6 * time.Second, 15 * time.Second, 30 * time.Second, 30 * time.Second}
 
 // firstDiagnosisRetryModelCall은 호출 하나를 보내고, 호출이 실패했지만(callErr) 예산·승인이 막히지 않았으면 정한 간격으로
 // 다시 보낸다. 예산 거부(예약 실패·상한)·막힘·문맥 취소는 다시 보내지 않는다. 마지막 결과의 예산 오류를 돌려준다.
@@ -247,19 +260,34 @@ func firstDiagnosisRetryModelCall(ctx context.Context, delays []time.Duration, o
 // firstDiagnosisRetryModelCallWith는 위와 같되, 마지막 실패가 요청 한도(rateLimited)이면 rateLimitDelays 간격을 쓴다.
 // 시도 횟수는 두 간격에 함께 센다.
 func firstDiagnosisRetryModelCallWith(ctx context.Context, delays, rateLimitDelays []time.Duration, rateLimited func() bool, once func() (llm.Message, string, llm.Usage, error, error), retryable func() bool) (llm.Message, string, llm.Usage, error) {
+	return firstDiagnosisRetryModelCallAfter(ctx, delays, rateLimitDelays, rateLimited, nil, once, retryable)
+}
+
+// firstDiagnosisRetryModelCallAfter는 위와 같되, 마지막 실패가 요청 한도이고 응답에 Retry-After가 있으면(retryAfter) 간격표의
+// 그 칸과 Retry-After 중 큰 쪽을 기다린다. 기다리는 시간은 요청 한도 간격표의 가장 긴 간격을 넘지 않는다.
+func firstDiagnosisRetryModelCallAfter(ctx context.Context, delays, rateLimitDelays []time.Duration, rateLimited func() bool, retryAfter func() (time.Duration, bool), once func() (llm.Message, string, llm.Usage, error, error), retryable func() bool) (llm.Message, string, llm.Usage, error) {
 	for attempt := 0; ; attempt++ {
 		message, reason, usage, callErr, budgetErr := once()
 		if budgetErr == nil {
 			return message, reason, usage, nil
 		}
 		schedule := delays
-		if rateLimited != nil && rateLimitDelays != nil && rateLimited() {
+		limited := rateLimited != nil && rateLimitDelays != nil && rateLimited()
+		if limited {
 			schedule = rateLimitDelays
 		}
 		if callErr == nil || attempt >= len(schedule) || ctx.Err() != nil || !retryable() {
 			return llm.Message{}, "", usage, budgetErr
 		}
-		timer := time.NewTimer(schedule[attempt])
+		wait := schedule[attempt]
+		if limited && retryAfter != nil {
+			// Retry-After는 기다림을 늘릴 때만 쓴다: 간격표의 이 칸과 Retry-After 중 큰 쪽, 위는 간격표의 가장 긴 간격이다
+			// (2026-11-27 사용자 결정 (나), #980 윤재상 리뷰: 0·짧은 값을 그대로 따르면 예전보다 빨리 포기한다).
+			if hint, ok := retryAfter(); ok {
+				wait = min(max(hint, wait), slices.Max(schedule))
+			}
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
 			timer.Stop()

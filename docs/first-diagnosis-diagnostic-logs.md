@@ -38,6 +38,7 @@ symlink, hardlink, 상대·탈출 경로, 저장소 `.git` 아래 및 일반 `we
 - `run_ref`, `call_ref`, `attempt_ref`: 실제 프로그램 참조의 SHA-256. 임의 문자열·비밀이 원문으로 남지 않는다.
 - `model/provider`: 고정 허용 식별자만 원문. 임의 로컬 모델이나 승인된 provider 식별자는 별도 해시 참조다.
 - `duration_ms`, 토큰·비용·건수: 실제 관측값. 원문 에러를 분석해 숫자를 만들지 않는다.
+- 모델 제공자 요청 한도(429, `http_rate_limited`)의 `model_request_finished`에만 `retry_after_ms`(응답 `Retry-After`, 초·HTTP 날짜, 한 시간 상한), `provider_name`(응답 본문 `error.metadata.provider_name`, 영문·숫자·공백·`._/-`만 64바이트), `provider_error`(본문 `error.metadata.raw`, 없으면 `error.message`, 제어 문자는 공백·512바이트)가 있을 수 있다(사용자 결정 2026-11-26, 429 원인 분석). 진단 기록에서 원문을 싣는 유일한 칸이다. 전송이 이 호출의 API 키를 `[REDACTED]`로 가린 뒤에만 싣고, 제어 비밀은 남지 않는다(절대규칙 2). `provider_name`은 해시하지 않는다(`provider_ref`는 응답한 제공자의 해시 그대로).
 - `count_known`이 있는 집계는 0과 조회 불가를 구분한다. 조회 불가를 0으로 확정하지 않는다.
 - `account_auth_checked`의 `account_label`은 설정에서 검증된 32자 이하 시험 계정 라벨이다. 다른 이벤트에는 이 칸을 허용하지 않는다. 설정에 따라 계정 라벨이 실제 사용자명과 같을 수 있으므로 보호 로그를 공유할 때는 라벨도 가린다. 자격 파일의 사용자명·비밀번호·토큰·쿠키와 대상 응답 본문은 기록하지 않는다. 재로그인 간격·횟수 제한이나 호출 시작 실패로 보내지 못했을 때는 `not_sent`·`auth_not_sent`를 남긴다.
 
@@ -71,8 +72,8 @@ task로 여러 준비/실행/조회 파일을 묶고, run/call/attempt 해시와
 |---|---|
 | `database_unavailable`, `database_role_invalid` | 연결 또는 최소 역할 검사. DSN은 별도 보호 설정에서 확인 |
 | `model_profile_invalid` | 승인 프로필/manifest 결속 실패 |
-| `http_unauthorized`, `http_rate_limited`, `http_server_error`, `http_client_error` | 모델 endpoint HTTP 상태 범주. 외부 오류 본문은 없음 |
-| `timeout`, `transport_failure`, `response_invalid` | 시한, DNS/TLS/연결 등 전송 실패, 응답 형식 실패. 세부 raw 오류는 없음 |
+| `http_unauthorized`, `http_rate_limited`, `http_server_error`, `http_client_error` | 모델 endpoint HTTP 상태 범주. 외부 오류 본문은 없음(`http_rate_limited`만 위 `retry_after_ms`·`provider_name`·`provider_error`) |
+| `timeout`, `transport_failure`, `response_invalid` | 시한, DNS/TLS/연결 등 전송 실패, 응답 형식 실패. 세부 raw 오류는 없음. 모델 호출 시간 상한(`timeout_seconds`)에 끊긴 요청도 `timeout`이다(2026-11-27 전에는 `transport_failure`로 남기도 했다). 응답 머리를 받은 뒤 본문을 기다리다 끊겼으면 `http_status`가 같이 남고, 받은 본문이 없어 `provider_name`·`provider_error`는 없다 |
 | `token_limit`, `cost_limit`, `request_limit`, `expired`, `approval_consumed` | 기존 모델 예산/승인 정책의 사전 차단. 추가 요청이나 자동 재시도 없음 |
 | `no_intents`, `planner_failed`, `max_turns` | 계획 부재 또는 Planner 종료. 생성 intent 수와 모델 이벤트 대조 |
 | `unregistered_tool`, `schema_invalid` | 미등록 도구 또는 모델 입력 schema 불일치. SDK가 붙이는 Planner `TodoWrite`는 등록 도구로 보고, SDK가 직접 실행하므로 `tool_selected`·`tool_schema_checked`만 남고 `tool_started`·`tool_finished`는 없음 |
