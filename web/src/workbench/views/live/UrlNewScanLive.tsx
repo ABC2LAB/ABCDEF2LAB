@@ -23,12 +23,12 @@ import {
   urlDiagnosisInput,
   type WorkflowMode,
 } from "@/lib/diagnosis/diagnosis-url";
-import { readExternalTestAccountPresence } from "@/lib/diagnosis/external-account-consent";
 import {
   type ExternalTransferConsent,
   readExternalTransferConsent,
   recordExternalTransferConsent,
 } from "@/lib/diagnosis/external-transfer-consent";
+import { readTargetAccountPresence } from "@/lib/diagnosis/target-account-presence";
 
 import { cx } from "../../lib/cx";
 import { NO_SPACE_USERNAME } from "../../live/accounts";
@@ -321,7 +321,7 @@ export function UrlNewScanLive() {
   const [startConfirm, setStartConfirm] = useState({ key: "", exclusions: false, backup: false });
   // 주소 칸을 한 번이라도 고쳤는가: 처음 들어온 빈 칸에는 빨간 안내를 띄우지 않고, 지웠을 때만 띄운다 (시안 #nHost)
   const [touched, setTouched] = useState(false);
-  // 새 점검에 들어올 때마다 대상의 시험 계정 유무·정책 선언을 다시 읽는다. 처음 한 번만 읽으면 그 뒤 계정 분류·정책 선언
+  // 새 점검에 들어올 때마다 대상의 시험 계정 유무·정책 선언을 다시 읽는다. 처음 한 번만 읽으면 그 뒤 시험 계정·정책 선언
   // 화면에서 더한 계정·선언이 반영되지 않아 "로그인 없이 진행"·확정 단계 안내 없음으로 남았다(1차 리허설 F2와 같은 종류,
   // 2026-11-22 합친 빌드 자동화에서 재현)
   // 새 점검에 들어온 순간 보던 점검이 끝난 점검이면 그 점검을 떼고 빈 입력으로 시작한다(사용자 11/24: '끝난 점검이라 입력이
@@ -411,7 +411,7 @@ export function UrlNewScanLive() {
     if (!tv || urlTargetHint(tv)) return;
     const controller = new AbortController();
     let current = true;
-    void readExternalTestAccountPresence(tv, controller.signal)
+    void readTargetAccountPresence(tv, controller.signal)
       .then((value) => {
         if (current)
           setAccountPresence({

@@ -1,7 +1,7 @@
 // #677 리뷰의 합성 fixture: 원문 가림(maskSecrets)만으로는 못 잡고, Markdown · HTML 로 그리면 비밀이 보이는 모양.
-// 상세 보고 카드(파싱 뒤 가림)와 클립보드 복사(maskForCopy) 시험이 같은 목록을 쓴다(#709 이동찬 리뷰). 값은 전부 합성이다.
+// 화면은 가리지 않으므로(DLP 폐기) 클립보드 복사(maskForCopy) 시험만 이 목록을 쓴다(#709 이동찬 리뷰 · #975). 값은 전부 합성이다.
 
-/** [이름, 원문, 화면 · 클립보드에 남으면 안 되는 합성 값] */
+/** [이름, 원문, 클립보드에 남으면 안 되는 합성 값] */
 export const MARKUP_HIDDEN_SECRETS: [string, string, string][] = [
   ["HTML 엔티티", "&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;=synthetic-entity-secret", "synthetic-entity-secret"],
   ["서식으로 쪼갬", "**pass**word=synthetic-split-secret", "synthetic-split-secret"],

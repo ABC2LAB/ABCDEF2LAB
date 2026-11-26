@@ -1,4 +1,6 @@
-// 화면 표시용 민감값 가림. 서버 원문은 그대로이고, 여기서는 그리기 직전의 글만 바꾼다.
+// 클립보드 복사용 민감값 가림(#975 이동찬 P2, 사용자 결정 2026-11-26). 화면 표시는 가리지 않지만(DLP 폐기, CLAUDE.md 절대규칙 2 —
+// 제품 화면은 내부 담당자만 본다), '복사' · 'PoC 복사' · 코드 상자 복사처럼 화면 밖(팀 채팅 · 이슈 · 보고서)으로 붙여 넣는 글은
+// 지금처럼 가린다. 레포 · PR · 이슈 · 팀 채팅에는 비밀번호 · 토큰 값을 붙이지 않는다(같은 규칙 2).
 // 대상: 인증 헤더 값 · JSON/쿼리/폼/`key: value` 의 민감 키 값 · `Bearer xxx` · JWT 모양 문자열.
 // 지나치게 가리는 쪽을 택한다(놓치는 것보다 낫다). 여러 번 걸어도 결과가 같다(멱등).
 
@@ -7,7 +9,6 @@ export const REDACTED = "[REDACTED]";
 
 /** 민감 키 이름 조각 (대소문자 무시, 이름 안 어디에 있어도). */
 const KEY_PART = "passw(?:or)?d|pwd|token|secret|session|api[_-]?key|authorization|cookie|credential";
-const KEY_RE = new RegExp(KEY_PART, "i");
 
 /** 값을 통째로 가리는 헤더. Cookie·Set-Cookie 는 이름을 남기고 값만 가린다. */
 const HEADER_RE =
@@ -45,11 +46,6 @@ const PLAIN_RE = new RegExp(
 const BEARER_RE = /\bBearer\s+(?!\[REDACTED\])[A-Za-z0-9._~+/=-]+/g;
 const JWT_RE = /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*/g;
 
-/** 이 이름이 민감 키인가 (password·token·session·cookie·api_key … 를 품음). */
-export function isSensitiveKey(name: string): boolean {
-  return KEY_RE.test(name);
-}
-
 /** 헤더 값 가리기: Cookie 는 `a=[R]; b=[R]`, Set-Cookie 는 첫 쌍만 가리고 속성 유지, Authorization 은 방식(Bearer 등) 유지. */
 function maskHeaderValue(name: string, value: string): string {
   const v = value.trim();
@@ -80,12 +76,11 @@ function maskHeaderValue(name: string, value: string): string {
 }
 
 /**
- * 글 안의 민감값을 `[REDACTED]` 로 바꾼다 (화면 표시용).
+ * 글 안의 민감값을 `[REDACTED]` 로 바꾼다 (한 줄 단위 · 글자 그대로. 클립보드로 낼 때는 maskForCopy).
  * - 헤더: Cookie · Set-Cookie · Authorization · Proxy-Authorization · X-Api-Key (· X-Auth-Token · X-Access-Token)
  * - JSON(이스케이프된 JSON 포함)·쿼리·폼·`key: value` 에서 이름에 password|passwd|pwd|token|secret|session|api_key|apikey|
  *   access_token|refresh_token|authorization|cookie|credential 이 들어간 키의 값
  * - `Bearer xxx`, JWT 모양(eyJ….….…)
- * 서버 원문은 가려지지 않는다 → 화면에 `<MaskedNote />` 를 함께 둔다.
  */
 export function maskSecrets(text: string): string {
   if (!text) return text;
@@ -102,12 +97,6 @@ export function maskSecrets(text: string): string {
   out = out.replace(BEARER_RE, `Bearer ${REDACTED}`);
   out = out.replace(JWT_RE, REDACTED);
   return out;
-}
-
-/** 이름-값 한 쌍(파라미터·미리보기 칸) 가리기: 이름이 민감 키면 값 전체, 아니면 maskSecrets(값). */
-export function maskParam(name: string, value: string): string {
-  if (!value) return value;
-  return isSensitiveKey(name) ? REDACTED : maskSecrets(value);
 }
 
 /**
@@ -242,24 +231,91 @@ export function maskForCopy(text: string): string {
 
 /**
  * 줄바꿈을 띄어쓰기로 이어 붙인 한 줄로 가려 본다. 가릴 게 있으면 이어 붙인 채 가린 글, 없으면 null.
- * 풀린 글(엔티티 줄바꿈)에서 키와 값이 다른 줄로 갈리면 한 줄 단위 가림이 못 알아봐서다(#709 이동찬 리뷰). 클립보드 복사와
- * 상세 보고 카드(Markdown 파싱 뒤 가림)가 같이 쓴다.
+ * 풀린 글(엔티티 줄바꿈)에서 키와 값이 다른 줄로 갈리면 한 줄 단위 가림이 못 알아봐서다(#709 이동찬 리뷰).
  */
-export function maskAcrossBreaks(text: string): string | null {
+function maskAcrossBreaks(text: string): string | null {
   const joined = text.replace(LINE_BREAK_RE, " ");
   const masked = maskSecrets(joined);
   return masked === joined ? null : masked;
 }
 
-/** 서버가 준 JSON 값을 보기 좋게 문자열로 만든 뒤 가린다 (문자열이면 그대로 가림). */
-export function maskJson(value: unknown): string {
-  if (value === undefined || value === null) return "";
-  if (typeof value === "string") return maskSecrets(value);
-  let text: string;
-  try {
-    text = JSON.stringify(value, null, 2);
-  } catch {
-    text = String(value);
+/**
+ * 블록(문단 · 제목 · 목록 칸 · 표 칸 · 목록 · 표 · 코드 상자 …). 블록 안에서 다음 블록을 만나기 전까지의 인라인 글(텍스트 · 서식 ·
+ * 대체 글)은 한 덩어리로 모아 가린다 — 서식 · 엔티티 줄바꿈으로 갈린 키와 값도 같은 덩어리로 본다(예전 화면 가림 remarkMaskSecrets 의
+ * 블록 규칙과 같다, #677 · #709 리뷰). 하위 목록이 있는 목록 칸도 그 앞 글을 모은 뒤 하위 목록을 따로 본다(#975 이동찬 P2).
+ */
+const BLOCK_TAGS = new Set([
+  "P",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "LI",
+  "DT",
+  "DD",
+  "UL",
+  "OL",
+  "DL",
+  "BLOCKQUOTE",
+  "DIV",
+  "SECTION",
+  "TABLE",
+  "THEAD",
+  "TBODY",
+  "TFOOT",
+  "TR",
+  "PRE",
+  "HR",
+]);
+const TEXT_NODE = 3;
+
+/** 인라인 글 한 덩어리: 줄바꿈을 이어 붙여 가릴 게 있으면 이어 붙인 채 가린 글, 없으면 줄 단위 가림(maskForCopy). */
+function blockCopy(text: string): string {
+  return maskForCopy(maskAcrossBreaks(text) ?? text);
+}
+
+function collectCopy(el: Element, out: string[]): void {
+  let inline = "";
+  const flush = () => {
+    if (inline.trim()) out.push(blockCopy(inline));
+    inline = "";
+  };
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeType === TEXT_NODE) {
+      inline += node.textContent ?? "";
+      continue;
+    }
+    if (!(node instanceof Element)) continue;
+    const tag = node.tagName;
+    if (!BLOCK_TAGS.has(tag)) {
+      // 인라인 요소(강조 · 코드 · 링크 글 · 이미지 대체 글): 같은 덩어리에 이어 붙인다
+      inline += node.textContent ?? "";
+      continue;
+    }
+    flush();
+    if (tag === "TR") {
+      // 표 한 줄: 칸을 탭으로 갈라 한 줄로(칸 글이 서로 붙어 키를 못 알아보지 않게). 칸마다 이어 붙여 가린 뒤 다시 본다
+      const cells = Array.from(node.children).map((c) => maskAcrossBreaks(c.textContent ?? "") ?? c.textContent ?? "");
+      out.push(maskForCopy(cells.join("\t")));
+    } else if (tag === "PRE") {
+      // 코드 상자는 줄 모양을 지킨다(줄 단위 가림)
+      out.push(maskForCopy(node.textContent ?? ""));
+    } else {
+      collectCopy(node, out);
+    }
   }
-  return maskSecrets(text);
+  flush();
+}
+
+/**
+ * 화면에 그려진 Markdown 상자(보고서 탭 · 상세 보고)를 클립보드용 글로 만들고 가린다(#975 이동찬 P2). 화면은 가리지 않으므로
+ * 그려진 글을 그대로 복사하면 블록 안 줄바꿈 · 표 칸 경계로 갈린 값을 줄 단위 가림이 놓친다 — 블록 · 표 줄 단위로 모아 가린다.
+ * innerText 에 기대지 않아 브라우저 · 시험 환경(jsdom)에서 같은 글이 나온다.
+ */
+export function renderedCopyText(root: Element): string {
+  const out: string[] = [];
+  collectCopy(root, out);
+  return out.join("\n");
 }

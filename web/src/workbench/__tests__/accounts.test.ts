@@ -5,66 +5,17 @@ vi.mock("@/lib/diagnosis/api", () => ({ apiFetch: vi.fn() }));
 import { apiFetch } from "@/lib/diagnosis/api";
 
 import {
-  type AccountClass,
-  type ClassifiedAccount,
-  classFromServer,
-  classLabel,
   getAccounts,
   getProductTargets,
   isValidAccountLabel,
-  markTestAccount,
-  normalizeClass,
   type ProductTargetRef,
   registerAccount,
-  summarizeAccounts,
-  unmarkAccount,
-  usableAsTestAccount,
-  validStatement,
 } from "../live/accounts";
 
 const api = vi.mocked(apiFetch);
 afterEach(() => api.mockReset());
 
-const acct = (cls: AccountClass): ClassifiedAccount => ({ ref: `r-${cls}`, origin: "https://t.example", cls });
 const target: ProductTargetRef = { id: "t1", origin: "https://a.example", state: "approved" };
-
-describe("usableAsTestAccount (§8 fail-closed)", () => {
-  it("승인된 시험 표시만 쓸 수 있다", () => {
-    expect(usableAsTestAccount("test_approved")).toBe(true);
-    expect(usableAsTestAccount("test_pending")).toBe(false);
-    expect(usableAsTestAccount("unmarked")).toBe(false);
-  });
-  it("미등록·판단 불가 값은 실계정(false)", () => {
-    expect(usableAsTestAccount("")).toBe(false);
-    expect(usableAsTestAccount("approved")).toBe(false);
-    expect(usableAsTestAccount("constructor")).toBe(false);
-  });
-});
-
-describe("normalizeClass / classLabel", () => {
-  it("아는 값은 그대로, 밖은 unmarked(실계정 취급)", () => {
-    expect(normalizeClass("test_approved")).toBe("test_approved");
-    expect(normalizeClass("bogus")).toBe("unmarked");
-    expect(classLabel("bogus")).toBe("미표시 (실계정 취급)");
-  });
-});
-
-describe("classFromServer (§8 fail-closed)", () => {
-  it("'test'만 승인된 시험, 그 밖은 전부 실계정", () => {
-    expect(classFromServer("test")).toBe("test_approved");
-    expect(classFromServer("real")).toBe("unmarked");
-    expect(classFromServer("")).toBe("unmarked");
-    expect(classFromServer("pending")).toBe("unmarked");
-  });
-});
-
-describe("summarizeAccounts", () => {
-  it("상태별로 세고 usable 은 승인 시험만(미등록 cls 는 실계정으로)", () => {
-    const weird = { ref: "x", origin: "o", cls: "weird" } as unknown as ClassifiedAccount;
-    const s = summarizeAccounts([acct("test_approved"), acct("test_pending"), acct("unmarked"), weird]);
-    expect(s).toMatchObject({ total: 4, testApproved: 1, testPending: 1, unmarked: 2, usable: 1 });
-  });
-});
 
 describe("getProductTargets", () => {
   it("id·origin 있는 대상만 받고 형식 깨진 건 버린다", async () => {
@@ -88,78 +39,56 @@ describe("getProductTargets", () => {
   });
 });
 
-describe("getAccounts (실 GET · 매핑 · fail-closed)", () => {
+describe("getAccounts (실 GET · 매핑)", () => {
   it("대상이 없으면 빈 목록(실 호출 안 함)", async () => {
     const r = await getAccounts(null);
-    expect(r).toEqual({ accounts: [], statement: "", mock: false });
+    expect(r).toEqual({ accounts: [] });
     expect(api).not.toHaveBeenCalled();
   });
 
-  it("test→시험 계정, real→실계정 취급으로 매핑하고 origin 은 대상 것, 형식 밖 라벨은 버린다", async () => {
+  // 계정 분류 폐지(사용자 결정 2026-11-26): 서버가 아직 싣는 classification · 표시자 · 사유 · account_statement 는 읽지 않는다
+  it("라벨 · 자격 등록 여부만 읽고 origin 은 대상 것, 형식 밖 라벨은 버린다", async () => {
     api.mockResolvedValueOnce({
       accounts: [
-        { label: "owner", classification: "test", classified_by: "op-1", classified_at: "2026-11-10T00:00:00Z" },
+        {
+          label: "owner",
+          classification: "test",
+          classified_by: "op-1",
+          classified_at: "2026-11-10T00:00:00Z",
+          registered_at: "2026-11-09T01:02:03.5Z",
+        },
         { label: "peer", classification: "real", reason: "target_reapproved" },
         { label: "guest", classification: "real", credential_configured: true },
-        { label: "odd", classification: "real", credential_configured: "true" }, // 참(boolean)이 아니면 미등록
-        { label: "User@x", classification: "test" }, // 라벨 형식 밖 → 버림
-        { classification: "test" }, // 라벨 없음 → 버림
+        { label: "odd", credential_configured: "true", registered_at: "어제" }, // 참(boolean)이 아니면 미등록, 시각 형식 밖은 null
+        { label: "User@x", credential_configured: true }, // 라벨 형식 밖 → 버림
+        { credential_configured: true }, // 라벨 없음 → 버림
       ],
+      account_statement: "소유·승인된 일회용 시험 계정입니다.",
     });
     const r = await getAccounts(target);
     expect(api).toHaveBeenCalledWith(
       "/api/product/targets/t1/accounts",
       expect.objectContaining({ cache: "no-store" }),
     );
-    expect(r.mock).toBe(false);
-    expect(r.accounts).toEqual([
-      {
-        ref: "owner",
-        origin: "https://a.example",
-        cls: "test_approved",
-        approvedBy: "op-1",
-        approvedAt: "2026-11-10T00:00:00Z",
-        note: undefined,
-        credentialConfigured: false,
-      },
-      {
-        ref: "peer",
-        origin: "https://a.example",
-        cls: "unmarked",
-        approvedBy: undefined,
-        approvedAt: undefined,
-        note: "실계정 전환 사유: target_reapproved",
-        credentialConfigured: false,
-      },
-      {
-        ref: "guest",
-        origin: "https://a.example",
-        cls: "unmarked",
-        approvedBy: undefined,
-        approvedAt: undefined,
-        note: undefined,
-        // 자격 등록 여부는 메모가 아니라 credential_configured 칸으로만 나른다(값 없음).
-        credentialConfigured: true,
-      },
-      {
-        ref: "odd",
-        origin: "https://a.example",
-        cls: "unmarked",
-        approvedBy: undefined,
-        approvedAt: undefined,
-        note: undefined,
-        credentialConfigured: false,
-      },
-    ]);
+    expect(r).toEqual({
+      accounts: [
+        {
+          ref: "owner",
+          origin: "https://a.example",
+          credentialConfigured: false,
+          registeredAt: Date.parse("2026-11-09T01:02:03.5Z"),
+        },
+        { ref: "peer", origin: "https://a.example", credentialConfigured: false, registeredAt: null },
+        // 자격 등록 여부는 credential_configured 칸으로만 나른다(값 없음). 분류가 real 이어도 같다
+        { ref: "guest", origin: "https://a.example", credentialConfigured: true, registeredAt: null },
+        { ref: "odd", origin: "https://a.example", credentialConfigured: false, registeredAt: null },
+      ],
+    });
   });
 
-  it("accounts 모양이 틀리면 빈 목록(fail-closed)", async () => {
+  it("accounts 모양이 틀리면 빈 목록", async () => {
     api.mockResolvedValueOnce({ accounts: "nope" });
     expect((await getAccounts(target)).accounts).toEqual([]);
-  });
-  it("account_statement 를 함께 준다(mark-test 동의 문장)", async () => {
-    api.mockResolvedValueOnce({ accounts: [], account_statement: "소유·승인된 일회용 시험 계정입니다." });
-    expect((await getAccounts(target)).statement).toBe("소유·승인된 일회용 시험 계정입니다.");
   });
 });
 
@@ -173,7 +102,7 @@ describe("isValidAccountLabel", () => {
   });
 });
 
-describe("쓰기(등록·시험 표시·해제) — 자격 값 없이 label만", () => {
+describe("등록 쓰기 — 자격 값 없이 label만", () => {
   it("registerAccount: POST accounts {label}, 형식 밖 라벨은 아예 보내지 않는다", async () => {
     api.mockResolvedValueOnce({});
     await registerAccount("t1", "owner");
@@ -184,43 +113,5 @@ describe("쓰기(등록·시험 표시·해제) — 자격 값 없이 label만",
     api.mockClear();
     await expect(registerAccount("t1", "User@x")).rejects.toThrow();
     expect(api).not.toHaveBeenCalled();
-  });
-  it("markTestAccount: POST mark-test {statement_confirmed:true}", async () => {
-    api.mockResolvedValueOnce({});
-    await markTestAccount("t1", "owner");
-    expect(api).toHaveBeenCalledWith(
-      "/api/product/targets/t1/accounts/owner/mark-test",
-      expect.objectContaining({ method: "POST", body: JSON.stringify({ statement_confirmed: true }) }),
-    );
-  });
-  it("unmarkAccount: POST unmark {}", async () => {
-    api.mockResolvedValueOnce({});
-    await unmarkAccount("t1", "owner");
-    expect(api).toHaveBeenCalledWith(
-      "/api/product/targets/t1/accounts/owner/unmark",
-      expect.objectContaining({ method: "POST", body: "{}" }),
-    );
-  });
-});
-
-// 서버 진술 문장은 그대로 쓰고, 형식 밖이면 ""(시험 표시 불가). 화면이 대체 문구로 동의를 받지 않게 한다(#538).
-describe("validStatement (진술 fail-closed)", () => {
-  it("정상 문장은 그대로", () => {
-    expect(validStatement("이 계정은 우리 조직이 소유한 일회용 시험 계정이다.")).toBe(
-      "이 계정은 우리 조직이 소유한 일회용 시험 계정이다.",
-    );
-  });
-  it.each([
-    undefined,
-    null,
-    7,
-    "",
-    " 앞 공백",
-    "뒤 공백 ",
-    "줄\n바꿈",
-    "널\u0000",
-    "x".repeat(1025),
-  ])("형식 밖은 빈 값: %j", (v) => {
-    expect(validStatement(v)).toBe("");
   });
 });
