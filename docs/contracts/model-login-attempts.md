@@ -249,15 +249,75 @@
 ### 6-1. 배운 로그인 방법 (회차 밖, #963 경준 리뷰 P2-B)
 
 11/26 분담대로 계정 화면에 계정별 "로그인 방법: 배움 / 검증됨"을 보이려면 회차를 넘어 남는 값이 있어야 한다. 그래서 배운 로그인 방법을 대상 계정 저널(보호 저널, 감사 기록)에 계정별로 남긴다.
-- **남기는 것**: §6 E③ 재사용이 쓰는 칸과 같다. `method`·`path`·`format`·`identifier_field`·`password_field`·`other_fields`·`fields_from_response`·`session_source`·`session_names`·`session_sent_as`. 값(아이디·비밀번호·세션)은 넣지 않는다. 출처 `run_ref`·`attempt_ref`·시각도 남긴다.
-- **상태**: 계정별 하나.
-  - `none`: 아직 없음.
-  - `learned`: 이 계정 라벨의 모델 로그인 시도가 `succeeded`. 더 뒤의 성공이 오면 그 방법으로 바꾼다.
-  - `verified`: 저장된 그 방법으로 E③ 재사용 로그인(`actor: program`)도 `succeeded`. 방법이 바뀌면 다시 `learned`가 된다.
-- **비우는 때**: 대상 재승인(판이 바뀜)·계정 자격 변경·계정 삭제 때 `none`으로 돌린다. 범위나 자격이 바뀌면 그 방법이 맞는지 다시 확인해야 하기 때문이다.
+- **저장·갱신 담당**: `learned`는 모델 로그인 PR(최민준, ⑤-B)이, `verified`는 E③ 재사용 PR(이동찬)이 쓴다.
 - **E③ 재사용 순서**: 이 회차에 `succeeded` 시도가 있으면 그것을 먼저 쓰고, 없으면 저장된 방법을 쓴다. 둘 다 없으면 그 계정은 확정 단계에 쓰지 않는다.
-- **계정 목록 응답**: 계정별 `login_method: {state: "none"|"learned"|"verified", run_ref, at}` 칸을 싣는다. 방법의 칸 이름까지 화면에 보일지는 화면 PR에서 정한다. 이 칸을 싣는 서버 PR은 웹 파서(닫힌 칸 목록)를 같은 PR에서 고친다(§4 규칙).
-- 저장·갱신은 로그인 시도 기록을 구현하는 모델 로그인 PR(최민준)이, `verified` 표시는 E③ 재사용 PR(이동찬)이 한다.
+- 값(아이디·비밀번호·세션 값·응답 본문)은 저널에도 API에도 넣지 않는다. 방법의 칸 이름·경로·세션 자리만 남긴다.
+
+#### 6-1-1. 상태와 바뀌는 때
+
+계정별 상태는 셋이다.
+
+| 상태(`state`) | 뜻 | 화면 글 제안 |
+|---|---|---|
+| `none` | 쓸 수 있는 배운 방법이 없음 | 아직 없음 |
+| `learned` | 이 계정의 로그인 시도(탐색·진단, `actor: model`)가 §4 `succeeded`였고 그 방법을 저장함 | 배움 |
+| `verified` | 저장된 그 방법(같은 `method_sha256`)으로 E③ 재사용 로그인(`actor: program`)도 `succeeded` | 검증됨 |
+
+- 더 뒤의 `succeeded`가 다른 방법이면 그 방법으로 바꾸고 `learned`가 된다(검증 표시는 이전 방법의 것이라 버린다). 같은 방법이면 `learned` 근거만 최신으로 바꾸고 `verified`는 유지한다.
+- 따로 지우는 사건은 없다. 서버가 상태를 계산할 때 저장된 방법이 **지금 대상 판(`target_revision`)과 지금 자격 해시(`credential_sha256`)** 둘 다에 묶여 있을 때만 쓴다. 어느 하나가 바뀌면 `none`이고 `cleared_reason`을 준다. 계정을 지우면 계정 행이 없어진다.
+
+#### 6-1-2. 대상 계정 저널 사건
+
+대상 계정 저널(`productAccountEvent`)에 사건 두 가지를 더한다. 기존 칸(`target_id`·`label`·`action`·`actor`·`at`·`target_revision`·`credential_sha256`)은 그대로 쓰고, `actor`는 그 회차를 시작한 대상 승인자다.
+
+| `action` | 쓰는 쪽 | 더하는 칸 |
+|---|---|---|
+| `login_method_learned` | 모델 로그인(⑤-B) | `login_method`(아래 방법 객체), `method_sha256`, `run_ref`, `stage`(`exploration`·`diagnosis`), `attempt_ref`, `evidence`(`observed_contrast`·`probe_contrast`) |
+| `login_method_verified` | E③ 재사용(이동찬) | `method_sha256`(검증한 방법), `run_ref`, `stage`(`confirmation`), `attempt_ref`, `evidence`(`e3_relogin`) |
+
+- `at`은 그 시도가 `succeeded`로 판정된 시각(UTC)이다.
+- `method_sha256`은 방법 객체를 키 순서 고정 JSON으로 만든 SHA-256이다. `verified`는 지금 `learned` 방법의 해시와 같을 때만 상태에 반영한다.
+- `credential_sha256`·`target_revision`은 그 회차에 결속된 자격 해시와 대상 판이다(위 '따로 지우는 사건은 없다'의 근거).
+
+**방법 객체(`login_method`)** — §6 E③ 재사용이 쓰는 칸과 같다. 모두 §3 기록 행의 같은 이름 칸에서 가져온다.
+
+| 칸 | 예 |
+|---|---|
+| `http_method` | `POST` |
+| `path` | `/login` |
+| `format` | `form`·`json`·`multipart` |
+| `identifier_field`·`password_field` | `email`, `password` (JSON은 점 경로) |
+| `other_fields` | `["_csrf","remember"]` |
+| `fields_from_response` | `["_csrf"]` |
+| `session_source` | `set_cookie`·`json_field`·`header`·`continued` |
+| `session_names` | `["connect.sid"]`, `["auth_token"]` |
+| `session_sent_as` | `cookie`, `Authorization:Bearer ` |
+
+#### 6-1-3. 계정 목록 API (`ProductAccount.login_method`)
+
+계정 목록·계정 변경 응답의 계정마다 `login_method` 객체를 **늘** 싣는다(배운 것이 없으면 `{"state":"none"}`).
+
+```json
+{
+  "state": "verified",
+  "learned": {"at": "2026-11-26T12:00:00Z", "run_ref": "…", "stage": "diagnosis", "attempt_ref": "diagnosis-3", "evidence": "observed_contrast"},
+  "verified": {"at": "2026-11-26T12:30:00Z", "run_ref": "…", "attempt_ref": "confirmation-1", "evidence": "e3_relogin"},
+  "method": {"http_method": "POST", "path": "/login", "format": "form", "identifier_field": "email", "password_field": "password",
+             "other_fields": ["_csrf"], "fields_from_response": ["_csrf"], "session_source": "set_cookie", "session_names": ["connect.sid"], "session_sent_as": "cookie"}
+}
+```
+
+| 칸 | 있는 때 | 값 |
+|---|---|---|
+| `state` | 늘 | `none`·`learned`·`verified` |
+| `cleared_reason` | `state: none`이고 예전 방법이 무효가 됐을 때만 | `target_reapproved`(대상 판이 바뀜)·`credential_changed`(자격을 다시 등록함) |
+| `learned` | `learned`·`verified` | `at`(UTC), `run_ref`, `stage`, `attempt_ref`, `evidence`(`observed_contrast`: 회차에 이미 오간 세션 없는 막힘과 대조, `probe_contrast`: 프로그램 대조 요청으로 대조) |
+| `verified` | `verified`만 | `at`(UTC), `run_ref`, `attempt_ref`, `evidence`(`e3_relogin`) |
+| `method` | `learned`·`verified` | 위 방법 객체. 화면에 어디까지 보일지는 화면 PR이 정한다 |
+
+- 기존 `login_method_missing`(bool)은 로그인 설정 9칸이 없다는 뜻이고 이 칸과 다르다. 9칸 폐지 PR(§7)에서 없어진다.
+- 이 칸을 싣는 서버 PR은 웹 파서(닫힌 칸·값 목록)를 같은 PR에서 고친다(§4 규칙). 모르는 `state`·`evidence`·`cleared_reason` 값은 파서가 거부한다.
+- 서버가 이 칸을 싣기 전 응답에는 칸이 없다. 화면은 칸이 없으면 '아직 없음'으로 보인다.
 
 ## 7. 열린 것과 순서
 
