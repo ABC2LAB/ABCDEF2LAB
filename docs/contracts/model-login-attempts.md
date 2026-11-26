@@ -61,7 +61,7 @@
   - **끝 조각**은 칸 이름을 `.`·`[`·`]`·`_`·`-`와 소문자→대문자 경계로 나눈 마지막 조각이다. 이름 비교는 대소문자를 무시한다.
   - **비밀번호 후보**는 다음 둘의 합집합이다.
     - 값이 등록 계정 비밀번호와 정확히 같은 칸
-    - 칸 이름 전체나 끝 조각이 `password`·`passwd`·`passphrase`·`pass`·`pwd` 가운데 하나인 칸(예: `password`, `user[password]`, `loginPassword`, `user.pwd`, `oldPassword`, `newPassword`)
+    - 칸 이름 전체나 나눈 조각 가운데 하나가 `password`·`passwd`·`passphrase`·`pass`·`pwd`인 칸(예: `password`, `user[password]`, `loginPassword`, `user.pwd`, `oldPassword`, `newPassword`, `passwordConfirm`). 끝 조각만 보면 가입의 `passwordConfirm`(끝 조각 `confirm`)을 놓쳐 후보가 하나로 남는다(구현에서 찾음).
   - 비밀번호 후보가 **정확히 하나**일 때만 그 칸이 비밀번호 칸이다. 둘 이상이면 로그인 시도가 아니다. 예: 비밀번호 바꾸기 `oldPassword`·`newPassword`, 가입 `password`·`passwordConfirm`.
   - **아이디 칸**은 비밀번호 칸과 `fields_from_response`(§3, CSRF 토큰 같은 칸)를 뺀 문자열 칸 가운데 아래 순서로 처음 맞는 하나다. 없으면 아이디 칸 없음으로 남긴다.
     1. 값이 등록 계정 아이디와 정확히 같은 칸
@@ -98,6 +98,8 @@
   - 세션이 없음(`session_source: none`): 응답이 새 세션을 주지 않았고, 로그인 요청에 실려 간 세션 쿠키(이어진 세션)도 없다. 로그인 전부터 받은 세션 쿠키를 로그인 뒤에도 그대로 쓰는 앱(세션 고정)은 `continued`라 여기에 들지 않고, 성공 여부는 대조(§4)로 가린다(#963 재상 봇 리뷰).
 - §4 성공 기준(`authenticated_contrast`)이 서면 `로그인됨`이 된다.
 - 실패가 분명하지 않은데 대조도 세우지 못하면(`unconfirmed`) 예외용 상태는 안전하게 `로그인됨`으로 쳐서 예외를 끈다. 화면 계정 상태(§4 표)는 그대로 `unconfirmed`다.
+- 보냈는지·응답을 모르는 예외 POST(`result_unknown`)도 예외를 끈다(`로그인됨`). 결과 불명 쓰기는 자동으로 다시 보내지 않는다.
+- 다른 경계 규칙(범위·제외 경로·예산 등)으로 예외 POST를 보내지 못하면 상태는 보내기 전으로 되돌린다.
 - **세션 만료**: 성공 판정에 쓴 대조 URL(질의 값까지 같은 URL)을 지금 세션으로 다시 열었을 때 '막힘'(401·403이거나 로그인 화면 경로로 리다이렉트, §4 용어)이면 `로그인 안 됨`으로 돌려 다시 로그인을 허용하고 `session_ended`를 남긴다. 다른 URL이 막히거나 로그인 화면으로 가는 것만으로는 만료로 보지 않고 기록도 하지 않는다(§4와 같은 기준).
 
 **`로그인됨`일 때** 예외는 꺼진다. 그 뒤 POST는 원래 규칙(회차의 쓰기 승인 범위)을 따른다. 승인이 없으면 그 요청만 보내지 않고 사유를 기록한다. 승인 알림은 띄우지 않고 탐색은 계속한다.
@@ -148,6 +150,8 @@
 | `consecutive_failures` | 이 시도까지 같은 아이디의 연속 실패 수(§5) |
 
 - 세션 값은 회차 메모리에서만 들고 뒤 요청과 대조한다. 회차가 끝나면 버린다. 이 대조로 `session_sent_as`·`followup`·`session_ended`를 채운다.
+- `json_field`·`header` 후보는 토큰 모양 값만 본다: 설정 하한(기본 16바이트) 이상이고 영문·숫자와 `-_.=+/~:`만 든 값이다. 공백이 든 안내 문장·`@`가 든 메일 주소·`/`로 시작하는 경로는 세션이 아니다(실패 응답 `{"message":"Password is not correct…"}`가 세션으로 잡히지 않게). 뒤 요청이 실제로 실어 보낸 후보가 있으면 `session_source`·`session_names`를 그것으로 좁힌다.
+- `session_sent_as`는 `cookie`이거나 `헤더이름:접두`(예: `Authorization:Bearer `)다.
 - `followup`·`outcome`·`session_ended`는 뒤 요청이 올 때 갱신한다. 한 시도의 행은 덧붙이기로 고치고, 마지막 행이 그 시도의 지금 값이다.
 
 ## 4. 성공·실패 판정
