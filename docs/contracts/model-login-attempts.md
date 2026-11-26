@@ -61,7 +61,7 @@
   - **끝 조각**은 칸 이름을 `.`·`[`·`]`·`_`·`-`와 소문자→대문자 경계로 나눈 마지막 조각이다. 이름 비교는 대소문자를 무시한다.
   - **비밀번호 후보**는 다음 둘의 합집합이다.
     - 값이 등록 계정 비밀번호와 정확히 같은 칸
-    - 칸 이름 전체나 나눈 조각 가운데 하나가 `password`·`passwd`·`passphrase`·`pass`·`pwd`인 칸(예: `password`, `user[password]`, `loginPassword`, `user.pwd`, `oldPassword`, `newPassword`, `passwordConfirm`). 끝 조각만 보면 가입의 `passwordConfirm`(끝 조각 `confirm`)을 놓쳐 후보가 하나로 남는다(구현에서 찾음).
+    - 값이 든 문자열 칸 가운데, 칸 이름 전체나 나눈 조각 가운데 하나가 `password`·`passwd`·`passphrase`·`pass`·`pwd`인 칸. 값이 `on`·`off`·`true`·`false`·`yes`·`no`·`1`·`0`·빈 값인 켜고 끄는 칸(`rememberPassword=on`·`showPassword:false`)은 이름이 맞아도 후보가 아니다(#963 재상 봇 P3, 등록 비밀번호와 값이 같은 칸은 그대로 후보)(예: `password`, `user[password]`, `loginPassword`, `user.pwd`, `oldPassword`, `newPassword`, `passwordConfirm`). 끝 조각만 보면 가입의 `passwordConfirm`(끝 조각 `confirm`)을 놓쳐 후보가 하나로 남는다(구현에서 찾음).
   - 비밀번호 후보가 **정확히 하나**일 때만 그 칸이 비밀번호 칸이다. 둘 이상이면 로그인 시도가 아니다. 예: 비밀번호 바꾸기 `oldPassword`·`newPassword`, 가입 `password`·`passwordConfirm`.
   - **아이디 칸**은 비밀번호 칸과 `fields_from_response`(§3, CSRF 토큰 같은 칸)를 뺀 문자열 칸 가운데 아래 순서로 처음 맞는 하나다. 없으면 아이디 칸 없음으로 남긴다.
     1. 값이 등록 계정 아이디와 정확히 같은 칸
@@ -227,6 +227,7 @@
   - `unconfirmed`·`not_sent`·`result_unknown`은 세지도 되돌리지도 않는다.
   - 이미 `succeeded`인 시도의 대조 URL이 그 세션으로 다시 '막힘'이 되는 것은 `session_ended`이고 실패가 아니다(§2-2·§4). 다른 URL의 막힘은 세지도 기록하지도 않는다.
 - 연속 실패가 3에 닿은 아이디로 새 로그인 시도를 하면, 탐색 경계와 E②가 보내기 전에 거부한다. 고정 사유는 `login_attempts_exhausted`다.
+  - E② 영수증 사유는 운영자 제외 경로(#627)처럼 `policy_denied`로 두고 E② 사유 어휘는 늘리지 않는다. 고정 사유는 이 기록의 `refusal`과 진단 로그(`login_attempt_refused`)에 있다.
   - 그 요청만 실패하고 회차는 계속한다.
   - 거부한 시도도 한 행으로 남긴다(`transport: not_sent`, `refusal: login_attempts_exhausted`). 연속 실패 수에는 세지 않는다.
   - 뒤 요청으로 나중에 `failed`가 정해지면, 그 사이에 이미 보낸 다른 시도는 되돌리지 않는다. 상한은 그다음 시도부터 막는다.
