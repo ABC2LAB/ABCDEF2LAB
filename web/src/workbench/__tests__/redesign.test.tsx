@@ -1,6 +1,7 @@
 // 시안 짜임으로 바꾼 실제 연결 화면: 증거 펼치기 · 레일 현재 표시 · 범위 기본 선택 · 대시보드 승인 카드.
 
 import "@testing-library/jest-dom/vitest";
+
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -8,15 +9,23 @@ vi.mock("../live/api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../live/api")>()),
   fetchRequestApprovals: vi.fn(),
 }));
+vi.mock("../live/e2Requests", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../live/e2Requests")>()),
+  readE2RequestDetail: vi.fn(),
+  readE2Requests: vi.fn(),
+}));
 vi.mock("../live/diagnosticCandidates", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../live/diagnosticCandidates")>()),
   fetchLiveCandidates: vi.fn(),
 }));
 
+import { ApiError } from "@/lib/diagnosis/api";
 import { catalog, handle, running, scope } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
 import * as api from "../live/api";
 import * as cands from "../live/diagnosticCandidates";
+import type { E2RequestDetail, E2RequestRow } from "../live/e2Requests";
+import * as e2req from "../live/e2Requests";
 import { LiveRailTasks } from "../live/rail";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { useUrlRuns } from "../live/urlRunList";
@@ -886,67 +895,55 @@ describe("탐색이 다 돌지 못하고 끝난 줄 (사용자 11/19 한 줄로)
   });
 });
 
-describe("탐색 기록 상세", () => {
-  it("줄을 누르면 오른쪽 패널에 서버 관찰(결과 · 찾은 곳 · 출처 · 요청/응답)이 나오고, 다른 줄을 누르면 그 줄로 바뀐다", () => {
-    const withLog: WorkflowSnapshot = {
-      ...flow,
-      endpoints: [
-        {
-          ...ep("read", "GET", "/api/products/1", "attested_read"),
-          status: 200,
-          request: "GET /api/products/1 HTTP/1.1",
-          response: "HTTP/1.1 200 OK",
-        },
-        ep("write", "PUT", "/api/users/2", "possible"),
-      ],
-      events: [
-        { at: "2026-11-11T01:00:01Z", kind: "sent", method: "GET", path: "/api/products/1", status: 200 },
-        { at: "2026-11-11T01:00:02Z", kind: "held", method: "PUT", path: "/api/users/2" },
-        { at: "2026-11-11T01:00:03Z", kind: "탐색 시작" },
-      ],
-    };
-    useUrl.setState({ handle, job, verified: true, flow: withLog, flowVerified: true });
-    render(
-      <ShellContext.Provider value={shell("crawl")}>
-        <WorkflowCrawlLive />
-      </ShellContext.Provider>,
-    );
-    const log = document.getElementById("cLog") as HTMLElement;
-    const aside = screen.getByRole("complementary", { name: "기록 상세" });
-    const getRow = within(log).getByRole("button", { name: /GET\s*\/api\/products\/1/ });
-    const putRow = within(log).getByRole("button", { name: /PUT\s*\/api\/users\/2/ });
-    expect(getRow).not.toHaveAttribute("aria-current");
-    fireEvent.click(getRow);
-    expect(getRow).toHaveAttribute("aria-current", "true");
-    const box = within(aside).getByRole("region", { name: "GET /api/products/1 요청 · 응답" });
-    expect(within(box).getByText("html_link")).toBeInTheDocument();
-    expect(within(box).getByText("GET /api/products/1 HTTP/1.1")).toBeInTheDocument();
-    expect(within(box).getByText("HTTP/1.1 200 OK")).toBeInTheDocument();
-    // 한 번에 하나: 다른 줄을 누르면 패널이 그 줄로 바뀐다. 응답 코드가 없는 줄은 기록 결과만, 송신 여부는 단정하지 않는다
-    fireEvent.click(putRow);
-    expect(getRow).not.toHaveAttribute("aria-current");
-    expect(screen.queryByRole("region", { name: "GET /api/products/1 요청 · 응답" })).toBeNull();
-    const put = within(aside).getByRole("region", { name: "PUT /api/users/2 요청 · 응답" });
-    expect(within(put).getByText("held")).toBeInTheDocument();
-    expect(within(put).getByText(/보냈는지 · 응답을 받았는지 확인할 수 없습니다/)).toBeInTheDocument();
-    // 같은 줄을 다시 눌러도 그대로 (줄 아래로 펼치고 접던 동작은 없다)
-    fireEvent.click(putRow);
-    expect(within(aside).getByRole("region", { name: "PUT /api/users/2 요청 · 응답" })).toBeInTheDocument();
-    expect(within(log).queryByRole("region")).toBeNull();
+describe("탐색 기록 상세 · 전송 결과 (요청 상세, 11/26)", () => {
+  const A1 = "a".repeat(32);
+  const A2 = "b".repeat(32);
+  const detail = (attempt: string, over: Partial<E2RequestDetail> = {}): E2RequestDetail => ({
+    call_ref: "call-1",
+    attempt_id: attempt,
+    kind: "request",
+    index: 4,
+    at: "2026-11-11T01:00:01Z",
+    method: "GET",
+    path_pattern: "/api/products/{id}",
+    path_detail_state: "pattern_only",
+    rule_ref: "rule-get",
+    decision: "allowed",
+    reason: "complete",
+    reasonCode: "complete",
+    status_code: 200,
+    forward_attempted: true,
+    request_written: true,
+    response_received: true,
+    response_complete: true,
+    response_truncated: false,
+    fields: {
+      request_headers: { state: "not_stored", code: "not_stored" },
+      request_body: { state: "not_stored", code: "not_stored" },
+      response_headers: { state: "not_stored", code: "not_stored" },
+      response_body: { state: "not_stored", code: "not_stored" },
+    },
+    ...over,
   });
-});
-
-describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
-  const mountLog = (
-    events: WorkflowSnapshot["events"],
-    endpoint: WorkflowSnapshot["endpoints"][number],
-    counts: WorkflowSnapshot["counts"] = flow.counts,
-  ) => {
+  const mount = (events: WorkflowSnapshot["events"]) => {
     useUrl.setState({
       handle,
       job,
       verified: true,
-      flow: { ...flow, counts, endpoints: [endpoint], events },
+      flow: {
+        ...flow,
+        endpoints: [
+          {
+            ...ep("read", "GET", "/api/products/1", "attested_read"),
+            status: 200,
+            // 서버가 메서드 · 경로 · 상태 코드로 만든 '경로의 마지막 관찰' 한 줄 — 이제 패널에 붙이지 않는다
+            request: "GET /api/products/1 HTTP/1.1",
+            response: "HTTP status 200",
+          },
+          ep("write", "PUT", "/api/users/2", "possible"),
+        ],
+        events,
+      },
       flowVerified: true,
     });
     render(
@@ -954,94 +951,167 @@ describe("탐색 기록 원문 결속 (리뷰 #473)", () => {
         <WorkflowCrawlLive />
       </ShellContext.Provider>,
     );
-    return within(document.getElementById("cLog") as HTMLElement).getAllByRole("button", { name: /GET/ });
+    return {
+      log: document.getElementById("cLog") as HTMLElement,
+      aside: screen.getByRole("complementary", { name: "기록 상세" }),
+    };
   };
 
-  it("같은 경로에 200 → 403 이면, 먼저 보낸 200 줄에 나중 403 원문을 붙이지 않는다", () => {
-    const rows = mountLog(
-      [
-        { at: "2026-11-11T01:00:01Z", kind: "sent", method: "GET", path: "/api/a", status: 200 },
-        { at: "2026-11-11T01:00:05Z", kind: "sent", method: "GET", path: "/api/a", status: 403 },
-      ],
+  it("보낸 요청 줄을 누르면 그 줄의 전송 결과(결정 · 사유 · 응답)와 헤더 · 본문 '저장 안 함'이 나오고, 마지막 관찰 한 줄은 없다", async () => {
+    vi.mocked(e2req.readE2RequestDetail).mockResolvedValue({ ok: true, detail: detail(A1) });
+    const { log, aside } = mount([
       {
-        ...ep("a", "GET", "/api/a", "attested_read"),
+        at: "2026-11-11T01:00:01Z",
+        kind: "request",
+        method: "GET",
+        path: "/api/products/1",
+        status: 200,
+        call_ref: "call-1",
+        attempt_id: A1,
+      },
+      { at: "2026-11-11T01:00:02Z", kind: "request", method: "PUT", path: "/api/users/2" },
+      { at: "2026-11-11T01:00:03Z", kind: "exploration_observed", method: "GET", path: "/about", status: 200 },
+    ]);
+    const getRow = within(log).getByRole("button", { name: /GET\s*\/api\/products\/1/ });
+    fireEvent.click(getRow);
+    expect(getRow).toHaveAttribute("aria-current", "true");
+    const box = within(aside).getByRole("region", { name: "GET /api/products/1 요청 · 응답" });
+    expect(within(box).getByText("html_link")).toBeInTheDocument();
+    expect(await within(box).findByText("허용")).toBeInTheDocument();
+    expect(within(box).getByText("응답 받음")).toBeInTheDocument();
+    expect(within(box).getByText("다 받음")).toBeInTheDocument();
+    // 경로 틀 · 저장 안 된 이유(전수조사 11/26): 경로와 그 모양, 헤더 · 본문 칸의 이유 글 · 이유 코드
+    expect(within(box).getByText("/api/products/{id}")).toBeInTheDocument();
+    expect(within(box).getByText(/값을 가린 경로 틀/)).toBeInTheDocument();
+    expect(within(box).getAllByText(/헤더 · 본문 저장 안 함/)).toHaveLength(2);
+    expect(within(box).getAllByText(/헤더 · 본문 · 크기 · 경로 원문을 저장하지 않아요/)).toHaveLength(2);
+    expect(within(box).getAllByText("not_stored")).toHaveLength(2);
+    expect(box).not.toHaveTextContent("HTTP/1.1");
+    expect(box).not.toHaveTextContent("HTTP status 200");
+    expect(vi.mocked(e2req.readE2RequestDetail).mock.calls[0].slice(0, 3)).toEqual(["42", "call-1", A1]);
+    // 식별자 없는 요청 줄: 보내지 않았거나 예전 점검 — 전송 기록을 열지 않는다
+    fireEvent.click(within(log).getByRole("button", { name: /PUT\s*\/api\/users\/2/ }));
+    const put = within(aside).getByRole("region", { name: "PUT /api/users/2 요청 · 응답" });
+    expect(within(put).getByText(/요청 식별자가 없는 줄이에요/)).toBeInTheDocument();
+    // 탐색 단계 줄: 탐색 경계 통과 · 원문 기록 없음
+    fireEvent.click(within(log).getByRole("button", { name: /GET\s*\/about/ }));
+    const about = within(aside).getByRole("region", { name: "GET /about 요청 · 응답" });
+    expect(within(about).getByText(/탐색 단계 요청이에요/)).toBeInTheDocument();
+    expect(vi.mocked(e2req.readE2RequestDetail)).toHaveBeenCalledTimes(1);
+  });
+
+  it("같은 경로를 여러 번 보냈으면 줄마다 그 줄의 시도로 연다 — 나중 403 을 앞 200 줄에 붙이지 않는다(리뷰 #473)", async () => {
+    vi.mocked(e2req.readE2RequestDetail).mockImplementation(async (_t, _c, attempt) => ({
+      ok: true,
+      detail:
+        attempt === A1
+          ? detail(A1)
+          : detail(A2, { decision: "denied", reason: "policy_denied", reasonCode: "policy_denied", status_code: 403 }),
+    }));
+    const { log, aside } = mount([
+      {
+        at: "2026-11-11T01:00:01Z",
+        kind: "request",
+        method: "GET",
+        path: "/api/products/1",
+        status: 200,
+        call_ref: "call-1",
+        attempt_id: A1,
+      },
+      {
+        at: "2026-11-11T01:00:05Z",
+        kind: "request",
+        method: "GET",
+        path: "/api/products/1",
         status: 403,
-        request: "GET /api/a (403 요청)",
-        response: "HTTP status 403",
+        call_ref: "call-1",
+        attempt_id: A2,
       },
-    );
+    ]);
+    const rows = within(log).getAllByRole("button", { name: /GET/ });
     fireEvent.click(rows[0]);
-    const first = screen.getByRole("region", { name: "GET /api/a 요청 · 응답" });
-    expect(within(first).queryByText("HTTP status 403")).toBeNull();
-    expect(within(first).getByText(/서버에 남은 원문은 이 줄의 것이 아닙니다/)).toBeInTheDocument();
-    // 나중(403) 줄에는 '경로의 마지막 관찰'로 분리해 보인다
+    expect(await within(aside).findByText("허용")).toBeInTheDocument();
+    expect(within(aside).queryByText("거부")).toBeNull();
     fireEvent.click(rows[1]);
-    const last = screen.getByRole("region", { name: "GET /api/a 요청 · 응답" });
-    expect(within(last).getAllByText("이 경로의 마지막 관찰").length).toBeGreaterThan(0);
-    expect(within(last).getByText("HTTP status 403")).toBeInTheDocument();
+    expect(await within(aside).findByText("거부")).toBeInTheDocument();
+    expect(within(aside).getByText(/정책 밖/)).toBeInTheDocument();
+    expect(within(aside).queryByText("허용")).toBeNull();
   });
 
-  it("200 송신 뒤 응답 코드 없는 같은 경로 줄에는 이전 200 원문을 붙이지 않는다", () => {
-    const rows = mountLog(
-      [
-        { at: "2026-11-11T01:00:01Z", kind: "sent", method: "GET", path: "/api/a", status: 200 },
-        { at: "2026-11-11T01:00:05Z", kind: "request", method: "GET", path: "/api/a" },
-      ],
+  it.each([
+    ["journal_invalid", /전송 기록 검증 실패/],
+    ["not_found", /이 회차 전송 기록에 이 요청이 없어요/],
+  ] as const)("전송 기록을 못 열면(%s) 내용을 지어내지 않고 까닭만 적는다", async (why, text) => {
+    vi.mocked(e2req.readE2RequestDetail).mockResolvedValue({ ok: false, why });
+    const { log, aside } = mount([
       {
-        ...ep("a", "GET", "/api/a", "attested_read"),
+        at: "2026-11-11T01:00:01Z",
+        kind: "request",
+        method: "GET",
+        path: "/api/products/1",
         status: 200,
-        request: "GET /api/a HTTP/1.1",
-        response: "HTTP/1.1 200 OK",
+        call_ref: "call-1",
+        attempt_id: A1,
       },
-    );
-    fireEvent.click(rows[1]);
-    const nostatus = screen.getByRole("region", { name: "GET /api/a 요청 · 응답" });
-    expect(within(nostatus).queryByText("HTTP/1.1 200 OK")).toBeNull();
-    expect(within(nostatus).getByText(/보냈는지 · 응답을 받았는지 확인할 수 없습니다/)).toBeInTheDocument();
-    // 보낸 200 줄은 이 경로의 마지막 송신이라 원문을 '경로의 마지막 관찰'로 보인다
-    fireEvent.click(rows[0]);
-    const sent = screen.getByRole("region", { name: "GET /api/a 요청 · 응답" });
-    expect(within(sent).getByText("HTTP/1.1 200 OK")).toBeInTheDocument();
+    ]);
+    fireEvent.click(within(log).getByRole("button", { name: /GET/ }));
+    expect(await within(aside).findByText(text)).toBeInTheDocument();
+    expect(within(aside).queryByText("허용")).toBeNull();
   });
 
-  const openSecretRow = () => {
-    const rows = mountLog(
-      [{ at: "2026-11-11T01:00:01Z", kind: "request", method: "GET", path: "/api/a", status: 200 }],
-      {
-        ...ep("a", "GET", "/api/a", "attested_read"),
-        status: 200,
-        request: "GET /api/a HTTP/1.1\nCookie: session=synthetic-cookie-1",
-        response: "HTTP/1.1 200 OK\nSet-Cookie: session=synthetic-cookie-2",
-      },
+  it("진단 요청 전체: 전환하면 전송 기록을 쪽 단위로 읽고 [더 보기]로 다음 쪽을 잇고, 줄을 누르면 그 시도의 상세", async () => {
+    const r = (index: number, attempt: string): E2RequestRow => ({
+      at: "2026-11-11T01:00:01Z",
+      kind: index === 1 ? "auth_prep" : "request",
+      method: index === 1 ? "POST" : "GET",
+      path: index === 1 ? "/login" : `/api/items/{id}`,
+      status: 200,
+      call_ref: `call-${index}`,
+      attempt_id: attempt,
+      index,
+      path_detail_state: "pattern_only",
+    });
+    vi.mocked(e2req.readE2Requests).mockImplementation(async (_t, cursor) =>
+      cursor === null
+        ? {
+            rows: [
+              r(1, A1),
+              { ...r(2, A1), kind: "login_contrast", path: "/{too_long}", path_detail_state: "unavailable" },
+            ],
+            total: 3,
+            next_cursor: 2,
+          }
+        : { rows: [r(5, A2)], total: 3, next_cursor: null },
     );
-    fireEvent.click(rows[0]);
-    return screen.getByRole("region", { name: "GET /api/a 요청 · 응답" });
-  };
-
-  it("펼친 칸의 원문은 화면에서도 비밀 값을 가린다 (리뷰 #473 비차단)", () => {
-    const box = openSecretRow();
-    expect(box).not.toHaveTextContent("synthetic-cookie");
-    expect(box).toHaveTextContent("[REDACTED]");
+    vi.mocked(e2req.readE2RequestDetail).mockResolvedValue({
+      ok: true,
+      detail: { ...detail(A2), call_ref: "call-5", index: 5 },
+    });
+    mount([]);
+    fireEvent.click(screen.getByRole("radio", { name: /진단 요청 전체/ }));
+    const all = await screen.findByText("2 / 3건");
+    expect(all).toBeInTheDocument();
+    const list = document.getElementById("cReqLog") as HTMLElement;
+    expect(within(list).getByText("프로그램 로그인")).toBeInTheDocument();
+    // 틀이 없는 경로는 지어내지 않고 '경로 틀 없음', 대조 요청은 프로그램 요청으로(#963 계약)
+    expect(within(list).getByText("경로 틀 없음")).toHaveAttribute("title", "경로가 너무 길어 틀로 남기지 않았어요");
+    expect(within(list).getByText("프로그램 대조 요청")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "더 보기" }));
+    expect(await screen.findByText("3 / 3건")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "더 보기" })).toBeNull();
+    expect(vi.mocked(e2req.readE2Requests).mock.calls.map((c) => c[1])).toEqual([null, 2]);
+    fireEvent.click(within(list).getByRole("button", { name: /#5/ }));
+    const aside = screen.getByRole("complementary", { name: "기록 상세" });
+    expect(within(aside).getByText(/진단 요청 전체 ·/)).toBeInTheDocument();
+    expect(await within(aside).findByText("허용")).toBeInTheDocument();
+    expect(vi.mocked(e2req.readE2RequestDetail).mock.calls[0].slice(0, 3)).toEqual(["42", "call-5", A2]);
   });
 
-  it("보냈지만 응답을 못 받은 줄(status 0 · 결과 불명)을 '보내지 않은 요청'으로 단정하지 않는다", () => {
-    // 서버 Controller.After: ForwardAttempted · RequestWritten = true, ResponseReceived = false, Reason = Unknown,
-    // StatusCode = 0 → counts.sent · attempted · unknown 이 오르지만 이벤트 status 는 omitempty 로 빠진다
-    const rows = mountLog(
-      [{ at: "2026-11-11T01:00:01Z", kind: "request", method: "GET", path: "/api/a" }],
-      {
-        ...ep("a", "GET", "/api/a", "attested_read"),
-        visited: false,
-        request: "GET /api/a HTTP/1.1",
-        response: "HTTP status 0 · response incomplete",
-      },
-      { ...flow.counts, sent: 1, attempted: 1, unknown: 1 },
-    );
-    fireEvent.click(rows[0]);
-    const box = screen.getByRole("region", { name: "GET /api/a 요청 · 응답" });
-    expect(within(box).queryByText(/보내지 않은/)).toBeNull();
-    expect(within(box).getByText(/보냈는지 · 응답을 받았는지 확인할 수 없습니다/)).toBeInTheDocument();
-    expect(within(box).queryByText("HTTP status 0 · response incomplete")).toBeNull();
+  it("진단 요청 전체: 전송 기록이 아직 없으면(404) 그렇게 적는다", async () => {
+    vi.mocked(e2req.readE2Requests).mockRejectedValue(new ApiError(404, "HTTP 404"));
+    mount([]);
+    fireEvent.click(screen.getByRole("radio", { name: /진단 요청 전체/ }));
+    expect(await screen.findByText(/아직 전송 기록이 없어요/)).toBeInTheDocument();
   });
 });
 

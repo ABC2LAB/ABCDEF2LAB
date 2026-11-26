@@ -7,17 +7,31 @@
 
 import { Fragment, type ReactElement, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 
-import type { E2Flow } from "@/lib/diagnosis/e2flow";
+import { ApiError } from "@/lib/diagnosis/api";
+import { type E2Flow, REASON_LABEL } from "@/lib/diagnosis/e2flow";
 
 import { cx } from "../../lib/cx";
+import {
+  DECISION_TEXT,
+  type E2DetailRead,
+  type E2Field,
+  type E2RequestRow,
+  type E2RequestsPage,
+  FIELD_REASON_TEXT,
+  pathDetailText,
+  readE2RequestDetail,
+  readE2Requests,
+  requestKindText,
+} from "../../live/e2Requests";
 import { clockOf } from "../../live/map";
 import { maskSecrets } from "../../live/mask";
 import { retryWorkflowAction, runUrlAction, runWorkflowAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { URL_ENDED_STATES } from "../../live/urlMap";
+import { usePoll } from "../../live/usePoll";
 import { flowStageText, type WorkflowEndpoint, type WorkflowSnapshot } from "../../live/workflow";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
-import { CloseInspButton, CodeCard, InspOpenButton, Kv, PaneToggle } from "../../ui/parts";
+import { CloseInspButton, CodeCard, InspOpenButton, Isec, Kv, PaneToggle } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { SentRequestsValue, useE2FlowFor } from "./sentRequests";
 import { reasonText, UrlHead, UrlNotices, UrlRefreshButton, useUrlHost } from "./urlParts";
@@ -271,6 +285,8 @@ const hms = (at: string) => clockOf(at) || "—";
  */
 const EVENT_TEXT: Readonly<Record<string, readonly [string, "in" | "ex" | "out" | ""]>> = {
   created: ["점검 시작", ""],
+  // 심화 점검 단계의 진단 요청(E② 를 지난 요청). 보낸 줄에만 요청 식별자가 붙는다
+  request: ["진단 요청", ""],
   crawl_started: ["탐색 시작", ""],
   crawl_finished: ["탐색을 마쳤습니다", ""],
   visit_started: ["방문 시작", ""],
@@ -652,26 +668,6 @@ function EndpointDetail({
 type FlowEvent = WorkflowSnapshot["events"][number];
 
 /**
- * 기록 줄 ↔ 저장된 원문의 관계. `endpoints`는 요청별 기록이 아니라 메서드 · 경로별 현재 상태다(서버 Controller.After 는
- * 송신 때 Request/Response 를 덮어쓰고, 미송신 때는 이전 값을 그대로 둔다). 이벤트에 call_ref 가 없어 건별로 묶을 수 없으므로
- * - unknown: 응답 코드가 없는 줄 → 송신 여부를 단정하지 않고 원문도 붙이지 않는다. 보냈지만 응답을 못 받은 경우
- *   (StatusCode 0)도 status 가 빠져 미송신과 구분되지 않는다(리뷰 #473)
- * - stale: 같은 경로에 더 나중(또는 같은 시각) 송신이 있거나 저장된 응답 코드가 이 줄과 다름 → 이 줄의 원문이 아님
- * - latest: 이 경로의 마지막 송신 줄이고 응답 코드도 같음 → "경로의 마지막 관찰"로 분리해 보인다(같은 요청이라고 단정하지 않음)
- */
-export type LogRaw = "unknown" | "stale" | "latest";
-export function logRawOf(events: readonly FlowEvent[], i: number, endpoint: WorkflowEndpoint | undefined): LogRaw {
-  const ev = events[i];
-  if (!ev?.status) return "unknown";
-  const at = Date.parse(ev.at);
-  const later = events.some(
-    (o, j) => j !== i && o.status && o.method === ev.method && o.path === ev.path && !(Date.parse(o.at) < at),
-  );
-  if (later || !endpoint || endpoint.status !== ev.status) return "stale";
-  return "latest";
-}
-
-/**
  * 탐색 기록에 남기는 경로 없는 줄: 처음(점검 시작)과 끝(점검 완료 · 중지됨 · 실행 실패)만(사용자 11/25). 탐색 시작 · 심화 점검
  * 시작/끝 · 범위 확인 대기 같은 중간 줄은 숨긴다. 중지 · 실패도 끝 줄로 남겨 끝난 까닭을 감추지 않는다(규칙 5)
  */
@@ -722,110 +718,361 @@ export function CrawlMeters({ flow, e2 }: { flow: WorkflowSnapshot; e2: E2Flow |
 /** 탐색 기록 줄을 가리키는 키. 서버 기록에 id 가 없어 시각 · 종류 · 메서드 · 경로로 가리킨다. */
 const logKeyOf = (ev: FlowEvent) => `${ev.at}:${ev.kind}:${ev.method}:${ev.path}`;
 
+/** 헤더 · 본문 칸 글: 지금 서버는 저장하지 않는다(not_stored). 모르는 모양은 지어내지 않고 모른다고 적는다 */
+const fieldText = (f: E2Field) => (f.state === "not_stored" ? "저장 안 함" : "이 화면이 모르는 상태");
+
 /**
- * 탐색 기록 한 줄의 상세 (자산 탐색 오른쪽 패널, 시안 logDetail). 이 기록의 결과와, 같은 경로의 서버 정보(찾은 곳 · 출처 · 종류)를
- * 보인다. 저장된 요청/응답 원문은 이 줄과 묶였다고 볼 수 있을 때(logRawOf = latest)만 "이 경로의 마지막 관찰"로 보이고,
- * 응답 코드가 없는 줄 · 나중 요청이 있는 줄에는 붙이지 않는다(값을 지어내지 않음 · 서버가 가린 그대로).
+ * 요청 · 응답 헤더 · 본문 칸(전송 기록 상세의 칸 그대로). 저장 안 된 이유 글과 이유 코드를 같이 보인다(전수조사 11/26).
+ * 값이 오는 판(DLP 폐기 뒤 헤더 · 본문 저장)이 되면 이 칸을 채운다
  */
-function LogDetail({
-  event,
-  endpoint,
-  raw,
-}: {
-  event: FlowEvent;
-  endpoint: WorkflowEndpoint | undefined;
-  raw: LogRaw;
-}) {
-  let cards: ReactNode;
-  if (!endpoint)
-    cards = (
-      <>
-        <NoneCard title="요청" text="이 기록과 같은 발견한 API가 없어 결과만 보입니다." />
-        <NoneCard title="응답" text="저장된 응답이 없습니다." />
-      </>
-    );
-  else if (raw === "unknown")
-    cards = (
-      <>
-        <NoneCard title="요청" text="응답 코드가 없는 기록이라 보냈는지 · 응답을 받았는지 확인할 수 없습니다." />
-        <NoneCard title="응답" text="서버에 남은 원문도 이 줄의 것인지 알 수 없어 보이지 않습니다." />
-      </>
-    );
-  else if (raw === "stale")
-    cards = (
-      <>
-        <NoneCard title="요청" text="이 경로에 더 나중 기록이 있어, 서버에 남은 원문은 이 줄의 것이 아닙니다." />
-        <NoneCard title="응답" text="서버는 경로마다 마지막 관찰만 저장합니다." />
-      </>
-    );
-  else
-    cards = (
-      <>
-        {endpoint.request ? (
-          <CodeCard
-            title="요청"
-            src="이 경로의 마지막 관찰"
-            text={maskSecrets(endpoint.request)}
-            id={`lg-req-${endpoint.id}`}
-          />
-        ) : (
-          <NoneCard title="요청" text="저장된 요청이 없습니다." />
-        )}
-        {endpoint.response ? (
-          <CodeCard
-            title="응답"
-            src="이 경로의 마지막 관찰"
-            text={maskSecrets(endpoint.response)}
-            id={`lg-res-${endpoint.id}`}
-          />
-        ) : (
-          <NoneCard title="응답" text="저장된 응답이 없습니다." />
-        )}
-      </>
-    );
+function StoredFields({ title, head, body }: { title: string; head: E2Field; body: E2Field }) {
+  const codes = [...new Set([head.code, body.code])];
+  const why = codes.map((c) => FIELD_REASON_TEXT[c]).find(Boolean) ?? "서버가 이 화면이 모르는 상태로 보냈어요";
   return (
-    <section aria-label={`${event.method} ${event.path ?? ""} 요청 · 응답`}>
+    <div className={s.cb}>
+      <div className={s["cb-h"]}>
+        <h3>{title}</h3>
+        <span className={s["cb-src"]}>전송 기록</span>
+      </div>
+      <div className={s["cb-none"]}>
+        <Icon name="lock" />
+        <span>
+          {head.code === body.code
+            ? `헤더 · 본문 ${fieldText(head)}`
+            : `헤더 ${fieldText(head)} · 본문 ${fieldText(body)}`}
+          <span className={s["cb-why"]}>
+            {why} <span className={s.mono}>{codes.join(" · ")}</span>
+          </span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** 보냄 칸: 대상에 요청을 썼는가 */
+function sentText(d: { forward_attempted: boolean; request_written: boolean }): string {
+  if (d.request_written) return "보냄";
+  return d.forward_attempted ? "보내려 했으나 쓰지 못함" : "보내지 않음";
+}
+/** 응답 칸: 받음 · 다 받음 · 잘림 */
+function receivedText(d: { response_received: boolean; response_complete: boolean; response_truncated: boolean }) {
+  if (!d.response_received) return "받지 못함";
+  return `${d.response_complete ? "다 받음" : "일부만 받음"}${d.response_truncated ? " · 잘림" : ""}`;
+}
+
+const DETAIL_MISS_TEXT: Readonly<Record<Exclude<E2DetailRead, { ok: true }>["why"], string>> = {
+  not_found: "이 회차 전송 기록에 이 요청이 없어요.",
+  journal_invalid: "전송 기록 검증 실패 — 내용을 보이지 않아요.",
+  forbidden: "이 점검의 전송 기록을 볼 권한이 없어요.",
+  error: "전송 기록을 읽지 못했어요.",
+};
+
+/**
+ * 전송 결과(요청 상세, 계약 workbench-live-data §4.1): 이 줄의 E② 호출 · 시도 하나를 읽어 결정 · 사유 · 보냄 · 응답을 보인다.
+ * 서버 판정 그대로이고 화면은 다시 판정하지 않는다. 헤더 · 본문은 서버가 저장하지 않아 '저장 안 함' 칸만 둔다
+ */
+function RequestSendResult({ task, callRef, attemptId }: { task: string; callRef: string; attemptId: string }) {
+  const read = usePoll((signal) => readE2RequestDetail(task, callRef, attemptId, signal), [task, callRef, attemptId]);
+  if (read.error)
+    return (
+      <div className={s.isec}>
+        <p className={s.err} role="alert">
+          {DETAIL_MISS_TEXT.error}
+        </p>
+        <button className={s.btn} type="button" onClick={read.reload}>
+          다시 읽기
+        </button>
+      </div>
+    );
+  if (!read.data) return <p className={s.empty}>전송 기록을 읽는 중</p>;
+  if (!read.data.ok) {
+    const miss = read.data;
+    return (
+      <div className={s.isec}>
+        <p className={miss.why === "journal_invalid" ? s.err : s.empty}>
+          {`${DETAIL_MISS_TEXT[miss.why]}${miss.why === "error" && miss.status ? ` (HTTP ${miss.status})` : ""}`}
+        </p>
+      </div>
+    );
+  }
+  const d = read.data.detail;
+  const reason = d.reason ? REASON_LABEL[d.reason] : d.reasonCode;
+  return (
+    <>
+      <Isec t="전송 결과">
+        <Kv
+          rows={[
+            [
+              "결정",
+              <span key="dec" className={cx(s.tag, d.decision === "allowed" ? s.in : s.deny)}>
+                {DECISION_TEXT[d.decision]}
+              </span>,
+            ],
+            [
+              "사유",
+              <span key="why">
+                {reason} <span className={cx(s.mono, s.help)}>{d.reasonCode}</span>
+              </span>,
+            ],
+            ["보냄", sentText(d)],
+            ["응답", d.status_code ? <Sc key="sc" status={d.status_code} /> : "코드 없음"],
+            ["받은 응답", receivedText(d)],
+            [
+              "경로",
+              d.path_pattern && d.path_detail_state !== "unavailable" ? (
+                <span key="pp" className={s.mono}>
+                  {d.path_pattern}
+                </span>
+              ) : (
+                NONE
+              ),
+            ],
+            ["경로 표시", pathDetailText(d.path_detail_state, d.path_pattern)],
+            [
+              "규칙",
+              d.rule_ref ? (
+                <span key="rule" className={s.mono}>
+                  {d.rule_ref}
+                </span>
+              ) : (
+                NONE
+              ),
+            ],
+            ["요청 종류", requestKindText(d.kind)],
+            ["기록", `${hms(d.at)} · 전송 기록 #${d.index}`],
+          ]}
+        />
+      </Isec>
+      <div className={s.expanel}>
+        <StoredFields title="요청" head={d.fields.request_headers} body={d.fields.request_body} />
+        <StoredFields title="응답" head={d.fields.response_headers} body={d.fields.response_body} />
+      </div>
+    </>
+  );
+}
+
+/** 오른쪽 패널 틀: 머리(어떤 기록 · 메서드 · 경로) + 기록 칸 + 전송 결과 */
+function DetailFrame({
+  eyebrow,
+  method,
+  path,
+  rows,
+  children,
+}: {
+  eyebrow: string;
+  method?: string;
+  path?: string;
+  rows: [string, ReactNode][];
+  children: ReactNode;
+}) {
+  return (
+    <section aria-label={`${method ?? ""} ${path ?? ""} 요청 · 응답`}>
       <div className={s["vi-head"]}>
         <div>
-          <div className={s.eyebrow}>{`탐색 기록 · ${hms(event.at)}`}</div>
+          <div className={s.eyebrow}>{eyebrow}</div>
           <h2>
-            <span className={cx(s.m, event.method ? s[event.method] : undefined)}>{event.method}</span>{" "}
-            <span className={s.p}>{event.path ? <Pth p={event.path} /> : "—"}</span>
+            <span className={cx(s.m, method ? s[method] : undefined)}>{method}</span>{" "}
+            <span className={s.p}>{path ? <Pth p={path} /> : "—"}</span>
           </h2>
         </div>
         <CloseInspButton label="기록 상세" />
       </div>
-      <div className={s.isec}>
-        <Kv
-          rows={[
-            ["응답", event.status ? <Sc key="sc" status={event.status} /> : "코드 없음"],
-            ["기록", <span key="kind">{eventText(event.kind)}</span>],
-            ...(endpoint
-              ? ([
-                  [
-                    "찾은 곳",
-                    <span key="from" className={s.mono}>
-                      {endpoint.from}
-                    </span>,
-                  ],
-                  ["출처", endpoint.source],
-                  ["종류", endpoint.kind],
-                  ...(endpoint.observation_error ? [["관찰 실패", endpoint.observation_error]] : []),
-                ] as [string, ReactNode][])
-              : []),
-            // 시안의 근거 · 기능(AI 추정)은 서버가 주지 않아 값을 비운다
-            ["근거", NONE],
-            ["기능 (AI 추정)", NONE],
-          ]}
+      {rows.length ? (
+        <div className={s.isec}>
+          <Kv rows={rows} />
+        </div>
+      ) : null}
+      {children}
+    </section>
+  );
+}
+
+/**
+ * 탐색 기록 한 줄의 상세 (자산 탐색 오른쪽 패널, 시안 logDetail). 이 기록의 결과와 같은 경로의 서버 정보(찾은 곳 · 출처 · 종류)에,
+ * 요청을 보낸 줄이면 그 줄의 전송 결과(요청 식별자로 읽은 E② 기록)를 붙인다. 예전에 붙이던 '이 경로의 마지막 관찰' 한 줄
+ * (서버가 메서드 · 경로 · 상태 코드로 만든 'GET /p HTTP/1.1' · 'HTTP status 200')은 이 줄의 것이 아닐 수 있고 원문도 아니라 뺐다(11/26)
+ */
+function LogDetail({
+  event,
+  endpoint,
+  task,
+}: {
+  event: FlowEvent;
+  endpoint: WorkflowEndpoint | undefined;
+  task: string | null;
+}) {
+  let send: ReactNode;
+  if (task && event.call_ref && event.attempt_id)
+    send = <RequestSendResult task={task} callRef={event.call_ref} attemptId={event.attempt_id} />;
+  else if (event.kind === "request")
+    send = (
+      <div className={s.expanel}>
+        <NoneCard
+          title="전송 결과"
+          text="요청 식별자가 없는 줄이에요 — 보내지 않은 요청이거나 11/25 이전 점검이라 전송 기록을 열 수 없어요."
         />
       </div>
-      <div className={s.expanel}>{cards}</div>
-      {endpoint && raw === "latest" && (endpoint.request || endpoint.response) ? (
-        <p className={s.help}>
-          서버가 이 줄과 원문을 묶어 주지 않아(call_ref 없음), 같은 경로의 마지막 관찰을 보입니다.
+    );
+  else
+    send = (
+      <div className={s.expanel}>
+        <NoneCard title="요청 · 응답" text="탐색 단계 요청이에요 — 탐색 경계를 지났고 요청 원문 기록은 없어요." />
+      </div>
+    );
+  return (
+    <DetailFrame
+      eyebrow={`탐색 기록 · ${hms(event.at)}`}
+      method={event.method}
+      path={event.path}
+      rows={[
+        ["응답", event.status ? <Sc key="sc" status={event.status} /> : "코드 없음"],
+        ["기록", <span key="kind">{eventText(event.kind)}</span>],
+        ...(endpoint
+          ? ([
+              [
+                "찾은 곳",
+                <span key="from" className={s.mono}>
+                  {endpoint.from}
+                </span>,
+              ],
+              ["출처", endpoint.source],
+              ["종류", endpoint.kind],
+              ...(endpoint.observation_error ? [["관찰 실패", endpoint.observation_error]] : []),
+            ] as [string, ReactNode][])
+          : []),
+        // 시안의 근거 · 기능(AI 추정)은 서버가 주지 않아 값을 비운다
+        ["근거", NONE],
+        ["기능 (AI 추정)", NONE],
+      ]}
+    >
+      {send}
+    </DetailFrame>
+  );
+}
+
+/** 진단 요청 전체 기록의 한 줄 상세 */
+function RequestRowDetail({ row, task }: { row: E2RequestRow; task: string }) {
+  return (
+    <DetailFrame
+      eyebrow={`진단 요청 전체 · ${hms(row.at)}`}
+      method={row.method}
+      path={row.path}
+      // 응답 · 요청 종류 · 경로 표시는 아래 전송 결과가 같은 값을 보여 위 칸은 두지 않는다(두 번 보이지 않게)
+      rows={[]}
+    >
+      <RequestSendResult task={task} callRef={row.call_ref} attemptId={row.attempt_id} />
+    </DetailFrame>
+  );
+}
+
+/** 전체 기록을 못 읽은 까닭 글(계약 §4.1) */
+function requestsMissText(error: unknown): string {
+  if (error instanceof ApiError && error.status === 404)
+    return "아직 전송 기록이 없어요 — 진단 요청을 보내기 전이거나 전송 통제를 거치지 않은 점검이에요.";
+  if (error instanceof ApiError && error.status === 409) return "전송 기록 검증 실패 — 내용을 보이지 않아요.";
+  if (error instanceof ApiError && error.status === 403) return "이 점검의 전송 기록을 볼 권한이 없어요.";
+  return "전송 기록을 읽지 못했어요.";
+}
+
+const reqKeyOf = (r: Pick<E2RequestRow, "call_ref" | "attempt_id">) => `${r.call_ref}/${r.attempt_id}`;
+
+/**
+ * 진단 요청 전체 기록(E② 저널 기준, 쪽 단위 — 계약 §4.1). 흐름 기록은 최근 32줄뿐이라 끝난 점검의 앞 요청이 빠지는데, 이
+ * 목록은 대상에 보낸 진단 · 로그인 · 확정 요청을 처음부터 다 보인다. 탐색 단계 요청은 E② 저널에 없어 여기 없다
+ */
+function E2RequestLog({
+  task,
+  current,
+  onPick,
+}: {
+  task: string;
+  current: string | null;
+  onPick: (row: E2RequestRow) => void;
+}) {
+  const first = usePoll((signal) => readE2Requests(task, null, signal), [task]);
+  const [more, setMore] = useState<{ base: number | null; pages: E2RequestsPage[] }>({ base: null, pages: [] });
+  const [moreError, setMoreError] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // 첫 쪽을 다시 읽으면 뒤에 붙인 쪽은 버린다(같은 판끼리만 잇는다)
+  const pages = first.data && more.base === first.fetchedAt ? more.pages : [];
+  if (first.error && !first.data)
+    return (
+      <div className={s["log-miss"]}>
+        <p className={first.error instanceof ApiError && first.error.status === 409 ? s.err : s.empty}>
+          {requestsMissText(first.error)}
         </p>
-      ) : null}
-    </section>
+        <button className={s.btn} type="button" onClick={first.reload}>
+          다시 읽기
+        </button>
+      </div>
+    );
+  if (!first.data) return <p className={s.empty}>전송 기록을 읽는 중</p>;
+  const all = [first.data, ...pages];
+  const rows = all.flatMap((pg) => pg.rows);
+  const next = all[all.length - 1].next_cursor;
+  const loadMore = () => {
+    if (next === null || busy) return;
+    setBusy(true);
+    setMoreError(false);
+    const base = first.fetchedAt;
+    readE2Requests(task, next)
+      .then((pg) => setMore((m) => ({ base, pages: [...(m.base === base ? m.pages : []), pg] })))
+      .catch(() => setMoreError(true))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <>
+      <div className={s.log} id="cReqLog">
+        <div className={s.lh}>
+          <span>시각</span>
+          <span>메서드</span>
+          <span>경로</span>
+          <span>요청 종류</span>
+          <span>기록 번호</span>
+          <span>결과</span>
+        </div>
+        {rows.length ? (
+          rows.map((row) => {
+            const key = reqKeyOf(row);
+            const on = current === key;
+            return (
+              <button
+                key={key}
+                className={cx(s.lr, on && s.on)}
+                type="button"
+                aria-current={on ? "true" : undefined}
+                onClick={() => onPick(row)}
+              >
+                <span className={s.t}>{hms(row.at)}</span>
+                <span className={cx(s.m, row.method ? s[row.method] : undefined)}>{row.method ?? NONE}</span>
+                <span
+                  className={cx(s.p, row.path_detail_state === "unavailable" && s["sap-nopath"])}
+                  title={pathDetailText(row.path_detail_state, row.path)}
+                >
+                  {row.path && row.path_detail_state !== "unavailable" ? <Pth p={row.path} /> : "경로 틀 없음"}
+                </span>
+                <span className={s.lk}>{requestKindText(row.kind)}</span>
+                <span className={cx(s.lk, s.mono)}>{`#${row.index}`}</span>
+                <span>
+                  <Sc status={row.status} />
+                </span>
+              </button>
+            );
+          })
+        ) : (
+          <p className={s.empty}>대상에 보낸 진단 요청이 없어요.</p>
+        )}
+      </div>
+      <div className={s["log-more"]}>
+        <span className={s.help}>{`${rows.length} / ${first.data.total}건`}</span>
+        {next !== null ? (
+          <button className={s.btn} type="button" disabled={busy} onClick={loadMore}>
+            {busy ? "읽는 중" : "더 보기"}
+          </button>
+        ) : null}
+        {moreError ? <span className={s.err}>다음 쪽을 읽지 못했어요.</span> : null}
+      </div>
+    </>
   );
 }
 
@@ -1080,15 +1327,19 @@ export function WorkflowCrawlLive() {
     { goTo, openInsp } = useShell();
   // 오른쪽 패널에 보이는 탐색 기록 줄 (한 번에 하나). 패널은 고르기 전에도 늘 펼쳐 두고 고르라는 안내를 보인다
   // (사용자 11/17 '계속 열려있게'). 접기 · 펼치기는 작업대 공통 PaneToggle 로만
-  const [logKey, setLogKey] = useState<string | null>(null);
+  // 패널에 보이는 줄: 탐색 기록 줄 또는 진단 요청 전체의 줄(11/26)
+  const [pick, setPick] = useState<{ kind: "event"; key: string } | { kind: "req"; row: E2RequestRow } | null>(null);
+  const logKey = pick?.kind === "event" ? pick.key : null;
+  // 기록 보기: 최근 기록(흐름 기록 최근 32줄 · 탐색 포함) · 진단 요청 전체(E② 저널, 쪽 단위 — 탐색 요청은 없음)
+  const [logView, setLogView] = useState<"recent" | "all">("recent");
   const stop = useStopConfirm("점검 취소");
   const found = useLatestFound(flow);
   // 끝난 점검은 한 번만 읽는다(진행 중일 때만 주기 조회, #938 윤재상 P3)
-  const e2 = useE2FlowFor(
-    job?.started && job.task_id ? job.task_id : null,
-    true,
-    !!job && URL_ENDED_STATES.includes(job.state),
-  );
+  const task = job?.started && job.task_id ? job.task_id : null;
+  const e2 = useE2FlowFor(task, true, !!job && URL_ENDED_STATES.includes(job.state));
+  // 진단 요청 전체 수 = 전송 통제 집계의 모델 · 로그인 · 확정 · 미분류(계약 §4.1 total 과 같음)
+  const tr = e2.data?.target_requests;
+  const reqTotal = tr ? tr.model + tr.login + tr.confirmation + tr.unclassified : null;
   const endpoints = flow?.endpoints ?? [];
   const events = flow?.events ?? [];
   const logAt = logKey ? events.findIndex((ev) => logKeyOf(ev) === logKey) : -1;
@@ -1102,9 +1353,16 @@ export function WorkflowCrawlLive() {
     [flow?.endpoints],
   );
   const pickLog = (key: string) => {
-    setLogKey(key);
+    setPick({ kind: "event", key });
     openInsp();
   };
+  const pickReq = (row: E2RequestRow) => {
+    setPick({ kind: "req", row });
+    openInsp();
+  };
+  let detail: ReactNode = null;
+  if (pick?.kind === "req" && task) detail = <RequestRowDetail row={pick.row} task={task} />;
+  else if (logEvent) detail = <LogDetail event={logEvent} endpoint={logEndpoint} task={task} />;
   const next = flow?.mode === "user_approval_v1" ? "scope" : "live";
   const ready = verified && !!flow?.initial_completed;
   const crawling = flow?.stage === "crawling";
@@ -1202,67 +1460,95 @@ export function WorkflowCrawlLive() {
               <section className={s.sec} aria-labelledby="cLogH">
                 <div className={s.sh}>
                   <h2 id="cLogH">탐색 기록</h2>
+                  {task ? (
+                    <div className={s.seg} role="radiogroup" aria-label="기록 보기">
+                      {(
+                        [
+                          ["recent", "최근 기록"],
+                          ["all", `진단 요청 전체${reqTotal === null ? "" : ` ${reqTotal}`}`],
+                        ] as const
+                      ).map(([id, label]) => (
+                        <label key={id}>
+                          <input
+                            type="radio"
+                            name="cLogView"
+                            checked={logView === id}
+                            onChange={() => setLogView(id)}
+                          />
+                          <span>{label}</span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
-                <div className={s.log} id="cLog">
-                  {/* 탐색 기록 칸(사용자 11/25): 같은 경로의 서버 출처를 줄마다, 결과는 맨 끝. 데이터 변경(조회 · 변경 가능)은
+                {logView === "all" && task ? (
+                  <E2RequestLog
+                    task={task}
+                    current={pick?.kind === "req" ? reqKeyOf(pick.row) : null}
+                    onPick={pickReq}
+                  />
+                ) : (
+                  <div className={s.log} id="cLog">
+                    {/* 탐색 기록 칸(사용자 11/25): 같은 경로의 서버 출처를 줄마다, 결과는 맨 끝. 데이터 변경(조회 · 변경 가능)은
                       범위 확인 화면 딱지와 같은 분류라, 본문 칸(body_keys)은 거의 비어 있어 뺐다.
                       응답 · 요청 원문 칸은 서버가 한 줄('HTTP status 200' ·
                       'GET /path HTTP/1.1')만 저장해 결과 · 메서드 · 경로와 같아 뺐고, 근거는 서버 값이 없어, 찾은 곳은 실제
                       데이터에서 모두 시작 페이지('/')라 뺐다(오른쪽 패널엔 남김) */}
-                  <div className={s.lh}>
-                    <span>시각</span>
-                    <span>메서드</span>
-                    <span>경로</span>
-                    <span>기록</span>
-                    <span>출처</span>
-                    <span>결과</span>
-                  </div>
-                  {flow.events.length ? (
-                    flow.events.map((event) => {
-                      if (event.method) {
-                        const key = logKeyOf(event);
-                        const endpoint = endpointOf.get(`${event.method} ${event.path ?? ""}`);
-                        const on = logKey === key;
-                        // 누르면 그 기록이 오른쪽 패널에 (줄 아래로 펼치지 않는다)
+                    <div className={s.lh}>
+                      <span>시각</span>
+                      <span>메서드</span>
+                      <span>경로</span>
+                      <span>기록</span>
+                      <span>출처</span>
+                      <span>결과</span>
+                    </div>
+                    {flow.events.length ? (
+                      flow.events.map((event) => {
+                        if (event.method) {
+                          const key = logKeyOf(event);
+                          const endpoint = endpointOf.get(`${event.method} ${event.path ?? ""}`);
+                          const on = logKey === key;
+                          // 누르면 그 기록이 오른쪽 패널에 (줄 아래로 펼치지 않는다)
+                          return (
+                            <button
+                              key={key}
+                              className={cx(s.lr, on && s.on)}
+                              type="button"
+                              aria-current={on ? "true" : undefined}
+                              onClick={() => pickLog(key)}
+                            >
+                              <span className={s.t}>{hms(event.at)}</span>
+                              <span className={cx(s.m, s[event.method])}>{event.method}</span>
+                              <span className={s.p}>{event.path ? <Pth p={event.path} /> : "—"}</span>
+                              <span className={s.lk}>{eventText(event.kind)}</span>
+                              {/* 같은 경로의 서버 출처(오른쪽 패널과 같은 값). 발견한 API 에 없는 경로면 — */}
+                              <span className={cx(s.lk, s.mono)}>{endpoint?.source ?? NONE}</span>
+                              <span>
+                                <EventResult event={event} />
+                              </span>
+                            </button>
+                          );
+                        }
+                        if (!LOG_SYSTEM_KINDS.has(event.kind)) return null;
                         return (
-                          <button
-                            key={key}
-                            className={cx(s.lr, on && s.on)}
-                            type="button"
-                            aria-current={on ? "true" : undefined}
-                            onClick={() => pickLog(key)}
-                          >
+                          <div className={cx(s.lr, s.sys)} key={`${event.at}:${event.kind}`}>
                             <span className={s.t}>{hms(event.at)}</span>
-                            <span className={cx(s.m, s[event.method])}>{event.method}</span>
-                            <span className={s.p}>{event.path ? <Pth p={event.path} /> : "—"}</span>
-                            <span className={s.lk}>{eventText(event.kind)}</span>
-                            {/* 같은 경로의 서버 출처(오른쪽 패널과 같은 값). 발견한 API 에 없는 경로면 — */}
-                            <span className={cx(s.lk, s.mono)}>{endpoint?.source ?? NONE}</span>
-                            <span>
-                              <EventResult event={event} />
-                            </span>
-                          </button>
+                            <span>{eventText(event.kind)}</span>
+                          </div>
                         );
-                      }
-                      if (!LOG_SYSTEM_KINDS.has(event.kind)) return null;
-                      return (
-                        <div className={cx(s.lr, s.sys)} key={`${event.at}:${event.kind}`}>
-                          <span className={s.t}>{hms(event.at)}</span>
-                          <span>{eventText(event.kind)}</span>
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <p className={s.empty}>아직 기록이 없습니다.</p>
-                  )}
-                </div>
+                      })
+                    ) : (
+                      <p className={s.empty}>아직 기록이 없습니다.</p>
+                    )}
+                  </div>
+                )}
               </section>
             </>
           ) : null}
         </div>
         <aside className={s.vi} aria-label="기록 상세">
-          {logEvent ? (
-            <LogDetail event={logEvent} endpoint={logEndpoint} raw={logRawOf(events, logAt, logEndpoint)} />
+          {detail !== null ? (
+            detail
           ) : (
             <>
               <div className={s["vi-head"]}>

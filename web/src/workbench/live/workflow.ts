@@ -6,6 +6,8 @@ import {
   type WorkflowLimits,
   type WorkflowMode,
 } from "@/lib/diagnosis/diagnosis-url";
+
+import { validAttemptId, validCallRef } from "./e2Requests";
 export const FLOW_VERSION = "abc2lab.workbench-flow/v1";
 /**
  * 서버가 주는 계획(plan) 목록 상한 (diagnosisflow postgres.go Display: intent 를 ORDER BY id LIMIT 20).
@@ -61,7 +63,19 @@ export type WorkflowSnapshot = {
     invalid_paths?: number;
   };
   endpoints: WorkflowEndpoint[];
-  events: { at: string; kind: string; method?: string; path?: string; status?: number }[];
+  /**
+   * 대상에 요청을 보낸 줄(E② request_written)에만 call_ref · attempt_id 가 붙는다(계약 workbench-engine-workflow, 11/25).
+   * 이 둘로 요청 상세를 연다. 탐색 단계 줄 · 보내지 않은 시도에는 없다
+   */
+  events: {
+    at: string;
+    kind: string;
+    method?: string;
+    path?: string;
+    status?: number;
+    call_ref?: string;
+    attempt_id?: string;
+  }[];
   commands: { key: string; operation: string; revision: number }[];
   plan?: { id: number; state: string; title: string }[];
   activity?: { id: number; at: string; worker: string; kind: string; summary: string }[];
@@ -151,7 +165,10 @@ export function parseWorkflow(value: unknown, job: URLDiagnosisJob): WorkflowSna
       !text(event.kind, 64) ||
       !text(event.at, 64) ||
       Number.isNaN(Date.parse(event.at)) ||
-      (event.path !== undefined && !text(event.path, 512))
+      (event.path !== undefined && !text(event.path, 512)) ||
+      // 요청 상세 식별자는 둘이 같이, 서버 형식대로만(하나만 오거나 모양이 틀리면 다른 요청을 열 수 있어 받지 않는다)
+      ((event.call_ref !== undefined || event.attempt_id !== undefined) &&
+        !(validCallRef(event.call_ref) && validAttemptId(event.attempt_id)))
     )
       return invalid();
   }

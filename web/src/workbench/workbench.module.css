@@ -2948,6 +2948,27 @@ select.inp {
   overflow: auto;
   background: var(--bg);
 }
+/* 요청 상세 헤더 · 본문 칸의 저장 안 된 이유 글 · 이유 코드(전수조사 11/26) */
+.cb-why {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+/* 진단 요청 전체(11/26): 아래 'n / 전체' · [더 보기] 줄, 못 읽음 안내 */
+.log-more {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 8px 2px 0;
+}
+.log-miss {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
 .lh,
 .lr {
   display: grid;
