@@ -442,19 +442,31 @@ func TestExplorationLoginHandoverKeepsMarkerUntilConfirmed(t *testing.T) {
 		name       string
 		read       func() ([]loginattempt.Row, uint64, error)
 		readOnly   bool
+		block      string
 		handedOver bool
 	}{
-		{"handed over", ok, false, true},
-		{"no attempts", func() ([]loginattempt.Row, uint64, error) { return nil, 0, nil }, false, true},
-		{"read failure", func() ([]loginattempt.Row, uint64, error) { return nil, 0, errors.New("boundary unavailable") }, false, false},
-		{"omitted rows", func() ([]loginattempt.Row, uint64, error) { return rows, 1, nil }, false, false},
+		{"handed over", ok, false, "", true},
+		{"no attempts", func() ([]loginattempt.Row, uint64, error) { return nil, 0, nil }, false, "", true},
+		{"read failure", func() ([]loginattempt.Row, uint64, error) { return nil, 0, errors.New("boundary unavailable") }, false, "", false},
+		{"omitted rows", func() ([]loginattempt.Row, uint64, error) { return rows, 1, nil }, false, "", false},
+		// 기록 쓰기만 실패한다(기록 자리에 디렉터리). 표지는 지울 수 있어도 남아야 한다.
+		{"record write fails", ok, false, server.E2HTTPLoginAttemptsFile, false},
+		// 기록은 넘겼지만 표지를 지우지 못한다(표지 자리에 비어 있지 않은 디렉터리). 인계 확인이 아니다.
+		{"marker removal fails", ok, false, server.E2HTTPLoginHistoryUnavailableFile, false},
 		// 기록 쓰기와 표지 다시 쓰기·지우기가 모두 실패한다(디렉터리 쓰기 불가).
-		{"record and marker writes fail", ok, true, false},
+		{"record and marker writes fail", ok, true, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			if err := server.MarkLoginHistoryUnavailable(dir); err != nil {
-				t.Fatal(err)
+			if tc.block != "" {
+				if err := os.MkdirAll(filepath.Join(dir, tc.block, "keep"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.block != server.E2HTTPLoginHistoryUnavailableFile {
+				if err := server.MarkLoginHistoryUnavailable(dir); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if tc.readOnly {
 				if err := os.Chmod(dir, 0o500); err != nil {
