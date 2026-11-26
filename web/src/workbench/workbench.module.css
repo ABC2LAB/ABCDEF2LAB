@@ -1170,6 +1170,11 @@ a.ph:hover {
   background: var(--ok-bg);
   color: var(--ok);
 }
+/* 실패(진단 실패 · 실행 실패)는 빨강(사용자 11/26: 범위 확인 '실행 실패'가 초록이라 헷갈림) */
+.pill.fail {
+  background: var(--hi-bg);
+  color: var(--hi);
+}
 .pill.run::before {
   content: "";
   width: 7px;
@@ -2942,6 +2947,98 @@ select.inp {
   max-height: clamp(260px, 50vh, 600px);
   overflow: auto;
   background: var(--bg);
+}
+/* 끝난 점검 승인 기록(11/26): 오른쪽 패널 목록 — 결과 딱지 · 메서드 · 경로(없으면 흐리게), 둘째 줄 보냄 · 시각, 펼치면 상세 */
+.sap {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sap > li + li {
+  border-top: 1px solid var(--rule);
+}
+.sap-row {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 8px;
+  width: 100%;
+  padding: 10px 4px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.sap-row:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+/* 고르기 모드(보고서): 오른쪽 패널에 보이는 줄 */
+.sap-row[aria-current="true"] {
+  background: var(--accent-bg);
+}
+.sap-row > .p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sap-nopath {
+  color: var(--ink-3);
+}
+.sap-sub {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.sap-open {
+  max-width: 760px;
+  padding-left: 8px;
+}
+/* 넓은 자리(보고서 [승인 기록] 탭): 결과 · 메서드 · 경로 · 보냄/시각을 한 줄에, 펼친 상세는 너무 늘어나지 않게 */
+.sap-wide .sap-row {
+  grid-template-columns: 52px 64px minmax(0, 1fr) auto;
+  padding: 9px 8px;
+}
+.sap-wide .sap-sub {
+  grid-column: auto;
+  text-align: right;
+}
+.sap-wide .sap-open {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 4px 14px;
+}
+/* 보고서 오른쪽 패널 승인 기록 상세(11/26): 위 칸 · 전송 결과 사이 간격 */
+.sap-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+/* 요청 상세 헤더 · 본문 칸의 저장 안 된 이유 글 · 이유 코드(전수조사 11/26) */
+.cb-why {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+/* 진단 요청 전체(11/26): 아래 'n / 전체' · [더 보기] 줄, 못 읽음 안내 */
+.log-more {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 8px 2px 0;
+}
+.log-miss {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
 }
 .lh,
 .lr {
