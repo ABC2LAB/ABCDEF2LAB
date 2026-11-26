@@ -78,11 +78,13 @@ func TestCaptureRunWithRedactsBeforeSummaryTruncation(t *testing.T) {
 	}
 }
 
-// E② Worker 세션은 실행의 RedactOutput으로 요약 전에 가린다(배선 시험). 결과 요약(400자) 경계에 시험 계정 세션 값을 둔다.
-func TestE2HTTPSessionSummaryHidesTruncatedSessionValue(t *testing.T) {
-	const session = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJkYXRhIjoidGVzdGVyLWEifQ.c2lnbmF0dXJl"
+// E② Worker 세션은 실행의 가림으로 요약 전에 가린다(배선 시험). 결과 요약(400자) 경계에 우리 제어 비밀(설정한 보호 값)을
+// 둔다 — 요약이 값을 잘라도 앞부분이 활동 기록에 남지 않는다. 시험 계정 세션 값은 더는 가리지 않으므로(절대규칙 2, 2026-11-26
+// DLP 폐기) 이 시험은 늘 가리는 값으로 배선을 본다.
+func TestE2HTTPSessionSummaryHidesTruncatedControlSecret(t *testing.T) {
+	const session = "synthetic-control-secret-0123456789-abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOP"
 	execution, _, _ := e2WorkerFixture(t)
-	if err := execution.AddRedactValues([]byte(session)); err != nil {
+	if err := execution.AddProtectedValues([]byte(session)); err != nil {
 		t.Fatal(err)
 	}
 	answer := strings.Repeat("a", 370) + " " + session
@@ -103,12 +105,12 @@ func TestE2HTTPSessionSummaryHidesTruncatedSessionValue(t *testing.T) {
 	covered := false
 	for _, a := range activities {
 		if strings.Contains(a.Summary+a.Detail+string(a.Metadata), session[:16]) {
-			t.Fatalf("%s activity keeps session prefix: summary=%q", a.Kind, a.Summary)
+			t.Fatalf("%s activity keeps control secret prefix: summary=%q", a.Kind, a.Summary)
 		}
 		covered = covered || a.Kind == "result" && strings.Contains(a.Summary, "[REDACTED]")
 	}
 	if !covered {
-		t.Fatal("result summary did not cover the session value")
+		t.Fatal("result summary did not cover the control secret")
 	}
 }
 

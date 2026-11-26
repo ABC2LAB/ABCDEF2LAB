@@ -2,6 +2,7 @@ package e2proxy
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -14,8 +15,9 @@ import (
 )
 
 // model_visible_v1(사용자 결정 2026-11-23): 대상 응답에 비친 시험 계정 비밀번호는 보류·가림 없이 도구(모델)에 주고, 저장
-// 기록용 가림(RedactRecord)에서만 가린다. 일반 보호 값(우리 제어 비밀) 보류는 그대로다. 값은 모두 합성이다.
-func TestPasswordResponseModelVisibleDeliversAndRecordMasks(t *testing.T) {
+// 기록에서도 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기: 제품 기록은 내부 담당자만 본다). 일반 보호 값(우리 제어 비밀)
+// 보류·가림은 그대로다(아래 시험). 값은 모두 합성이다.
+func TestPasswordResponseModelVisibleDeliversAndRecordKeeps(t *testing.T) {
 	password := "seeded-pass-77!"
 	cases := map[string]struct{ media, body string }{
 		"plain": {"text/plain", "before " + password + " after"},
@@ -49,12 +51,12 @@ func TestPasswordResponseModelVisibleDeliversAndRecordMasks(t *testing.T) {
 			if receipt.Reason != Complete || !receipt.ResponseComplete || e.Snapshot().Counts.Withheld != 0 {
 				t.Fatalf("보류로 셈: %+v", receipt)
 			}
-			// 모델에 가는 도구 출력은 비밀번호를 그대로 두고, 저장 기록은 가린다.
-			if !bytes.Contains(e.RedactOutput(body), []byte(password)) {
+			// 모델에 가는 도구 출력도 저장 기록도 비밀번호를 그대로 둔다.
+			if !bytes.Equal(e.RedactOutput(body), body) {
 				t.Fatal("모델 출력에서 비밀번호를 가림")
 			}
-			if record := e.RedactRecord(body); bytes.Contains(record, []byte(password)) || !bytes.Contains(record, []byte("[REDACTED]")) {
-				t.Fatal("저장 기록에 비밀번호가 남음")
+			if !bytes.Equal(e.RedactRecord(body), body) {
+				t.Fatal("저장 기록에서 비밀번호를 가림")
 			}
 		})
 	}
@@ -71,12 +73,14 @@ func TestPasswordResponseModelVisibleKeepsControlSecretsWithheld(t *testing.T) {
 			if err := e.AddProtectedPasswords([]byte(password)); err != nil {
 				t.Fatal(err)
 			}
+			// 이전 비밀번호 정책(보류·mask_spans_v1)은 모델 출력에서 비밀번호를 가리고, model_visible_v1만 그대로 둔다.
 			out := e.RedactOutput([]byte("x " + password))
 			if visible := bytes.Contains(out, []byte(password)); visible != (mode == PasswordResponseModelVisible) {
 				t.Fatalf("모델 출력 비밀번호 노출=%v", visible)
 			}
-			if bytes.Contains(e.RedactRecord([]byte("x "+password)), []byte(password)) {
-				t.Fatal("저장 기록에 비밀번호가 남음")
+			// 저장 기록은 어느 정책에서도 시험 계정 비밀번호를 가리지 않는다(2026-11-26 DLP 폐기).
+			if record := e.RedactRecord([]byte("x " + password)); string(record) != "x "+password {
+				t.Fatalf("저장 기록에서 비밀번호를 가림: %s", record)
 			}
 		})
 	}
@@ -96,8 +100,14 @@ func TestPasswordResponseModelVisibleKeepsControlSecretsWithheld(t *testing.T) {
 	if resp != nil || !errors.Is(err, ErrWithheld) || receipt.Reason != Withheld {
 		t.Fatalf("제어 비밀이 비친 응답을 넘김: %v %+v", err, receipt)
 	}
-	if bytes.Contains(e.RedactOutput([]byte(control)), []byte(control)) {
-		t.Fatal("모델 출력에서 제어 비밀을 안 가림")
+	// 제어 비밀은 모델 출력에서도 저장 기록에서도 가린다(기록은 뒤에 모델 입력으로 다시 갈 수 있다). 원문·JSON 이스케이프 둘 다.
+	escaped, _ := json.Marshal("leak " + control)
+	for name, redact := range map[string]func([]byte) []byte{"model output": e.RedactOutput, "record": e.RedactRecord} {
+		for _, text := range [][]byte{[]byte("leak " + control), escaped} {
+			if got := redact(text); bytes.Contains(got, []byte(control)) || !bytes.Contains(got, []byte("[REDACTED]")) {
+				t.Fatalf("%s: 제어 비밀을 안 가림: %s", name, got)
+			}
+		}
 	}
 }
 

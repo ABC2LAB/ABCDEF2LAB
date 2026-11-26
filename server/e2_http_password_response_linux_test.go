@@ -105,8 +105,14 @@ func TestPasswordResponseFactoryPrepRefreshAndPolicyBinding(t *testing.T) {
 			if reads.Load() != 1 || counts.ForwardAttempted != 3 || counts.Responses != 3 || counts.Unknown != 0 {
 				t.Fatal("실제 로그인·재로그인·조회 계수 변경")
 			}
-			if out := run.Execution.RedactOutput([]byte("seeded-pass-88ff synthetic-password-mask-session")); strings.Contains(string(out), "seeded-pass-88ff") || strings.Contains(string(out), "synthetic-password-mask-session") {
-				t.Fatal("비밀번호·세션이 공유 출력에 남음")
+			// 이전 비밀번호 정책(보류·mask_spans_v1)은 모델 출력에서 비밀번호를 계속 가린다. 시험 계정 실행의 세션 값은 가리지
+			// 않고, 저장 기록은 둘 다 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기).
+			const text = "seeded-pass-88ff synthetic-password-mask-session"
+			if out := string(run.Execution.RedactOutput([]byte(text))); strings.Contains(out, "seeded-pass-88ff") || !strings.Contains(out, "synthetic-password-mask-session") {
+				t.Fatalf("모델 출력 가림 범위: %s", out)
+			}
+			if out := string(run.Execution.RedactRecord([]byte(text))); out != text {
+				t.Fatalf("저장 기록에서 비밀번호·세션을 가림: %s", out)
 			}
 			if _, err := call.Close(ctx); err != nil {
 				t.Fatal("진단 호출 감사 마감 실패")
