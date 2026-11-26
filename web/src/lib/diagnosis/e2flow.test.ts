@@ -378,6 +378,7 @@ describe("저널 없음(journal none — 계약 workbench-live-data §4, 2026-11
 
   it.each([
     ["사건이 실려 옴", none({ calls: [{ call_ref: "call-1", intent_id: 9, closed: false, attempts: [e2Attempt()] }] })],
+    ["시도 없는 호출이 실려 옴", none({ calls: [{ call_ref: "call-1", intent_id: 9, closed: false, attempts: [] }] })],
     ["누계가 0 이 아님", none({ counts: { ...zero, attempts: 1 } })],
     ["커서가 0 이 아님", none({ last_index: 3 })],
     ["더 있음", none({ more: true })],
