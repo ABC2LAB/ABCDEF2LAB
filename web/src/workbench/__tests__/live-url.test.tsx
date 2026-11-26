@@ -1,4 +1,3 @@
-import { SERVER_EXTERNAL_ACCOUNT_STATEMENT } from "@/lib/diagnosis/external-account-consent-fixtures";
 // live URL 진단(diagnosis-api.v2): 서버 방식 확인(catalog) → 새 점검(초안 + 범위 확인 → 확인 상자 + 시작)
 // → 점검 진행(상태 조회 · 중지 · 실제 task 전송 통제) → 보고서(결과 저장 확인 뒤). 팀 lib 의 요청 함수만 모의하고
 // 검증 · 결속 함수(matchURLJob · matchURLHandle · urlDiagnosisInput · 핸들 저장)는 진짜를 쓴다.
@@ -81,7 +80,6 @@ import { LiveFeeds } from "../live/feeds";
 import { clockOf, dateTimeOf } from "../live/map";
 import { LiveRailTasks } from "../live/rail";
 import {
-  disconnectUrl,
   recheckUrl,
   resetUrl,
   runUrlAction,
@@ -137,6 +135,25 @@ const START_CONFIRMED = { exclusions_reviewed: true, backup_confirmed: true } as
 const exclusionsBox = () => screen.getByRole("checkbox", { name: EXCLUSIONS_REVIEWED_STATEMENT });
 const backupBox = () => screen.getByRole("checkbox", { name: BACKUP_CONFIRMED_STATEMENT });
 /** 오른쪽 요약 '약관 동의'에서 시작 확인 두 진술에 체크한다(사용자 11/24, 원래 2쪽 점검 설정). 둘 다 있어야 '승인 범위 확인'이 켜진다. 이미 체크한 칸은 그대로 둔다. */
+/** 이 설치의 외부 전송 동의 응답(GET/POST /api/product/external-transfer-consent, 사용자 결정 2026-11-26). */
+const TRANSFER_STATEMENT = "이 설치에서 외부 모델을 쓰는 점검은 대상 응답을 가리지 않고 외부 모델 제공자에게 보냅니다.";
+function consentBody(state: "open" | "install" | "admin" | "none") {
+  if (state === "none") return { external_consent: { required: false, consented: false } };
+  if (state === "open")
+    return { external_consent: { required: true, statement: TRANSFER_STATEMENT, consented: false } };
+  return {
+    external_consent: {
+      required: true,
+      statement: TRANSFER_STATEMENT,
+      consented: true,
+      source: state,
+      consented_by: "ARTEX",
+      consented_at: "2026-11-26T09:00:00Z",
+    },
+  };
+}
+const isConsentPath = (path: unknown) => String(path) === "/api/product/external-transfer-consent";
+
 function tickStartConfirm() {
   for (const box of [exclusionsBox(), backupBox()]) if (!(box as HTMLInputElement).checked) fireEvent.click(box);
 }
@@ -147,9 +164,10 @@ const startConsent = () =>
 
 it("URL 입력 뒤 외부 LLM을 펼쳐 모델·키를 등록하고 범위 조회만 한다", async () => {
   u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
-  vi.mocked(teamApi.apiFetch).mockImplementation(
-    async (path) => (String(path).includes("targets/resolve") ? {} : { configured: true }) as never,
-  );
+  vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
+    if (isConsentPath(path)) return consentBody("install") as never;
+    return (String(path).includes("targets/resolve") ? {} : { configured: true }) as never;
+  });
   mount("new");
   const target = await screen.findByLabelText(/점검할 사이트 주소/);
   fireEvent.change(target, { target: { value: "https://target.example/app" } });
@@ -957,15 +975,16 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     expect(screen.queryByRole("button", { name: "점검 시작" })).toBeNull();
   });
 
-  it("작업대의 명시적 외부 전송·USD 동의를 lib에 전달한다", async () => {
+  // 외부 전송 동의는 설치 단위(2026-11-26)라 시작 확인은 비용 상한 · 범위만 받고 회차별 외부 전송 동의를 lib에 넘기지 않는다.
+  it("외부 모델 시작은 비용 · 범위 확인만 받고 회차별 외부 전송 동의를 넘기지 않는다", async () => {
     saveHandle();
     u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
     u.readURLStatus.mockResolvedValue(externalReady);
     u.commandURLDiagnosis.mockResolvedValue({ ...preparing, scope: externalReady.scope });
     mount("new");
-    // 11/23 결정: 시험 계정이 없어도 외부 모델 회차는 대상 정보의 외부 전송과 사용자 책임을 시작 확인에서 고지한다.
-    const consent = await screen.findByRole("checkbox", { name: /외부 전송된 정보에 대한 책임은 사용자에게 있습니다/ });
-    expect(consent).toHaveAccessibleName(/대상이 돌려준 비밀번호·개인정보 등 포함/);
+    const consent = await screen.findByRole("checkbox", { name: /비용 상한 안에서 위 범위로 점검을 시작합니다/ });
+    expect(consent).toHaveAccessibleName(/이 설치의 외부 전송 동의를 따릅니다/);
+    expect(consent).not.toHaveAccessibleName(/책임은 사용자에게/);
     // 서버가 돌려준 범위의 제공자는 요약 패널에 (분석 모델 칸의 제공자 고르기와 별개)
     const sum = screen.getByRole("complementary", { name: "점검 요약" });
     expect(within(sum).getByText(new RegExp(externalModel.provider.replace("/", "\\/")))).toBeInTheDocument();
@@ -977,11 +996,9 @@ describe("새 점검 → 범위 확인 (URL 진단)", () => {
     fireEvent.click(consent);
     fireEvent.click(start);
     await waitFor(() =>
-      expect(u.commandURLDiagnosis).toHaveBeenCalledWith(externalReady, "start", owner, expect.any(String), {
-        externalTransferConfirmed: true,
-      }),
+      expect(u.commandURLDiagnosis).toHaveBeenCalledWith(externalReady, "start", owner, expect.any(String)),
     );
-    expect(sessionStorage.getItem("abc2lab.urlDiagnosisHandle.v2")).not.toContain("externalTransferConfirmed");
+    expect(u.commandURLDiagnosis.mock.calls[0]).toHaveLength(4);
   });
   it("외부 모델 + 탐색 프로필이면 외부 CDN 사전고지를 띄운다", async () => {
     const limits = {
@@ -3213,174 +3230,126 @@ describe("시험 계정 인증 표시(urlAccountAuthRows, §3.4·§4)", () => {
   });
 });
 
-describe("외부 모델 시험 계정 동의", () => {
-  async function externalTarget(hasTest = true, failAccounts = false, withStatement = true) {
-    u.readURLCatalog.mockResolvedValue({
-      ...catalog,
-      profiles: [
-        { ...catalog.profiles[0], model: externalModel },
-        { ...catalog.profiles[0], id: "external-2", model: externalModel },
-      ],
-    });
-    vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
+describe("외부 전송 동의(설치 때 한 번, 2026-11-26)", () => {
+  /** 외부 모델 하나 · 대상 승인 · 시험 계정. consent 는 서버 동의 상태, "fail" 이면 조회 실패. */
+  async function externalTarget(
+    consent: "open" | "install" | "admin" | "none" | "fail",
+    opts: { postFails?: boolean } = {},
+  ) {
+    let state = consent;
+    u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
+    vi.mocked(teamApi.apiFetch).mockImplementation(async (path, init) => {
       const p = String(path);
+      if (isConsentPath(p)) {
+        if (init?.method === "POST") {
+          if (opts.postFails) throw new Error("fixed-consent-unavailable");
+          state = "admin";
+          return consentBody("admin") as never;
+        }
+        if (state === "fail") throw new Error("fixed-consent-unavailable");
+        return consentBody(state) as never;
+      }
       if (p.includes("targets/resolve"))
-        return {
-          target: {
-            id: "target-1",
-            origin: new URL(new URL(p, "http://fixture.test").searchParams.get("url") ?? "https://target.example/")
-              .origin,
-            state: "approved",
-          },
-        } as never;
-      if (p.endsWith("/accounts") && failAccounts) throw new Error("fixed-account-unavailable");
-      if (p.endsWith("/accounts"))
-        return {
-          accounts: hasTest ? [{ label: "tester", classification: "test" }] : [],
-          ...(withStatement ? { external_consent_statement: SERVER_EXTERNAL_ACCOUNT_STATEMENT } : {}),
-        } as never;
+        return { target: { id: "target-1", origin: "https://target.example", state: "approved" } } as never;
+      if (p.endsWith("/accounts")) return { accounts: [{ label: "tester", classification: "test" }] } as never;
       return { credential: { configured: true, model: externalModel.model } } as never;
     });
     u.createURLDraft.mockImplementation(async (input) => ({ ...draft, input }));
-    u.commandURLDiagnosis.mockImplementation(async (current) => ({ ...ready, input: current.input }));
-    mount("new");
-    const target = await screen.findByLabelText(/점검할 사이트 주소/);
-    fireEvent.change(target, { target: { value: "https://target.example/app" } });
-    // 분석 모델 · 외부 전송 동의 칸은 1쪽(사용자 11/24). 범위 확인은 toStart() 로 2쪽에 가서
+    const view = mount("new");
+    fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
+      target: { value: "https://target.example/app" },
+    });
     await screen.findByText("등록됨");
-    return target;
+    tickStartConfirm();
+    return { view, recover: () => (state = "open") };
   }
-  it("새 점검에 다시 들어오면 그사이 등록한 시험 계정을 다시 읽어 동의 칸을 보인다(F2와 같은 종류, 2026-11-22)", async () => {
-    // 처음엔 시험 계정이 없다 → 동의 칸 없음. 계정 분류 화면에서 계정을 등록한 뒤 새 점검으로 돌아오면 다시 읽어야 한다
-    let registered = false;
-    const view = await (async () => {
-      u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
-      vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
-        const p = String(path);
-        if (p.includes("targets/resolve"))
-          return { target: { id: "target-1", origin: "https://target.example", state: "approved" } } as never;
-        if (p.endsWith("/accounts"))
-          return {
-            accounts: registered ? [{ label: "tester", classification: "test" }] : [],
-            external_consent_statement: SERVER_EXTERNAL_ACCOUNT_STATEMENT,
-          } as never;
-        return { credential: { configured: true, model: externalModel.model } } as never;
-      });
-      const r = mount("new");
-      fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
-        target: { value: "https://target.example/app" },
-      });
-      await screen.findByText("등록됨");
-      return r;
-    })();
-    expect(screen.queryByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeNull();
-    registered = true; // 계정 분류 화면에서 시험 계정 등록
-    view.rerender(
-      <ShellContext.Provider value={shellValue({ route: "classify", goTo: view.goTo })}>
-        <UrlFeeds />
-        <NewScanByMode />
-      </ShellContext.Provider>,
-    );
-    view.rerender(
-      <ShellContext.Provider value={shellValue({ route: "new", goTo: view.goTo })}>
-        <UrlFeeds />
-        <NewScanByMode />
-      </ShellContext.Provider>,
-    );
-    // 새 점검에 다시 들어오면 1쪽부터
-    expect(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeInTheDocument();
-  });
-  it("기본 미선택·명시적 동의만 초안에 전송하고 저장소에는 남기지 않는다", async () => {
-    await externalTarget();
-    const checkbox = await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ });
-    expect(checkbox).not.toBeChecked();
-    // 외부 전송 동의도 오른쪽 요약 '약관 동의'에(사용자 11/24, 원래 분석 모델 칸)
-    expect(screen.getByRole("complementary", { name: "점검 요약" })).toContainElement(checkbox);
-    expect(screen.getByText(/체크하지 않으면 시험 계정 없이 진행/)).toBeInTheDocument();
-    // 체크하지 않아도 범위 확인은 보낼 수 있다
-    tickStartConfirm();
-    expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled();
-    fireEvent.click(checkbox);
-    fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
+  const rangeButton = () => screen.getAllByRole("button", { name: "승인 범위 확인" })[0];
+  const summary = () => screen.getByRole("complementary", { name: "점검 요약" });
+  const consentPosts = () =>
+    vi.mocked(teamApi.apiFetch).mock.calls.filter(([p, init]) => isConsentPath(p) && init?.method === "POST");
+
+  it("동의가 없으면 서버 문장을 요약에 보이고, 한 번 동의하기 전에는 범위 확인을 막는다", async () => {
+    await externalTarget("open");
+    const box = await within(summary()).findByRole("checkbox", { name: TRANSFER_STATEMENT });
+    expect(screen.getByText(/이 설치에서 한 번만 받습니다/)).toBeInTheDocument();
+    expect(rangeButton()).toBeDisabled();
+    expect(screen.getByText(/이 설치의 외부 전송에 한 번 동의하세요/)).toBeInTheDocument();
+    const save = screen.getByRole("button", { name: "동의 남기기" });
+    expect(save).toBeDisabled();
+    fireEvent.click(box);
+    fireEvent.click(save);
+    expect(await screen.findByText(/외부 전송 동의됨 · 관리자 화면 · 2026-11-26/)).toBeInTheDocument();
+    expect(consentPosts()).toHaveLength(1);
+    expect(JSON.parse(String(consentPosts()[0][1]?.body))).toEqual({ statement_confirmed: true });
+    expect(screen.queryByRole("checkbox", { name: TRANSFER_STATEMENT })).toBeNull();
+    await waitFor(() => expect(rangeButton()).toBeEnabled());
+    fireEvent.click(rangeButton());
     await waitFor(() => expect(u.createURLDraft).toHaveBeenCalledTimes(1));
-    expect(u.createURLDraft.mock.calls[0][0].external_test_accounts).toBe(true);
-    expect(JSON.stringify(sessionStorage)).not.toContain("external_test_accounts");
-    expect(JSON.stringify(localStorage)).not.toContain("external_test_accounts");
+    // 회차별 동의 칸은 초안 입력에 만들지 않는다
+    expect(u.createURLDraft.mock.calls[0][0]).not.toHaveProperty("external_test_accounts");
   });
-  it("대상 변경 뒤 돌아와도 이전 동의가 살아나지 않는다", async () => {
-    const target = await externalTarget();
-    fireEvent.click(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ }));
-    fireEvent.change(target, { target: { value: "https://second.example/app" } });
-    fireEvent.change(target, { target: { value: "https://target.example/app" } });
-    expect(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).not.toBeChecked();
+  it("설치 때 동의한 설치는 다시 묻지 않고 동의 출처를 보인다", async () => {
+    await externalTarget("install");
+    expect(await within(summary()).findByText(/외부 전송 동의됨 · 설치 때 · 2026-11-26/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "동의 남기기" })).toBeNull();
+    await waitFor(() => expect(rangeButton()).toBeEnabled());
+    // 시험 계정이 있으면 외부 모델도 시험 계정으로 로그인한다(설치 동의가 다룸)
+    expect(within(summary()).getByText("로그인").nextElementSibling).toHaveTextContent("시험 계정 로그인");
   });
-  it("모델을 바꿨다가 돌아와도 동의는 초기화된다", async () => {
-    await externalTarget();
-    fireEvent.click(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ }));
-    fireEvent.change(screen.getByLabelText("제공자"), { target: { value: "external-2" } });
-    fireEvent.change(screen.getByLabelText("제공자"), { target: { value: "profile-1" } });
-    expect(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).not.toBeChecked();
+  it("동의 상태를 읽지 못하면 동의 없음으로 보지 않고 막은 채 다시 확인하게 한다", async () => {
+    const { recover } = await externalTarget("fail");
+    const alert = await within(summary()).findByRole("alert");
+    expect(alert).toHaveTextContent("외부 전송 동의 상태를 확인하지 못했습니다");
+    expect(screen.queryByRole("button", { name: "동의 남기기" })).toBeNull();
+    expect(rangeButton()).toBeDisabled();
+    recover();
+    fireEvent.click(within(alert).getByRole("button", { name: "다시 확인" }));
+    expect(await within(summary()).findByRole("checkbox", { name: TRANSFER_STATEMENT })).toBeInTheDocument();
   });
-  it("계정 조회 실패는 동의를 만들지 않고 시험 계정 없이 진행할 수 있다", async () => {
-    await externalTarget(true, true);
-    expect(await screen.findByRole("alert")).toHaveTextContent("시험 계정 등록 상태를 확인하지 못했습니다");
-    // [계정 다시 조회] 버튼은 뺐다(사용자 11/24, 팀 공유)
-    expect(screen.queryByRole("button", { name: "계정 다시 조회" })).toBeNull();
-    expect(screen.queryByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeNull();
+  it("동의를 남기지 못하면 동의로 보이지 않고 계속 막는다", async () => {
+    await externalTarget("open", { postFails: true });
+    fireEvent.click(await within(summary()).findByRole("checkbox", { name: TRANSFER_STATEMENT }));
+    fireEvent.click(screen.getByRole("button", { name: "동의 남기기" }));
+    expect(
+      await within(summary()).findByText("동의를 남기지 못했습니다. 동의 상태를 다시 확인해 주세요."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/외부 전송 동의됨/)).toBeNull();
+    expect(rangeButton()).toBeDisabled();
+  });
+  it("외부 모델이 없는 설치라고 하면 동의 칸 없이 진행한다", async () => {
+    await externalTarget("none");
+    await waitFor(() => expect(rangeButton()).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "동의 남기기" })).toBeNull();
+    expect(screen.queryByText(/외부 전송 동의됨/)).toBeNull();
+  });
+  it("서버가 만들 수 없는 동의 응답은 동의로 읽지 않는다", async () => {
+    u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
+    vi.mocked(teamApi.apiFetch).mockImplementation(
+      async (path) =>
+        (isConsentPath(path)
+          ? { external_consent: { required: true, statement: TRANSFER_STATEMENT, consented: true, source: "runner" } }
+          : { credential: { configured: true, model: externalModel.model } }) as never,
+    );
+    mount("new");
+    fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
+      target: { value: "https://target.example/app" },
+    });
+    expect(await within(summary()).findByRole("alert")).toHaveTextContent("외부 전송 동의 상태를 확인하지 못했습니다");
+  });
+  it("로컬 모델은 외부 전송 동의를 읽지 않는다", async () => {
+    vi.mocked(teamApi.apiFetch).mockImplementation(async () => ({ configured: true }) as never);
+    mount("new");
+    fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
+      target: { value: "https://target.example/app" },
+    });
     tickStartConfirm();
-    expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled();
-    expect(u.createURLDraft).not.toHaveBeenCalled();
-  });
-  it("서버 진술이 없으면 체크 칸 없이 시험 계정 없는 점검을 허용한다", async () => {
-    await externalTarget(true, false, false);
-    expect(await screen.findByText(/외부 전송 동의 문장을 받지 못해 시험 계정 없이 진행/)).toBeInTheDocument();
-    expect(screen.queryByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeNull();
-    tickStartConfirm();
-    expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled();
-  });
-  it("새 초안은 이전 회차 동의를 초기화한다", async () => {
-    await externalTarget();
-    fireEvent.click(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ }));
-    act(() => disconnectUrl());
-    fireEvent.change(screen.getByLabelText(/점검할 사이트 주소/), { target: { value: "https://target.example/app" } });
-    expect(await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).not.toBeChecked();
-  });
-  it("실제 시험 계정이 없으면 동의 칸을 만들지 않는다", async () => {
-    await externalTarget(false);
-    expect(screen.queryByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeNull();
-    tickStartConfirm();
-    await waitFor(() => expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled());
+    await waitFor(() => expect(rangeButton()).toBeEnabled());
+    expect(vi.mocked(teamApi.apiFetch).mock.calls.some(([p]) => isConsentPath(p))).toBe(false);
   });
 });
 
-it("외부 모델에서 실제 시험 계정이 있어도 미선택이면 동의 필드를 생략한다", async () => {
-  u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
-  vi.mocked(teamApi.apiFetch).mockImplementation(async (path) => {
-    if (String(path).includes("targets/resolve"))
-      return { target: { id: "target-1", origin: "https://target.example", state: "approved" } } as never;
-    if (String(path).endsWith("/accounts"))
-      return {
-        accounts: [{ label: "tester", classification: "test" }],
-        external_consent_statement: SERVER_EXTERNAL_ACCOUNT_STATEMENT,
-      } as never;
-    return { credential: { configured: true, model: externalModel.model } } as never;
-  });
-  mount("new");
-  fireEvent.change(await screen.findByLabelText(/점검할 사이트 주소/), {
-    target: { value: "https://target.example/app" },
-  });
-  const checkbox = await screen.findByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ });
-  expect(checkbox).not.toBeChecked();
-  tickStartConfirm();
-  await waitFor(() => expect(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]).toBeEnabled());
-  fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
-  await waitFor(() => expect(u.createURLDraft).toHaveBeenCalledTimes(1));
-  expect(u.createURLDraft.mock.calls[0][0]).not.toHaveProperty("external_test_accounts");
-});
-
-it("결속된 외부 시험 계정 동의 회차는 정규화·새로고침 뒤에도 '시험 계정 로그인'으로 보인다 (리뷰 이동찬)", async () => {
-  // 저장된 회차 입력은 external_test_accounts=true(끝에 / 로 정규화된 target_url). 새 초안용 consentChecked 는 false 지만,
-  // 안내·요약은 저장된 서버 입력을 기준으로 한다(정규화로 consentKey 가 달라지거나 새로고침으로 로컬 상태가 초기화돼도).
+it("회차별 동의로 결속된 예전 외부 회차는 정규화·새로고침 뒤에도 '시험 계정 로그인'으로 보인다 (리뷰 이동찬)", async () => {
+  // 저장된 회차 입력은 external_test_accounts=true(11/26 전 회차별 동의). 안내 · 요약은 저장된 서버 입력을 기준으로 한다.
   u.readURLCatalog.mockResolvedValue({ ...catalog, profiles: [{ ...catalog.profiles[0], model: externalModel }] });
   vi.mocked(teamApi.apiFetch).mockResolvedValue({} as never);
   const consented = { ...draft.input, external_test_accounts: true as const };
@@ -3408,8 +3377,8 @@ it("로컬 모델 회차도 대상에 시험 계정이 있으면 '시험 계정 
   });
   const sum = screen.getByRole("complementary", { name: "점검 요약" });
   await waitFor(() => expect(within(sum).getByText("로그인").nextElementSibling).toHaveTextContent("시험 계정 로그인"));
-  // 로컬은 외부 전송 동의 체크 칸을 만들지 않는다(동의 없이 결속)
-  expect(screen.queryByRole("checkbox", { name: /이 점검 회차에서 시험 계정 세션/ })).toBeNull();
+  // 로컬은 외부 전송 동의 칸을 만들지 않는다(동의 없이 결속)
+  expect(screen.queryByRole("button", { name: "동의 남기기" })).toBeNull();
 });
 
 it("보고서 재조회가 실패하면 이전 성공 자료로 이번 오류를 숨기지 않는다", async () => {

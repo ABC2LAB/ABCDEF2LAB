@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 
 import { apiFetch } from "./api";
-import { MAX_TARGET_REQUESTS, commandURLDiagnosis, matchURLJob, parseURLCatalog, parseURLJob } from "./diagnosis-url";
+import { commandURLDiagnosis, MAX_TARGET_REQUESTS, matchURLJob, parseURLCatalog, parseURLJob } from "./diagnosis-url";
 import {
   catalog,
   envelope,
@@ -34,7 +34,9 @@ it("catalog and scope preserve installed provider and USD cap without credential
 // 지금 보내는 모델은 3.6이지만 2026-11-14 전에 만든 작업 기록(3.5)도 그 모델 그대로 읽는다.
 it("reads a job recorded with the previous model as recorded", () => {
   const recorded = { ...model, model: "qwen/qwen3.5-35b-a3b" };
-  expect(parseURLJob(envelope({ ...ready, scope: { ...scope, model: recorded } }), owner).scope?.model).toEqual(recorded);
+  expect(parseURLJob(envelope({ ...ready, scope: { ...scope, model: recorded } }), owner).scope?.model).toEqual(
+    recorded,
+  );
 });
 it.each([
   { ...model, model: "qwen/qwen3.7-35b-a3b" },
@@ -45,16 +47,16 @@ it.each([
 ])("rejects an invalid external model contract", (value) => {
   expect(() => parseURLJob(envelope({ ...ready, scope: { ...scope, model: value } }), owner)).toThrow();
 });
-it("Start binds explicit external consent while omitting model credentials and routing input", async () => {
+// 외부 전송 동의는 설치 단위라(2026-11-26) 외부 모델 시작에도 회차별 동의 칸을 싣지 않는다 — 서버가 설치 동의 기록으로 확인한다.
+it("Start omits per-run external consent, model credentials and routing input", async () => {
   const current = { ...ready, scope };
   vi.mocked(apiFetch).mockResolvedValue(envelope({ ...running, revision: current.revision + 1, scope }));
-  await commandURLDiagnosis(current, "start", owner, "external-start", { externalTransferConfirmed: true });
+  await commandURLDiagnosis(current, "start", owner, "external-start");
   expect(apiFetch).toHaveBeenCalledTimes(1);
   const options = vi.mocked(apiFetch).mock.calls[0][1];
   expect(JSON.parse(String(options?.body))).toEqual({
     version: "diagnosis-api.v2",
     expected_revision: current.revision,
-    external_transfer_confirmed: true,
   });
 });
 it("keeps reserved cost on unknown and rejects decreasing reservation", () => {
@@ -95,23 +97,9 @@ it("accepts failed calls counted at their reservation and rejects invalid or dec
   expect(() => matchURLJob(next, current)).toThrow();
 });
 
-it.each([
-  undefined,
-  {},
-  { externalTransferConfirmed: false },
-  { externalTransferConfirmed: "true" as unknown as boolean },
-])("명시적 외부 전송 동의가 없으면 요청 전에 시작을 거부한다: %o", async (confirmation) => {
-  const current = { ...ready, scope };
-  vi.mocked(apiFetch).mockResolvedValue(envelope({ ...running, revision: current.revision + 1, scope }));
-  await expect(commandURLDiagnosis(current, "start", owner, "external-start", confirmation)).rejects.toMatchObject({
-    status: 400,
-    message: "external_transfer_confirmation_required",
-  });
-  expect(apiFetch).not.toHaveBeenCalled();
-});
 it("로컬 시작은 외부 전송 동의를 생성하지 않는다", async () => {
   vi.mocked(apiFetch).mockResolvedValue(envelope({ ...running, revision: ready.revision + 1 }));
-  await commandURLDiagnosis(ready, "start", owner, "local-start", { externalTransferConfirmed: true });
+  await commandURLDiagnosis(ready, "start", owner, "local-start");
   expect(JSON.parse(String(vi.mocked(apiFetch).mock.calls[0][1]?.body))).toEqual({
     version: "diagnosis-api.v2",
     expected_revision: ready.revision,
@@ -121,7 +109,7 @@ it.each(["validate", "stop"] as const)("%s 요청은 외부 전송 동의를 담
   const current = { ...(action === "stop" ? running : ready), scope };
   const next = action === "stop" ? { ...current, revision: current.revision + 1, state: "stopping" } : current;
   vi.mocked(apiFetch).mockResolvedValue(envelope(next));
-  await commandURLDiagnosis(current, action, owner, undefined, { externalTransferConfirmed: true });
+  await commandURLDiagnosis(current, action, owner, undefined);
   expect(JSON.parse(String(vi.mocked(apiFetch).mock.calls[0][1]?.body))).toEqual({
     version: "diagnosis-api.v2",
     expected_revision: current.revision,

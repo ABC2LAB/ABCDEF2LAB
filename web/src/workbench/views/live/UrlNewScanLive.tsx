@@ -22,7 +22,12 @@ import {
   urlDiagnosisInput,
   type WorkflowMode,
 } from "@/lib/diagnosis/diagnosis-url";
-import { EXTERNAL_ACCOUNT_STATEMENT, readExternalTestAccountPresence } from "@/lib/diagnosis/external-account-consent";
+import { readExternalTestAccountPresence } from "@/lib/diagnosis/external-account-consent";
+import {
+  type ExternalTransferConsent,
+  readExternalTransferConsent,
+  recordExternalTransferConsent,
+} from "@/lib/diagnosis/external-transfer-consent";
 
 import { cx } from "../../lib/cx";
 import { NO_SPACE_USERNAME } from "../../live/accounts";
@@ -47,6 +52,12 @@ import { reasonText, UrlHead, UrlNotices, UrlPill } from "./urlParts";
 
 /** 입력 → 서버에 보낼 초안 입력 (팀 lib 검사를 통과해야만). */
 
+/** 동의 시각(서버 RFC3339) → 이 브라우저 시각 'YYYY-MM-DD HH:MM'. */
+function consentAtText(at: string): string {
+  const d = new Date(at);
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}`;
+}
 /** 시작 전 범위의 승인 방식(서버 값). */
 type ApprovalMode = "preauthorized_scope" | "confirm_every_request" | "workbench_selective_v1";
 // 점검 이름(display_name)은 선택 칸으로 받는다(사용자 11/18 — 서버 목록은 원문 URL 을 주지 않아 이름이 없으면 줄이
@@ -57,12 +68,11 @@ function draftInput(
   name: string,
   mode?: WorkflowMode,
   excludes = "",
-  externalTestAccounts = false,
   startConfirmation: URLStartConfirmation = {},
 ): URLDiagnosisInput | null {
   if (!profile) return null;
   try {
-    return urlDiagnosisInput(target, profile, name, mode, excludes, externalTestAccounts, startConfirmation);
+    return urlDiagnosisInput(target, profile, name, mode, excludes, startConfirmation);
   } catch {
     return null;
   }
@@ -287,19 +297,25 @@ export function UrlNewScanLive() {
     key: string;
     value: boolean;
     failed: boolean;
-    statement: string;
     /** 시험 계정 자격은 있는데 대상 로그인 방식이 없음(#914 login_method_missing) */
     loginMissing: boolean;
   }>({
     key: "",
     value: false,
     failed: false,
-    statement: "",
     loginMissing: false,
   });
   // 로그인 방식이 없을 때 '이번에는 익명으로 점검'을 직접 골랐는가(#914 인계: 고르지 않으면 시작 화면에 머문다). 대상이 바뀌면 풀린다
   const [anonChoice, setAnonChoice] = useState({ key: "", on: false });
-  const [accountConsent, setAccountConsent] = useState({ key: "", checked: false });
+  // 이 설치의 외부 전송 동의(설치 때 한 번, 2026-11-26). 외부 모델을 고르면 읽고, 동의를 남기면 그 결과로 바꾼다.
+  // 조회 실패는 동의 없음이 아니다 — 외부 모델 점검을 막고 '확인하지 못함'으로 보인다
+  const [transferConsent, setTransferConsent] = useState<
+    { state: "idle" | "loading" | "failed" } | { state: "ready"; value: ExternalTransferConsent }
+  >({ state: "idle" });
+  const [consentSeq, setConsentSeq] = useState(0);
+  const [consentChecked, setConsentChecked] = useState(false);
+  const [consentSaving, setConsentSaving] = useState(false);
+  const [consentError, setConsentError] = useState("");
   // 시작 확인 두 진술. 초안 입력에 들어가 초안을 만들 때 굳으므로 '승인 범위 확인' 전에 받는다.
   const [startConfirm, setStartConfirm] = useState({ key: "", exclusions: false, backup: false });
   // 주소 칸을 한 번이라도 고쳤는가: 처음 들어온 빈 칸에는 빨간 안내를 띄우지 않고, 지웠을 때만 띄운다 (시안 #nHost)
@@ -361,8 +377,6 @@ export function UrlNewScanLive() {
   const evShown = shown ? excludedOneLine(shown.excluded_paths ?? "") : excluded;
   const external = profile?.model?.external_transfer === true;
   const consentKey = `${tv}\u0000${pv}\u0000${resetSeq}\u0000${accountRevision}`;
-  // 입력이 바뀐 렌더부터 이전 동의를 배제한다(늦은 effect/응답을 기다리지 않는다).
-  if (accountConsent.key !== consentKey) setAccountConsent({ key: consentKey, checked: false });
   // 시작 확인은 대상 · 모델 · 진단 모드 · 제외 경로를 보고 한 진술이라, 그중 하나라도 바뀌면 다시 받는다.
   const confirmKey = `${tv}\u0000${pv}\u0000${mv}\u0000${ev}\u0000${resetSeq}`;
   if (startConfirm.key !== confirmKey) setStartConfirm({ key: confirmKey, exclusions: false, backup: false });
@@ -373,26 +387,20 @@ export function UrlNewScanLive() {
   const backupConfirmed = shown
     ? shown.backup_confirmed === true
     : startConfirm.key === confirmKey && startConfirm.backup;
-  // 대상에 시험 계정이 있는지는 로컬·외부 모두 조회한다 (서버 runBindsAccounts: 로컬 모드는 동의 없이도, 외부 모드는 external_test_accounts 동의 시 결속).
+  // 대상에 시험 계정이 있는지는 로컬·외부 모두 조회한다. 서버는 로컬 모델이면 바로, 외부 모델이면 설치 외부 전송 동의가
+  // 있을 때 시험 계정을 결속한다(동의가 없으면 외부 모델 점검 자체가 시작하지 않는다).
   const hasTestAccounts = accountPresence.key === consentKey && accountPresence.value;
-  const consentChecked =
-    external &&
-    hasTestAccounts &&
-    !!accountPresence.statement &&
-    accountConsent.key === consentKey &&
-    accountConsent.checked;
-  // 이 회차가 시험 계정으로 로그인(결속)하는가. 결속된 회차는 저장된 서버 입력을, 새 초안은 조회+모드로 판단한다 (정규화·새로고침에도 유지).
-  //  - 외부 모델: 외부 전송 동의(external_test_accounts)가 있어야 결속. 로컬 모델: 동의 없이도 대상에 시험 계정이 있으면 결속.
+  const consentValue = transferConsent.state === "ready" ? transferConsent.value : null;
+  // 외부 모델 점검을 보낼 수 있는가: 동의를 읽었고, 이 설치에 동의가 필요 없거나 이미 동의했다
+  const transferConsented = !!consentValue && (!consentValue.required || consentValue.consented);
+  // 이 회차가 시험 계정으로 로그인(결속)하는가 — 대상에 시험 계정이 있으면(외부 모델은 설치 동의가 있어야 시작하므로 같다).
+  // 회차별 동의(external_test_accounts)로 결속된 예전 회차는 저장된 서버 입력 그대로 로그인으로 본다.
   // 로그인 방식이 없으면(#914) 이번 초안은 시험 계정으로 로그인하지 못한다 — 익명으로 점검할지 사용자가 직접 고른다
   // 시작 전(초안 · 범위 확인 뒤)까지만 막는다 — 이미 시작한 점검은 서버가 익명으로 돌고 있다(workbench-live-data)
   const notStarted = !job || job.state === "ready" || job.state === "awaiting_approval";
   const loginMissing = notStarted && hasTestAccounts && accountPresence.loginMissing;
   const anonChosen = anonChoice.key === consentKey && anonChoice.on;
-  const testAccountLogin =
-    !loginMissing &&
-    (shown
-      ? shown.external_test_accounts === true || (!external && hasTestAccounts)
-      : hasTestAccounts && (!external || consentChecked));
+  const testAccountLogin = !loginMissing && (hasTestAccounts || shown?.external_test_accounts === true);
   // 로그인 칸 '연결 전' 설명: 시험 계정으로 로그인하면 '로그인 없이' 라고 단정하지 않는다.
   const loginUnwiredWhy = testAccountLogin
     ? `${NO_INPUT} · 시험 계정으로 로그인해 점검합니다`
@@ -408,20 +416,40 @@ export function UrlNewScanLive() {
           setAccountPresence({
             key: consentKey,
             value: value.hasTestAccounts,
-            statement: value.statement,
             failed: false,
             loginMissing: value.loginMethodMissing,
           });
       })
       .catch(() => {
-        if (current)
-          setAccountPresence({ key: consentKey, value: false, statement: "", failed: true, loginMissing: false });
+        if (current) setAccountPresence({ key: consentKey, value: false, failed: true, loginMissing: false });
       });
     return () => {
       current = false;
       controller.abort();
     };
   }, [tv, consentKey]);
+  // 외부 모델을 고르면 이 설치의 외부 전송 동의를 읽는다(초안이 없을 때만 — 초안 뒤에는 서버가 검토 사유로 알린다)
+  const needsConsent = external && !shown;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: consentSeq 는 [다시 확인]으로 같은 동의를 다시 읽는 트리거
+  useEffect(() => {
+    if (!needsConsent) return;
+    const controller = new AbortController();
+    let current = true;
+    setTransferConsent({ state: "loading" });
+    setConsentChecked(false);
+    setConsentError("");
+    void readExternalTransferConsent(controller.signal)
+      .then((value) => {
+        if (current) setTransferConsent({ state: "ready", value });
+      })
+      .catch(() => {
+        if (current) setTransferConsent({ state: "failed" });
+      });
+    return () => {
+      current = false;
+      controller.abort();
+    };
+  }, [needsConsent, consentSeq]);
   // 주소 옆 인증 칸: 승인되면 '인증됨', 등록 뒤 TXT 를 기다리면 'TXT 확인 대기', 그 밖엔 [URL 인증](누르면 바로 밑 소유 확인
   // 상자가 펼쳐진다). 서버에 대상 승인이 없으면(404 · 501) 칸을 두지 않는다. 승인 자체는 서버가 DNS TXT 로 확인한다
   const urlAuthSlot = (
@@ -460,7 +488,6 @@ export function UrlNewScanLive() {
         profile?.workflow ? workflowMode : undefined,
         // 칸의 한 줄(쉼표)을 서버 형식(줄마다 하나)으로
         profile?.workflow ? excludedLines(excluded) : "",
-        consentChecked,
         { exclusionsReviewed, backupConfirmed },
       );
 
@@ -479,6 +506,12 @@ export function UrlNewScanLive() {
       why2.push(kind === "external" ? "설치된 외부 모델 프로필이 없습니다" : "설치된 로컬 모델 프로필이 없습니다");
     else if (!profile) why2.push("모델을 고르세요");
     if (external && !credentialReady) why2.push("외부 API 키를 등록하세요");
+    if (external && !transferConsented)
+      why2.push(
+        transferConsent.state === "failed"
+          ? "외부 전송 동의 상태를 확인하지 못했습니다"
+          : "오른쪽 약관 동의에서 이 설치의 외부 전송에 한 번 동의하세요",
+      );
     if (!startConfirmed) why2.push("오른쪽 약관 동의 두 가지에 체크하세요");
     if (loginMissing && !anonChosen)
       why2.push("로그인 방식이 없습니다 — 로그인 방식을 저장하거나 '이번에는 익명으로 점검'을 고르세요");
@@ -490,6 +523,7 @@ export function UrlNewScanLive() {
     g.canValidate &&
     !busy &&
     (!external || credentialReady) &&
+    (!external || transferConsented) &&
     startConfirmed &&
     (!loginMissing || anonChosen);
   const send = async () => {
@@ -557,15 +591,6 @@ export function UrlNewScanLive() {
   } else if (job.state === "ready") {
     action = (
       <>
-        {external && hasTestAccounts && !testAccountLogin ? (
-          <div className={cx(s.note, s.warn)} role="note">
-            <Icon name="alert" />
-            <span>
-              시험 계정 외부 전송 동의를 하지 않아 시험 계정(로그인) 없이 점검합니다. 시험 계정으로 점검하려면 새로
-              입력하세요.
-            </span>
-          </div>
-        ) : null}
         {scope?.approval_mode === "confirm_every_request" ? (
           <div className={cx(s.note, s.warn)} role="note">
             <Icon name="alert" />
@@ -581,7 +606,7 @@ export function UrlNewScanLive() {
           />
           <span>
             {scope?.model?.external_transfer
-              ? "대상 응답·도구 출력(대상이 돌려준 비밀번호·개인정보 등 포함)이 외부 모델 제공자로 전송되며, 외부 전송된 정보에 대한 책임은 사용자에게 있습니다. 이에 동의하고 비용 상한 안에서 위 범위로 점검을 시작합니다."
+              ? "비용 상한 안에서 위 범위로 점검을 시작합니다. 외부 모델 전송은 이 설치의 외부 전송 동의를 따릅니다."
               : "위 범위로 점검을 시작합니다."}
           </span>
         </label>
@@ -635,7 +660,7 @@ export function UrlNewScanLive() {
       </div>
     );
   } else if (!shown) {
-    // 외부 전송 시험 계정 동의는 오른쪽 요약 '약관 동의'(accountConsentBox)
+    // 외부 전송 동의는 오른쪽 요약 '약관 동의'(transferConsentBox)
     modelSide = (
       <ExternalModelSettings
         key={`${pv}:${resetSeq}`}
@@ -646,37 +671,75 @@ export function UrlNewScanLive() {
     );
   }
 
-  // 외부 모델 시험 계정 세션 전송 동의(초안 입력 external_test_accounts). 오른쪽 요약 '약관 동의'에 둔다(사용자 11/24, 원래
-  // 분석 모델 칸). 초안을 만든 뒤에는 서버 입력이 정해 이 칸을 두지 않는다(요약 · 시작 단계가 말한다)
-  const accountConsentBox: ReactNode =
-    extView && !shown ? (
-      <>
-        {hasTestAccounts && accountPresence.statement ? (
-          <>
-            <p className={s.help}>{EXTERNAL_ACCOUNT_STATEMENT}</p>
-            <label className={s.ckline}>
-              <input
-                type="checkbox"
-                checked={consentChecked}
-                disabled={g.inputLocked || busy}
-                onChange={(e) => setAccountConsent({ key: consentKey, checked: e.target.checked })}
-              />
-              <span>{accountPresence.statement}</span>
-            </label>
-            <p className={s.help}>체크하지 않으면 시험 계정 없이 진행합니다.</p>
-          </>
-        ) : null}
-        {hasTestAccounts && !accountPresence.statement ? (
-          <p className={s.help}>외부 전송 동의 문장을 받지 못해 시험 계정 없이 진행합니다.</p>
-        ) : null}
-        {accountPresence.key === consentKey && accountPresence.failed ? (
-          // [계정 다시 조회] 버튼은 뺐다(사용자 11/24, 팀 공유) — 새 점검에 다시 들어오면 다시 읽는다
-          <p role="alert" className={s.help}>
-            시험 계정 등록 상태를 확인하지 못했습니다. 동의를 만들지 않고 시험 계정 없이 진행합니다.
-          </p>
-        ) : null}
-      </>
-    ) : null;
+  // 이 설치의 외부 전송 동의(사용자 결정 2026-11-26: 설치 때 한 번). 오른쪽 요약 '약관 동의'에 둔다. 외부 모델을 골랐을 때만
+  // 보이고, 동의는 서버 문장을 그대로 보여 주고 관리자가 한 번 남긴다(그 뒤로는 다시 묻지 않음). 범위 확인 뒤에는 두지 않는다
+  const recordConsent = async () => {
+    setConsentSaving(true);
+    setConsentError("");
+    try {
+      setTransferConsent({ state: "ready", value: await recordExternalTransferConsent() });
+    } catch {
+      setConsentError("동의를 남기지 못했습니다. 동의 상태를 다시 확인해 주세요.");
+    } finally {
+      setConsentSaving(false);
+    }
+  };
+  let transferConsentBox: ReactNode = null;
+  if (extView && !shown) {
+    if (transferConsent.state === "failed") {
+      transferConsentBox = (
+        <div role="alert" className={cx(s.note, s.warn)}>
+          <Icon name="alert" />
+          <span className={s["lv-grow"]}>
+            외부 전송 동의 상태를 확인하지 못했습니다. 확인하기 전에는 외부 모델 점검을 시작하지 않습니다.
+          </span>
+          <button className={cx(s.btn, s.sm)} type="button" onClick={() => setConsentSeq((n) => n + 1)}>
+            다시 확인
+          </button>
+        </div>
+      );
+    } else if (!consentValue) {
+      transferConsentBox = (
+        <p className={s.help} role="status">
+          외부 전송 동의를 확인하는 중…
+        </p>
+      );
+    } else if (consentValue.required && !consentValue.consented) {
+      transferConsentBox = (
+        <section aria-label="외부 전송 동의">
+          <p className={s.help}>외부 전송 동의 — 이 설치에서 한 번만 받습니다.</p>
+          <label className={s.ckline}>
+            <input
+              type="checkbox"
+              checked={consentChecked}
+              disabled={consentSaving}
+              onChange={(e) => setConsentChecked(e.target.checked)}
+            />
+            <span>{consentValue.statement}</span>
+          </label>
+          <button
+            className={cx(s.btn, s.sm)}
+            type="button"
+            disabled={!consentChecked || consentSaving}
+            onClick={() => void recordConsent()}
+          >
+            {consentSaving ? "남기는 중…" : "동의 남기기"}
+          </button>
+          {consentError ? (
+            <p role="alert" className={s.err}>
+              {consentError}
+            </p>
+          ) : null}
+        </section>
+      );
+    } else if (consentValue.required && consentValue.consented) {
+      transferConsentBox = (
+        <p className={s.help}>
+          {`외부 전송 동의됨 · ${consentValue.source === "install" ? "설치 때" : "관리자 화면"} · ${consentAtText(consentValue.consentedAt)}`}
+        </p>
+      );
+    }
+  }
 
   // 절대규칙 6 고지 (시안 v52): 할 일을 제목으로, 자세한 설명 · 원래 고지 문장은 (?) 메모에. 범위 확인 앞뒤 모두 보인다
   const warnRule = (
@@ -1305,7 +1368,7 @@ export function UrlNewScanLive() {
                 ? "이 점검을 만들 때 기록된 확인입니다."
                 : "두 확인은 점검 기록에 남습니다. 둘 다 체크해야 승인 범위 확인으로 넘어갑니다."}
             </p>
-            {accountConsentBox}
+            {transferConsentBox}
             <ApprovedWriteNotice scope={scope} />
             <UrlNotices />
           </div>

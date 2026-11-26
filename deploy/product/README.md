@@ -64,11 +64,19 @@ Workbench는 `http://127.0.0.1:8787/`, 사용자명은 `ABC2LAB`, 비밀번호�
 
 ## 사용 흐름과 외부 LLM
 
-**새 점검 → URL 입력 → 외부 LLM 사용하기 → 승인 모델 선택·API 키 등록/재사용 → 대상 권한·범위 등록 및 소유 확인 → 서버 승인 범위·비용 확인 → 명시적 동의 → 진단 시작.** 로컬 승인 프로필이 하나면 기본 선택한다. 키 저장과 범위 확인만으로 진단을 실행하지 않는다.
+**새 점검 → URL 입력 → 외부 LLM 사용하기 → 승인 모델 선택·API 키 등록/재사용 → (설치에 외부 전송 동의가 없으면 한 번 동의) → 대상 권한·범위 등록 및 소유 확인 → 서버 승인 범위·비용 확인 → 시작 확인 → 진단 시작.** 로컬 승인 프로필이 하나면 기본 선택한다. 키 저장과 범위 확인만으로 진단을 실행하지 않는다.
 
 OpenRouter는 운영자가 `openrouter_manifest`에 [기존 보호 승인 JSON 형식](../../docs/openrouter-first-diagnosis.md)을 추가한다. `local_model`은 생략할 수 있다. 현재 모델은 `qwen/qwen3.6-35b-a3b`(2026-11-14부터), endpoint는 `https://openrouter.ai/api/v1`로 고정된다. installer가 profile ID를 생성된 DB ID에 바인딩한다. provider slug/응답 이름, privacy/ZDR, 계정 spend cap, 요청·토큰·실제 USD 상한, 가격 상한, 만료·승인 ID를 운영자가 확인한다. 키 입력으로 이 설정을 바꿀 수 없다. 새 승인은 manifest `version: 3`과 `sampling`(제품 기본값은 평가 프로토콜 §6 값: temperature 1.0·top_p 0.95·top_k 20·min_p 0·presence_penalty 1.5·repetition_penalty 1.0·seed 42)을 넣는다. 매 요청에 이 값이 들어가고 엔진이 보낸 temperature는 덮어쓴다(`docs/openrouter-first-diagnosis.md`). v1·v2 승인은 이전처럼 샘플링을 넣지 않는다.
 
-키는 인증된 `POST /api/product/model-credentials`에서 설치된 프로필의 `api_key` 열만 갱신한다. 별도 writer 역할에는 키 읽기·모델·endpoint·예산 변경 권한이 없다. 비제어 password 입력은 전송 즉시 비우며 React 상태·URL·진단 초안·local/session storage·보고서에 키를 넣지 않는다. 시작 시 외부 전송·비용 동의는 별도로 필요하다. 키 변경·응답 유실·사용량 불명은 기존 fail-closed 계약을 따른다. 다음 진단은 인증된 GET에서 `configured`와 승인 모델 ID만 읽어 키를 재사용한다. API 키 값은 브라우저로 반환하지 않는다. 연결 실패 시 합성 모델이나 일반 ARTEX 엔진으로 자동 전환하지 않는다.
+키는 인증된 `POST /api/product/model-credentials`에서 설치된 프로필의 `api_key` 열만 갱신한다. 별도 writer 역할에는 키 읽기·모델·endpoint·예산 변경 권한이 없다. 비제어 password 입력은 전송 즉시 비우며 React 상태·URL·진단 초안·local/session storage·보고서에 키를 넣지 않는다. 시작 시 비용·범위 확인은 별도로 필요하다(외부 전송 동의는 아래 설치 단위 동의). 키 변경·응답 유실·사용량 불명은 기존 fail-closed 계약을 따른다. 다음 진단은 인증된 GET에서 `configured`와 승인 모델 ID만 읽어 키를 재사용한다. API 키 값은 브라우저로 반환하지 않는다. 연결 실패 시 합성 모델이나 일반 ARTEX 엔진으로 자동 전환하지 않는다.
+
+**외부 전송 동의(설치 때 한 번, 2026-11-26 사용자 결정).** 외부 모델(OpenRouter) 점검은 대상 응답·도구 출력, 등록한 시험 계정의 아이디·비밀번호, 대상이 발급한 세션을 가리지 않고 제공자에게 보낸다. 그래서 회차마다 묻지 않고 설치 조직이 아래 문장에 한 번 동의한다. 동의가 없는 설치의 외부 모델 점검은 검토 사유 `external_transfer_consent_required`로 시작하지 않는다(로컬 모델 점검은 상관없다).
+
+- 새 설치: 설치 입력에 `"external_transfer_consent": {"statement": "<문장>"}`을 넣는다. 문장은 `cmd/first-controlled-diagnosis/product_external_consent.go`의 `productExternalTransferStatement`와 글자 그대로 같아야 하고, `openrouter_manifest`가 있는 설치만 받는다(다르면 설치 입력 오류).
+- 이미 설치된 곳(`update.sh`는 설치 입력을 다시 읽지 않는다): 관리자가 새 점검 화면에서 외부 모델을 고르면 문장이 보이고, 체크 뒤 [동의 남기기]로 한 번 남긴다(`POST /api/product/external-transfer-consent {"statement_confirmed": true}`, 조회는 `GET`).
+- 기록은 상태 디렉터리의 `external-transfer-consent-<문장 해시 앞 16자>.json`(0600) 하나이고 한 번 만들면 바꾸지 않는다(먼저 남긴 동의가 이긴다). 문장의 SHA-256·출처(`install`·`admin`)·주체·시각만 남긴다. 문장이 바뀌면 파일 이름이 달라 다시 한 번 동의받는다.
+- 시험 계정을 쓴 외부 모델 회차는 지금처럼 대상 계정 저널에 `external_consent` 줄(이번 문장 해시·주체·시각·작업)을 남긴다(감사).
+- 회차별 칸(초안 입력 `external_test_accounts`, 시작 `external_transfer_confirmed`)은 옛 클라이언트·평가 러너를 위해 받기만 하고 제품 설치의 결정에는 쓰지 않는다.
 
 유료 승인(OpenRouter manifest)은 v4면 총량이 **점검 하나의 상한**이다: 설치 하나가 `max_runs`까지 점검을 돌리고, 점검마다 예약 기록(`.openrouter-<승인 해시>.run-<…>.ledger`)을 따로 두어 그 점검이 승인 총량을 넘지 않게 한다(점검마다 새 승인을 받지 않는다). v1~v3은 승인 총량·만료 안에서 여러 회차가 이어 쓴다. 같은 v4 승인 파일을 CLI 두 프로세스 경로와 제품 URL 진단에 함께 쓰지 않는다. 두 경로의 장부는 서로 합산되지 않는다. 기록은 보호 manifest 디렉터리에 두고, 매 요청 전에 잠금 안에서 다시 읽어 승인 총량을 넘지 않을 때만 예약한다. 응답을 확인한 호출은 실제 사용량으로 정산해 남은 예약을 다시 쓴다(P3 결정안 C07, `docs/openrouter-first-diagnosis.md`). v1~v3의 한도·만료·누적 예산 소진, v4의 만료·위임 실행 횟수 소진 후에는 기존 운영자 재승인이 필요하다. 예전 1회용 표식(`.used`)·`.ledger`·journal을 지우거나 고쳐 재승인하지 않는다. `.ledger`를 지우면 그 기록의 합계가 0으로 돌아가 총량 보장이 깨진다(점검 하나 안에서 지우거나 고쳐 재시도하지 않는다). 사용자 모델 입력은 설치된 승인 모델에 한정된다.
 

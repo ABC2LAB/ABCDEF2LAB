@@ -503,7 +503,6 @@ async function runUrlActionNow(
           input.display_name ?? "",
           input.workflow_mode,
           input.excluded_paths ?? "",
-          input.external_test_accounts === true,
           {
             exclusionsReviewed: input.exclusions_reviewed === true,
             backupConfirmed: input.backup_confirmed === true,
@@ -544,8 +543,7 @@ async function runUrlActionNow(
           return true;
         }
         next = await commandURLDiagnosis(fresh, "stop", owner);
-      } else
-        next = await commandURLDiagnosis(job, kind, owner, saved.startKey, { externalTransferConfirmed: st.confirmed });
+      } else next = await commandURLDiagnosis(job, kind, owner, saved.startKey);
     }
     if (current !== generation || !saved) return false;
     if (job) {

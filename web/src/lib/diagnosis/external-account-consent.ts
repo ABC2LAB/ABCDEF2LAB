@@ -1,9 +1,5 @@
 import { ApiError, apiFetch } from "./api";
 
-export const EXTERNAL_ACCOUNT_STATEMENT =
-  "체크하면 시험 계정 세션(쿠키·토큰)과 대상 응답·도구 출력을 외부 모델 제공자에게 보냅니다.";
-// biome-ignore lint/suspicious/noControlCharactersInRegex: Reject C0 and DEL in server consent statements.
-const statementControls = /[\x00-\x1f\x7f]/;
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const ref = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(v);
 
@@ -11,7 +7,7 @@ const ref = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9][
 export async function readExternalTestAccountPresence(
   target: string,
   signal?: AbortSignal,
-): Promise<{ hasTestAccounts: boolean; statement: string; loginMethodMissing: boolean; targetId?: string }> {
+): Promise<{ hasTestAccounts: boolean; loginMethodMissing: boolean; targetId?: string }> {
   const origin = new URL(target).origin;
   const resolved = await apiFetch<unknown>(
     `/api/product/targets/resolve?url=${encodeURIComponent(target)}`,
@@ -23,7 +19,7 @@ export async function readExternalTestAccountPresence(
     resolved.target === undefined &&
     (Object.keys(resolved).length === 0 || (Array.isArray(resolved.targets) && resolved.targets.length === 0))
   )
-    return { hasTestAccounts: false, statement: "", loginMethodMissing: false };
+    return { hasTestAccounts: false, loginMethodMissing: false };
   const t = resolved.target;
   if (!object(t) || !ref(t.id) || t.origin !== origin || t.state !== "approved")
     throw new ApiError(422, "invalid_target_contract");
@@ -45,13 +41,6 @@ export async function readExternalTestAccountPresence(
     )
   )
     throw new ApiError(422, "invalid_account_contract");
-  const statement =
-    typeof result.external_consent_statement === "string" &&
-    result.external_consent_statement.length > 0 &&
-    new TextEncoder().encode(result.external_consent_statement).length <= 1024 &&
-    !statementControls.test(result.external_consent_statement)
-      ? result.external_consent_statement
-      : "";
   // 자격은 저장됐는데 이 대상의 로그인 방식이 없으면 서버가 login_method_missing: true 를 준다(#914, workbench-live-data).
   // 대상 설정 상태일 뿐이라 MFA · 지원 안 함으로 읽지 않고, 없다고 로그인 성공으로도 읽지 않는다. 시험 계정만 본다
   const loginMethodMissing = accounts.some(
@@ -60,7 +49,6 @@ export async function readExternalTestAccountPresence(
   );
   return {
     hasTestAccounts: accounts.some((a) => object(a) && a.classification === "test"),
-    statement,
     loginMethodMissing,
     // 진행 화면의 '로그인 방식 등록' 안내가 계정 분류 화면에서 이 대상을 미리 고르게 한다
     targetId: t.id,

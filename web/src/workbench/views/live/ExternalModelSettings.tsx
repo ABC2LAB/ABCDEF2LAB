@@ -112,8 +112,8 @@ export function ExternalModelSettings({
           <span className={cx(s.lbl, s.must)}>API 키</span>
         )}
         <HelpTip label="API 키 설명">
-          키는 서버에만 등록하고 키 값은 브라우저로 읽어오지 않습니다. 외부 전송 · USD 상한 동의는 다음 범위 확인
-          화면에서 따로 합니다.
+          키는 서버에만 등록하고 키 값은 브라우저로 읽어오지 않습니다. 외부 전송 동의는 이 설치에서 한 번만 받고(오른쪽
+          약관 동의), USD 상한은 범위 확인 뒤 시작 확인에서 봅니다.
         </HelpTip>
       </div>
       {asking ? (

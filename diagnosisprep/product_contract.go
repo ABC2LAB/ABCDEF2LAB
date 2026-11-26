@@ -44,6 +44,41 @@ type ProductRequest struct {
 	Declaration *DeclarationInput `json:"declaration,omitempty"`
 	// Reset은 리셋 확인(reset_confirm)의 입력이다.
 	Reset *ResetRequest `json:"reset,omitempty"`
+	// ExternalConsent는 외부 전송 동의 기록(external_consent_record)의 입력이다. 동의는 설치 단위로 한 번이다.
+	ExternalConsent *ExternalConsentRequest `json:"external_consent,omitempty"`
+}
+
+// ExternalConsentRequest는 관리자가 화면의 외부 전송 동의 문장에 동의했다는 진술이다(설치 입력으로 동의하지 않은 기존
+// 설치가 한 번 남긴다). 문장 자체는 서버 상수이고 기록에는 그 SHA-256만 남는다.
+type ExternalConsentRequest struct {
+	StatementConfirmed bool `json:"statement_confirmed"`
+}
+
+// ProductExternalConsent는 이 설치의 외부 전송 동의 상태다(사용자 결정 2026-11-26: 외부 전송 동의는 설치 때 한 번).
+//   - Required: 이 설치에 외부 모델(OpenRouter)이 있어 동의가 필요한지. 거짓이면 나머지는 비어 있다.
+//   - Statement: 동의할 문장(지금 서버 상수). 화면은 이 문장을 그대로 보인다.
+//   - Consented·Source·ConsentedBy·ConsentedAt: 지금 문장에 대한 동의 기록. Source는 install(설치 입력)·admin(관리자 화면).
+//     문장이 바뀌면 옛 동의는 지금 문장의 동의가 아니므로 Consented는 거짓이다.
+type ProductExternalConsent struct {
+	Required    bool       `json:"required"`
+	Statement   string     `json:"statement,omitempty"`
+	Consented   bool       `json:"consented"`
+	Source      string     `json:"source,omitempty"`
+	ConsentedBy string     `json:"consented_by,omitempty"`
+	ConsentedAt *time.Time `json:"consented_at,omitempty"`
+}
+
+func validProductExternalConsent(c ProductExternalConsent) bool {
+	if !c.Required {
+		return c == (ProductExternalConsent{})
+	}
+	if !validText(c.Statement, 2048) || c.Statement == "" {
+		return false
+	}
+	if !c.Consented {
+		return c.Source == "" && c.ConsentedBy == "" && c.ConsentedAt == nil
+	}
+	return (c.Source == "install" || c.Source == "admin") && reference.MatchString(c.ConsentedBy) && c.ConsentedAt != nil && !c.ConsentedAt.IsZero()
 }
 
 // TargetLogin은 대상 앱의 로그인 방식이다. 앱의 경로·필드 이름은 코드가 아니라 이 설정으로만 받는다(하드코딩 금지).
@@ -198,11 +233,9 @@ type ProductResponse struct {
 	// AccountStatement는 accounts 목록과 함께 주는 시험 계정 표시 진술 문장이다. 화면은 이 문장을 그대로 보여 주고 동의를
 	// 받는다(저널에는 이 문장의 SHA-256만 남는다).
 	AccountStatement string `json:"account_statement,omitempty"`
-	// ExternalConsentStatement는 accounts 목록과 함께 주는 외부 API 시험 계정 전송 동의 진술 문장이다(초안 입력
-	// external_test_accounts). 화면은 이 문장을 그대로 보여 주고 동의를 받는다. 실행이 시작되면 저널에 이 문장의 SHA-256이
-	// 남는다(#552, #561 리뷰).
-	ExternalConsentStatement string `json:"external_consent_statement,omitempty"`
-	Reason                   string `json:"reason,omitempty"`
+	// ExternalConsent는 external_consent·external_consent_record의 결과다(설치 단위 외부 전송 동의).
+	ExternalConsent *ProductExternalConsent `json:"external_consent,omitempty"`
+	Reason          string                  `json:"reason,omitempty"`
 	// Declaration은 declaration·declaration_put의 결과다.
 	Declaration *ProductDeclaration `json:"declaration,omitempty"`
 	// Reset은 reset_confirmation·reset_confirm의 결과다.
@@ -233,6 +266,23 @@ func validProductRequest(r *ProductRequest) bool {
 		return false
 	}
 	if r.Operation != "resolve" && r.TargetURL != "" {
+		return false
+	}
+	// 외부 전송 동의는 설치 단위라 대상·작업·모델 칸이 없다.
+	if strings.HasPrefix(r.Operation, "external_consent") {
+		if r.JobID != "" || r.CommandKey != "" || r.ExpectedRevision != 0 || len(r.SelectedIDs) > 0 || r.TargetURL != "" || r.TargetID != "" || r.ProfileID != "" ||
+			r.Registration != nil || r.Account != nil || r.Login != nil || r.Credential != nil || r.Declaration != nil || r.Reset != nil {
+			return false
+		}
+		switch r.Operation {
+		case "external_consent":
+			return r.ExternalConsent == nil
+		case "external_consent_record":
+			return r.ExternalConsent != nil && r.ExternalConsent.StatementConfirmed
+		}
+		return false
+	}
+	if r.ExternalConsent != nil {
 		return false
 	}
 	if strings.HasPrefix(r.Operation, "reset_confirm") {
