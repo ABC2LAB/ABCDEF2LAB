@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +95,57 @@ func TestLearnedLoginTransportAudit(t *testing.T) {
 	ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
 	if _, _, reason := ll.plan("tester-a"); reason != "" || ll.provenance["tester-a"] != learnedlogin.ProvenanceExplorationUnaudited {
 		t.Fatalf("탐색 행 %q %v", reason, ll.provenance)
+	}
+}
+
+func TestExplorationEvidenceControlsE3Reuse(t *testing.T) {
+	r, _, rec := learnedAccountTarget(t)
+	creds := map[string]string{"tester-a": credentialOf(r, rec.Target.ID, "tester-a")}
+	row := modelSucceededRow("exploration-1", "tester-a", "/login")
+	row.Stage, row.TransportRef = learnedlogin.StageExploration, "17"
+	for name, mutate := range map[string]func(*learnedlogin.ExplorationEvidence){
+		"matched":      nil,
+		"other path":   func(e *learnedlogin.ExplorationEvidence) { e.Sends[0].Path = "/other" },
+		"not received": func(e *learnedlogin.ExplorationEvidence) { e.Sends[0].ResponseReceived = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			runs, job := learnedRunDir(t, []learnedlogin.Row{row})
+			e := learnedlogin.ExplorationEvidence{Schema: learnedlogin.ExplorationEvidenceSchema, RunRef: "run-job1", SessionRef: "explore-job1",
+				JobID: job, TargetRef: rec.Target.ID, TargetRevision: rec.Target.Revision, SourceDigest: strings.Repeat("a", 64),
+				Sends: []learnedlogin.ExplorationSend{{Seq: 17, Method: "POST", Path: "/login", Status: 302, BoundaryForwarded: true,
+					ApprovedTarget: true, ObservationForwarded: true, ResponseReceived: true}}}
+			if mutate != nil {
+				mutate(&e)
+			}
+			if err := learnedlogin.WriteExplorationEvidence(filepath.Join(runs, job, "state"), e); err != nil {
+				t.Fatal(err)
+			}
+			ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
+			fake := &fakeLearnedAccounts{result: authenticatedResult(), contrast: server.E2HTTPLoginContrastResult{Sent: true, Status: 401}}
+			ll.relogin(t.Context(), "tester-a", fake, fake)
+			want := learnedlogin.Reason("")
+			if mutate != nil {
+				want = learnedlogin.ReasonTransportUnverified
+			}
+			if _, _, reason := ll.plan("tester-a"); reason != want {
+				t.Fatalf("출처 대조 %q, want %q", reason, want)
+			}
+			if want == "" && (len(fake.requests) != 1 || ll.provenance["tester-a"] != learnedlogin.ProvenanceExplorationObserved) {
+				t.Fatalf("경계 관찰 대조 이후 재사용 %d %v", len(fake.requests), ll.provenance)
+			}
+			if want != "" && (len(fake.requests) != 0 || len(fake.legacy) != 0) {
+				t.Fatal("불일치 근거로 로그인 송신")
+			}
+		})
+	}
+	runs, job := learnedRunDir(t, []learnedlogin.Row{row})
+	path := filepath.Join(runs, job, "state", learnedlogin.ExplorationEvidenceFile)
+	if err := os.WriteFile(path, []byte("broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
+	if _, _, reason := ll.plan("tester-a"); reason != learnedlogin.ReasonTransportUnverified {
+		t.Fatalf("손상된 근거 허용: %q", reason)
 	}
 }
 

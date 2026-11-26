@@ -16,6 +16,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/exploration"
 	"github.com/Autumn-27/artex/exploreboundary"
+	"github.com/Autumn-27/artex/learnedlogin"
 	"github.com/Autumn-27/artex/loginattempt"
 	"github.com/Autumn-27/artex/server"
 )
@@ -118,7 +119,7 @@ func (b *urlPreparationRuntime) productExplorationStage(l *urlLoadedProfile, e d
 			recordExplorationStage(stateDir, explorationResultRecord(notRun, result.Charge.Known, result.Charge.Requests))
 			// 탐색 단계 로그인 시도 행을 회차 기록에 옮긴다. 진단 단계(E②)가 이 행으로 아이디별 연속 실패를 이어 센다(계약 §5).
 			if tracked {
-				b.recordExplorationLoginAttempts(ctx, stateDir, options.Binding, options.Credentials, notRun)
+				b.recordExplorationLoginAttempts(ctx, stateDir, options.Binding, options.SourceDigest, options.Credentials, notRun)
 			}
 			return result.Charge, err
 		}
@@ -155,7 +156,7 @@ func (b *urlPreparationRuntime) explorationLoginTracked() bool {
 
 // recordExplorationLoginAttempts는 탐색 경계의 로그인 시도 행을 회차 상태 디렉터리 기록에 덧붙인다. 탐색이 경계를 열기 전에
 // 끝났으면(NOT_RUN) 탐색 로그인이 없으므로 읽지 않고 인계를 확인한다.
-func (b *urlPreparationRuntime) recordExplorationLoginAttempts(ctx context.Context, stateDir string, binding exploration.Binding, credentials []agent.E2HTTPAccountCredential, notRun bool) {
+func (b *urlPreparationRuntime) recordExplorationLoginAttempts(ctx context.Context, stateDir string, binding exploration.Binding, sourceDigest string, credentials []agent.E2HTTPAccountCredential, notRun bool) {
 	host := b.product.exploration
 	read := func() ([]loginattempt.Row, uint64, error) {
 		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), explorationCloseTimeout)
@@ -169,13 +170,25 @@ func (b *urlPreparationRuntime) recordExplorationLoginAttempts(ctx context.Conte
 	for _, c := range credentials {
 		labels = append(labels, c.Label)
 	}
-	handOverExplorationLogins(stateDir, read, labels)
+	if notRun {
+		handOverExplorationLogins(stateDir, read, labels)
+		return
+	}
+	handOverExplorationLogins(stateDir, read, labels, func(rows []loginattempt.Row) error {
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), explorationCloseTimeout)
+		defer cancel()
+		evidence, err := host.explorationLoginEvidence(readCtx, binding, sourceDigest, rows)
+		if err != nil {
+			return err
+		}
+		return learnedlogin.WriteExplorationEvidence(stateDir, evidence)
+	})
 }
 
 // handOverExplorationLogins는 탐색 로그인 시도 행을 회차 기록에 덧붙이고, 모두 넘겼을 때만 인계 표지를 지운다. 읽기 실패·
 // 상한으로 빠진 행·기록 쓰기 실패·표지 지우기 실패면 표지가 남아 진단 단계는 로그인 시도를 보내지 않는다(회차 공통 연속 실패
 // 상한을 지킬 수 없으므로, #969 동찬 리뷰 P2). 일반 조회·감사 기록은 그대로다. 인계를 확인했으면 true다.
-func handOverExplorationLogins(stateDir string, read func() ([]loginattempt.Row, uint64, error), labels []string) bool {
+func handOverExplorationLogins(stateDir string, read func() ([]loginattempt.Row, uint64, error), labels []string, prepare ...func([]loginattempt.Row) error) bool {
 	unavailable := func(why string) bool {
 		log.Print("[first-diagnosis] 탐색 로그인 시도 기록을 넘겨받지 못함: " + why + "(진단 단계는 로그인 시도를 보내지 않음)")
 		// 표지는 탐색 시작 때 썼다. 다시 써 두되 못 써도 시작 때 표지가 남아 있다.
@@ -188,15 +201,18 @@ func handOverExplorationLogins(stateDir string, read func() ([]loginattempt.Row,
 	if err != nil {
 		return unavailable("경계 조회 실패")
 	}
+	if omitted > 0 {
+		log.Printf("[first-diagnosis] 탐색 로그인 시도 행 %d개가 경계 상한으로 빠짐", omitted)
+		return unavailable("행 빠짐")
+	}
+	if len(prepare) > 1 || len(prepare) == 1 && prepare[0](rows) != nil {
+		return unavailable("독립 경계 근거 인계 실패")
+	}
 	if err := server.AppendLoginAttemptRows(stateDir, rows); err != nil {
 		return unavailable("기록 쓰기 실패")
 	}
 	if err := writeLoginSummary(stateDir, loginattempt.AccountAuthOfRows(rows, labels)); err != nil {
 		log.Print("[first-diagnosis] 탐색 로그인 요약을 쓰지 못함")
-	}
-	if omitted > 0 {
-		log.Printf("[first-diagnosis] 탐색 로그인 시도 행 %d개가 경계 상한으로 빠짐", omitted)
-		return unavailable("행 빠짐")
 	}
 	if server.ClearLoginHistoryUnavailable(stateDir) != nil {
 		log.Print("[first-diagnosis] 탐색 로그인 기록 인계 표지를 지우지 못함(진단 단계는 로그인 시도를 보내지 않음)")
