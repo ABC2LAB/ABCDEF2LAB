@@ -292,8 +292,8 @@ func TestE2FlowViewFailsClosed(t *testing.T) {
 
 // 저널 없음(none)은 실행이 E②를 잡은 적이 없을 때만이다(#983 리뷰 P1, 2026-11-27 결정). 실행은 E②를 잡을 때 취득 기록
 // (server.E2AcquireRecordFile)을 저널보다 먼저 남긴다. 그래서 저널이 있던 결속 회차에서 저널 파일이 없어지면 취득 기록이
-// 남아 있어 '진단 요청 전'이 아니라 무효로 보인다. 요청 전체 기록도 '저널 전(404)'이 아니라 무효(409)다. 취득 기록을
-// 확인하지 못하면 읽기 실패다.
+// 남아 있어 '진단 요청 전'이 아니라 무효로 보인다. 요청 전체 기록도 '저널 전(404)'이 아니라 무효(409)다. 저널도 취득 기록도
+// 없을 때만 none이고, 상태 디렉터리를 읽지 못하면 읽기 실패다.
 func TestE2FlowMissingJournalAfterAcquireIsInvalid(t *testing.T) {
 	a1 := strings.Repeat("1", 32)
 	runsDir, _ := liveRunFixture(t, func(record func(e2proxy.Event)) {
@@ -318,7 +318,7 @@ func TestE2FlowMissingJournalAfterAcquireIsInvalid(t *testing.T) {
 	if w, _ := liveGet(t, runsDir, "/api/tasks/9/e2-flow/requests"); w.Code != http.StatusConflict {
 		t.Fatalf("requests after journal removal: %d %s", w.Code, w.Body.String())
 	}
-	// 취득 기록 자리를 확인할 수 없으면(경로가 디렉터리를 지나지 못함) none도 무효도 아니고 읽기 실패다.
+	// 취득 기록까지 없으면(E②를 잡은 적이 없는 실행과 같은 모양) none이다. 상태 디렉터리 자체를 읽지 못하면 읽기 실패다.
 	if err := os.Remove(record); err != nil {
 		t.Fatal(err)
 	}

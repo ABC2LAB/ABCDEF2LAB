@@ -258,15 +258,11 @@ func e2FlowEvents(r *http.Request, b *runBinding) ([]e2proxy.Event, bool, error)
 	}
 	journal, err := b.root.Open("state/events.jsonl")
 	if errors.Is(err, fs.ErrNotExist) {
-		// 저널이 없다. 실행이 E②를 잡은 적이 없을 때만(취득 기록 없음) '아직 없음'이다. 취득 기록은 저널보다 먼저 남기므로,
-		// 기록은 있는데 저널이 없으면 지워졌거나 만들지 못한 것이다 — 사건 없이 무효로 답한다(#983 리뷰 P1). 기록을 확인하지
-		// 못하면 읽기 실패다.
-		_, recordErr := b.root.Lstat("state/" + server.E2AcquireRecordFile)
-		switch {
-		case errors.Is(recordErr, fs.ErrNotExist):
+		// 저널이 없다. 실행이 E②를 잡은 적이 없다고 확인될 때만(취득 기록 없음) '아직 없음'이다. 취득 기록은 저널보다 먼저
+		// 남기므로, 기록은 있는데 저널이 없으면 지워졌거나 만들지 못한 것이다 — 사건 없이 무효로 답한다(#983 리뷰 P1). 기록이
+		// 없다고 확인하지 못한 경우도 '아직 없음'으로 답하지 않는다.
+		if _, recordErr := b.root.Lstat("state/" + server.E2AcquireRecordFile); errors.Is(recordErr, fs.ErrNotExist) {
 			return nil, false, errRunNotBound
-		case recordErr != nil:
-			return nil, false, errPreparation
 		}
 		return nil, false, nil
 	}
