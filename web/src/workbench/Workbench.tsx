@@ -15,7 +15,6 @@ import { URL_ENDED_STATES } from "./live/urlMap";
 import { isView, type Shell, ShellContext, type View } from "./shell";
 import { type DSel, type Panel, useWb } from "./store";
 import { Rail } from "./ui/Rail";
-import { AccountClassifyLive } from "./views/live/AccountClassifyLive";
 import {
   DashboardByMode,
   FinishedByMode,
@@ -26,6 +25,7 @@ import {
   ScopeByMode,
 } from "./views/live/byMode";
 import { PolicyDeclarationLive } from "./views/live/PolicyDeclarationLive";
+import { TargetAccountsLive } from "./views/live/TargetAccountsLive";
 import { UrlAccessMapLive } from "./views/live/UrlAccessMapLive";
 import { UrlAssetsLive } from "./views/live/UrlAssetsLive";
 import { UrlControlPolicyLive } from "./views/live/UrlControlPolicyLive";
@@ -381,7 +381,7 @@ export function Workbench() {
             {section("finding", pick("취약점 상세", <UrlFindingLive />))}
             {section("e2flow", pick("전송 통제 흐름", <UrlE2FlowLive />))}
             {section("controlpolicy", pick("전송 통제 정책", <UrlControlPolicyLive />))}
-            {section("classify", pick("계정 분류", <AccountClassifyLive />))}
+            {section("classify", pick("시험 계정", <TargetAccountsLive />))}
             {section("declaration", pick("정책 선언", <PolicyDeclarationLive />))}
             {section("scope", pick("범위 확인", <ScopeByMode />))}
             {section("live", pick("점검 진행", <LiveByMode />))}
