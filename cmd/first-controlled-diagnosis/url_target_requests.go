@@ -141,7 +141,8 @@ func targetRequestsOf(events []e2proxy.Event, exploration explorationRequestsRec
 			} else {
 				out.Model++
 			}
-		case e2proxy.ProgramAuthPrep, e2proxy.ProgramRefreshSession:
+		case e2proxy.ProgramAuthPrep, e2proxy.ProgramRefreshSession, e2proxy.ProgramLoginContrast:
+			// 프로그램 대조 요청도 로그인 몫이다(사용자 결정 2026-11-26, 계약 model-login-attempts §4).
 			out.Login++
 		case e2proxy.ProgramE3Identity, e2proxy.ProgramE3Create, e2proxy.ProgramE3Read:
 			out.Confirmation++

@@ -56,7 +56,8 @@ type Snapshot struct {
 }
 
 // 시험 계정 인증 준비 결과 값이다(계약 §3.4). 자격·세션 값은 없다.
-var accountAuthResults = map[string]bool{"authenticated": true, "login_failed": true, "session_not_found": true, "result_unknown": true, "not_sent": true}
+// not_attempted(시도 없음)·unconfirmed(성공 확인 안 됨)는 모델 직접 로그인 회차의 값이다(docs/contracts/model-login-attempts.md §4).
+var accountAuthResults = map[string]bool{"authenticated": true, "login_failed": true, "session_not_found": true, "result_unknown": true, "not_sent": true, "not_attempted": true, "unconfirmed": true}
 
 // accountLabel은 대상 계정 등록 라벨 규칙이다(diagnosisprep 등록 규칙과 같음, 사용자명 원문이 아님).
 var accountLabel = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)

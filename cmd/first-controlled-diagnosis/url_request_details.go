@@ -107,7 +107,7 @@ type e2RequestDetail struct {
 	PathDetailState server.PathDetailState `json:"path_detail_state"`
 }
 
-// requestKind는 시도의 귀속이다. 프로그램 로그인은 프로그램 호출 이름(auth_prep·refresh_session)을 그대로 쓴다.
+// requestKind는 시도의 귀속이다. 프로그램 로그인은 프로그램 호출 이름(auth_prep·refresh_session·login_contrast)을 그대로 쓴다.
 func requestKind(e e2proxy.Event) string {
 	switch e.Program {
 	case "":
@@ -115,7 +115,7 @@ func requestKind(e e2proxy.Event) string {
 			return e2RequestKindConfirmation
 		}
 		return e2RequestKindModel
-	case e2proxy.ProgramAuthPrep, e2proxy.ProgramRefreshSession:
+	case e2proxy.ProgramAuthPrep, e2proxy.ProgramRefreshSession, e2proxy.ProgramLoginContrast:
 		return string(e.Program)
 	case e2proxy.ProgramE3Identity, e2proxy.ProgramE3Create, e2proxy.ProgramE3Read:
 		return e2RequestKindConfirmation

@@ -31,7 +31,7 @@ func TestReleaseClosesOnlyThatJobsExplorationSession(t *testing.T) {
 	if err := f.host.clearForRelease(t.Context()); err != nil {
 		t.Fatalf("세션이 없는데 확인 실패: %v", err)
 	}
-	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{})(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
