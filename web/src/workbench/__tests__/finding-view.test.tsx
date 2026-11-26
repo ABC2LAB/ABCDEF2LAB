@@ -171,7 +171,7 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
     expect(a.fetchRemediation).toHaveBeenCalledTimes(2);
   });
 
-  it("'증거 / PoC' 칸 맨 밑 'PoC 복사'는 단계 · 요청 · 응답 증거를 가린 글로 복사한다", async () => {
+  it("'증거 / PoC' 칸 맨 밑 'PoC 복사'는 단계 · 요청 · 응답 증거를 화면에 보이는 그대로 복사한다", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     const step = {
@@ -217,40 +217,9 @@ describe("UrlFindingLive (단독 발견 상세 · 저장 결과)", () => {
       "요청 1 · 계정 B로 계정 A 주문 조회\nGET /api/orders/2\n사전 조건: 시험 계정 A · B\n관찰: 200 응답에 계정 A 주문",
     );
     expect(text).toContain("요청 시도 · 응답 관찰:");
-    // 화면처럼 가린 글만 — 토큰 값 · 스크린샷 안내 글은 없다
-    expect(text).not.toContain("synthetic-poc-token");
+    // 값은 가리지 않는다(DLP 폐기, CLAUDE.md 절대규칙 2) — 스크린샷 안내 글은 없다
+    expect(text).toContain("synthetic-poc-token");
     expect(text).not.toContain("스크린샷");
-    vi.unstubAllGlobals();
-  });
-
-  it("'PoC 복사'는 엔티티로 키를 숨긴 응답 증거 값도 클립보드에 남기지 않는다 (#677 fixture · #709 리뷰)", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
-    const hidden = "&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;";
-    a.fetchRemediation.mockResolvedValue({
-      task_id: 42,
-      entries: [
-        {
-          ...entry(1),
-          evidence: [
-            "HTTP/1.1 200 OK",
-            "Authorization: Bearer synthetic-poc-token",
-            `${hidden}=synthetic-entity-secret`,
-            `{"${hidden}":"synthetic-json-entity-secret"}`,
-          ].join("\n"),
-        },
-      ],
-    });
-    pickFinding("42", "candidate-1");
-    mount();
-    const page = await screen.findByRole("region", { name: "취약점 상세 페이지" });
-    fireEvent.click(within(page).getByRole("button", { name: "PoC 복사" }));
-    expect(await within(page).findByText("PoC 를 복사했습니다.")).toBeInTheDocument();
-    const text = writeText.mock.calls[0][0] as string;
-    expect(text).not.toMatch(/synthetic-poc-token|synthetic-entity-secret|synthetic-json-entity-secret/);
-    // 붙여 넣은 앱이 풀 엔티티도 남지 않는다
-    expect(text).not.toContain("&#");
-    expect(text).toContain("HTTP/1.1 200 OK");
     vi.unstubAllGlobals();
   });
 
