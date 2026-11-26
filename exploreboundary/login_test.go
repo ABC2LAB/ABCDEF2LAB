@@ -256,3 +256,53 @@ func TestBrowserContextOneAccountAndReset(t *testing.T) {
 		t.Fatalf("새 문맥에서 다른 계정 로그인을 막음: %+v", d)
 	}
 }
+
+// 직접 입구(Bash·curl) 로그인도 계정 상태·쓰기 예외·연속 실패 상한을 똑같이 받는다. 빠지는 것은 '한 문맥 한 계정'
+// 규칙뿐이다(사용자 확인 2026-11-26). 확인된 세션 값을 실은 직접 요청은 예외를 받지 않는다.
+func TestDirectIngressLoginFollowsSameRules(t *testing.T) {
+	direct := func(user, pass string) Request {
+		r := loginPost(user, pass)
+		r.Ingress, r.FetchMode = DirectIngress, ""
+		return r
+	}
+	s := loginSession(t, exploration.ReadOnly)
+	for i := 0; i < 3; i++ {
+		d, ticket := s.Admit(t.Context(), direct("user1", "alpha-pass-1"))
+		if !d.Forward {
+			t.Fatalf("%d번째 직접 로그인을 예외로 못 보냄: %+v", i+1, d)
+		}
+		ticket.Done(Result{Status: 401, ResponseReceived: true, ResponseHeader: http.Header{}})
+	}
+	if d, _ := s.Admit(t.Context(), direct("user1", "alpha-pass-1")); d.Forward || d.Reason != ReasonLoginAttemptsExhausted {
+		t.Fatalf("직접 입구가 연속 실패 상한을 피함: %+v", d)
+	}
+	s2 := loginSession(t, exploration.ReadOnly)
+	d, ticket := s2.Admit(t.Context(), approved("GET", "/app/home"))
+	ticket.Done(Result{Status: 302, ResponseReceived: true, ResponseHeader: http.Header{"Location": {"/app/login"}}})
+	// 브라우저로 로그인해 대조가 서면 로그인됨이고, 그동안 직접 로그인도 예외를 받지 않는다.
+	d, ticket = s2.Admit(t.Context(), loginPost("user1", "alpha-pass-1"))
+	if !d.Forward {
+		t.Fatal(d)
+	}
+	ticket.Done(Result{Status: 302, ResponseReceived: true, ResponseHeader: http.Header{"Location": {"/app/home"}, "Set-Cookie": {"sid=user-session-77; Path=/"}}})
+	if d, _ := s2.Admit(t.Context(), direct("user1", "alpha-pass-1")); d.Forward || d.Reason != ReasonMethodNotApproved {
+		t.Fatalf("로그인됨인 계정의 직접 로그인을 예외로 보냄: %+v", d)
+	}
+	home := approved("GET", "/app/home")
+	home.Header = http.Header{"Cookie": {"sid=user-session-77"}}
+	d, ticket = s2.Admit(t.Context(), home)
+	ticket.Done(Result{Status: 200, ResponseReceived: true, ResponseHeader: http.Header{}})
+	if s2.login.AccountAuth()["tester-a"] != loginattempt.AuthAuthenticated {
+		t.Fatal("대조 성공 안 함")
+	}
+	// 브라우저 문맥을 바꿔 '로그인 안 됨'이 돼도, curl이 확인된 세션 값을 실었으면 예외가 아니다. 싣지 않으면 예외다.
+	s2.ResetBrowserContext()
+	carrying := direct("user1", "alpha-pass-1")
+	carrying.Header = http.Header{"Cookie": {"sid=user-session-77"}}
+	if d, _ := s2.Admit(t.Context(), carrying); d.Forward || d.Reason != ReasonMethodNotApproved {
+		t.Fatalf("확인된 세션을 실은 직접 로그인에 예외를 줌: %+v", d)
+	}
+	if d, _ := s2.Admit(t.Context(), direct("user1", "alpha-pass-1")); !d.Forward {
+		t.Fatalf("세션 없는 직접 로그인을 막음: %+v", d)
+	}
+}

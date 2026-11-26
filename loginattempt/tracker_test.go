@@ -599,3 +599,29 @@ func TestBrowserContextHoldsOneAccount(t *testing.T) {
 		t.Fatalf("실패한 계정이 문맥을 잡음: %+v", r)
 	}
 }
+
+// 브라우저 문맥을 바꿔 계정이 '로그인 안 됨'이 돼도, 그 계정의 확인된 세션 값을 실은 요청은 로그인됨으로 보고 쓰기
+// 예외를 주지 않는다(사용자 결정 2026-11-26). 세션을 싣지 않은 요청(새 문맥의 로그인)은 예외를 받는다.
+func TestExceptionNotForRequestsCarryingConfirmedSession(t *testing.T) {
+	tr, _ := newTracker(t, true)
+	tr.Observe(get("/home"), redirect("/login"))
+	inBrowser := func(r Request) Request { r.Context = "browser"; return r }
+	login := inBrowser(formLogin("user2", "bravo-pass-2"))
+	p := tr.Prepare(login, false)
+	tr.Complete(p, "1", login, redirect("/home", "Set-Cookie", "sid=user-session-b1"))
+	tr.Observe(get("/home", "Cookie", "sid=user-session-b1"), html(200, "<p>home</p>"))
+	tr.ResetContext("browser")
+	if tr.ExceptionState("tester-b") != StateLoggedOut {
+		t.Fatal("문맥 바꾼 뒤 상태")
+	}
+	carrying := formLogin("user2", "bravo-pass-2", "Cookie", "sid=user-session-b1")
+	if q := tr.Prepare(carrying, false); !q.Login || q.Exception || q.Refusal != "" {
+		t.Fatalf("확인된 세션을 실은 요청에 예외를 줌: %+v", q)
+	}
+	if tr.ExceptionState("tester-b") != StateLoggedOut {
+		t.Fatal("세션 실은 요청이 상태를 바꿈")
+	}
+	if q := tr.Prepare(inBrowser(formLogin("user2", "bravo-pass-2")), false); !q.Exception {
+		t.Fatal("세션 없는 새 문맥 로그인에 예외를 안 줌")
+	}
+}

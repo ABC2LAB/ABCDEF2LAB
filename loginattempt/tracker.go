@@ -286,6 +286,12 @@ func (t *Tracker) Prepare(req Request, writeAllowed bool) Plan {
 			t.refuseLocked(a, RefusalPending)
 			return Plan{Login: true, Refusal: RefusalPending}
 		case StateLoggedOut:
+			// 그 계정의 확인된 세션 값을 실은 요청은 로그인됨으로 보고 예외를 주지 않는다. 브라우저 문맥을 바꿔 상태가 '로그인
+			// 안 됨'이 돼도 직접 요청(curl)은 그 세션을 들고 있을 수 있다(사용자 결정 2026-11-26). 상태는 바꾸지 않는다(세션
+			// 없는 새 브라우저 문맥의 로그인은 예외를 받는다).
+			if t.carriesConfirmedLocked(req.Header, cand.AccountLabel) {
+				break
+			}
 			a.exception, a.priorState = true, st
 			a.row.WriteException = true
 			t.state[cand.AccountLabel] = StateVerifying
@@ -524,27 +530,9 @@ func sessionHeader(a *attempt) http.Header {
 func (t *Tracker) AccountOf(h http.Header) string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	sent := requestCookies(h)
 	label := ""
 	for _, a := range t.attempts {
-		if a.seeded || a.row.Outcome != OutcomeSucceeded || a.cand.AccountLabel == "" {
-			continue
-		}
-		// 귀속은 성공 대조에서 확인한 방식으로만 한다(#969 동찬 리뷰 P2). 처음 세션 자리를 찾을 때(carrierLocked)처럼 아무
-		// 헤더에서나 토큰을 찾으면 관계없는 메타데이터 헤더에 토큰 문자열이 든 요청도 그 계정으로 귀속된다.
-		carried := false
-		if a.row.SessionSentAs == "cookie" {
-			for name, value := range a.cookies {
-				carried = carried || sent[name] == value
-			}
-		} else if want := sessionHeader(a); len(want) == 1 {
-			for name, values := range want {
-				for _, v := range h.Values(name) {
-					carried = carried || v == values[0]
-				}
-			}
-		}
-		if !carried {
+		if a.seeded || a.row.Outcome != OutcomeSucceeded || a.cand.AccountLabel == "" || !carriesSession(a, h) {
 			continue
 		}
 		if label != "" && label != a.cand.AccountLabel {
@@ -553,6 +541,44 @@ func (t *Tracker) AccountOf(h http.Header) string {
 		label = a.cand.AccountLabel
 	}
 	return label
+}
+
+// carriesConfirmedLocked는 요청이 그 계정의 성공한 로그인 세션(확인한 방식 그대로)을 실었는지 본다. 닫힌 브라우저 문맥의
+// 세션도 센다(서버 세션은 살아 있을 수 있다).
+func (t *Tracker) carriesConfirmedLocked(h http.Header, label string) bool {
+	for _, a := range t.attempts {
+		if !a.seeded && a.row.Outcome == OutcomeSucceeded && a.cand.AccountLabel == label && carriesSession(a, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// carriesSession은 요청 헤더가 성공 대조에서 확인한 방식(session_sent_as)으로 그 시도의 세션을 실었는지 본다.
+func carriesSession(a *attempt, h http.Header) bool {
+	sent := requestCookies(h)
+	// 귀속은 성공 대조에서 확인한 방식으로만 한다(#969 동찬 리뷰 P2). 처음 세션 자리를 찾을 때(carrierLocked)처럼 아무
+	// 헤더에서나 토큰을 찾으면 관계없는 메타데이터 헤더에 토큰 문자열이 든 요청도 그 계정으로 귀속된다.
+	if a.row.SessionSentAs == "cookie" {
+		for name, value := range a.cookies {
+			if sent[name] == value {
+				return true
+			}
+		}
+		return false
+	}
+	want := sessionHeader(a)
+	if len(want) != 1 {
+		return false
+	}
+	for name, values := range want {
+		for _, v := range h.Values(name) {
+			if v == values[0] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (t *Tracker) rememberLocked(body []byte) {
