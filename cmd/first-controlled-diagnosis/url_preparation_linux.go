@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/server"
 )
@@ -26,6 +27,55 @@ import (
 func urlOperatorUID() uint32 { return uint32(os.Geteuid()) }
 
 func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask) (launchConfig, error) {
+	return b.issueForPurpose(l, jobID, actual, false)
+}
+
+// issueSelectedCandidate mints a fresh E② authority for an approved non-IDOR
+// follow-up. An active declaration on the original target must never grant
+// E③ capabilities to this separate task.
+func (b *urlPreparationRuntime) issueSelectedCandidate(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask) (launchConfig, error) {
+	if l == nil || l.productTarget == nil || l.productRegistry == nil || l.productConnection == nil ||
+		l.policy.Workflow != nil || l.policy.E3WriteConsent || l.policy.E3Resettable ||
+		len(l.policy.Rules) < 1 || len(l.policy.Rules) > 4 {
+		return launchConfig{}, errPreparation
+	}
+	if l.policy.SelectedAccountRef == "" {
+		if l.policy.Auth != nil || l.policy.HeaderMode != e2proxy.HeaderPreserve || len(l.productAccounts) != 0 {
+			return launchConfig{}, errPreparation
+		}
+	} else if l.policy.Auth == nil || len(l.policy.Auth.Accounts) != 1 || len(l.productAccounts) != 1 ||
+		l.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough ||
+		server.CandidateAccountRevision(l.policy.Auth.Accounts[0].Label, l.policy.Auth.Accounts[0].Credential.SHA256) != l.policy.SelectedAccountRef ||
+		l.productAccounts[0].Label != l.policy.Auth.Accounts[0].Label || l.productAccounts[0].CredentialSHA256 != l.policy.Auth.Accounts[0].Credential.SHA256 {
+		return launchConfig{}, errPreparation
+	}
+	ordinary, loginRules := 0, 0
+	for _, rule := range l.policy.Rules {
+		if rule.Ref == "" || rule.PathScopeRef == "" || rule.Credentials != nil || len(rule.Methods) != 1 ||
+			rule.Origin != l.productTarget.Target.Origin || rule.ConnectIP != l.productConnection.IP ||
+			rule.TLSSPKISHA256 != l.productConnection.SPKI {
+			return launchConfig{}, errPreparation
+		}
+		if rule.Purpose == e2proxy.PurposeAuthPrep {
+			if l.policy.Auth == nil || rule.Ref != l.policy.Auth.RuleRef || rule.PathPrefix != l.policy.Auth.Login.Path ||
+				rule.Methods[0] != l.policy.Auth.Login.Method || rule.PathMatch != "" {
+				return launchConfig{}, errPreparation
+			}
+			loginRules++
+		} else if rule.Purpose == "" && rule.PathMatch == "exact" &&
+			(rule.Methods[0] == "GET" || rule.Methods[0] == "HEAD") {
+			ordinary++
+		} else {
+			return launchConfig{}, errPreparation
+		}
+	}
+	if ordinary < 1 || ordinary > 3 || (l.policy.Auth == nil && loginRules != 0) || (l.policy.Auth != nil && loginRules != 1) {
+		return launchConfig{}, errPreparation
+	}
+	return b.issueForPurpose(l, jobID, actual, true)
+}
+
+func (b *urlPreparationRuntime) issueForPurpose(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask, selectedCandidate bool) (launchConfig, error) {
 	c := l.launch
 	if l.productTarget != nil && (l.productConnection == nil || l.productConnection.jobID != jobID) {
 		return c, errPreparation
@@ -72,7 +122,7 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 	// 쓴다. 선언이 없으면 쓰지 않고, 그 회차의 확정 단계는 꺼진다.
 	var e3Declaration e3contract.Declaration
 	var e3Declared bool
-	if l.productTarget != nil && l.productRegistry != nil {
+	if !selectedCandidate && l.productTarget != nil && l.productRegistry != nil {
 		if declaration, active := l.productRegistry.activeDeclaration(*l.productTarget); active {
 			e3Declaration, e3Declared = declaration, true
 			frozen, frozenPolicy, err := freezeDeclaration(declaration, jobID, policy.ValidFrom, policy.ValidUntil,
@@ -95,7 +145,7 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 	}
 	// 목적 규칙은 동결한 선언과 승인 대상에서만 파생한다. 몫은 실행 정책과 권위 digest에 함께 결속한다.
 	e3Types := 0
-	if e3Declared && c.E2HostSocket != "" {
+	if !selectedCandidate && e3Declared && c.E2HostSocket != "" {
 		// 회차 시작 때 재확인한 pin을 써서 모델 규칙과 E③ 규칙의 연결 주소가 정확히 같다.
 		e3Target := *l.productTarget
 		e3Target.SelectedIP = l.productConnection.IP
@@ -170,7 +220,7 @@ func runURLPreparationService(ctx context.Context, args []string, stdout, stderr
 	backend.endpoint = service
 	var ipcEndpoint diagnosisprep.Endpoint = service
 	if backend.product != nil {
-		ipcEndpoint = productPreparationEndpoint{base: service, product: backend.product}
+		ipcEndpoint = productPreparationEndpoint{base: service, product: backend.product, backend: backend}
 		defer backend.product.targets.Close()
 	}
 	ipc, err := diagnosisprep.ListenUnix(ctx, backend.config.SocketPath, ipcEndpoint)
@@ -192,6 +242,9 @@ func runURLPreparationService(ctx context.Context, args []string, stdout, stderr
 	httpServer := &http.Server{Handler: backend, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32 << 10}
 	serving := make(chan error, 1)
 	go func() { serving <- httpServer.Serve(listener) }()
+	if backend.product != nil && backend.recoverCandidateVerifications(ctx) != nil {
+		log.Print("[candidate-verification] recovery state unavailable; no execution replayed")
+	}
 	outputErr := json.NewEncoder(stdout).Encode(map[string]any{"service_ready": true, "mode": "url_preparation", "execution": "EXPLICIT_START_REQUIRED", "storage": "durable"})
 	var serveErr error
 	restart := false
@@ -212,6 +265,7 @@ func runURLPreparationService(ctx context.Context, args []string, stdout, stderr
 	closeErr = errors.Join(closeErr, service.Shutdown(cleanup))
 	httpErr := httpServer.Shutdown(cleanup)
 	if httpErr == nil {
+		closeErr = errors.Join(closeErr, backend.waitCandidateWorkers(cleanup))
 		closeErr = errors.Join(closeErr, backend.closeReports())
 	}
 	if restart {

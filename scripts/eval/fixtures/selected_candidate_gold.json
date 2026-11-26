@@ -1,0 +1,293 @@
+[
+  {
+    "id": "missing-header",
+    "claim": "HTML response lacks nosniff",
+    "normal_explanation": "Header may be set on another response",
+    "observations": [
+      {
+        "call": "a",
+        "run": "r",
+        "path": "/page",
+        "nosniff": "missing"
+      },
+      {
+        "call": "b",
+        "run": "r",
+        "path": "/page",
+        "nosniff": "missing"
+      }
+    ],
+    "expected": "model_supported",
+    "rule_verdict": "model_supported",
+    "comparable": true
+  },
+  {
+    "id": "normal-header",
+    "claim": "HTML response lacks nosniff",
+    "normal_explanation": "Header may be present",
+    "observations": [
+      {
+        "call": "a",
+        "nosniff": "present"
+      },
+      {
+        "call": "b",
+        "nosniff": "present"
+      }
+    ],
+    "expected": "model_refuted",
+    "rule_verdict": "model_refuted",
+    "comparable": true
+  },
+  {
+    "id": "unrelated-function",
+    "claim": "HTML response lacks nosniff",
+    "normal_explanation": "A different page may differ",
+    "observations": [
+      {
+        "call": "a",
+        "path": "/page",
+        "nosniff": "missing"
+      },
+      {
+        "call": "b",
+        "path": "/other",
+        "nosniff": "missing"
+      }
+    ],
+    "expected": "insufficient",
+    "rule_verdict": "insufficient",
+    "comparable": false
+  },
+  {
+    "id": "no-second-evidence",
+    "claim": "HTML response lacks nosniff",
+    "normal_explanation": "A separate run cannot establish original state",
+    "observations": [
+      {
+        "call": "a",
+        "run": "r"
+      },
+      {
+        "call": "b",
+        "run": "other"
+      }
+    ],
+    "expected": "insufficient",
+    "rule_verdict": "insufficient",
+    "comparable": false
+  },
+  {
+    "id": "conflicting-setting",
+    "claim": "HTML response lacks nosniff",
+    "normal_explanation": "Responses conflict",
+    "observations": [
+      {
+        "call": "a",
+        "nosniff": "missing"
+      },
+      {
+        "call": "b",
+        "nosniff": "present"
+      }
+    ],
+    "expected": "insufficient",
+    "rule_verdict": "insufficient",
+    "comparable": false
+  },
+  {
+    "id": "copied-attempt",
+    "claim": "HTML response lacks nosniff",
+    "normal_explanation": "Two copies are one observation",
+    "observations": [
+      {
+        "call": "a",
+        "attempt": "1"
+      },
+      {
+        "call": "b",
+        "attempt": "1"
+      }
+    ],
+    "expected": "insufficient",
+    "rule_verdict": "insufficient",
+    "comparable": false
+  },
+  {
+    "id": "other-policy",
+    "claim": "HTML response lacks nosniff",
+    "normal_explanation": "Approval policies differ",
+    "observations": [
+      {
+        "call": "a",
+        "policy": "p1"
+      },
+      {
+        "call": "b",
+        "policy": "p2"
+      }
+    ],
+    "expected": "insufficient",
+    "rule_verdict": "insufficient",
+    "comparable": false
+  },
+  {
+    "id": "different-account-same-bearer",
+    "claim": "Private document visible to another account",
+    "normal_explanation": "Entitlements may differ",
+    "observations": [
+      {
+        "call": "a",
+        "auth": "authorization",
+        "account": "a"
+      },
+      {
+        "call": "b",
+        "auth": "authorization",
+        "account": "b"
+      }
+    ],
+    "expected": "insufficient",
+    "rule_verdict": "unsupported",
+    "comparable": false
+  },
+  {
+    "id": "anonymous-after-auth",
+    "claim": "Authenticated data is publicly exposed",
+    "normal_explanation": "Anonymous response may be unrelated",
+    "observations": [
+      {
+        "call": "a",
+        "auth": "authorization"
+      },
+      {
+        "call": "b",
+        "auth": "none"
+      }
+    ],
+    "expected": "insufficient",
+    "rule_verdict": "unsupported",
+    "comparable": false
+  },
+  {
+    "id": "response-truncated",
+    "claim": "Response discloses internal data",
+    "normal_explanation": "Relevant part may be missing",
+    "observations": [
+      {
+        "call": "a",
+        "complete": false
+      },
+      {
+        "call": "b",
+        "complete": true
+      }
+    ],
+    "expected": "insufficient",
+    "rule_verdict": "unsupported",
+    "comparable": false
+  },
+  {
+    "id": "missing-original",
+    "claim": "Server banner exposes a version",
+    "normal_explanation": "Original request is missing",
+    "observations": [
+      {
+        "call": "b",
+        "server": "Example/1.0"
+      }
+    ],
+    "expected": "insufficient",
+    "rule_verdict": "insufficient",
+    "comparable": false
+  },
+  {
+    "id": "business-rule-unknown",
+    "claim": "Account B read account A item",
+    "normal_explanation": "Item may be shared",
+    "observations": [
+      {
+        "call": "a",
+        "status": 200
+      },
+      {
+        "call": "b",
+        "status": 200
+      }
+    ],
+    "expected": "insufficient",
+    "rule_verdict": "unsupported",
+    "comparable": false
+  },
+  {
+    "id": "banner-exposed",
+    "claim": "Runtime Server header exposes a version",
+    "normal_explanation": "Document examples are not runtime headers",
+    "observations": [
+      {
+        "call": "a",
+        "server": "Example/1.0",
+        "source": "runtime_header"
+      },
+      {
+        "call": "b",
+        "server": "Example/1.0",
+        "source": "independent_runtime_header"
+      }
+    ],
+    "expected": "model_supported",
+    "rule_verdict": "model_supported",
+    "comparable": true
+  },
+  {
+    "id": "banner-example",
+    "claim": "Server version is exposed",
+    "normal_explanation": "Version may be document example",
+    "observations": [
+      {
+        "call": "a",
+        "body_example": "Example/1.0"
+      },
+      {
+        "call": "b",
+        "server": "generic"
+      }
+    ],
+    "expected": "model_refuted",
+    "rule_verdict": "unsupported",
+    "comparable": true
+  },
+  {
+    "id": "recovery-unknown",
+    "claim": "Write changed security state",
+    "normal_explanation": "Write and restoration are unknown",
+    "observations": [
+      {
+        "call": "a",
+        "request": "POST",
+        "result": "unknown"
+      },
+      {
+        "call": "b",
+        "recovery": "unverified"
+      }
+    ],
+    "expected": "insufficient",
+    "rule_verdict": "unsupported",
+    "comparable": false
+  },
+  {
+    "id": "forged-source",
+    "claim": "Error disclosed a token",
+    "normal_explanation": "Source absent from audit",
+    "observations": [
+      {
+        "call": "invented",
+        "audit": "missing"
+      }
+    ],
+    "expected": "insufficient",
+    "rule_verdict": "unsupported",
+    "comparable": false
+  }
+]

@@ -58,6 +58,10 @@ type Config struct {
 // TrustedResult is built by the host, separately from the tool's stdout. Final
 // means process, proxy and audit closure have all been observed for this call.
 type TrustedResult struct {
+	// SelectedProof is populated only after the E² Host authenticates this
+	// ordinary result against its current journal head. It is never copied to
+	// the generic tool/model result JSON.
+	SelectedProof *SelectedAuditProof `json:"-"`
 	// AdmissionNotSent is the acknowledged control receipt for a command that
 	// never acquired a Bash slot or started a Call/process/proxy.
 	AdmissionNotSent  *e2proxy.Receipt      `json:"admission_not_sent,omitempty"`
@@ -76,6 +80,11 @@ type TrustedResult struct {
 	// proxy_unavailable(E② 프록시 장애)·canceled(확인된 초기화 중지). 시간 상한과 프록시 장애는 transient_failure로 분류되지만 시간 상한은 그 명령만 끝나지 않은
 	// 것이고 프록시 장애는 집행 장애다(실행 결과 상태 값 계약 열린 항목 2). 그 밖에는 비운다.
 	Termination string `json:"termination,omitempty"`
+}
+
+type SelectedAuditProof struct {
+	Event      e2proxy.Event             `json:"event"`
+	Checkpoint e2proxy.JournalCheckpoint `json:"checkpoint"`
 }
 
 // ProcessLimits are host-selected run conditions, never model input. The

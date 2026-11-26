@@ -20,6 +20,32 @@ func bindingStore(t *testing.T, sessions E2HTTPSessions) *e2HTTPSessionStore {
 	return newE2HTTPSessionStore(sessions, "run-ab", nil)
 }
 
+func TestActualSentSessionMatchesOnlyOneProtectedAccount(t *testing.T) {
+	store := bindingStore(t, E2HTTPSessions{
+		"tester-a": {"Authorization": {"Bearer synthetic-a"}},
+		"tester-b": {"Authorization": {"Bearer synthetic-b"}},
+	})
+	if label, ok := store.matchSentAccount(http.Header{"Authorization": {"Bearer synthetic-a"}}, ""); !ok || label != "tester-a" {
+		t.Fatal("sent credential did not bind the actual account", label, ok)
+	}
+	for _, sent := range []http.Header{
+		{"Authorization": {"Bearer synthetic-other"}},
+		{"Authorization": {"Bearer synthetic-a"}, "Cookie": {"extra=synthetic"}},
+		{"Cookie": {"sid=synthetic-a"}},
+	} {
+		if label, ok := store.matchSentAccount(sent, ""); ok || label != "" {
+			t.Fatal("unmatched or extra credential acquired account identity", label)
+		}
+	}
+	store = bindingStore(t, E2HTTPSessions{
+		"tester-a": {"X-Auth-Token": {"synthetic-a"}},
+		"tester-b": {"X-Auth-Token": {"synthetic-b"}},
+	})
+	if label, ok := store.matchSentAccount(http.Header{"X-Auth-Token": {"synthetic-b"}}, "X-Auth-Token"); !ok || label != "tester-b" {
+		t.Fatal("custom credential header did not bind", label, ok)
+	}
+}
+
 // C14 인증에 성공해 세션이 있는 계정만 참조를 받는다. 실행이 다르거나 세션이 없는 라벨은 참조가 없다.
 func TestAccountBindingIssuedOnlyForAuthenticatedSessions(t *testing.T) {
 	s := bindingStore(t, E2HTTPSessions{"tester-a": http.Header{"Cookie": {"sid=synthetic-a"}}, "tester-empty": http.Header{}})

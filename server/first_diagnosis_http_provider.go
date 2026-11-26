@@ -23,9 +23,10 @@ var ErrFirstDiagnosisHTTPHost = errors.New("first_diagnosis_http_host_unavailabl
 
 // 동일 운영자 UID의 M01 보호 입력이다. 독립 감사 UID나 복원 권위를 대신하지 않는다.
 type FirstDiagnosisHTTPHostConfig struct {
-	PolicyFile    string `json:"policy_file"`
-	AuthorityFile string `json:"authority_file"`
-	AuthorityRoot string `json:"authority_root"`
+	PolicyFile           string `json:"policy_file"`
+	AuthorityFile        string `json:"authority_file"`
+	AuthorityRoot        string `json:"authority_root"`
+	CaptureSelectedProof bool   `json:"-"`
 	// PlannerLimits는 launch 설정의 Plan당 상한이다(C26·C32). 파일 입력이 아니다.
 	PlannerLimits agent.E2HTTPPlannerLimits `json:"-"`
 	// ExternalModel은 이 서버의 모델이 외부 API(openrouter)인지다. 파일 입력이 아니라 StartFirstDiagnosisHTTP가 모델 설정에서
@@ -141,7 +142,7 @@ func NewFirstDiagnosisHTTPHost(ctx context.Context, cfg FirstDiagnosisHTTPHostCo
 	if len(hooks) == 1 {
 		hook = hooks[0]
 	}
-	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{HostSocket: hook.HostSocket, Workflow: hook.Workflow, RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire, PlannerLimits: cfg.PlannerLimits, WebSearch: cfg.WebSearch, SealChecked: hook.SealChecked})
+	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{HostSocket: hook.HostSocket, CaptureSelectedProof: cfg.CaptureSelectedProof, Workflow: hook.Workflow, RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire, PlannerLimits: cfg.PlannerLimits, WebSearch: cfg.WebSearch, SealChecked: hook.SealChecked})
 	if err != nil {
 		authority.revoke()
 		_ = authority.close()

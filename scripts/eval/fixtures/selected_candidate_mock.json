@@ -1,0 +1,66 @@
+{
+  "missing-header": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "normal-header": {
+    "verdict": "model_refuted",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "unrelated-function": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "no-second-evidence": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "conflicting-setting": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "copied-attempt": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "other-policy": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "different-account-same-bearer": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "anonymous-after-auth": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "response-truncated": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "missing-original": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "business-rule-unknown": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "banner-exposed": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "banner-example": {
+    "verdict": "model_refuted",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "recovery-unknown": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  },
+  "forged-source": {
+    "verdict": "model_supported",
+    "reason": "Synthetic model recommendation for regression testing"
+  }
+}

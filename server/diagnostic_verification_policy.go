@@ -1,0 +1,82 @@
+package server
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"strconv"
+)
+
+const diagnosisVerificationPolicyOrigin = "diagnosis_verification_policy_v2"
+const diagnosisVerificationV2 = "passive/v2"
+const diagnosisVerificationSelected = "selected/llm-v1"
+
+type diagnosisVerificationPolicy struct {
+	Version string `json:"version"`
+	TaskID  int64  `json:"task_id"`
+	RunRef  string `json:"run_ref"`
+}
+
+// The durable marker is written before any model-stage candidate can be saved.
+// Task row locking serializes duplicate starts without changing old reports.
+func saveDiagnosisVerificationPolicy(ctx context.Context, pool *sql.DB, taskID int64, runRef string) error {
+	return saveDiagnosisVerificationPolicyVersion(ctx, pool, taskID, runRef, diagnosisVerificationV2)
+}
+
+func saveDiagnosisSelectedVerificationPolicy(ctx context.Context, pool *sql.DB, taskID int64, runRef string) error {
+	return saveDiagnosisVerificationPolicyVersion(ctx, pool, taskID, runRef, diagnosisVerificationSelected)
+}
+
+func saveDiagnosisVerificationPolicyVersion(ctx context.Context, pool *sql.DB, taskID int64, runRef, version string) error {
+	if ctx == nil || pool == nil || taskID <= 0 || runRef == "" || len(runRef) > 256 ||
+		(version != diagnosisVerificationV2 && version != diagnosisVerificationSelected) {
+		return ErrFirstDiagnosisOutcome
+	}
+	tx, err := pool.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exp int64
+	if err := tx.QueryRowContext(ctx, `SELECT exploration_id FROM tasks WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, taskID).Scan(&exp); err != nil {
+		return err
+	}
+	var raw []byte
+	err = tx.QueryRowContext(ctx, `SELECT payload FROM exploration_nodes WHERE exploration_id=$1 AND kind='fact' AND state='confirmed' AND origin=$2 AND payload->>'task_id'=$3 ORDER BY id DESC LIMIT 1`, exp, diagnosisVerificationPolicyOrigin, strconv.FormatInt(taskID, 10)).Scan(&raw)
+	if err == nil {
+		var old diagnosisVerificationPolicy
+		if json.Unmarshal(raw, &old) != nil || old.Version != version || old.TaskID != taskID || old.RunRef != runRef {
+			return ErrFirstDiagnosisOutcome
+		}
+		return tx.Commit()
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	payload, _ := json.Marshal(diagnosisVerificationPolicy{Version: version, TaskID: taskID, RunRef: runRef})
+	if _, err := tx.ExecContext(ctx, `INSERT INTO exploration_nodes(exploration_id,kind,state,origin,payload) VALUES($1,'fact','confirmed',$2,$3::jsonb)`, exp, diagnosisVerificationPolicyOrigin, string(payload)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func readDiagnosisVerificationPolicy(ctx context.Context, tx *sql.Tx, taskID int64) (*diagnosisVerificationPolicy, error) {
+	var raw []byte
+	var kind, state string
+	// Find the marker by its server-owned exploration and origin first. A
+	// corrupted task_id in its payload must not make a v2 run look legacy.
+	err := tx.QueryRowContext(ctx, `SELECT n.payload,n.kind,n.state FROM tasks t JOIN exploration_nodes n ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND t.deleted_at IS NULL AND n.origin=$2 ORDER BY n.id DESC LIMIT 1`, taskID, diagnosisVerificationPolicyOrigin).Scan(&raw, &kind, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var policy diagnosisVerificationPolicy
+	if kind != "fact" || state != "confirmed" || json.Unmarshal(raw, &policy) != nil ||
+		(policy.Version != diagnosisVerificationV2 && policy.Version != diagnosisVerificationSelected) || policy.TaskID != taskID || policy.RunRef == "" {
+		return nil, ErrFirstDiagnosisOutcome
+	}
+	return &policy, nil
+}

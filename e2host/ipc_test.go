@@ -113,6 +113,52 @@ func TestClientVerifiedReadsCurrentE3Result(t *testing.T) {
 	}
 }
 
+func TestClientObservedAtOrdinaryResultAndSeal(t *testing.T) {
+	host, _, scope := fixture(t)
+	path := filepath.Join(t.TempDir(), "audit.sock")
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := listener.AcceptUnix()
+		if err == nil {
+			host.serveConn(ctx, conn, uint32(os.Geteuid()))
+		}
+	}()
+	client, err := OpenClient(ctx, path, scope, "revision-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, result := hostSentEvents(scope)
+	if err := client.Record(ctx, intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Record(ctx, result); err != nil {
+		t.Fatal(err)
+	}
+	ref := ObservationRef{CallRef: result.CallRef, AttemptID: result.AttemptID, Sequence: result.Sequence}
+	verified, err := client.ObservedAt(ctx, ref)
+	if err != nil || verified.Event.CallRef != ref.CallRef || verified.Checkpoint.Sequence != 2 {
+		t.Fatal("ordinary IPC attestation", err)
+	}
+	seal, err := client.SealChecked(ctx)
+	if err != nil || seal == nil || len(seal.Checks) != 1 || !seal.Checks[0].Included || seal.Checks[0].MAC != verified.Checkpoint.MAC {
+		t.Fatal("ordinary IPC seal", err)
+	}
+	client.Abort()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("Host socket did not close")
+	}
+}
+
 func TestClientVerifiedTamperedJournalIsNotMissing(t *testing.T) {
 	host, _, scope := fixture(t)
 	path := filepath.Join(t.TempDir(), "audit.sock")

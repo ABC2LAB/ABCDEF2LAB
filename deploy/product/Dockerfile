@@ -71,6 +71,8 @@ CMD ["product-front", "-listen", ":8787", "-api-origin", "http://127.0.0.1:28081
 FROM go-build AS acceptance-build
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -trimpath -o /out/product-fixture ./cmd/product-fixture
 FROM debian:bookworm-slim AS acceptance-fixture
+ARG VCS_REF=dev
+LABEL org.opencontainers.image.revision="${VCS_REF}"
 COPY --from=acceptance-build /out/product-fixture /app/product-fixture
 USER 1000:1000
 ENTRYPOINT ["/app/product-fixture"]

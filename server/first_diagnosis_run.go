@@ -7,13 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosis"
+	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/golang-jwt/jwt/v5"
@@ -35,7 +38,26 @@ type diagnosisRunRecord struct {
 	Goal *diagnosisGoalDigests `json:"goal,omitempty"`
 	// Language는 이 실행의 진단 후보에서 한국어 칸 언어 섞임으로 다시 쓰게 한 횟수와 '다른 언어 섞임' 표시가 붙은 후보
 	// 수다(2026-11-24, agent/e2_diagnostic_candidate_lang.go). 이 칸 이전 기록에는 없다.
-	Language *diagnosisLanguageCounts `json:"language,omitempty"`
+	Language     *diagnosisLanguageCounts     `json:"language,omitempty"`
+	Verification *diagnosisVerificationRecord `json:"verification,omitempty"`
+}
+
+type diagnosisVerificationRecord struct {
+	Version             string                         `json:"version"`
+	SourceUnavailable   bool                           `json:"source_unavailable,omitempty"`
+	ObservationsStored  bool                           `json:"observations_stored,omitempty"`
+	ObservationsCount   int                            `json:"observations_count,omitempty"`
+	ObservationsDigest  string                         `json:"observations_digest,omitempty"`
+	NonIDORConfirmed    int                            `json:"non_idor_confirmed"`
+	NonIDORNegative     int                            `json:"non_idor_negative"`
+	VerificationPending int                            `json:"verification_pending"`
+	Candidates          []diagnosisCandidateAssessment `json:"candidates"`
+}
+type diagnosisCandidateAssessment struct {
+	StoredReviewUnavailable bool                   `json:"stored_review_unavailable,omitempty"`
+	CandidateID             int64                  `json:"candidate_id"`
+	EvidenceDigest          string                 `json:"evidence_digest"`
+	Result                  candidateverify.Result `json:"result"`
 }
 
 // diagnosisLanguageCounts는 저장된 진단 후보 기준이다. 다시 쓰라고 했지만 모델이 다시 내지 않은 요청은 진단 로그
@@ -109,7 +131,11 @@ func (s *FirstDiagnosisSupervisor) PersistRunOutcomeStoredStop(ctx context.Conte
 	if !validDiagnosisRunResult(state, result) {
 		result = nil
 	}
-	err := saveDiagnosisRunRecordGoal(ctx, s.m.pg.DB, mustFirstDiagnosisTaskNumber(task), state, server.FirstDiagnosisModelUsage(), result, s.goalDigests())
+	var trusted []e2runner.TrustedResult
+	if server.engine != nil && server.engine.e2HTTP != nil {
+		trusted = server.engine.e2HTTP.Results(task)
+	}
+	err := saveDiagnosisRunRecordGoal(ctx, s.m.pg.DB, mustFirstDiagnosisTaskNumber(task), state, server.FirstDiagnosisModelUsage(), result, s.goalDigests(), trusted)
 	status, reason := diagnosisLogOutcome(ctx, err, "result_storage_failed")
 	stored := err == nil
 	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "result_save_finished", TaskID: mustFirstDiagnosisTaskNumber(task), RunRef: state.RunRef, Stage: "result_storage", Status: status, ReasonCode: reason, DurationMS: time.Since(startedAt).Milliseconds(), ResultStored: &stored})
@@ -168,7 +194,7 @@ func saveDiagnosisRunRecord(ctx context.Context, pool *sql.DB, task int64, state
 
 // saveDiagnosisRunRecordGoal은 saveDiagnosisRunRecord에 목표 SHA 칸을 더한다. 같은 task의 기록이 이미 있으면 목표 칸까지
 // 같아야 같은 기록으로 본다.
-func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, state requestApprovalRunState, model *llmpolicy.OpenRouterUsage, result *diagnosis.RunResult, goal *diagnosisGoalDigests) error {
+func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, state requestApprovalRunState, model *llmpolicy.OpenRouterUsage, result *diagnosis.RunResult, goal *diagnosisGoalDigests, trusted ...[]e2runner.TrustedResult) error {
 	if ctx == nil || pool == nil || task <= 0 || !validDiagnosisRun(state) || !validDiagnosisRunResult(state, result) {
 		return ErrFirstDiagnosisOutcome
 	}
@@ -182,9 +208,86 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 	if tx.QueryRowContext(ctx, `SELECT exploration_id FROM tasks WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, task).Scan(&exploration) != nil {
 		return ErrFirstDiagnosisOutcome
 	}
+	policy, err := readDiagnosisVerificationPolicy(ctx, tx, task)
+	if err != nil || policy != nil && policy.RunRef != state.RunRef {
+		return ErrFirstDiagnosisOutcome
+	}
 	language := &diagnosisLanguageCounts{}
 	if language.Rewrites, language.Mixed, err = db.CountDiagnosticCandidateLanguage(ctx, tx, exploration, state.RunRef); err != nil {
 		return ErrFirstDiagnosisOutcome
+	}
+	candidates, candidateReadErr := db.ListDiagnosticCandidatesQuery(ctx, tx, exploration, task, state.RunRef, db.MaxDiagnosticCandidates+1)
+	version := "passive/v1"
+	if policy != nil {
+		version = policy.Version
+	}
+	verification := &diagnosisVerificationRecord{Version: version, Candidates: make([]diagnosisCandidateAssessment, 0, len(candidates))}
+	var durableObservations []candidateverify.StoredObservationV2
+	if candidateReadErr == nil && policy != nil && state.Outcome == "completed" && len(trusted) != 0 && trusted[0] != nil {
+		if version == diagnosisVerificationSelected {
+			durableObservations, err = candidateverify.ProjectTrustedSelected(task, state.RunRef, trusted[0])
+		} else {
+			durableObservations, err = candidateverify.ProjectTrustedV2(task, state.RunRef, trusted[0])
+		}
+		if err != nil {
+			return ErrFirstDiagnosisOutcome
+		}
+		verification.ObservationsStored = len(durableObservations) != 0
+		if verification.ObservationsStored {
+			verification.ObservationsCount = len(durableObservations)
+			verification.ObservationsDigest, err = candidateObservationsDigest(durableObservations)
+			if err != nil {
+				return ErrFirstDiagnosisOutcome
+			}
+		}
+	}
+	if candidateReadErr != nil || len(candidates) > db.MaxDiagnosticCandidates {
+		// 후보 근거 손상 때문에 정본 종료 기록을 잃지 않는다.
+		verification.SourceUnavailable = true
+		candidates = nil
+	}
+	for _, candidate := range candidates {
+		var result candidateverify.Result
+		if policy == nil {
+			result = candidateverify.Assess(candidate)
+		} else if version == diagnosisVerificationSelected {
+			result = candidateverify.Result{Status: candidateverify.Insufficient, Reason: "selected_verification_required"}
+			if state.Outcome != "completed" || state.ClosureFailed {
+				result.Reason = "run_not_completed"
+			} else if len(trusted) == 0 || trusted[0] == nil {
+				verification.SourceUnavailable = true
+				result.Reason = "source_unavailable"
+			}
+		} else {
+			if !candidateverify.SupportedV2(candidate) {
+				result = candidateverify.Result{Status: candidateverify.Unsupported, Reason: "type_not_supported"}
+			} else if state.Outcome != "completed" || state.ClosureFailed {
+				result = candidateverify.Result{Status: candidateverify.Insufficient, Reason: "run_not_completed"}
+			} else if len(trusted) == 0 || trusted[0] == nil {
+				verification.SourceUnavailable = true
+				result = candidateverify.Result{Status: candidateverify.Insufficient, Reason: "source_unavailable"}
+			} else {
+				result = candidateverify.AssessV2(candidate, trusted[0])
+			}
+		}
+		row := diagnosisCandidateAssessment{CandidateID: candidate.ID, EvidenceDigest: candidate.EvidenceDigest, Result: result}
+		if version == diagnosisVerificationV2 && verification.ObservationsStored && candidateverify.SupportedV2(candidate) {
+			stored := candidateverify.AssessStoredV2(candidate, durableObservations)
+			if stored.Status != result.Status || stored.Reason != result.Reason || !reflect.DeepEqual(stored.Attempts, result.Attempts) || !reflect.DeepEqual(stored.Sources, result.Sources) {
+				// Keep the immutable automatic assessment. Other candidates may still
+				// have a complete set of observations in the same run.
+				row.StoredReviewUnavailable = true
+			}
+		}
+		verification.Candidates = append(verification.Candidates, row)
+		switch result.Status {
+		case candidateverify.Confirmed:
+			verification.NonIDORConfirmed++
+		case candidateverify.Negative:
+			verification.NonIDORNegative++
+		default:
+			verification.VerificationPending++
+		}
 	}
 	var existing []byte
 	err = tx.QueryRowContext(ctx, `SELECT payload FROM exploration_nodes WHERE exploration_id=$1 AND kind='fact' AND state='confirmed' AND origin=$2 AND payload->>'task_id'=$3 ORDER BY id DESC LIMIT 1`, exploration, diagnosisRunOrigin, strconv.FormatInt(task, 10)).Scan(&existing)
@@ -209,7 +312,9 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 		goalB, errF := json.Marshal(old.Goal)
 		languageA, errG := json.Marshal(language)
 		languageB, errH := json.Marshal(old.Language)
-		if !bytes.Equal(a, b) || errA != nil || errB != nil || !bytes.Equal(modelA, modelB) || errC != nil || errD != nil || !bytes.Equal(resultA, resultB) || errE != nil || errF != nil || !bytes.Equal(goalA, goalB) || errG != nil || errH != nil || !bytes.Equal(languageA, languageB) {
+		verificationA, errI := json.Marshal(verification)
+		verificationB, errJ := json.Marshal(old.Verification)
+		if !bytes.Equal(a, b) || errA != nil || errB != nil || !bytes.Equal(modelA, modelB) || errC != nil || errD != nil || !bytes.Equal(resultA, resultB) || errE != nil || errF != nil || !bytes.Equal(goalA, goalB) || errG != nil || errH != nil || !bytes.Equal(languageA, languageB) || errI != nil || errJ != nil || !bytes.Equal(verificationA, verificationB) {
 			return ErrFirstDiagnosisOutcome
 		}
 		return tx.Commit()
@@ -217,12 +322,17 @@ func saveDiagnosisRunRecordGoal(ctx context.Context, pool *sql.DB, task int64, s
 	if !errors.Is(err, sql.ErrNoRows) {
 		return ErrFirstDiagnosisOutcome
 	}
-	payload, err := json.Marshal(diagnosisRunRecord{Version: 1, TaskID: task, SavedAt: time.Now().UTC(), Run: state, Model: model, Result: result, Goal: goal, Language: language})
+	payload, err := json.Marshal(diagnosisRunRecord{Version: 1, TaskID: task, SavedAt: time.Now().UTC(), Run: state, Model: model, Result: result, Goal: goal, Language: language, Verification: verification})
 	if err != nil {
 		return ErrFirstDiagnosisOutcome
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO exploration_nodes(exploration_id,kind,state,origin,payload) VALUES($1,'fact','confirmed',$2,$3::jsonb)`, exploration, diagnosisRunOrigin, string(payload)); err != nil {
 		return ErrFirstDiagnosisOutcome
+	}
+	if verification.ObservationsStored {
+		if err := storeCandidateObservations(ctx, tx, task, state.RunRef, durableObservations); err != nil {
+			return ErrFirstDiagnosisOutcome
+		}
 	}
 	if tx.Commit() != nil {
 		return ErrFirstDiagnosisOutcome
