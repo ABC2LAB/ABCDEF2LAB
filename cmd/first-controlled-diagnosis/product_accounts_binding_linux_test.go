@@ -103,7 +103,7 @@ func TestProductRunBindsRegisteredAccountsAndStopsOnUnmark(t *testing.T) {
 		t.Fatal("등록 계정 목록", err)
 	}
 	auth := loaded.policy.Auth
-	if auth == nil || !auth.ModelLogin || auth.PasswordResponse != e2proxy.PasswordResponseModelVisible || len(auth.Accounts) != 2 || auth.Accounts[0].Label != "real-b" || auth.Accounts[1].Label != "tester-a" || auth.Login.Path != "/read/login" || loaded.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough {
+	if auth == nil || !auth.ModelLogin || auth.LoginAttempts == nil || auth.LoginAttempts.MaxConsecutiveFailures != productLoginConsecutiveFailures || auth.PasswordResponse != e2proxy.PasswordResponseModelVisible || len(auth.Accounts) != 2 || auth.Accounts[0].Label != "real-b" || auth.Accounts[1].Label != "tester-a" || auth.Login.Path != "/read/login" || loaded.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough {
 		t.Fatalf("auth section: %+v mode=%s", auth, loaded.policy.HeaderMode)
 	}
 	var rule bool

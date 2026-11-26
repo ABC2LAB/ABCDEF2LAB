@@ -28,6 +28,7 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/privateinput"
+	"github.com/Autumn-27/artex/loginattempt"
 	"github.com/Autumn-27/artex/transmit"
 	"github.com/Autumn-27/artex/transmit/budget"
 )
@@ -628,6 +629,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		var patternExecution atomic.Pointer[e2proxy.Execution]
 		var patternUsernames atomic.Pointer[map[string]bool]
 		var accountSessionStore atomic.Pointer[e2HTTPSessionStore]
+		var accountLoginAttempts atomic.Pointer[loginattempt.Tracker]
 		var resolveSentAccount func(http.Header) string
 		var selectedSessionHeaders func() (http.Header, bool)
 		credentialHeader := ""
@@ -638,6 +640,13 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				accountRefs[account.Label] = CandidateAccountRevision(account.Label, account.Credential.SHA256)
 			}
 			resolveSentAccount = func(sent http.Header) string {
+				// 모델 직접 로그인 회차: 모델 요청의 계정은 성공한 로그인 세션을 실었는지로 정한다(값이 정확히 같은 헤더가 아니어도,
+				// 브라우저·curl이 다른 쿠키를 같이 실어도). 성공하지 않은 세션이나 두 계정 세션은 귀속하지 않는다.
+				if tracker := accountLoginAttempts.Load(); tracker != nil {
+					if label := tracker.AccountOf(sent); label != "" {
+						return accountRefs[label]
+					}
+				}
 				store := accountSessionStore.Load()
 				if store == nil {
 					return ""
@@ -781,6 +790,18 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		var refresh func(context.Context, string) (http.Header, string)
 		sessionStore := newE2HTTPSessionStore(auth.Sessions, execution.Snapshot().Scope.RunRef, nil)
 		accountSessionStore.Store(sessionStore)
+		// 모델 직접 로그인 회차는 모델 요청마다 로그인 시도를 판정한다(계약 docs/contracts/model-login-attempts.md). Worker가
+		// 첫 요청을 보내기 전에 붙인다. 판정기를 못 만들면 상한을 지킬 수 없으므로 실행을 열지 않는다.
+		var loginAttempts *loginattempt.Tracker
+		if policy.Auth != nil && policy.Auth.ModelLogin && policy.SelectedAccountRef == "" {
+			var trackerErr error
+			loginAttempts, trackerErr = newE2HTTPLoginAttempts(taskctx, policy, credentials, sessionStore)
+			if trackerErr != nil {
+				return failed(execution, runner)
+			}
+			execution.AttachLoginAttempts(loginAttempts)
+			accountLoginAttempts.Store(loginAttempts)
+		}
 		programCalls := newE2HTTPProgramCalls(auth.CallRefs...)
 		if policy.Auth != nil && policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && (len(credentials) > 0 || len(auth.Sessions) > 0) {
 			authPolicy, origin := *policy.Auth, ""
@@ -812,7 +833,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if hostRecorder != nil {
 			verifySelected = hostRecorder.ObservedAt
 		}
-		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, VerifySelected: verifySelected, AccountAuth: accountAuth, Sessions: auth.Sessions, RefreshSession: refresh, Credentials: credentials, sessionStore: sessionStore, programCalls: programCalls}, nil
+		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, VerifySelected: verifySelected, AccountAuth: accountAuth, Sessions: auth.Sessions, RefreshSession: refresh, Credentials: credentials, LoginAttempts: loginAttempts, sessionStore: sessionStore, programCalls: programCalls}, nil
 	}
 	// 진단 Worker의 insert_assets는 검사를 거친 일반 규칙과 인증 준비 규칙의 origin을 쓴다(C24).
 	approvedOrigins := make([]string, 0, len(policy.Rules))
