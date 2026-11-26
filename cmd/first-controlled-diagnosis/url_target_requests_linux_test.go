@@ -33,6 +33,8 @@ func targetRequestEvents() []e2proxy.Event {
 		liveEvent("result", "call-model-c", strings.Repeat("c", 32), 1, "denied", e2proxy.PolicyDenied),
 		liveEvent("call_closed", "call-model-a", "", 0, "", e2proxy.Complete),
 		program(liveEvent("result", "call-refresh", strings.Repeat("3", 32), 1, "allowed", e2proxy.Complete), e2proxy.ProgramRefreshSession),
+		// 모델 로그인의 프로그램 대조 요청도 로그인 몫이다(사용자 결정 2026-11-26).
+		program(liveEvent("result", "call-contrast", strings.Repeat("7c", 16), 1, "allowed", e2proxy.Complete), e2proxy.ProgramLoginContrast),
 		liveEvent("control", "", "", 0, "", e2proxy.Closed),
 	}
 }
@@ -92,7 +94,7 @@ func targetRequestsGet(t *testing.T, runsDir string, live liveExploration) e2Flo
 // 모델·로그인 수는 검증한 저널에서 요청을 쓴 시도 수와 같고, 탐색 수는 경계가 확정한 기록과 같으며, 합은 둘을 더한 값이다.
 func TestE2FlowTargetRequestsMatchJournalAndExplorationRecord(t *testing.T) {
 	model, login := writtenAttempts(targetRequestEvents())
-	if model != 2 || login != 2 {
+	if model != 2 || login != 3 {
 		t.Fatalf("시험 저널 구성이 바뀜 model=%d login=%d", model, login)
 	}
 	closed := explorationKnown(explorationClosed, 7)

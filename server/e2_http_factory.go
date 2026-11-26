@@ -793,16 +793,24 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		// 모델 직접 로그인 회차는 모델 요청마다 로그인 시도를 판정한다(계약 docs/contracts/model-login-attempts.md). Worker가
 		// 첫 요청을 보내기 전에 붙인다. 판정기를 못 만들면 상한을 지킬 수 없으므로 실행을 열지 않는다.
 		var loginAttempts *loginattempt.Tracker
+		var prober *loginContrastProber
 		if policy.Auth != nil && policy.Auth.ModelLogin && policy.SelectedAccountRef == "" {
 			var trackerErr error
-			loginAttempts, trackerErr = newE2HTTPLoginAttempts(taskctx, policy, credentials, sessionStore)
+			prober = newLoginContrastProber(nil)
+			loginAttempts, trackerErr = newE2HTTPLoginAttempts(taskctx, policy, credentials, sessionStore, prober)
 			if trackerErr != nil {
 				return failed(execution, runner)
 			}
 			execution.AttachLoginAttempts(loginAttempts)
 			accountLoginAttempts.Store(loginAttempts)
+
 		}
 		programCalls := newE2HTTPProgramCalls(auth.CallRefs...)
+		if prober != nil {
+			// 프로그램 대조 요청은 실행 문맥 동안만 보낸다(마감·취소면 멈춤). 호출 참조는 프로그램 호출로 마감 대조에서 뺀다.
+			prober.execution, prober.tracker, prober.calls = execution, loginAttempts, programCalls
+			go prober.run(taskctx)
+		}
 		if policy.Auth != nil && policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && (len(credentials) > 0 || len(auth.Sessions) > 0) {
 			authPolicy, origin := *policy.Auth, ""
 			for _, rule := range policy.Rules {

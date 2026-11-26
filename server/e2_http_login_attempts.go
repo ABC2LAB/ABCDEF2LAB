@@ -41,7 +41,7 @@ var errLoginAttempts = errors.New("server: login attempt tracker unavailable")
 
 // newE2HTTPLoginAttempts는 모델 직접 로그인 회차의 진단 단계 판정기를 만든다. 성공한 등록 계정 로그인의 세션은 세션
 // 저장소에 넣어 확정 단계 계정 결속(E③)과 보낸 요청의 계정 귀속에 쓴다. 기록 파일의 앞 단계 행으로 연속 실패 수를 잇는다.
-func newE2HTTPLoginAttempts(ctx context.Context, policy E2HTTPFilePolicy, credentials []agent.E2HTTPAccountCredential, store *e2HTTPSessionStore) (*loginattempt.Tracker, error) {
+func newE2HTTPLoginAttempts(ctx context.Context, policy E2HTTPFilePolicy, credentials []agent.E2HTTPAccountCredential, store *e2HTTPSessionStore, prober *loginContrastProber) (*loginattempt.Tracker, error) {
 	if policy.Auth == nil || !policy.Auth.LoginAttempts.valid() || store == nil {
 		return nil, errLoginAttempts
 	}
@@ -52,9 +52,10 @@ func newE2HTTPLoginAttempts(ctx context.Context, policy E2HTTPFilePolicy, creden
 		}
 	}
 	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Host == "" || prober == nil {
 		return nil, errLoginAttempts
 	}
+	prober.origin = u
 	accounts := make([]loginattempt.Account, 0, len(credentials))
 	for _, c := range credentials {
 		accounts = append(accounts, loginattempt.Account{Label: c.Label, Username: c.Username, Password: c.Password})
@@ -68,7 +69,8 @@ func newE2HTTPLoginAttempts(ctx context.Context, policy E2HTTPFilePolicy, creden
 	tracker, err := loginattempt.New(loginattempt.Config{RunRef: policy.RunRef, Stage: loginattempt.StageDiagnosis, Origin: u, Accounts: accounts,
 		MaxConsecutiveFailures: limits.MaxConsecutiveFailures, MaxContrastProbes: limits.MaxContrastProbes, TokenMinBytes: limits.TokenMinBytes,
 		Sink:        func(row loginattempt.Row) { appendLoginAttemptRow(ctx, path, row) },
-		OnSucceeded: func(label string, session http.Header) { store.replace(label, session) }})
+		OnSucceeded: func(label string, session http.Header) { store.replace(label, session) },
+		OnProbe:     prober.notify})
 	if err != nil {
 		return nil, errLoginAttempts
 	}

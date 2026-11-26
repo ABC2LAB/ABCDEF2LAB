@@ -1090,3 +1090,123 @@ func TestE2HTTPModelLoginNotSentRowLinksReceipt(t *testing.T) {
 		t.Fatalf("미전송 행이 E② 거부 영수증과 이어지지 않음: %+v / %s/%s", r, receipt.CallRef, receipt.AttemptID)
 	}
 }
+
+// 프로그램 대조 요청(계약 §4): 모델이 로그인 세션으로 연 URL에 세션 없는 응답이 없으면, E² 프로그램 호출(login_contrast)로
+// 그 정확한 URL을 세션 없이 한 번 다시 연다. 막힘이면 성공이 서고(contrast_source probe), 대상은 쿠키 없는 GET을 받는다.
+// 대조 요청은 GET·본문 없음·인증 헤더 없음만 보낸다.
+func TestE2HTTPModelLoginContrastProbe(t *testing.T) {
+	const token = "model-login-session-88bb"
+	var anonymous atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/read/login":
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: token, Path: "/"})
+			http.Redirect(w, r, "/read/dashboard", http.StatusFound)
+		case r.Method == "GET" && r.URL.Path == "/read/dashboard":
+			if c, err := r.Cookie("session"); err == nil && c.Value == token {
+				io.WriteString(w, "dashboard")
+				return
+			}
+			if r.Header.Get("Cookie") == "" && r.Header.Get("Authorization") == "" {
+				anonymous.Add(1)
+			}
+			http.Redirect(w, r, "/read/login", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/read"
+	policy.Rules[0].Methods = []string{"GET", "POST"}
+	policy.MaxRequests = 64
+	policy.Limits.MaxDenials, policy.Limits.MaxAttempts = 16, 64
+	auth := policy.Rules[0]
+	auth.Ref, auth.PathScopeRef, auth.PathPrefix, auth.Methods, auth.Purpose, auth.Credentials = "auth-login", "auth-login-path", "/login", []string{"POST"}, e2proxy.PurposeAuthPrep, nil
+	policy.Rules = append(policy.Rules, auth)
+	pin := authCredentialPin(t, filepath.Dir(cfg.PolicyFile), "account-tester-a.json", "tester@owned.test", "seeded-pass-88ff")
+	a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
+	a.ModelLogin = true
+	a.LoginAttempts = &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
+	policy.Auth, policy.HeaderMode = &a, e2proxy.HeaderTestAccountPassthrough
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+		t.Fatal("policy write")
+	}
+	options, err := LoadE2HTTPRuntimeOptions(t.Context(), E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	lease, err := options.Acquire(run, E2HTTPRequest{TaskID: "17", TaskIDNumber: 17, ExplorationID: 1, IntentID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(context.Background())
+	call, err := lease.Execution.BeginCall(run, "model-login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer call.Close(context.Background())
+	login, _ := http.NewRequest("POST", target.URL+"/read/login", strings.NewReader("email=tester%40owned.test&password=seeded-pass-88ff"))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if resp, _, err := call.Do(run, login); err != nil {
+		t.Fatal(err)
+	} else {
+		resp.Body.Close()
+	}
+	dash, _ := http.NewRequest("GET", target.URL+"/read/dashboard", nil)
+	dash.Header.Set("Cookie", "session="+token)
+	if resp, _, err := call.Do(run, dash); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("세션 GET: %v", err)
+	} else {
+		resp.Body.Close()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for lease.LoginAttempts.AccountAuth()["tester-a"] != loginattempt.AuthAuthenticated && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := lease.LoginAttempts.AccountAuth()["tester-a"]; got != loginattempt.AuthAuthenticated || anonymous.Load() != 1 {
+		t.Fatalf("대조 요청으로 성공 안 함: %s 세션 없는 GET=%d", got, anonymous.Load())
+	}
+	rows, err := readLoginAttemptRows(filepath.Join(policy.StateDir, E2HTTPLoginAttemptsFile))
+	if err != nil || len(rows) == 0 {
+		t.Fatal("기록 없음")
+	}
+	last := rows[len(rows)-1]
+	if last.ContrastSource != loginattempt.ContrastProbe || last.ContrastProbes != 1 || last.Outcome != loginattempt.OutcomeSucceeded {
+		t.Fatalf("대조 요청 행: %+v", last)
+	}
+	contrast := 0
+	for _, c := range lease.Execution.Calls() {
+		if c.Program == e2proxy.ProgramLoginContrast {
+			contrast++
+		}
+	}
+	if contrast != 1 {
+		t.Fatalf("프로그램 대조 호출 수: %d", contrast)
+	}
+	// 대조 요청 호출은 세션·본문·쓰기 메서드를 싣지 못한다.
+	probeCall, err := lease.Execution.BeginProgramCall(run, e2proxy.ProgramLoginContrast, "login-contrast-check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probeCall.Close(context.Background())
+	for name, req := range map[string]*http.Request{
+		"cookie": func() *http.Request {
+			r, _ := http.NewRequest("GET", target.URL+"/read/dashboard", nil)
+			r.Header.Set("Cookie", "session="+token)
+			return r
+		}(),
+		"post": func() *http.Request {
+			r, _ := http.NewRequest("POST", target.URL+"/read/login", strings.NewReader("x=1"))
+			return r
+		}(),
+	} {
+		if _, receipt, err := probeCall.Do(run, req); err == nil || receipt.Reason != e2proxy.Unsupported {
+			t.Fatalf("%s: 대조 요청이 막아야 할 요청을 보냄: %+v %v", name, receipt, err)
+		}
+	}
+}

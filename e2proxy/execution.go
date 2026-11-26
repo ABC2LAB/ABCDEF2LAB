@@ -1390,7 +1390,7 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 			attempt.Reason = r.Reason
 			c.observeAttemptPath(req, attempt)
 			// 인증 준비는 진단 요청이 아니라 워크플로 요청 경계에 알리지 않는다(진단 쓰기 수와 따로 셈).
-			if purpose == "" && c.e.cfg.RequestBoundary != nil && req != nil && req.URL != nil {
+			if purpose == "" && c.program != ProgramLoginContrast && c.e.cfg.RequestBoundary != nil && req != nil && req.URL != nil {
 				boundaryErr = c.e.cfg.RequestBoundary.After(context.WithoutCancel(ctx), RequestView{Method: req.Method, URL: req.URL.String(), BodyPresent: req.ContentLength != 0}, rr)
 			}
 		})
@@ -1491,8 +1491,15 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	// 진단 요청 경계(워크플로 선택·쓰기 승인)와 요청 승인은 모델 요청에만 적용한다. 인증 준비는 대상 등록 때 승인한 로그인
 	// 경로 하나로만 나간다.
 	boundary := e.cfg.RequestBoundary
-	if purpose != "" {
+	if purpose != "" || c.program == ProgramLoginContrast {
+		// 프로그램 대조 요청은 모델이 진단 요청 경계를 지나 이미 GET한 URL을 세션 없이 다시 여는 것이다. 진단 흐름 경계·요청
+		// 승인은 거치지 않고, 승인 규칙 범위·제외 경로·예산은 그대로 받는다(계약 §4).
 		boundary = nil
+	}
+	if c.program == ProgramLoginContrast && (method != http.MethodGet || len(body) > 0 || headerPresent(requestHeaders, "Cookie") || headerPresent(requestHeaders, "Authorization") ||
+		e.cfg.TargetCredentialHeader != "" && headerPresent(requestHeaders, e.cfg.TargetCredentialHeader)) {
+		r.Decision, r.Reason = "unsupported", Unsupported
+		return finish(nil, ErrDenied)
 	}
 	// 운영자 제외 경로(#627)는 진단 흐름 경계보다 먼저 E²가 본다. 진단 흐름 경계 거부와 같은 모양(policy_denied, 맞은
 	// 규칙 참조)의 결과 기록 하나·호출당 거부 계수 하나로 끝나고 경계는 부르지 않는다(요청당 한 번, 사유 하나). 그래서
@@ -1507,7 +1514,7 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	// 모델 직접 로그인(사용자 결정 2026-11-26): 아이디별 연속 실패 상한에 닿은 로그인은 보내지 않는다. E② 사유 어휘는 늘리지
 	// 않고 운영자 제외 경로(#627)처럼 policy_denied로 남긴다. 고정 사유 login_attempts_exhausted는 로그인 시도 기록과 진단
 	// 로그에 있다(계약 §5).
-	if purpose == "" && e3 == nil {
+	if purpose == "" && e3 == nil && c.program == "" {
 		if tracker := e.loginAttempts.Load(); tracker != nil {
 			loginTracker = tracker
 			// 상한 거부도 이 영수증(call_ref·attempt_id)으로 E② 기록과 잇는다(#969 동찬 리뷰 P2).
@@ -1526,7 +1533,7 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 			return finish(nil, ErrDenied)
 		}
 	}
-	needsApproval := e.needsRequestApproval(purpose, method, body, view)
+	needsApproval := c.program != ProgramLoginContrast && e.needsRequestApproval(purpose, method, body, view)
 	if needsApproval {
 		// 승인 대기 문맥은 call 문맥(모델 단계 마감·call 기한)과 요청 문맥(요청 기한·연결 끝남)의 원인을 그대로 싣는다.
 		// 승인 이력이 닫힌 까닭(closed_reason)을 가리는 근거다.

@@ -154,6 +154,9 @@ type Config struct {
 	// OnSucceeded는 등록 계정 라벨의 시도가 성공한 순간 그 세션을 실어 보낼 헤더(Cookie 또는 토큰 헤더)로 받는다. 값은
 	// 회차 메모리에만 둔다(세션 저장소·확정 단계 계정 결속). 판정기 잠금 안에서 부른다.
 	OnSucceeded func(label string, session http.Header)
+	// OnProbe는 보낼 프로그램 대조 요청이 새로 쌓였을 때 부른다(NextProbe로 꺼낸다). 판정기 잠금 안에서 부르므로 막지 않는
+	// 알림만 한다.
+	OnProbe func()
 }
 
 type observation struct {
@@ -762,6 +765,9 @@ func (t *Tracker) followupLocked(a *attempt) {
 			a.probed[o.key] = true
 			path, rawQuery, _ := strings.Cut(o.key, "?")
 			t.pending = append(t.pending, Probe{Path: path, RawQuery: rawQuery, attempt: a})
+			if t.cfg.OnProbe != nil {
+				t.cfg.OnProbe()
+			}
 		}
 	}
 	if a.row.Followup != followup {
