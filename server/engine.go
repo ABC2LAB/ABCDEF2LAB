@@ -989,6 +989,7 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 				return
 			}
 			if bindingErr != nil {
+				t.recordFirstDiagnosisFailure(bindingErr)
 				_ = e.m.SetTaskStatus(t.ID, "failed")
 				e.cancelExec(t.ID, bindingErr)
 				return

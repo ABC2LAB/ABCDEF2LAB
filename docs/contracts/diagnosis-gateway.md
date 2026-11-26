@@ -57,7 +57,8 @@ validate는 이미 준비된 서비스의 결속 상태 조회다. 새 초안의
 초안 준비 검사는 별도 API의 운영자 승인 catalog에서 수행해야 한다.
 
 응답은 version/request_id와 snapshot 또는 고정 오류 code 중 하나다.
-snapshot은 task_id/preparation_ref/state/started/drain_complete/result_ready만 전달한다.
+snapshot은 task_id/preparation_ref/state/started/drain_complete/result_ready와 실행 결과(result)·계정별 인증 결과(account_auth)·사유(reason_code)만 전달한다.
+reason_code는 failed·unknown에만 있는 고정 사유 코드다(`^[a-z][a-z0-9_]{0,63}$`, 실행이 진단 로그 `run_finished`에 남긴 값과 같음, [실행 결과 상태 값 계약](run-outcome-states.md) §3.1). 모르면 없다.
 엔진 내부 객체·프롬프트·도구 입력·원문 오류·DB 필드를 노출하지 않는다.
 
 ## 실행 및 실패 의미

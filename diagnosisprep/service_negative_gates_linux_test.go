@@ -379,3 +379,72 @@ func TestDrainedKnownCancellationAllowsNextRunWithoutRefund(t *testing.T) {
 		})
 	}
 }
+
+// 운영자 중지 요청 사유(stop_requested)는 중지 중 갱신과 사유 없는 중지 끝 상태에서 지워지지 않는다. 실행 쪽이 다른 사유를
+// 붙였으면 그 사유가 이긴다. 중지 요청이 없던 중지는 사유를 만들지 않는다(B1: 끝 상태에서 운영자 중지를 구분).
+func TestOperatorStopReasonSurvivesToCancelled(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		stop        bool
+		finalReason string
+		want        string
+	}{
+		{"operator stop", true, "", "stop_requested"},
+		{"target ended wins", true, "target_ended", "target_ended"},
+		{"no stop request", false, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, b, _ := newFixture(t)
+			entered, late := make(chan error, 1), make(chan error, 1)
+			finish, final := make(chan struct{}), make(chan struct{})
+			b.run = func(ctx context.Context, _ Execution, p Publish) error {
+				u := Update{State: Running, Phase: ExecutionPhase, TaskID: "42", PreparationStarted: true, AuthorityState: AuthorityConsumed, Started: true}
+				err := p(u)
+				entered <- err
+				if err != nil {
+					return err
+				}
+				select {
+				case <-ctx.Done():
+				case <-finish:
+				}
+				// 중지 중 갱신(사유 없음)이 사유를 지우지 않아야 한다.
+				late <- p(u)
+				<-final
+				end := u
+				end.State, end.Phase, end.DrainComplete, end.ResultReady, end.ReasonCode = Cancelled, Report, true, true, tc.finalReason
+				return p(end)
+			}
+			j := create(t, s, "create")
+			if got := start(t, s, j, "start"); got.Error != "" {
+				t.Fatal(got.Error)
+			}
+			if err := awaitNegativeGateResult(t, entered); err != nil {
+				t.Fatal(err)
+			}
+			if tc.stop {
+				before := status(t, s, j.ID)
+				r := request(Stop)
+				r.JobID, r.ExpectedRevision = j.ID, before.Revision
+				if stopped := call(t, s, r); stopped.Error != "" || stopped.Job == nil || stopped.Job.ReasonCode != "stop_requested" {
+					t.Fatalf("중지 요청: %+v", stopped)
+				}
+			} else {
+				close(finish)
+			}
+			if err := awaitNegativeGateResult(t, late); err != nil {
+				t.Fatal(err)
+			}
+			if tc.stop {
+				if got := status(t, s, j.ID); got.State != Stopping || got.ReasonCode != "stop_requested" {
+					t.Fatalf("중지 중 갱신이 사유를 바꿈: state=%s reason=%q", got.State, got.ReasonCode)
+				}
+			}
+			close(final)
+			ended := awaitState(t, s, j.ID, Cancelled)
+			if ended.ReasonCode != tc.want {
+				t.Fatalf("끝 상태 사유 %q, 기대 %q", ended.ReasonCode, tc.want)
+			}
+		})
+	}
+}
