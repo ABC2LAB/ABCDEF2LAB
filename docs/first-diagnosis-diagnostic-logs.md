@@ -146,6 +146,7 @@ E② 감사 저널, 체크포인트, 증거, 결과 DB, 원래 보호 설정은 
 | `planning_authority_rejected` | 실행 권한 확인 거부 |
 | `planning_exploration_failed` | 탐색 준비 실패(원래 typed 오류 반환) |
 | `planning_workflow_blocked` | workflow BeforePlanning 차단(원래 typed 오류 반환) |
+| `planning_time_budget` | 탐색 단계나 workflow BeforePlanning 대기(범위 선택·흐름 일시정지) 중 시간 상한 마감 유예가 끝나 감독자가 멈춤(`AbortTimeBudgetDrain`). 실패가 아니라 실행 상한으로 반환(`ErrE2HTTPBudgetLimited`, `budget_limited` 마감) |
 | `planning_task_closed` | 닫힌 task |
 | `planning_task_blocked` | 차단된 task |
 | `planning_task_cancelled` | task context 종료 |

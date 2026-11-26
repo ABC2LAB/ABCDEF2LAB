@@ -237,6 +237,10 @@ type E2HTTPRuntime struct {
 	// planResults는 작업별 마지막 계획(Plan) 한 번이 오류 없이 끝났는지다(작업 ID → bool). 흐름 모드 마감이 '계획은
 	// 정상인데 의도 0'과 '계획 호출이 실패해 의도 0'을 가르는 데 쓴다.
 	planResults sync.Map
+	// planTimeBudget은 계획 준비가 시간 상한 마감(agent.AbortTimeBudgetDrain)으로 멈춘 작업이다(작업 ID → true). 범위 선택을
+	// 기다리다 멈춘 흐름 모드 회차를 마감 검사가 실패가 아니라 실행 상한 마감으로 가른다(#964,
+	// firstDiagnosisSelectionWaitClosure).
+	planTimeBudget sync.Map
 }
 
 // recordPlanResult는 계획 한 번의 결과를 남긴다(준비 단계의 첫 계획과 실행 단계의 계획 반복 모두).
@@ -247,6 +251,15 @@ func (r *E2HTTPRuntime) recordPlanResult(taskID string, ok bool) {
 }
 
 // lastPlanSucceeded는 그 작업의 마지막 계획이 오류 없이 끝났는지 본다. 계획 기록이 없으면 거짓이다.
+// planningStoppedByTimeBudget은 그 작업의 계획 준비가 시간 상한 마감으로 멈췄는지다.
+func (r *E2HTTPRuntime) planningStoppedByTimeBudget(taskID string) bool {
+	if r == nil {
+		return false
+	}
+	_, ok := r.planTimeBudget.Load(taskID)
+	return ok
+}
+
 func (r *E2HTTPRuntime) lastPlanSucceeded(taskID string) bool {
 	if r == nil {
 		return false
@@ -549,6 +562,23 @@ func (r *E2HTTPRuntime) planningFailure(ctx context.Context, status, reason stri
 	}
 	_ = diagnosticlog.Emit(logContext, diagnosticlog.Event{Component: "planner", Event: "stage_finished", Stage: "planning", Status: status, ReasonCode: reason})
 }
+
+// timeBudgetDrained는 계획 준비 중(탐색 단계·범위 선택이나 흐름 일시정지 대기)에 감독자가 시간 상한 마감 유예를 다 써서
+// 실행을 멈춘 경우인지 본다(agent.AbortTimeBudgetDrain).
+func timeBudgetDrained(ctx context.Context) bool {
+	return ctx != nil && ctx.Err() != nil && errors.Is(context.Cause(ctx), agent.AbortTimeBudgetDrain)
+}
+
+// planningTimeBudget은 시간 상한 마감으로 멈춘 계획 준비를 실패가 아니라 실행 상한으로 돌려준다. 그래야 탐색 결과가 있는
+// 회차가 failed가 아니라 정한 마감 상태(completed·budget_limited)로 끝난다(계약 §3.4 시간 상한 마감, 2026-11-26 NodeGoat
+// 회차 2 발견 5: 범위 선택을 기다리다 시간 상한에 닿아 planning_workflow_blocked → engine_task_failed).
+func (r *E2HTTPRuntime) planningTimeBudget(ctx context.Context, task *Task) error {
+	task.firstDiagnosisBudgetLimited.Store(true)
+	r.planTimeBudget.Store(task.ID, true)
+	r.planningFailure(ctx, "blocked", "planning_time_budget")
+	return ErrE2HTTPBudgetLimited
+}
+
 func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (context.Context, error) {
 	t, err := r.taskFor(task)
 	if err != nil {
@@ -572,11 +602,17 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 		return ctx, ErrE2HTTPHost
 	}
 	if err := r.prepareExploration(ctx, task, t); err != nil {
+		if timeBudgetDrained(ctx) {
+			return ctx, r.planningTimeBudget(ctx, task)
+		}
 		r.planningFailure(ctx, "failed", "planning_exploration_failed")
 		return ctx, err
 	}
 	if r.options.Workflow != nil {
 		if err := r.options.Workflow.BeforePlanning(ctx); err != nil {
+			if timeBudgetDrained(ctx) {
+				return ctx, r.planningTimeBudget(ctx, task)
+			}
 			r.planningFailure(ctx, "blocked", "planning_workflow_blocked")
 			return ctx, err
 		}
@@ -621,6 +657,10 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 		}
 	}
 	t.plannerRounds++
+	// 계획 준비가 다시 정상으로 통과했으면 앞의 시간 상한 멈춤 표시는 지금 상태가 아니다. 지우지 않으면 그 뒤 실제 계획 실패도
+	// 마감 검사에서 계획 성공처럼 보인다(#964 윤재상 리뷰). 계획 결과 기록 때 지우지 않는 것은, 시간 상한 마감 때 함께 취소된
+	// 다른 계획이 실패로 기록되며 표시를 지워 원래 결함(범위 대기 회차의 failed)으로 돌아가지 않게 하려는 것이다.
+	r.planTimeBudget.Delete(task.ID)
 	// 실제 intent가 생기기 전 Planner의 Bash/probe는 허용하지 않는다.
 	return agent.WithE2HTTPWebSearch(agent.WithE2HTTPPlannerLimits(agent.WithE2HTTPPlanning(e2HTTPTaskContext(ctx, t.ctx)), r.options.PlannerLimits), r.options.WebSearch), nil
 }
