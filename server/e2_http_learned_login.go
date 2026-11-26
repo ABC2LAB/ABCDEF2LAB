@@ -83,14 +83,12 @@ func (s *e2HTTPSessionStore) LearnedRelogin(ctx context.Context, req E2HTTPLearn
 	if s == nil || s.learned == nil {
 		return out
 	}
-	s.refresh(ctx, req.Label, func() (http.Header, string) {
+	_, _, ref := s.refreshWithBinding(ctx, req.Label, func() (http.Header, string) {
 		var session http.Header
 		out, session = s.learned(ctx, req)
 		return session, out.Result
 	})
-	if out.Result == E2HTTPAuthAuthenticated {
-		out.BindingRef, _ = s.AccountBindingRef(s.runRef, req.Label)
-	}
+	out.BindingRef = ref
 	return out
 }
 

@@ -335,11 +335,12 @@ func (p *e2HTTPProgramCalls) snapshot() map[string]bool {
 }
 
 // replace는 세션을 바꾸고 같은 잠금 안에서 결속 참조를 새로 발급한다. 조회가 새 세션과 옛 참조를 같이 보는 순간이 없다.
-func (s *e2HTTPSessionStore) replace(label string, header http.Header) {
+func (s *e2HTTPSessionStore) replace(label string, header http.Header) string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessions[label] = header.Clone()
 	s.issueLocked(label)
+	return s.bindings[label]
 }
 
 func (s *e2HTTPSessionStore) gate(label string) chan struct{} {
@@ -354,25 +355,31 @@ func (s *e2HTTPSessionStore) gate(label string) chan struct{} {
 	return s.gates[label]
 }
 
-// refresh는 계정 하나의 다시 로그인을 보내기부터 세션 교체까지 한 번에 하나만 한다(#550 이동찬 리뷰: 두 Worker가 같은
-// 계정을 동시에 다시 로그인시키면 먼저 보낸 쪽 응답이 늦게 와서 더 새 세션을 옛 세션으로 덮을 수 있다). 다른 계정은 막지
-// 않는다. 기다리는 동안 문맥이 끝나면 보내지 않는다.
 func (s *e2HTTPSessionStore) refresh(ctx context.Context, label string, login func() (http.Header, string)) (http.Header, string) {
+	header, result, _ := s.refreshWithBinding(ctx, label, login)
+	return header, result
+}
+
+// refreshWithBinding은 계정 하나의 다시 로그인을 보내기부터 세션 교체까지 한 번에 하나만 한다(#550 이동찬 리뷰: 두 Worker가 같은
+// 계정을 동시에 다시 로그인시키면 먼저 보낸 쪽 응답이 늦게 와서 더 새 세션을 옛 세션으로 덮을 수 있다). 다른 계정은 막지
+// 않는다. 기다리는 동안 문맥이 끝나면 보내지 않는다. 검증에는 이 호출이 설치한 세션의 결속 참조만 돌려준다.
+func (s *e2HTTPSessionStore) refreshWithBinding(ctx context.Context, label string, login func() (http.Header, string)) (http.Header, string, string) {
 	if ctx == nil {
-		return nil, E2HTTPAuthNotSent
+		return nil, E2HTTPAuthNotSent, ""
 	}
 	gate := s.gate(label)
 	select {
 	case gate <- struct{}{}:
 	case <-ctx.Done():
-		return nil, E2HTTPAuthNotSent
+		return nil, E2HTTPAuthNotSent, ""
 	}
 	defer func() { <-gate }()
 	header, result := login()
+	var ref string
 	if result == E2HTTPAuthAuthenticated && len(header) > 0 {
-		s.replace(label, header)
+		ref = s.replace(label, header)
 	}
-	return header, result
+	return header, result, ref
 }
 
 // 성공 횟수는 제한하지 않는다. 같은 실행·계정의 연속 실패와 로그인 폭주만 제한하며,
