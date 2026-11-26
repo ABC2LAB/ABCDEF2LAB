@@ -23,7 +23,6 @@ import { SEVL } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import { fetchCoverage } from "../../live/api";
 import { clockOf, fmtDur, planState, sevKey } from "../../live/map";
-import { maskSecrets } from "../../live/mask";
 import { NotYet, useNow } from "../../live/parts";
 import {
   runDurationMissingWhy,
@@ -524,7 +523,7 @@ export function JobSummary({
                 [
                   <span key={label} className={s.tipline}>
                     {accountName(i)}
-                    <HelpTip label={`${accountName(i)} 서버 라벨 보기`}>서버 라벨: {maskSecrets(label)}</HelpTip>
+                    <HelpTip label={`${accountName(i)} 서버 라벨 보기`}>서버 라벨: {label}</HelpTip>
                   </span>,
                   result,
                 ] as const,

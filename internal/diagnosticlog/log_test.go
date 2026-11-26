@@ -312,3 +312,34 @@ func TestE3ConfirmationStageIsInVocabulary(t *testing.T) {
 		t.Fatal("raw supervisor stage accepted")
 	}
 }
+
+// 요청 한도 응답의 제공자 이름·원문 오류는 정한 형식(다듬은 값)만 받는다. Retry-After는 0 이상이다.
+func TestProviderDetailFieldsBounded(t *testing.T) {
+	e := testEvent()
+	e.RetryAfterMS, e.ProviderName, e.ProviderError = 7000, "PrimeIntellect", "rate limited, retry later"
+	if !valid(e) {
+		t.Fatal("다듬은 제공자 상세를 거부")
+	}
+	for name, change := range map[string]func(*Event){
+		"negative wait":  func(e *Event) { e.RetryAfterMS = -1 },
+		"name newline":   func(e *Event) { e.ProviderName = "Prime\nIntellect" },
+		"name too long":  func(e *Event) { e.ProviderName = strings.Repeat("a", 65) },
+		"name symbols":   func(e *Event) { e.ProviderName = "Prime<Intellect>" },
+		"error control":  func(e *Event) { e.ProviderError = "line\nbreak" },
+		"error too long": func(e *Event) { e.ProviderError = strings.Repeat("가", 200) },
+		"error invalid":  func(e *Event) { e.ProviderError = "bad \xff byte" },
+		"error padded":   func(e *Event) { e.ProviderError = " padded " },
+	} {
+		bad := e
+		change(&bad)
+		if valid(bad) {
+			t.Fatalf("%s: 다듬지 않은 값을 받음", name)
+		}
+	}
+	if got := ProviderErrorText(strings.Repeat("가", 200)); len(got) > maxProviderErrorBytes || !strings.HasPrefix(strings.Repeat("가", 200), got) {
+		t.Fatalf("글자 단위로 자르지 않음: %d", len(got))
+	}
+	if ProviderNameText("  Prime<Intellect>/fp8 ") != "PrimeIntellect/fp8" || ProviderErrorText("a\tb\x00c") != "a b c" {
+		t.Fatal("다듬기 규칙")
+	}
+}

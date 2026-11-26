@@ -74,6 +74,7 @@ func (s *Server) startTaskEngine(t *Task) {
 			return
 		}
 		if err != nil {
+			t.recordFirstDiagnosisFailure(err)
 			_ = s.m.SetTaskStatus(t.ID, "failed")
 			s.engine.cancelExec(t.ID, err)
 			return

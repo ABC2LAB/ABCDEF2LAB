@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Autumn-27/artex/loginattempt"
 )
 
 // DenialHeader는 경계가 막은 응답에 붙이는 사유 헤더다. ResultHeader는 전달했지만 대상 응답을 돌려주지 못한 결과다.
@@ -264,6 +266,8 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, scheme, host st
 		deny(w, ReasonProtocolUnsupported)
 		return
 	}
+	// 로그인 시도 판정용(기록에 넣지 않음). 판정기가 붙지 않은 세션은 쓰지 않는다.
+	req.RawQuery, req.ContentType, req.Body, req.Header = in.URL.RawQuery, in.Header.Get("Content-Type"), body, in.Header
 	d, ticket := s.Admit(in.Context(), req)
 	if !d.Forward {
 		deny(w, d.Reason)
@@ -332,6 +336,10 @@ func (p *Proxy) forward(w http.ResponseWriter, in *http.Request, scheme, host st
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, p.cfg.MaxResponseBytes+1))
 	result.Status, result.ResponseReceived, result.ResponseContentType = resp.StatusCode, true, mediaType(resp.Header.Get("Content-Type"))
 	result.Bytes = int64(len(respBody))
+	result.ResponseHeader = resp.Header
+	if int64(len(respBody)) <= p.cfg.MaxResponseBytes {
+		result.ResponseBody = respBody[:min(len(respBody), loginattempt.MaxObservedBodyBytes)]
+	}
 	if err != nil || int64(len(respBody)) > p.cfg.MaxResponseBytes {
 		// 상한을 넘는 응답은 전달하지 않는다. 받은 바이트 수만 기록한다.
 		finish()

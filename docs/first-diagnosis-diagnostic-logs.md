@@ -38,6 +38,7 @@ symlink, hardlink, 상대·탈출 경로, 저장소 `.git` 아래 및 일반 `we
 - `run_ref`, `call_ref`, `attempt_ref`: 실제 프로그램 참조의 SHA-256. 임의 문자열·비밀이 원문으로 남지 않는다.
 - `model/provider`: 고정 허용 식별자만 원문. 임의 로컬 모델이나 승인된 provider 식별자는 별도 해시 참조다.
 - `duration_ms`, 토큰·비용·건수: 실제 관측값. 원문 에러를 분석해 숫자를 만들지 않는다.
+- 모델 제공자 요청 한도(429, `http_rate_limited`)의 `model_request_finished`에만 `retry_after_ms`(응답 `Retry-After`, 초·HTTP 날짜, 한 시간 상한), `provider_name`(응답 본문 `error.metadata.provider_name`, 영문·숫자·공백·`._/-`만 64바이트), `provider_error`(본문 `error.metadata.raw`, 없으면 `error.message`, 제어 문자는 공백·512바이트)가 있을 수 있다(사용자 결정 2026-11-26, 429 원인 분석). 진단 기록에서 원문을 싣는 유일한 칸이다. 전송이 이 호출의 API 키를 `[REDACTED]`로 가린 뒤에만 싣고, 제어 비밀은 남지 않는다(절대규칙 2). `provider_name`은 해시하지 않는다(`provider_ref`는 응답한 제공자의 해시 그대로).
 - `count_known`이 있는 집계는 0과 조회 불가를 구분한다. 조회 불가를 0으로 확정하지 않는다.
 - `account_auth_checked`의 `account_label`은 설정에서 검증된 32자 이하 시험 계정 라벨이다. 다른 이벤트에는 이 칸을 허용하지 않는다. 설정에 따라 계정 라벨이 실제 사용자명과 같을 수 있으므로 보호 로그를 공유할 때는 라벨도 가린다. 자격 파일의 사용자명·비밀번호·토큰·쿠키와 대상 응답 본문은 기록하지 않는다. 재로그인 간격·횟수 제한이나 호출 시작 실패로 보내지 못했을 때는 `not_sent`·`auth_not_sent`를 남긴다.
 
@@ -58,6 +59,7 @@ task로 여러 준비/실행/조회 파일을 묶고, run/call/attempt 해시와
 9. `result_save_started/finished`, `run_summary`, `run_finished`, `diagnosis_finished`: 실행·감사·저장 마감과 실제 종료 단계.
 10. `service_request_finished`, `report_queried`: 보고서 서비스의 HTTP 응답 범주와 실제 저장 결과 조회. URL이나 본문을 기록하지 않는다.
 11. `account_auth_checked`: 최초 인증 준비 또는 재로그인에서 계정별 세션 확보 결과. `reason_code`는 자격 파일 읽기 실패, 로그인 거절, 응답에서 안전한 세션을 얻지 못함, 세션 가림 등록 실패·용량 초과, 결과 불명 등을 고정 코드로 구분한다. `auth_session_unavailable`은 토큰 위치 오류와 E②의 세션 안전성 거절을 함께 포함하므로 이 코드만으로 더 좁은 원인을 확정하지 않는다. 이 이벤트의 성공도 대상의 신원 경로 검증이나 이후 세션 유효성을 증명하지 않는다.
+12. `login_attempt_refused`: 모델 직접 로그인 회차에서 E②가 보내기 전에 막은 모델 로그인. `reason_code` `login_attempts_exhausted`는 같은 아이디의 연속 실패 상한(회차당)이다. E② 영수증 사유는 운영자 제외 경로처럼 `policy_denied`이고, 시도별 칸은 회차 상태 디렉터리의 `login-attempts.jsonl`(계약 `docs/contracts/model-login-attempts.md`)에 있다. `login_attempt_record_failed`는 그 기록을 쓰지 못한 것이며 송신을 멈추지 않는다.
 
 `run_summary`는 일반 HTTP의 기존 승인/실행 상태와 OpenRouterUsage를 재사용한다.
 실제 송신 수, 허용/거절/차단 수, 후보 수와 감사·drain·결과 저장 확인을 구분한다.
@@ -70,8 +72,8 @@ task로 여러 준비/실행/조회 파일을 묶고, run/call/attempt 해시와
 |---|---|
 | `database_unavailable`, `database_role_invalid` | 연결 또는 최소 역할 검사. DSN은 별도 보호 설정에서 확인 |
 | `model_profile_invalid` | 승인 프로필/manifest 결속 실패 |
-| `http_unauthorized`, `http_rate_limited`, `http_server_error`, `http_client_error` | 모델 endpoint HTTP 상태 범주. 외부 오류 본문은 없음 |
-| `timeout`, `transport_failure`, `response_invalid` | 시한, DNS/TLS/연결 등 전송 실패, 응답 형식 실패. 세부 raw 오류는 없음 |
+| `http_unauthorized`, `http_rate_limited`, `http_server_error`, `http_client_error` | 모델 endpoint HTTP 상태 범주. 외부 오류 본문은 없음(`http_rate_limited`만 위 `retry_after_ms`·`provider_name`·`provider_error`) |
+| `timeout`, `transport_failure`, `response_invalid` | 시한, DNS/TLS/연결 등 전송 실패, 응답 형식 실패. 세부 raw 오류는 없음. 모델 호출 시간 상한(`timeout_seconds`)에 끊긴 요청도 `timeout`이다(2026-11-27 전에는 `transport_failure`로 남기도 했다). 응답 머리를 받은 뒤 본문을 기다리다 끊겼으면 `http_status`가 같이 남고, 받은 본문이 없어 `provider_name`·`provider_error`는 없다 |
 | `token_limit`, `cost_limit`, `request_limit`, `expired`, `approval_consumed` | 기존 모델 예산/승인 정책의 사전 차단. 추가 요청이나 자동 재시도 없음 |
 | `no_intents`, `planner_failed`, `max_turns` | 계획 부재 또는 Planner 종료. 생성 intent 수와 모델 이벤트 대조 |
 | `unregistered_tool`, `schema_invalid` | 미등록 도구 또는 모델 입력 schema 불일치. SDK가 붙이는 Planner `TodoWrite`는 등록 도구로 보고, SDK가 직접 실행하므로 `tool_selected`·`tool_schema_checked`만 남고 `tool_started`·`tool_finished`는 없음 |
@@ -79,7 +81,7 @@ task로 여러 준비/실행/조회 파일을 묶고, run/call/attempt 해시와
 | `result_unknown`, `e2_http_execution_result_unknown` | 송신 결과를 확인 못함. 성공/미전송으로 추정하지 않음 |
 | `candidate_store_failed`, `result_storage_failed` | 후보 DB 저장 또는 최종 결과 저장 실패 |
 | `audit_failed`, `drain_failed` | 감사·실행 마감 실패. 로깅 장애와 다름 |
-| `closure_*`, `engine_task_failed` | 일반 HTTP 마감 판정에서 막은 검사(예: `closure_tool_outcome_invalid` 호출 분류, `closure_policy_limited_unmatched` 정책 제한 근거 없음, `closure_call_mismatch` 신뢰 결과와 E② 기록 불일치), 엔진이 작업을 실패로 표시함. 감독자 `stage_finished`·`run_finished`·`run_summary`에 `execution_failed` 대신 남음 |
+| `closure_*`, `engine_task_failed` | 일반 HTTP 마감 판정에서 막은 검사(예: `closure_tool_outcome_invalid` 호출 분류, `closure_policy_limited_unmatched` 정책 제한 근거 없음, `closure_call_mismatch` 신뢰 결과와 E② 기록 불일치), 엔진이 작업을 실패로 표시함. 감독자 `stage_finished`·`run_finished`·`run_summary`에 `execution_failed` 대신 남음. 엔진이 계획 준비 실패로 작업을 실패로 표시했으면 `engine_task_failed` 대신 그 분기 사유(`planning_exploration_failed` 등)가 남는다(B1). 실패 실행의 `run_finished` 사유는 진단 상태·진단 준비 Job의 `reason_code`로도 간다([실행 결과 상태 값 계약](contracts/run-outcome-states.md) §3.1) |
 | `user_cancelled`, `cancelled` | 사용자/문맥 취소. 일부 요청이 이미 나갔는지는 E② 감사 확인 |
 
 대상이 HTTP 4xx/5xx를 반환한 것은 응답을 받은 사실이며 모델 HTTP 오류나 정책 거절과 다르다.

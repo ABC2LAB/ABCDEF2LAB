@@ -110,6 +110,7 @@ func (s *Service) execute(ctx context.Context) {
 	switch {
 	case closeErr != nil || !closure.DrainComplete || !closure.ResultReady:
 		s.snapshot.State = Unknown
+		s.snapshot.ReasonCode = ReasonClosureUnconfirmed
 	case s.snapshot.State == Stopping || errors.Is(err, context.Canceled):
 		s.snapshot.State = Cancelled
 		// 중지된 실행은 마감 때 읽은 intent 결과 개수만 싣는다(끝난 것·끊긴 것). 못 읽었으면 개수 없이 중지다.
@@ -121,9 +122,12 @@ func (s *Service) execute(ctx context.Context) {
 		}
 	case err != nil:
 		s.snapshot.State = Failed
+		// 실행이 분류한 실패 사유(진단 로그 run_finished와 같은 값)를 상태까지 싣는다. 없으면 사유 없이 실패다.
+		s.snapshot.ReasonCode = ReasonOf(err)
 	case closure.Result == nil || !closure.Result.Valid():
 		// 마감은 확인됐지만 실행 결과를 모르면 완료라고 하지 않는다(절대 규칙 5).
 		s.snapshot.State = Unknown
+		s.snapshot.ReasonCode = ReasonResultUnconfirmed
 	default:
 		s.snapshot.State = Completed
 		result := *closure.Result
@@ -167,6 +171,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		s.snapshot.State = Cancelled
 		if err != nil {
 			s.snapshot.State = Unknown
+			s.snapshot.ReasonCode = ReasonClosureUnconfirmed
 		}
 		s.snapshot.DrainComplete = closure.DrainComplete
 	}

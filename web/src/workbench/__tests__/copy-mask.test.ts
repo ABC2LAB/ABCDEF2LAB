@@ -1,8 +1,8 @@
-// live/mask: 실제 모양의 HTTP 원문 · JSON · 도구 입력에서 비밀이 남지 않는지.
+// live/copyMask: 클립보드로 나가는 글(실제 모양의 HTTP 원문 · JSON · 도구 입력)에 비밀이 남지 않는지(#975 이동찬 P2 — 화면은 안 가리고 복사만).
 
 import { describe, expect, it } from "vitest";
 
-import { isSensitiveKey, maskForCopy, maskJson, maskParam, maskSecrets, REDACTED, UNVERIFIED_LINE } from "../live/mask";
+import { maskForCopy, maskSecrets, REDACTED, renderedCopyText, UNVERIFIED_LINE } from "../live/copyMask";
 import { MARKUP_HIDDEN_SECRETS } from "./mask-fixtures";
 
 const JWT =
@@ -116,25 +116,6 @@ describe("maskSecrets — 폼 · 로그 · 도구 입력", () => {
   });
 });
 
-describe("maskParam · maskJson · isSensitiveKey", () => {
-  it("이름이 민감하면 값 전체", () => {
-    expect(isSensitiveKey("X-Auth-Token")).toBe(true);
-    expect(isSensitiveKey("client_secret")).toBe(true);
-    expect(isSensitiveKey("page")).toBe(false);
-    expect(maskParam("sessionid", "abc")).toBe(REDACTED);
-    expect(maskParam("q", "Bearer zzz")).toBe(`Bearer ${REDACTED}`);
-    expect(maskParam("q", "")).toBe("");
-  });
-
-  it("maskJson 은 객체를 풀어 가린다", () => {
-    const out = maskJson({ url: "https://x.test/?apikey=K1", headers: { Authorization: "Basic dXNlcjpwYXNz" } });
-    expectGone(out, ["K1", "dXNlcjpwYXNz"]);
-    expect(out).toContain('"url": "https://x.test/?apikey=[REDACTED]"');
-    expect(maskJson(null)).toBe("");
-    expect(maskJson("password=x")).toBe("password=[REDACTED]");
-  });
-});
-
 describe("maskForCopy — 클립보드로 나가는 글 (#709 리뷰)", () => {
   // #677 리뷰의 합성 fixture: 키 이름을 HTML 엔티티로 숨기면 maskSecrets 는 키를 못 알아본다
   const ENTITY_KEY = "&#112;&#97;&#115;&#115;&#119;&#111;&#114;&#100;";
@@ -211,5 +192,50 @@ describe("maskForCopy — 클립보드로 나가는 글 (#709 리뷰)", () => {
     expect(maskForCopy("")).toBe("");
     const once = maskForCopy(`${ENTITY_KEY}=synthetic-entity-secret`);
     expect(maskForCopy(once)).toBe(once);
+  });
+});
+
+// #975: 화면은 가리지 않으므로 그려진 Markdown 상자의 글을 블록 · 표 줄 단위로 모아 가린다(innerText 에 기대지 않음)
+describe("renderedCopyText — 그려진 상자 복사", () => {
+  const box = (html: string) => {
+    const el = document.createElement("div");
+    el.innerHTML = html;
+    return el;
+  };
+  it("문단 안 줄바꿈으로 갈린 키 · 값을 한 덩어리로 가린다", () => {
+    const out = renderedCopyText(box("<p>password:\nsynthetic-copy-newline</p><p>다음 문단</p>"));
+    expect(out).not.toContain("synthetic-copy-newline");
+    expect(out).toContain(REDACTED);
+    expect(out.split("\n")).toEqual(["password: [REDACTED]", "다음 문단"]);
+  });
+  it("표는 줄마다 칸을 탭으로 갈라 붙은 칸 글에 숨은 키도 가린다", () => {
+    const out = renderedCopyText(
+      box(
+        "<table><thead><tr><th>이름</th><th>값</th></tr></thead><tbody><tr><td>a</td><td>api_key=synthetic-copy-cell</td></tr></tbody></table>",
+      ),
+    );
+    expect(out).not.toContain("synthetic-copy-cell");
+    expect(out.split("\n")).toEqual(["이름\t값", `a\tapi_key=${REDACTED}`]);
+  });
+  it("코드 상자는 줄 모양을 지키고 줄마다 가린다", () => {
+    const out = renderedCopyText(box("<pre><code>GET / HTTP/1.1\nCookie: s=synthetic-copy-cookie\nX: y</code></pre>"));
+    expect(out.split("\n")).toEqual(["GET / HTTP/1.1", `Cookie: s=${REDACTED}`, "X: y"]);
+  });
+  // #975 이동찬 P2: 하위 목록이 있는 목록 칸 — 하위 목록 앞의 인라인 글(서식으로 나뉜 키와 값)을 한 덩어리로 가린다
+  it("하위 목록이 있는 목록 칸도 그 앞 글을 한 덩어리로 가리고, 하위 목록은 따로 본다", () => {
+    const out = renderedCopyText(
+      box(
+        "<ul><li><strong>pass</strong>word=synthetic-nested-secret<ul><li>token=synthetic-child-secret</li><li>하위 항목</li></ul></li></ul>",
+      ),
+    );
+    expect(out).not.toContain("synthetic-nested-secret");
+    expect(out).not.toContain("synthetic-child-secret");
+    expect(out.split("\n")).toEqual([`password=${REDACTED}`, `token=${REDACTED}`, "하위 항목"]);
+  });
+  it("목록 칸 안의 문단은 문단 단위로, 숨길 것 없는 글은 그대로", () => {
+    const out = renderedCopyText(
+      box("<h2>재현 요약</h2><ul><li><p>계정 B로 주문 조회</p></li><li>token=synthetic-copy-li</li></ul>"),
+    );
+    expect(out.split("\n")).toEqual(["재현 요약", "계정 B로 주문 조회", `token=${REDACTED}`]);
   });
 });

@@ -2362,7 +2362,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     ).toHaveTextContent("다른 계정 책 조회 3");
   });
 
-  it("보고서 탭: 참조형 이미지 `![글][이름]` 의 대체 글에 엔티티로 숨긴 비밀도 가린다 (#677 리뷰)", async () => {
+  it("보고서 탭: 참조형 이미지 `![글][이름]` 는 불러오지 않고 대체 글만 — 화면은 그대로, 복사는 엔티티로 숨긴 값도 가린다 (#677 · #975)", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     saveHandle();
@@ -2375,13 +2375,34 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     mount("report");
     fireEvent.click(await screen.findByRole("tab", { name: "보고서" }));
     const doc = screen.getByRole("region", { name: "취약점 점검 보고서" });
-    expect(doc).not.toHaveTextContent("synthetic-reference-mask");
+    // 대체 글은 파서가 푼 그대로 보인다(제품 화면은 내부 담당자만 본다, CLAUDE.md 절대규칙 2)
+    expect(doc).toHaveTextContent("password=synthetic-reference-mask");
     // 이미지는 불러오지 않는다
     expect(doc.querySelector("img")).toBeNull();
     expect(doc).not.toHaveTextContent("synthetic.png");
     fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
     await within(doc).findByText("보고서 글을 복사했습니다.");
     expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-reference-mask|&#/);
+  });
+
+  // #975 이동찬 리뷰: 보고서 탭 복사도 상세 보고와 같은 복사 처리 — 표 칸 · 줄 경계로 갈린 값이 화면엔 보이고 클립보드엔 없다
+  it.each([
+    ["엔티티 줄바꿈으로 키 · 값 가름", "password:&#10;synthetic-report-newline-27", "synthetic-report-newline-27"],
+    ["표 칸", "| 이름 | 값 |\n| --- | --- |\n| a | api_key=synthetic-report-table |", "synthetic-report-table"],
+  ])("보고서 탭: %s — 화면에는 보이고 복사에는 없다", async (_, summary, secret) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [{ ...candidate(1), summary }] });
+    mount("report");
+    fireEvent.click(await screen.findByRole("tab", { name: "보고서" }));
+    const doc = screen.getByRole("region", { name: "취약점 점검 보고서" });
+    expect(doc).toHaveTextContent(secret);
+    fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
+    await within(doc).findByText("보고서 글을 복사했습니다.");
+    expect(writeText.mock.calls[0][0]).not.toContain(secret);
+    expect(writeText.mock.calls[0][0]).toContain("[REDACTED]");
   });
 
   it("보고서 탭: 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {
@@ -2463,9 +2484,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(doc).toHaveTextContent("구조화된 실제 재현 단계 미확보");
     expect(doc).toHaveTextContent("요청 1 · 계정 B로 계정 A 주문 조회 — GET /api/orders/2");
     expect(doc).toHaveTextContent("사전 조건: 시험 계정 A · B");
-    // 요청·응답은 코드 상자, 비밀은 가린다(엔티티로 숨긴 값도 풀리지 않는다)
+    // 요청·응답은 코드 상자. 화면은 가리지 않고(DLP 폐기), 복사는 가린다(#975 이동찬 P2 — 엔티티로 숨긴 값도)
     expect(doc.querySelector("pre code")).not.toBeNull();
-    expect(doc).not.toHaveTextContent(/synthetic-poc-token|synthetic-poc-entity/);
+    expect(doc).toHaveTextContent("synthetic-poc-token");
     fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
     await within(doc).findByText("보고서 글을 복사했습니다.");
     expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-poc-token|synthetic-poc-entity|&#/);
@@ -3272,7 +3293,7 @@ describe("외부 전송 동의(설치 때 한 번, 2026-11-26)", () => {
       }
       if (p.includes("targets/resolve"))
         return { target: { id: "target-1", origin: "https://target.example", state: "approved" } } as never;
-      if (p.endsWith("/accounts")) return { accounts: [{ label: "tester", classification: "test" }] } as never;
+      if (p.endsWith("/accounts")) return { accounts: [{ label: "tester", credential_configured: true }] } as never;
       return { credential: { configured: true, model: externalModel.model } } as never;
     });
     u.createURLDraft.mockImplementation(async (input) => ({ ...draft, input }));
@@ -3406,7 +3427,7 @@ it("로컬 모델 회차도 대상에 시험 계정이 있으면 '시험 계정 
     const p = String(path);
     if (p.includes("targets/resolve"))
       return { target: { id: "target-1", origin: "https://target.example", state: "approved" } } as never;
-    if (p.endsWith("/accounts")) return { accounts: [{ label: "tester", classification: "test" }] } as never;
+    if (p.endsWith("/accounts")) return { accounts: [{ label: "tester", credential_configured: true }] } as never;
     return { configured: true } as never;
   });
   mount("new");
@@ -3652,8 +3673,7 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
 
   // 사용자 11/24: 수평만이라 시험 계정은 A(소유) · B(교차) 둘 — 이름을 적어 추가하는 상자 대신 두 줄 고정. 이름은 정책 선언의
   // 소유 · 교차 계정 이름. 아래 따로 있던 계정 목록은 뺐고 '이번 회차 로그인' 줄만. 정책 선언 상자는 선언만
-  const STATEMENT = "소유 · 승인된 일회용 시험 계정이라는 진술";
-  function serveQuick(initial: Array<Record<string, unknown>>, statement = STATEMENT) {
+  function serveQuick(initial: Array<Record<string, unknown>>) {
     serve(active(declaration()), noWrites, initial);
     const base = vi.mocked(teamApi.apiFetch).getMockImplementation();
     const calls: string[] = [];
@@ -3666,19 +3686,14 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
         calls.push(`${m} ${p.split(`/${TARGET_ID}`)[1]}`);
         sent.push(String(init?.body ?? ""));
         const label = p.split("/accounts/")[1]?.split("/")[0];
-        if (m === "POST" && p.endsWith("/accounts"))
-          rows.push({ label: JSON.parse(String(init?.body)).label, classification: "real" });
-        if (p.endsWith("/mark-test"))
-          rows = rows.map((r) => (r.label === label ? { ...r, classification: "test" } : r));
-        if (p.endsWith("/unmark")) rows = rows.map((r) => (r.label === label ? { ...r, classification: "real" } : r));
+        if (m === "POST" && p.endsWith("/accounts")) rows.push({ label: JSON.parse(String(init?.body)).label });
         if (p.endsWith("/credential")) {
           rows = rows.map((r) => (r.label === label ? { ...r, credential_configured: true } : r));
           return { account: { label, credential_configured: true } } as never;
         }
         return {} as never;
       }
-      if (p.endsWith(`/${TARGET_ID}/accounts`))
-        return { accounts: rows, ...(statement ? { account_statement: statement } : {}) } as never;
+      if (p.endsWith(`/${TARGET_ID}/accounts`)) return { accounts: rows } as never;
       return (base as NonNullable<typeof base>)(path, init);
     });
     return { calls, sent };
@@ -3688,8 +3703,8 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
   // 직접 골라야 넘어간다
   it("로그인 방식이 없으면 안내하고 '이번에는 익명으로 점검'을 골라야 시작할 수 있다", async () => {
     serveQuick([
-      { label: "tester-a", classification: "test", credential_configured: true, login_method_missing: true },
-      { label: "tester-b", classification: "test", credential_configured: true, login_method_missing: true },
+      { label: "tester-a", credential_configured: true, login_method_missing: true },
+      { label: "tester-b", credential_configured: true, login_method_missing: true },
     ]);
     saveHandle();
     mount("new");
@@ -3713,7 +3728,7 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
   });
 
   it("로컬 모델 · 시험 계정 등록됨이면 점검 요약 로그인 칸이 '시험 계정 로그인'", async () => {
-    serve(active(declaration()), noWrites, [{ label: "tester", classification: "test" }]);
+    serve(active(declaration()), noWrites, [{ label: "tester", credential_configured: true }]);
     saveHandle();
     mount("new");
     const summary = await screen.findByRole("complementary", { name: "점검 요약" });
@@ -4037,7 +4052,6 @@ describe("진행 화면 계정 경고(최민준 요청 11/25 — #936 account_au
           accounts: [
             {
               label: "rh_tester_a",
-              classification: "test",
               credential_configured: true,
               ...(loginMissing ? { login_method_missing: true } : {}),
             },

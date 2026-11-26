@@ -141,6 +141,22 @@ const (
 	reasonEnginePaused = "engine_paused"
 )
 
+// recordFirstDiagnosisFailure는 계획 준비가 분류한 실패 사유를 작업에 남긴다. 엔진·목표 분해가 작업을 실패로 표시하기 직전에
+// 부르고, 감독자가 실행 실패 사유로 실행 상태(reason_code)까지 싣는다(B1, NodeGoat 회차 발견 2). 사유가 없으면 남기지 않는다.
+func (t *Task) recordFirstDiagnosisFailure(err error) {
+	if reason, ok := diagnosisCheckReason(err); ok {
+		t.firstDiagnosisFailureReason.Store(&reason)
+	}
+}
+
+// firstDiagnosisFailure는 엔진이 작업을 실패로 표시하며 남긴 고정 사유다. 없으면 일반 엔진 실패 사유다.
+func (t *Task) firstDiagnosisFailure() string {
+	if reason := t.firstDiagnosisFailureReason.Load(); reason != nil && *reason != "" {
+		return *reason
+	}
+	return reasonEngineTaskFailed
+}
+
 // diagnosisFailureReason은 실패 행의 사유 코드다. 감독자의 검사가 사유를 실었으면 그 코드를, 아니면 단계의 일반 사유를 쓴다.
 func diagnosisFailureReason(stage string, err error) string {
 	if reason, ok := diagnosisCheckReason(err); ok {

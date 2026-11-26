@@ -96,6 +96,15 @@ func (c *firstDiagnosisModelCall) rateLimited() bool {
 	return c != nil && c.result != nil && c.result().NotBilled
 }
 
+// retryAfter는 이 호출의 요청 한도(429) 응답에 있던 Retry-After다. 없으면 false다.
+func (c *firstDiagnosisModelCall) retryAfter() (time.Duration, bool) {
+	if c == nil || c.result == nil {
+		return 0, false
+	}
+	r := c.result()
+	return r.RetryAfter, r.HasRetryAfter
+}
+
 // callRejected는 호출이 요청 내용 거부로 끝났는지다.
 func (b *FirstDiagnosisModelBudget) callRejected(call *firstDiagnosisModelCall) bool {
 	if b != nil && b.rejectedCall != nil {

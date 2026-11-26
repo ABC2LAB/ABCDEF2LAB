@@ -15,7 +15,6 @@ import { activeURLRun, endedURLRun, type URLRunSummary } from "@/lib/diagnosis/d
 import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
 import { setShowingHiddenRuns, useHiddenRunIDs, useHiddenRuns } from "../../live/hiddenRuns";
-import { maskSecrets } from "../../live/mask";
 import { useUrl, useUrlGates, useUrlSelectionKey } from "../../live/urlDiagnosis";
 import { useUrlRuns } from "../../live/urlRunList";
 import { usePoll } from "../../live/usePoll";
@@ -184,8 +183,7 @@ function RecordList({ finished }: { finished: boolean }) {
         onApprovals={() => goTo("dashboard")}
       />
     );
-  else if (picking)
-    detail = <PickLoading title={title} name={maskSecrets(picking.display_name?.trim() || picking.id)} />;
+  else if (picking) detail = <PickLoading title={title} name={picking.display_name?.trim() || picking.id} />;
 
   let emptyText = finished ? "이 상태의 끝난 점검이 없습니다." : "이 상태의 점검이 없습니다.";
   if (showHidden) emptyText = "삭제한 점검이 없습니다.";

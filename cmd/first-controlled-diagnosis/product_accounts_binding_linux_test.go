@@ -67,7 +67,7 @@ func accountRunFixture(t *testing.T) (*productRuntime, urlPreparationInstallatio
 	return runtime, cfg, target, diagnosisprep.Input{TargetURL: "https://owned.example.test/read", ProfileID: m.ID, DisplayName: "Owned account run"}
 }
 
-func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
+func TestProductRunBindsRegisteredAccountsAndStopsOnUnmark(t *testing.T) {
 	runtime, cfg, target, input := accountRunFixture(t)
 	r := runtime.targets
 	// 계정이 없으면 인증 준비 칸이 없다.
@@ -78,6 +78,10 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 	plain.clearMaterials()
 	if plain.policy.Auth != nil || len(plain.productAccounts) != 0 || plain.policy.HeaderMode != e2proxy.HeaderPreserve {
 		t.Fatal("run without test accounts got an auth section or another header mode")
+	}
+	// 계정이 없는 회차도 로그인 시도 판정 설정을 받는다(등록 밖 아이디의 연속 실패 상한, 사용자 결정 2026-11-26).
+	if plain.policy.LoginAttempts == nil || plain.policy.LoginAttempts.MaxConsecutiveFailures != productLoginConsecutiveFailures {
+		t.Fatal("계정 없는 회차에 로그인 시도 판정 설정이 없음")
 	}
 	login := diagnosisprep.TargetLogin{Method: "POST", Path: "/read/login", Format: "json", UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}
 	if _, err := r.setTargetLogin("ARTEX", target.ID, login); err != nil {
@@ -91,27 +95,19 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// 자격을 등록했어도 시험 계정 확인을 생략하면 익명 점검은 열리고, 자격은 실행에 결속하지 않는다.
-	unclassified, err := runtime.load("ARTEX", input, false, "")
-	if err != nil {
-		t.Fatal("자격이 있지만 시험 계정 확인을 하지 않은 점검", err)
-	}
-	defer unclassified.clearMaterials()
-	registered, err := r.listAccounts("ARTEX", target.ID)
-	if err != nil || len(registered) != 2 || !registered[0].CredentialConfigured || !registered[1].CredentialConfigured ||
-		unclassified.policy.Auth != nil || len(unclassified.productAccounts) != 0 || unclassified.policy.HeaderMode != e2proxy.HeaderPreserve {
-		t.Fatal("등록 여부와 실행에 결속할 시험 계정 여부를 구분하지 못함")
-	}
-	if _, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err != nil {
-		t.Fatal(err)
-	}
+	// 계정을 시험·실계정으로 따로 분류하지 않는다(사용자 결정 2026-11-26, CLAUDE.md 절대규칙 2). 자격이 있고 대상에 로그인
+	// 방식이 있으면 시험 표시 없이도 등록 계정이 실행에 결속된다(모델이 직접 로그인한다).
 	loaded, err := runtime.load("ARTEX", input, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer loaded.clearMaterials()
+	registered, err := r.listAccounts("ARTEX", target.ID)
+	if err != nil || len(registered) != 2 || !registered[0].CredentialConfigured || !registered[1].CredentialConfigured {
+		t.Fatal("등록 계정 목록", err)
+	}
 	auth := loaded.policy.Auth
-	if auth == nil || auth.PasswordResponse != e2proxy.PasswordResponseModelVisible || len(auth.Accounts) != 1 || auth.Accounts[0].Label != "tester-a" || auth.Login.Path != "/read/login" || loaded.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough {
+	if auth == nil || !auth.ModelLogin || loaded.policy.LoginAttempts == nil || loaded.policy.LoginAttempts.MaxConsecutiveFailures != productLoginConsecutiveFailures || auth.PasswordResponse != e2proxy.PasswordResponseModelVisible || len(auth.Accounts) != 2 || auth.Accounts[0].Label != "real-b" || auth.Accounts[1].Label != "tester-a" || auth.Login.Path != "/read/login" || loaded.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough {
 		t.Fatalf("auth section: %+v mode=%s", auth, loaded.policy.HeaderMode)
 	}
 	var rule bool
@@ -121,32 +117,35 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 	if !rule {
 		t.Fatalf("auth rule missing: %+v", loaded.policy.Rules)
 	}
-	// 서버 인증 준비는 실행 디렉터리에서 자격 사본을 pin으로 읽는다. 실행 자료에 pin과 같은 사본이 있어야 한다(S07 실제 회차).
-	cred := auth.Accounts[0].Credential
-	if raw, ok := loaded.materials[cred.File]; !ok || urlSHA(raw) != cred.SHA256 {
-		t.Fatal("test account credential copy missing from run materials")
-	}
-	copies, _ := filepath.Glob(filepath.Join(cfg.StateDir, "bindings", "*", "account-"+target.ID+".tester-a.*"))
-	if len(copies) != 1 {
-		t.Fatalf("credential copy in binding: %v", copies)
-	}
-	if raw, err := os.ReadFile(copies[0]); err != nil || urlSHA(raw) != auth.Accounts[0].Credential.SHA256 {
-		t.Fatal("credential copy does not match its pin")
-	}
-	if others, _ := filepath.Glob(filepath.Join(cfg.StateDir, "bindings", "*", "account-"+target.ID+".real-b.*")); len(others) != 0 {
-		t.Fatal("real account credential copied into the run binding")
+	// 서버는 실행 디렉터리에서 자격 사본을 pin으로 읽는다. 실행 자료에 pin과 같은 사본이 있어야 한다(S07 실제 회차).
+	for _, account := range auth.Accounts {
+		cred := account.Credential
+		if raw, ok := loaded.materials[cred.File]; !ok || urlSHA(raw) != cred.SHA256 {
+			t.Fatal("account credential copy missing from run materials", account.Label)
+		}
+		copies, _ := filepath.Glob(filepath.Join(cfg.StateDir, "bindings", "*", "account-"+target.ID+"."+account.Label+".*"))
+		if len(copies) != 1 {
+			t.Fatalf("credential copy in binding: %v", copies)
+		}
+		if raw, err := os.ReadFile(copies[0]); err != nil || urlSHA(raw) != cred.SHA256 {
+			t.Fatal("credential copy does not match its pin")
+		}
 	}
 	if loaded.current() != nil {
 		t.Fatal("fresh binding failed its check")
 	}
-	// 결속 뒤 다른 계정을 새로 표시해도 이 실행은 계속된다.
+	// 옛 시험 표시 API는 결속에 쓰지 않는다(화면 정리 전까지 받기만 한다). 표시해도 결속은 그대로다.
 	if _, err := r.markTestAccount("ARTEX", target.ID, "real-b", true); err != nil {
 		t.Fatal(err)
 	}
 	if loaded.current() != nil {
-		t.Fatal("marking an unrelated account stopped the run")
+		t.Fatal("marking an account stopped the run")
 	}
-	// 결속한 계정을 해제하면 확인이 실패한다(새 송신 정지). 결속 디렉터리와 실행 디렉터리의 사본도 지운다(다른 계정 사본은 둔다).
+	if _, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err != nil {
+		t.Fatal(err)
+	}
+	// 표시를 떼면(옛 API) 그 계정 자격을 지운다. 결속한 실행은 확인이 실패한다(새 송신 정지, 더 안전한 쪽). 결속 디렉터리와
+	// 실행 디렉터리의 사본도 지운다(다른 계정 사본은 둔다).
 	runCopy := filepath.Join(cfg.RunsDir, "job-unmark", bindingCredentialName(target.ID, "tester-a", strings.Repeat("c", 64)))
 	otherCopy := filepath.Join(cfg.RunsDir, "job-unmark", bindingCredentialName(target.ID, "real-b", strings.Repeat("d", 64)))
 	if os.MkdirAll(filepath.Dir(runCopy), 0o700) != nil || os.WriteFile(runCopy, []byte("{}"), 0o600) != nil || os.WriteFile(otherCopy, []byte("{}"), 0o600) != nil {
@@ -170,7 +169,7 @@ func TestProductRunBindsTestAccountsAndStopsOnUnmark(t *testing.T) {
 	if copies, _ := filepath.Glob(filepath.Join(cfg.StateDir, "bindings", "*", "account-"+target.ID+".tester-a.*")); len(copies) != 0 {
 		t.Fatalf("credential copy left after unmark: %v", copies)
 	}
-	// 새 실행은 지금 test인 real-b로 결속하고, 대상을 철회하면 그 대상의 사본을 모두 지운다.
+	// 새 실행은 자격이 남은 real-b로 결속하고, 대상을 철회하면 그 대상의 사본을 모두 지운다.
 	next, err := runtime.load("ARTEX", input, false, "")
 	if err != nil {
 		t.Fatal(err)
@@ -212,8 +211,8 @@ func TestURLAuthRuleValid(t *testing.T) {
 	}
 }
 
-// 실행 고르기: 로그인 방식이 없거나, real이거나, 자격이 없는 계정은 고르지 않는다. 자격을 바꾸면 요약이 바뀌고 결속한
-// 실행은 멈춘다.
+// 실행 고르기: 로그인 방식이 없거나 자격이 없는 계정은 고르지 않는다. 시험 표시는 보지 않는다(분류 없음, 2026-11-26).
+// 자격을 바꾸면 요약이 바뀌고 결속한 실행은 멈춘다.
 func TestProductRunAccountsSelection(t *testing.T) {
 	r, _, target := accountTestTarget(t, true)
 	rec := r.approvals[target.ID]
@@ -250,7 +249,7 @@ func TestProductRunAccountsSelection(t *testing.T) {
 		}
 	}
 	got, digest, err := r.runAccounts(rec)
-	if err != nil || digest == "" || len(got.Accounts) != 1 || got.Accounts[0].Label != "tester-a" {
+	if err != nil || digest == "" || len(got.Accounts) != 2 || got.Accounts[0].Label != "real-c" || got.Accounts[1].Label != "tester-a" {
 		t.Fatalf("selection: %+v %v", got, err)
 	}
 	if r.accountsCurrent(rec, got.Accounts) != nil {

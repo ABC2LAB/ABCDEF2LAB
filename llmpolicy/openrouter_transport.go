@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -372,6 +373,16 @@ func (t *openRouterTransport) RoundTrip(r *http.Request) (*http.Response, error)
 			diagnostic.ReasonCode = "http_unauthorized"
 		case resp.StatusCode == 429:
 			diagnostic.ReasonCode = "http_rate_limited"
+			// 요청 한도 응답의 Retry-After와 본문의 제공자 이름·원문 오류를 진단 기록에 남긴다(사용자 결정 2026-11-26, 429
+			// 원인 분석). 다시 보낼 때는 Retry-After를 따른다(상한은 모델 예산의 요청 한도 대기 상한). 원문 오류는 길이를
+			// 자르고 이 호출의 API 키를 가린다(제어 비밀은 기록에 넣지 않는다, 절대규칙 2).
+			if wait, ok := openRouterRetryAfter(resp.Header.Get("Retry-After"), time.Now()); ok {
+				diagnostic.RetryAfterMS = wait.Milliseconds()
+				slot.retryAfter(wait)
+			}
+			if complete {
+				diagnostic.ProviderName, diagnostic.ProviderError = openRouterRateLimitDetail(data, openRouterBearer(r.Header.Get("Authorization")))
+			}
 			// 요청 한도(429)는 제공자가 처리하지 않은 요청이라 청구되지 않는다(2026-11-14 점검 회차 실측: 429 4번이 키
 			// 사용량에 잡히지 않음). 상태를 받았으면 본문이 끊겨도 같다. 예약을 사용량 0으로 정산해 승인 총량에 되돌리고
 			// 호출 칸에 남긴다. 5xx·연결 끊김은 처리 여부를 알 수 없어 지금처럼 예약량을 쓴 것으로 둔다(C05).
@@ -582,5 +593,80 @@ func openRouterDiagnosticTransportReason(err error, ctx context.Context) string 
 	if errors.As(err, &timeout) && timeout.Timeout() {
 		return "timeout"
 	}
+	// 호출 시간 상한(http.Client.Timeout)은 요청 문맥의 기한과 따로 도는 타이머로도 요청을 끊는다. 그 타이머가 먼저 끊으면
+	// 오류는 표준 타입이 아니고 문맥도 아직 끝나지 않았을 수 있어, 시한이 전송 실패로 남았다(2026-11-27 NodeGoat 회차: 목표
+	// 분해 호출이 상한에 끊겼는데 원인 기록이 없음). 문맥 기한이 지났으면 시한이다.
+	if ctx != nil {
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			return "timeout"
+		}
+	}
 	return "transport_failure"
+}
+
+// openRouterRetryAfterLimit은 기록하는 Retry-After의 상한이다. 실제로 기다리는 시간은 모델 예산이 더 낮은 상한으로 자른다.
+const openRouterRetryAfterLimit = time.Hour
+
+// openRouterRetryAfter는 Retry-After 헤더(초 또는 HTTP 날짜)를 기다릴 시간으로 읽는다. 없거나 형식이 틀리면 false다.
+// 지난 날짜는 0, 상한을 넘으면 상한이다.
+func openRouterRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	var wait time.Duration
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds < 0 {
+			return 0, false
+		}
+		if seconds > int64(openRouterRetryAfterLimit/time.Second) {
+			return openRouterRetryAfterLimit, true
+		}
+		wait = time.Duration(seconds) * time.Second
+	} else if at, err := http.ParseTime(value); err == nil {
+		wait = max(at.Sub(now), 0)
+	} else {
+		return 0, false
+	}
+	return min(wait, openRouterRetryAfterLimit), true
+}
+
+// openRouterBearer는 Authorization 헤더의 Bearer 토큰(이 호출의 API 키)이다. 없으면 빈 문자열이다.
+func openRouterBearer(header string) string {
+	token, ok := strings.CutPrefix(header, "Bearer ")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(token)
+}
+
+// openRouterRateLimitDetail은 요청 한도 응답 본문({"error":{"message","metadata":{"provider_name","raw"}}})의 제공자 이름과
+// 원문 오류다. 원문은 metadata.raw(문자열이 아니면 JSON 그대로), 없으면 message다. 둘 다 진단 기록 형식으로 다듬고, 원문에서
+// API 키(secret)를 가린다. 읽지 못하면 빈 값이다.
+func openRouterRateLimitDetail(data []byte, secret string) (string, string) {
+	var body struct {
+		Error struct {
+			Message  string `json:"message"`
+			Metadata struct {
+				ProviderName string          `json:"provider_name"`
+				Raw          json.RawMessage `json:"raw"`
+			} `json:"metadata"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(data, &body) != nil {
+		return "", ""
+	}
+	raw := body.Error.Message
+	if r := body.Error.Metadata.Raw; len(r) > 0 && string(r) != "null" {
+		var text string
+		if json.Unmarshal(r, &text) == nil {
+			raw = text
+		} else {
+			raw = string(r)
+		}
+	}
+	if secret != "" {
+		raw = strings.ReplaceAll(raw, secret, "[REDACTED]")
+	}
+	return diagnosticlog.ProviderNameText(body.Error.Metadata.ProviderName), diagnosticlog.ProviderErrorText(raw)
 }

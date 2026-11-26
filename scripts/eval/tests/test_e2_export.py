@@ -26,7 +26,7 @@ EXPECTED = E2Expectation(eval_run_id="eval-run-1", model_tag="model-1", reset_ge
                          llm_backend="api")
 # 파서가 따라가는 Go 정의. 바뀌면 파서를 다시 맞추고 값을 갱신한다.
 GO_SHAPES = {"e2proxy/audit.go": {"func validJournalEvent(": "003ec100acf7d859ee76ad421a19d2c8291304b1b46774e1f764a47864bb6dc0", "func validJournalRef(": "19e535e1f750fa71646b37c58e528f0a2409c5d182d45e2f57889e7f2e26fb77", "func validJournalTime(": "ba9dc33173dcd0c3498013c1ddb3a9dfa93539240a5371212e42ed7b104740a6"},
-             "e2proxy/types.go": {"type Receipt struct": "a874afbd266b6e51e5162a0a48a8ad08cf49e32af805ef619615c26834db825d", "type Event struct": "b76400d2b19d095202ef7f2be6a32264645d6104f4f8aa274fe60701c23df7a2", 'func ValidCallAttribution(': '30a25655f3e9b634a1209da141699ae569b8f0863239e76227db428a8d2b5c0c', 'func (k ProgramCallKind) Valid()': '05da99ce0defdbf8c0f480f736a2778134709159e0e7ffdd54f872ed34cda5ce'}}
+             "e2proxy/types.go": {"type Receipt struct": "a874afbd266b6e51e5162a0a48a8ad08cf49e32af805ef619615c26834db825d", "type Event struct": "b76400d2b19d095202ef7f2be6a32264645d6104f4f8aa274fe60701c23df7a2", 'func ValidCallAttribution(': '30a25655f3e9b634a1209da141699ae569b8f0863239e76227db428a8d2b5c0c', 'func (k ProgramCallKind) Valid()': 'cc402b4a31aea9a9e4caee05f65859590c0356a2e4e8d6122379e15f0cfa539d'}}
 
 
 def go_block(text, start):
@@ -195,7 +195,7 @@ class TestAttempts(unittest.TestCase):
         self.assertEqual(str(caught.exception), f"e2_export: {code}")
 
     def test_program_attribution_is_explicit_and_bound(self):
-        for kind in ("auth_prep", "refresh_session"):
+        for kind in ("auth_prep", "refresh_session", "login_contrast"):
             rows = [attempt(1,"intent",A1,1,"allowed",intent_id=0,program=kind),
                     attempt(2,"result",A1,1,"allowed",intent_id=0,program=kind,**SENT),
                     closed(3,intent_id=0,program=kind)]

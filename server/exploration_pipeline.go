@@ -37,6 +37,8 @@ type ExplorationPipelineOptions struct {
 	MaxTurns      int
 	MaxDuration   time.Duration
 	OpenHost      ExplorationPipelineFactory
+	// Credentials는 탐색 에이전트에게 줄 등록 계정 자격이다(모델이 브라우저로 직접 로그인, 사용자 결정 2026-11-26).
+	Credentials []agent.E2HTTPAccountCredential
 }
 type ExplorationPipelineResult struct {
 	Status      string
@@ -335,7 +337,7 @@ func (s *Server) RunExplorationPipeline(ctx context.Context, task *Task, o Explo
 			return out, e
 		}
 	} else {
-		_, e = session.Run(ctx, worker, agent.ExplorationRunOptions{TargetURL: o.TargetURL, ApprovedPaths: o.ApprovedPaths, Reporter: o.Workflow, MaxTurns: o.MaxTurns, MaxDuration: o.MaxDuration}, func(a db.Activity) {
+		_, e = session.Run(ctx, worker, agent.ExplorationRunOptions{TargetURL: o.TargetURL, ApprovedPaths: o.ApprovedPaths, Credentials: append([]agent.E2HTTPAccountCredential(nil), o.Credentials...), Reporter: o.Workflow, MaxTurns: o.MaxTurns, MaxDuration: o.MaxDuration}, func(a db.Activity) {
 			if s.engine != nil && s.engine.m != nil {
 				a.Worker = "exploration"
 				s.engine.emitActivity(task, a)
