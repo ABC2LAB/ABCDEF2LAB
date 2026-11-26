@@ -240,3 +240,43 @@ func TestOperatorRecoveryRefusesUnknownWrite(t *testing.T) {
 		t.Fatal("unknown write ceased to block new runs")
 	}
 }
+
+func TestRecoveryCrashBeforeLinkAndLostReply(t *testing.T) {
+	host, pool, scope := fixture(t)
+	session, err := host.Open(t.Context(), scope, "revision-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, _ := hostSentEvents(scope)
+	if err := session.Record(t.Context(), intent); err != nil {
+		t.Fatal(err)
+	}
+	_ = session.Abort()
+	status, err := host.InspectUnfinished(t.Context(), scope.RunRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte(scope.RunRef))
+	dir := filepath.Join(host.root, hex.EncodeToString(digest[:]))
+	if err := os.WriteFile(filepath.Join(dir, "operator-recovery.json.crashed.tmp"), []byte("partial"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if host.CheckRestoredHeads(t.Context()) == nil {
+		t.Fatal("orphan temporary file released the journal")
+	}
+	req := RecoveryRequest{RunRef: scope.RunRef, ExpectedRevision: status.Head.Revision,
+		ExpectedCheckpoint: status.Head.Checkpoint.MAC, Operator: "operator-1"}
+	socket := dockerFixture(t, "exited")
+	_, err = host.RecoverUnfinished(t.Context(), req, socket, "testproject", testSelfID)
+	if err != nil {
+		t.Fatal("retry after pre-link crash failed", err)
+	}
+	// The caller loses the success reply, then the process restarts.
+	restarted, err := New(pool, host.epoch, host.keyRef, host.key, host.root)
+	if err != nil || restarted.CheckRestoredHeads(t.Context()) != nil {
+		t.Fatal("committed recovery was not durable", err)
+	}
+	if _, err := restarted.RecoverUnfinished(t.Context(), req, socket, "testproject", testSelfID); err != nil {
+		t.Fatal("lost reply retry was not idempotent", err)
+	}
+}
