@@ -36,6 +36,7 @@ import { entrySeverity, entrySeverityLabel, type SeverityLevel } from "@/lib/dia
 import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import { downloadDiagnostic, fetchCoverage, fetchRemediation, type Remediation } from "../../live/api";
+import { maskForCopy } from "../../live/copyMask";
 import {
   candidateCountText,
   candidateErrorText,
@@ -1677,16 +1678,17 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
   return out.join("\n");
 }
 
-/** 보고서 탭: 점검 보고서 (ARTEX 모양 — 문서 아이콘 · 제목, [복사], 테두리 상자 안 스크롤). 복사는 그려진 가린 글. */
+/** 보고서 탭: 점검 보고서 (ARTEX 모양 — 문서 아이콘 · 제목, [복사], 테두리 상자 안 스크롤). 화면은 가리지 않고, 복사만 그려진 글을 가린다. */
 function PocReport({ entries, info }: { entries: readonly RemediationEntry[]; info: PocInfo }) {
   const box = useRef<HTMLDivElement>(null);
   const [msg, setMsg] = useState("");
-  // 원문 Markdown 이 아니라 그려진 글을 복사한다: 붙여 넣은 곳의 Markdown 이 서식으로 쪼갠 값을 다시 이어 붙이지 않게
+  // 원문 Markdown 이 아니라 그려진 글을 가려서 복사한다: 클립보드는 화면 밖(팀 채팅 · 이슈)으로 나가므로 가리고(#975 이동찬 P2),
+  // 붙여 넣은 곳의 Markdown 이 서식으로 쪼갠 값을 다시 이어 붙이지 않게 그려진 글을 쓴다
   async function copy() {
     const el = box.current;
     const shown = el ? el.innerText || el.textContent || "" : "";
     try {
-      await navigator.clipboard.writeText(shown);
+      await navigator.clipboard.writeText(maskForCopy(shown));
       setMsg("보고서 글을 복사했습니다.");
     } catch (error) {
       console.warn("보고서 글 복사 실패", error);

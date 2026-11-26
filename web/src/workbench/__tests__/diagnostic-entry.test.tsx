@@ -11,6 +11,7 @@ import {
 } from "@/lib/diagnosis/remediation";
 
 import { DiagnosticEntrySections, pocCopyText, stepHeading } from "../views/live/DiagnosticEntrySections";
+import { MARKUP_HIDDEN_SECRETS } from "./mask-fixtures";
 
 vi.mock("@/lib/diagnosis/api", async (original) => ({
   ...(await original<typeof import("@/lib/diagnosis/api")>()),
@@ -138,7 +139,7 @@ it("fetches images only on explicit view and rejects a mismatched image hash", a
   expect(screen.queryByRole("img")).not.toBeInTheDocument();
 });
 
-it("상세 보고는 Markdown 으로 그리되 원문 HTML · 링크 이동 · 이미지 불러오기는 하지 않고, 값은 가리지 않는다(DLP 폐기)", async () => {
+it("상세 보고는 Markdown 으로 그리되 원문 HTML · 링크 이동 · 이미지 불러오기는 하지 않고, 화면은 그대로 · 복사만 가린다", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
   const entry = {
@@ -160,7 +161,45 @@ it("상세 보고는 Markdown 으로 그리되 원문 HTML · 링크 이동 · �
   fireEvent.click(within(card).getByRole("button", { name: "복사" }));
   await within(card).findByText("상세 보고를 복사했습니다.");
   expect(writeText).toHaveBeenCalledTimes(1);
-  expect(writeText.mock.calls[0][0]).toContain("synthetic-private-token");
+  // 클립보드는 화면 밖(팀 채팅 · 이슈)으로 나가므로 가린다(#975 이동찬 P2, 절대규칙 2)
+  expect(writeText.mock.calls[0][0]).not.toContain("synthetic-private-token");
+  expect(writeText.mock.calls[0][0]).toContain("Authorization: Bearer [REDACTED]");
+});
+
+it.each(
+  MARKUP_HIDDEN_SECRETS,
+)("상세 보고 복사는 파서가 푼 글도 가린다 — %s (#677 · #709 리뷰, #975)", async (_, report, secret) => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  render(<DiagnosticEntrySections task="42" entry={{ ...fixture(), report }} onReload={vi.fn()} />);
+  const card = screen.getByRole("region", { name: "상세 보고" });
+  // 복사는 화면에 그려진 글을 가린 것이라 원문(엔티티)도 값도 클립보드로 나가지 않는다
+  fireEvent.click(within(card).getByRole("button", { name: "복사" }));
+  await within(card).findByText("상세 보고를 복사했습니다.");
+  expect(writeText.mock.calls[0][0]).not.toContain(secret);
+  expect(writeText.mock.calls[0][0]).not.toContain("&#");
+});
+
+it.each(
+  MARKUP_HIDDEN_SECRETS,
+)("'PoC 복사'는 응답 증거의 같은 모양도 클립보드에 남기지 않는다 — %s (#709 리뷰, #975)", async (_, evidence, secret) => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  render(
+    <DiagnosticEntrySections
+      task="42"
+      entry={{ ...fixture(), evidence: `HTTP/1.1 200 OK\n${evidence}` }}
+      onReload={vi.fn()}
+      layout="page"
+    />,
+  );
+  fireEvent.click(screen.getByRole("button", { name: "PoC 복사" }));
+  await screen.findByText("PoC 를 복사했습니다.");
+  const text = writeText.mock.calls[0][0] as string;
+  expect(text).not.toContain(secret);
+  // 붙여 넣은 앱이 풀 엔티티도 남지 않고, 숨길 것 없는 줄은 그대로다
+  expect(text).not.toContain("&#");
+  expect(text).toContain("HTTP/1.1 200 OK");
 });
 
 it.each([

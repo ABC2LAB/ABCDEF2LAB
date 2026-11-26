@@ -2349,7 +2349,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     ).toHaveTextContent("다른 계정 책 조회 3");
   });
 
-  it("보고서 탭: 참조형 이미지 `![글][이름]` 는 불러오지 않고 대체 글만 — 값은 가리지 않는다(DLP 폐기)", async () => {
+  it("보고서 탭: 참조형 이미지 `![글][이름]` 는 불러오지 않고 대체 글만 — 화면은 그대로, 복사는 엔티티로 숨긴 값도 가린다 (#677 · #975)", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     saveHandle();
@@ -2369,7 +2369,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(doc).not.toHaveTextContent("synthetic.png");
     fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
     await within(doc).findByText("보고서 글을 복사했습니다.");
-    expect(writeText).toHaveBeenCalledTimes(1);
+    expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-reference-mask|&#/);
   });
 
   it("보고서 탭: 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {
@@ -2451,12 +2451,12 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(doc).toHaveTextContent("구조화된 실제 재현 단계 미확보");
     expect(doc).toHaveTextContent("요청 1 · 계정 B로 계정 A 주문 조회 — GET /api/orders/2");
     expect(doc).toHaveTextContent("사전 조건: 시험 계정 A · B");
-    // 요청·응답은 코드 상자, 값은 가리지 않는다(DLP 폐기)
+    // 요청·응답은 코드 상자. 화면은 가리지 않고(DLP 폐기), 복사는 가린다(#975 이동찬 P2 — 엔티티로 숨긴 값도)
     expect(doc.querySelector("pre code")).not.toBeNull();
     expect(doc).toHaveTextContent("synthetic-poc-token");
     fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
     await within(doc).findByText("보고서 글을 복사했습니다.");
-    expect(writeText.mock.calls[0][0]).toContain("synthetic-poc-token");
+    expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-poc-token|synthetic-poc-entity|&#/);
   });
 
   it("대표 경로와 E② 요청 시도의 관찰 경로를 구분하고 취약한 경로로 단정하지 않는다", () => {
