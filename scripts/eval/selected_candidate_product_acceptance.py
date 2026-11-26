@@ -70,6 +70,45 @@ def kill_and_restart_owned_preparation(project):
             raise RuntimeError("owned_preparation_restart_failed")
 
 
+def verify_new_selection_after_restart(product, token, route, evidence_digest, previous_id, target_stats, model_stats,
+                                       expected_requests):
+    before_target = request(target_stats, "/stats")["allowed_received"]
+    before_model = request(model_stats, "/stats")["model_calls"]
+    selected = request(product, route, token, body={"request_id": "recovery-" + secrets.token_hex(8),
+                                              "evidence_digest": evidence_digest, "method": "llm/v1"})
+    item = selected["verifications"][0]
+    if item["id"] == previous_id:
+        raise RuntimeError("recovery_selection_reused_interrupted_request")
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        item = request(product, route, token)["verifications"][0]
+        if item["latest"]["process_state"] in ("analysis_ready", "completed", "failed", "cancelled", "expired"):
+            break
+        time.sleep(.5)
+    if item["latest"]["process_state"] != "analysis_ready":
+        raise RuntimeError("recovery_analysis_not_ready")
+    planned = request(product, route + "/" + item["id"] + "/plan", token,
+                      body={"analysis_digest": item["analysis"]["digest"]})
+    if len(planned["plan"]["actions"]) != expected_requests:
+        raise RuntimeError("recovery_plan_changed")
+    request(product, route + "/" + item["id"] + "/decision", token,
+            body={"plan_digest": planned["plan_digest"], "decision": "approved"})
+    deadline = time.monotonic() + 150
+    while time.monotonic() < deadline:
+        item = request(product, route, token)["verifications"][0]
+        if item["latest"]["process_state"] in ("completed", "failed", "cancelled", "expired"):
+            break
+        time.sleep(.5)
+    if item["latest"]["process_state"] != "completed" or item["latest"].get("verdict") != "model_supported":
+        raise RuntimeError("recovery_followup_not_completed:" + item["latest"]["process_state"])
+    target_sends = request(target_stats, "/stats")["allowed_received"] - before_target
+    model_calls = request(model_stats, "/stats")["model_calls"] - before_model
+    if target_sends != expected_requests or model_calls != 2 or len(item["latest"].get("sources", [])) == 0:
+        raise RuntimeError("recovery_followup_counts_invalid")
+    return {"new_verification_id": item["id"], "approved_target_sends": target_sends, "model_calls": model_calls,
+            "verdict": item["latest"]["verdict"]}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("install", type=Path)
@@ -80,7 +119,7 @@ def main():
     parser.add_argument("--model-stats-port", type=int, default=49582)
     parser.add_argument("--head", required=True, help="Full source commit used for the product image")
     parser.add_argument("--project", default="pr950-selected93", help="Owned Compose project name")
-    parser.add_argument("--scenario", choices=("S01", "S02", "S03", "S04", "S05", "S06", "S07", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M"), default="S02")
+    parser.add_argument("--scenario", choices=("S01", "S02", "S03", "S04", "S05", "S06", "S07", "S07B", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M"), default="S02")
     parser.add_argument("--resume-task", type=int, help="Continue an owned fixture task after a harness failure")
     parser.add_argument("--reuse-target", action="store_true", help="Use the previously approved owned fixture target")
     args = parser.parse_args()
@@ -176,7 +215,9 @@ def main():
         if latest["process_state"] in ("analysis_ready", "completed", "failed", "cancelled", "expired"):
             break
         time.sleep(.5)
-    if args.scenario == "S01" and latest["process_state"] == "completed":
+    if args.scenario == "S07B" and latest["process_state"] == "failed" and latest.get("reason") == "budget_unavailable":
+        pass
+    elif args.scenario == "S01" and latest["process_state"] == "completed":
         pass
     elif latest["process_state"] != "analysis_ready":
         raise RuntimeError("analysis_not_ready:" + latest["process_state"])
@@ -277,7 +318,7 @@ def main():
                 await_fixture_count(model_stats, "held_final_models", 1, timeout=90)
                 kill_and_restart_owned_preparation(args.project)
     deadline = time.monotonic() + 180
-    while args.scenario not in ("S06", "S07", "S07P", "S09") and (args.scenario != "S04" or decision_status == 200) and latest["process_state"] != "completed" and time.monotonic() < deadline:
+    while args.scenario not in ("S06", "S07", "S07B", "S07P", "S09") and (args.scenario != "S04" or decision_status == 200) and latest["process_state"] != "completed" and time.monotonic() < deadline:
         try:
             history = request(product, route, token)
         except (OSError, RuntimeError):
@@ -289,7 +330,12 @@ def main():
         if latest["process_state"] in ("failed", "cancelled", "expired"):
             break
         time.sleep(.5)
-    if args.scenario == "S06":
+    if args.scenario == "S07B":
+        history = request(product, route, token)
+        latest = history["verifications"][0]["latest"]
+        if latest["process_state"] != "failed" or latest.get("reason") != "budget_unavailable":
+            raise RuntimeError("exhausted_installation_budget_advanced")
+    elif args.scenario == "S06":
         history = request(product, route, token)
         latest = history["verifications"][0]["latest"]
         if latest["process_state"] != "analysis_ready" or request(model_stats, "/stats")["model_calls"] != pending_model:
@@ -312,8 +358,11 @@ def main():
     elif args.scenario == "S04" and decision_status == 409:
         history = request(product, route, token)
         latest = history["verifications"][0]["latest"]
-    elif args.scenario in ("S07R", "S09C", "S09R", "S09M") and latest["process_state"] in ("failed", "cancelled", "expired"):
-        pass
+    elif args.scenario in ("S07R", "S09C", "S09R", "S09M"):
+        expected_reason = {"S07R": "candidate_execution_unavailable", "S09C": "candidate_execution_cancelled",
+                           "S09R": "candidate_execution_unavailable", "S09M": "final_model_interrupted"}[args.scenario]
+        if latest["process_state"] not in ("failed", "cancelled", "expired") or latest.get("reason") != expected_reason:
+            raise RuntimeError("interruption_reason_not_preserved")
     elif args.scenario == "S04" and latest["process_state"] in ("failed", "cancelled", "expired"):
         pass
     elif args.scenario == "S08" and latest["process_state"] == "failed" and latest.get("reason") == "final_model_unavailable":
@@ -333,7 +382,7 @@ def main():
         raise RuntimeError("candidate_missing_from_updated_report")
     if args.scenario in ("S01", "S02", "S03", "S05") and current_candidate.get("outcome") != "model_supported":
         raise RuntimeError("selected_verdict_missing_from_report")
-    if args.scenario in ("S04", "S06", "S07", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M") and current_candidate.get("outcome") in ("model_supported", "model_refuted"):
+    if args.scenario in ("S04", "S06", "S07", "S07B", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M") and current_candidate.get("outcome") in ("model_supported", "model_refuted"):
         raise RuntimeError("unverified_candidate_promoted_in_report")
     if args.scenario in ("S07R", "S09C", "S09R", "S09M"):
         time.sleep(16)  # Let the deliberately held fixture response arrive; no late send may follow.
@@ -342,7 +391,7 @@ def main():
     after_authenticated_reads = request(target_stats, "/stats")["authenticated_reads"]
     after_structured_reads = request(target_stats, "/stats")["structured_reads"]
     after_model = request(model_stats, "/stats")["model_calls"]
-    expected_new_sends = 0 if args.scenario in ("S01", "S04", "S06", "S07", "S07P", "S09") else 2 if args.scenario == "S05" else 1
+    expected_new_sends = 0 if args.scenario in ("S01", "S04", "S06", "S07", "S07B", "S07P", "S09") else 2 if args.scenario == "S05" else 1
     if pending_target != after_diagnosis_target or after_target != pending_target + expected_new_sends:
         raise RuntimeError("unexpected_target_send_count")
     if args.scenario == "S03" and (after_diagnosis_logins - before_logins != 1 or
@@ -357,10 +406,20 @@ def main():
         raise RuntimeError("unrelated_model_source_gained_decisive_verdict")
     if args.scenario == "S06" and (pending_model - after_diagnosis_model != 1 or after_model != pending_model):
         raise RuntimeError("unsupported_write_triggered_extra_model_call")
+    if args.scenario == "S07B" and after_model != after_diagnosis_model:
+        raise RuntimeError("exhausted_installation_budget_triggered_model")
     if args.scenario in ("S07R", "S09C", "S09R") and after_model != pending_model:
         raise RuntimeError("interrupted_target_work_triggered_final_model")
     if args.scenario == "S09M" and after_model != pending_model + 1:
         raise RuntimeError("unknown_final_model_was_replayed")
+    recovery = None
+    if args.scenario in ("S09R", "S09M"):
+        recovery = verify_new_selection_after_restart(product, token, route, history["evidence_digest"], verification,
+                                                      target_stats, model_stats, 2 if args.scenario == "S09R" else 1)
+        updated = request(product, "/api/report/diagnostic/remediation?task=" + task + "&audience=internal", token)
+        recovered_candidate = next((row for row in updated["entries"] if row.get("entry_id") == "candidate-" + candidate_id), None)
+        if recovered_candidate is None or recovered_candidate.get("outcome") != "model_supported":
+            raise RuntimeError("recovery_verdict_missing_from_report")
     print(json.dumps({"scenario": args.scenario, "head": args.head, "status": "PASS", "initial_candidates": len(candidates),
         "before_approval_target_sends": pending_target - after_diagnosis_target, "initial_target_sends": None if args.resume_task else after_diagnosis_target - before_target,
         "approved_followup_sends": after_target - pending_target, "out_of_scope_sends": request(target_stats, "/stats")["outside_received"],
@@ -368,7 +427,8 @@ def main():
         "auth_logins": after_logins - before_logins, "authenticated_reads": after_authenticated_reads,
         "structured_reads": after_structured_reads,
         "decision_status": decision_status,
-        "audit_complete": True, "html_docx_variants": 4, "paid_model_calls": 0}, sort_keys=True))
+        "audit_complete": True, "html_docx_variants": 4, "paid_model_calls": 0,
+        "recovery": recovery}, sort_keys=True))
 
 
 if __name__ == "__main__":

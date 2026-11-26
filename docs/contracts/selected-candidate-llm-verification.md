@@ -6,6 +6,8 @@
 
 기존 `passive/v1`, `passive/v2`, `candidate-active/v1` 종료 기록은 과거 판정과 근거를 읽기 위해 유지한다. 새 `selected/llm-v1` 회차에서 `stored/v1`, `active/v1`의 유형별 판정과 고정 두 GET 실행으로 들어갈 수 없다. E③ IDOR 판정은 이 계약의 대상이 아니다.
 
+과거 `passive/v2` 회차에서 새 `active/v1` 실행을 계획할 때도 원본 GET 관찰의 인증 범주가 명시적으로 `none`이고 계정 참조가 비어 있어야 한다. `active/v1`에는 계정 결속·재로그인 단계가 없으므로 인증된 원본, 인증 범주가 `unknown`인 원본, 이 필드가 비어 있는 옛 원본을 익명 후속 GET과 비교하지 않는다. 기존 이력 조회는 계속 허용한다.
+
 ## 현재 API와 권한
 
 `GET /api/product/tasks/{task}/candidates/{candidate}/verifications`는 작업 소유권과 원본 후보의 task·run·digest 결속을 확인한 뒤 자동 상태, 저장 관찰 여부 및 검증 이력을 반환한다. 조회는 대상 요청과 모델 호출을 만들지 않는다.
