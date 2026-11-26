@@ -26,6 +26,8 @@ const (
 	OpRecords     = "records"
 	// OpLoginAttempts는 모델 직접 로그인 회차의 로그인 시도 행(쪽)이다(docs/contracts/model-login-attempts.md §3).
 	OpLoginAttempts = "login_attempts"
+	// OpBrowserContextReset은 엔진이 브라우저 문맥을 새로 열었다는 알림이다(로그인 문맥 초기화).
+	OpBrowserContextReset = "browser_context_reset"
 )
 
 // 제어 오류 어휘다. 원문 오류·경로·대상 값은 소켓으로 내보내지 않는다.
@@ -329,6 +331,13 @@ func (m *Manager) Handle(ctx context.Context, in ControlRequest) ControlResponse
 		// 한 쪽은 제어 소켓 한 줄에 담기는 만큼이다. 행 수를 묶어 탐색 요청 수를 줄이지 않고 쪽으로 나눠 읽는다.
 		records, omitted, next := s.RecordsPage(in.Offset, recordsPerPage)
 		return ControlResponse{OK: true, Records: records, Omitted: omitted, Next: next}
+	case OpBrowserContextReset:
+		s := m.session(in.SessionRef)
+		if s == nil || !s.Status().Active {
+			return fail(ControlErrInvalid)
+		}
+		s.ResetBrowserContext()
+		return ControlResponse{OK: true}
 	case OpLoginAttempts:
 		s := m.session(in.SessionRef)
 		if s == nil {

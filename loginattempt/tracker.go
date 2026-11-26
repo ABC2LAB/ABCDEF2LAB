@@ -59,6 +59,9 @@ const (
 const (
 	RefusalExhausted = "login_attempts_exhausted"
 	RefusalPending   = "login_verification_pending"
+	// RefusalContextInUse는 같은 브라우저 문맥에 다른 등록 계정이 이미 로그인해 있어 막은 로그인이다. 계정을 바꾸려면 새
+	// 문맥을 연다(쿠키가 섞이면 어느 계정 세션을 실었는지 가를 수 없다).
+	RefusalContextInUse = "browser_account_in_use"
 )
 
 // 화면 계정 상태(§4 account_auth). not_attempted·unconfirmed는 모델 로그인에서 새로 생긴 값이다.
@@ -163,7 +166,10 @@ type observation struct {
 }
 
 type attempt struct {
-	row         Row
+	row Row
+	// context는 시도가 나온 브라우저 문맥이고, detached는 그 문맥이 닫혀 이 시도의 세션이 더는 그 저장소에 없다는 뜻이다.
+	context     string
+	detached    bool
 	order       int
 	cand        Candidate
 	exception   bool
@@ -257,7 +263,7 @@ func (t *Tracker) Prepare(req Request, writeAllowed bool) Plan {
 		return Plan{}
 	}
 	t.n++
-	a := &attempt{order: t.n, cand: cand, probed: map[string]bool{}}
+	a := &attempt{order: t.n, cand: cand, probed: map[string]bool{}, context: req.Context}
 	a.row = Row{Schema: Schema, AttemptRef: t.cfg.Stage + "-" + itoa(t.n), RunRef: t.cfg.RunRef, Stage: t.cfg.Stage, Actor: t.cfg.Actor, TransportRef: req.TransportRef,
 		At: t.cfg.Now().UTC().Format(time.RFC3339Nano), AccountLabel: cand.AccountLabel, Identifier: cand.Identifier,
 		PasswordRegistered: cand.PasswordRegistered, Method: req.Method, Path: cleanPath(req.Path), QueryKeys: queryKeys(req.RawQuery),
@@ -268,6 +274,10 @@ func (t *Tracker) Prepare(req Request, writeAllowed bool) Plan {
 	if t.failures[cand.Identifier] >= t.cfg.MaxConsecutiveFailures {
 		t.refuseLocked(a, RefusalExhausted)
 		return Plan{Login: true, Refusal: RefusalExhausted}
+	}
+	if req.Context != "" && cand.AccountLabel != "" && t.contextHeldLocked(req.Context, cand.AccountLabel) {
+		t.refuseLocked(a, RefusalContextInUse)
+		return Plan{Login: true, Refusal: RefusalContextInUse}
 	}
 	plan := Plan{Login: true, attempt: a}
 	if t.cfg.Exception && !writeAllowed && cand.Pair {
@@ -283,6 +293,40 @@ func (t *Tracker) Prepare(req Request, writeAllowed bool) Plan {
 		}
 	}
 	return plan
+}
+
+// contextHeldLocked는 같은 문맥에서 다른 등록 계정이 로그인 중이거나(응답 대기) 로그인해 있는지(성공·확인 안 됨) 본다.
+// 실패·미전송·결과 불명 시도와 닫힌 문맥의 시도는 세지 않는다.
+func (t *Tracker) contextHeldLocked(context, label string) bool {
+	for _, a := range t.attempts {
+		if a.detached || a.seeded || a.context != context || a.cand.AccountLabel == "" || a.cand.AccountLabel == label {
+			continue
+		}
+		if !a.done || a.row.Outcome == OutcomeSucceeded || a.row.Outcome == OutcomeUnconfirmed {
+			return true
+		}
+	}
+	return false
+}
+
+// ResetContext는 브라우저 문맥 하나를 닫았을 때 부른다. 그 문맥에서 로그인한 계정의 세션은 저장소에서 사라졌으므로
+// 예외 상태를 '로그인 안 됨'으로 돌려 다시 로그인할 수 있게 한다. 저장해 둔 세션을 새 문맥에 다시 싣는 구현이면 이것을
+// 부르지 않고 그 계정을 '로그인됨'으로 둔다(사용자 결정 2026-11-26, 만료가 확인되면 그때 '로그인 안 됨').
+func (t *Tracker) ResetContext(context string) {
+	if context == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, a := range t.attempts {
+		if a.context != context || a.detached || a.seeded {
+			continue
+		}
+		a.detached = true
+		if t.cfg.Exception && a.cand.AccountLabel != "" {
+			t.state[a.cand.AccountLabel] = StateLoggedOut
+		}
+	}
 }
 
 func nonNil(s []string) []string {

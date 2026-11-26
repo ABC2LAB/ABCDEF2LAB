@@ -560,3 +560,42 @@ func TestAccountOfUsesConfirmedHeaderOnly(t *testing.T) {
 		}
 	}
 }
+
+// 한 브라우저 문맥에는 한 등록 계정만 로그인한다. 다른 계정이 그 문맥에서 로그인 중이거나 로그인해 있으면 막고(실패한
+// 계정은 세지 않음), 문맥을 닫으면(ResetContext) 그 문맥의 계정은 '로그인 안 됨'으로 돌아가 다시 로그인할 수 있다.
+// 직접 요청(문맥 없음)에는 이 규칙이 없다(팀 합의 2026-11-26 (나)).
+func TestBrowserContextHoldsOneAccount(t *testing.T) {
+	tr, rec := newTracker(t, true)
+	inBrowser := func(r Request) Request { r.Context = "browser"; return r }
+	a := inBrowser(formLogin("user1@owned.test", "alpha-pass-1"))
+	p := tr.Prepare(a, false)
+	if !p.Exception {
+		t.Fatal("첫 계정 예외 아님")
+	}
+	if q := tr.Prepare(inBrowser(formLogin("user2", "bravo-pass-2")), false); q.Refusal != RefusalContextInUse {
+		t.Fatalf("응답 대기 중인 다른 계정이 있는 문맥에서 로그인함: %+v", q)
+	}
+	tr.Complete(p, "1", a, redirect("/home", "Set-Cookie", "sid=user-session-a1"))
+	if q := tr.Prepare(inBrowser(formLogin("user2", "bravo-pass-2")), false); q.Refusal != RefusalContextInUse {
+		t.Fatalf("로그인된 다른 계정이 있는 문맥에서 로그인함: %+v", q)
+	}
+	if r := rec.rows[len(rec.rows)-1]; r.Refusal != RefusalContextInUse || r.Transport != TransportNotSent {
+		t.Fatalf("거부 행: %+v", r)
+	}
+	if q := tr.Prepare(formLogin("user2", "bravo-pass-2"), true); q.Refusal != "" {
+		t.Fatal("직접 요청에도 문맥 규칙을 적용함")
+	}
+	tr.ResetContext("browser")
+	if tr.ExceptionState("tester-a") != StateLoggedOut {
+		t.Fatal("닫힌 문맥의 계정이 로그인 안 됨으로 안 돌아감")
+	}
+	q := tr.Prepare(inBrowser(formLogin("user2", "bravo-pass-2")), false)
+	if q.Refusal != "" || !q.Exception {
+		t.Fatalf("새 문맥에서 다른 계정 로그인을 막음: %+v", q)
+	}
+	// 실패한 계정은 문맥을 잡지 않는다.
+	tr.Complete(q, "2", inBrowser(formLogin("user2", "bravo-pass-2")), Response{Status: 401, Header: http.Header{}})
+	if r := tr.Prepare(inBrowser(formLogin("user1@owned.test", "alpha-pass-1")), false); r.Refusal != "" {
+		t.Fatalf("실패한 계정이 문맥을 잡음: %+v", r)
+	}
+}

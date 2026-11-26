@@ -20,6 +20,21 @@ type LoginConfig struct {
 
 func (LoginConfig) String() string { return "exploreboundary.LoginConfig[protected]" }
 
+// browserLoginContext는 브라우저 입구 요청의 로그인 문맥 이름이다. 브라우저는 한 번에 문맥 하나만 쓰고, 계정을 바꾸면
+// 엔진이 새 문맥을 연 뒤 ResetBrowserContext로 알린다.
+const browserLoginContext = "browser"
+
+// ResetBrowserContext는 브라우저 문맥을 새로 열었다는 엔진 알림이다. 닫힌 문맥에서 로그인한 계정은 쿠키가 사라졌으므로
+// '로그인 안 됨'으로 돌아가 다시 로그인할 수 있고, 다른 계정 로그인도 막지 않는다.
+func (s *Session) ResetBrowserContext() {
+	s.mu.Lock()
+	tracker := s.login
+	s.mu.Unlock()
+	if tracker != nil {
+		tracker.ResetContext(browserLoginContext)
+	}
+}
+
 // maxLoginRows는 세션이 들고 있는 로그인 시도 행 상한이다. 넘는 행은 omitted로만 센다.
 const maxLoginRows = 4096
 
@@ -78,7 +93,12 @@ func (s *Session) LoginAttemptsPage(offset uint64, n int) (rows []loginattempt.R
 // loginRequestLocked는 승인 대상 요청의 판정기 입력이다. 기록 참조는 이 요청이 받을 경계 기록 순번이다(거부든 허용이든
 // 다음 순번). 호출자는 s.mu를 보유한다.
 func (s *Session) loginRequestLocked(req Request) loginattempt.Request {
-	return loginattempt.Request{TransportRef: strconv.FormatUint(s.seq+1, 10), Method: req.Method, Path: req.EscapedPath, RawQuery: req.RawQuery,
+	context := ""
+	if req.Ingress == BrowserIngress {
+		// 브라우저 입구 요청은 한 쿠키 저장소(지금 브라우저 문맥)에서 나온다. 직접 입구(Bash)는 문맥 규칙을 받지 않는다.
+		context = browserLoginContext
+	}
+	return loginattempt.Request{TransportRef: strconv.FormatUint(s.seq+1, 10), Context: context, Method: req.Method, Path: req.EscapedPath, RawQuery: req.RawQuery,
 		ContentType: req.ContentType, Body: req.Body, Header: cloneHeader(req.Header)}
 }
 

@@ -1,6 +1,7 @@
 package exploreboundary
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -215,5 +216,43 @@ func TestControlLoginConfigAndRows(t *testing.T) {
 	plain.login = nil
 	if d, _ := plain.Admit(t.Context(), loginPost("user1", "alpha-pass-1")); d.Forward {
 		t.Fatal("판정기 없는 세션이 예외로 보냄")
+	}
+}
+
+// 브라우저 문맥 하나에는 등록 계정 하나만 로그인한다. 다른 계정의 브라우저 로그인은 browser_account_in_use로 막고, 직접
+// 입구 로그인은 막지 않는다. 엔진이 새 문맥을 열었다고 알리면(browser_context_reset) 앞 계정은 '로그인 안 됨'이고 다른
+// 계정 로그인이 열린다(팀 합의 2026-11-26 (나)).
+func TestBrowserContextOneAccountAndReset(t *testing.T) {
+	m, client, source := controlFixture(t, sameUID)
+	binding := fixtureBinding(exploration.ReadOnly, exploration.FullLocal)
+	login := &WireLogin{Accounts: []WireLoginAccount{{Label: "tester-a", Username: "user1", Password: "alpha-pass-1"}, {Label: "tester-b", Username: "user2", Password: "bravo-pass-2"}},
+		MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
+	lease, err := ControlBoundary{Client: client, SourceDigest: fixtureDigest, Target: source.Current, Login: login}.Open(t.Context(), binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := m.Current()
+	d, ticket := s.Admit(t.Context(), loginPost("user1", "alpha-pass-1"))
+	if !d.Forward {
+		t.Fatal(d)
+	}
+	ticket.Done(Result{Status: 302, ResponseReceived: true, ResponseHeader: http.Header{"Location": {"/app/home"}, "Set-Cookie": {"sid=user-session-a1; Path=/"}}})
+	if d, _ := s.Admit(t.Context(), loginPost("user2", "bravo-pass-2")); d.Forward || d.Reason != ReasonBrowserAccountInUse {
+		t.Fatalf("다른 계정이 로그인한 문맥에서 브라우저 로그인을 보냄: %+v", d)
+	}
+	direct := loginPost("user2", "bravo-pass-2")
+	direct.Ingress, direct.FetchMode = DirectIngress, ""
+	if d, _ := s.Admit(t.Context(), direct); d.Reason == ReasonBrowserAccountInUse {
+		t.Fatal("직접 입구 로그인에 브라우저 문맥 규칙을 적용함")
+	}
+	resetter, ok := lease.(interface{ ResetBrowserContext(context.Context) error })
+	if !ok || resetter.ResetBrowserContext(t.Context()) != nil {
+		t.Fatal("문맥 초기화 알림 실패")
+	}
+	if s.login.ExceptionState("tester-a") != loginattempt.StateLoggedOut {
+		t.Fatal("닫힌 문맥의 계정이 로그인 안 됨으로 안 돌아감")
+	}
+	if d, _ := s.Admit(t.Context(), loginPost("user2", "bravo-pass-2")); !d.Forward && d.Reason == ReasonBrowserAccountInUse {
+		t.Fatalf("새 문맥에서 다른 계정 로그인을 막음: %+v", d)
 	}
 }

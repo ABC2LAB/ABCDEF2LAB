@@ -57,6 +57,8 @@ const (
 	// 판정 대기 중(한 번에 하나).
 	ReasonLoginAttemptsExhausted   = "login_attempts_exhausted"
 	ReasonLoginVerificationPending = "login_verification_pending"
+	// 같은 브라우저 문맥에 다른 등록 계정이 로그인해 있음(계정을 바꾸려면 새 문맥, 팀 합의 2026-11-26 (나)).
+	ReasonBrowserAccountInUse = "browser_account_in_use"
 )
 
 var (

@@ -17,12 +17,15 @@ type Request struct {
 	// TransportRef는 이 요청의 경계·E② 기록 참조다(계약 §3 transport_ref). 보내기 전에 알면 채운다. 보내지 않은 시도도
 	// 이 값으로 경계·E② 기록과 잇는다.
 	TransportRef string
-	Method       string
-	Path         string
-	RawQuery     string
-	ContentType  string
-	Body         []byte
-	Header       http.Header
+	// Context는 요청이 나온 쿠키 저장소(브라우저 문맥)다. 비면 문맥 규칙을 적용하지 않는다(직접 요청 등). 같은 문맥에는
+	// 한 번에 한 등록 계정만 로그인한다(§2-2, 팀 합의 2026-11-26 (나)).
+	Context     string
+	Method      string
+	Path        string
+	RawQuery    string
+	ContentType string
+	Body        []byte
+	Header      http.Header
 }
 
 // Response는 대상 응답이다. Body는 경계가 정한 상한까지의 앞부분이고, 없어도 된다(그때 HTML·JSON 신호는 없음으로 본다).

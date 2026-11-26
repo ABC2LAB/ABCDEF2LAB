@@ -209,3 +209,15 @@ func (r ControlReader) Sequences(ctx context.Context, b diagnosisflow.Exploratio
 	}
 	return out.Seqs, nil
 }
+
+// ResetBrowserContext는 엔진이 이 세션의 브라우저 문맥을 새로 열었다고 경계에 알린다(로그인 문맥 초기화).
+func (l controlLease) ResetBrowserContext(ctx context.Context) error {
+	out, err := l.client.call(ctx, ControlRequest{Op: OpBrowserContextReset, SessionRef: l.binding.SessionRef})
+	if err != nil {
+		return err
+	}
+	if !out.OK {
+		return ErrUnavailable
+	}
+	return nil
+}

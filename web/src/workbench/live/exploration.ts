@@ -36,7 +36,8 @@ export type BoundaryReason =
   | "protocol_unsupported"
   // 모델 직접 로그인(계약 model-login-attempts §2-2·§5)
   | "login_attempts_exhausted"
-  | "login_verification_pending";
+  | "login_verification_pending"
+  | "browser_account_in_use";
 
 export const BOUNDARY_REASON_LABEL: Record<BoundaryReason, string> = {
   out_of_scope_origin: "승인 밖 origin",
@@ -57,6 +58,7 @@ export const BOUNDARY_REASON_LABEL: Record<BoundaryReason, string> = {
   protocol_unsupported: "지원 안 하는 통신",
   login_attempts_exhausted: "로그인 연속 실패 상한",
   login_verification_pending: "로그인 확인 중(같은 계정)",
+  browser_account_in_use: "브라우저에 다른 계정 로그인 중",
 };
 
 const KNOWN_REASONS = new Set<string>(Object.keys(BOUNDARY_REASON_LABEL));
