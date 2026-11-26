@@ -12,6 +12,7 @@ import (
 
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/exploration"
+	"github.com/Autumn-27/artex/loginattempt"
 )
 
 func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
@@ -62,6 +63,8 @@ type ControlBoundary struct {
 	Client       ControlClient
 	SourceDigest string
 	Target       func(ctx context.Context, ref string, revision uint64) (Target, error)
+	// Login은 모델 직접 로그인 회차의 판정 설정이다(없으면 판정하지 않음). open 요청에만 싣는다.
+	Login *WireLogin
 }
 
 func (b ControlBoundary) Open(ctx context.Context, binding exploration.Binding) (exploration.Lease, error) {
@@ -73,7 +76,7 @@ func (b ControlBoundary) Open(ctx context.Context, binding exploration.Binding) 
 		return nil, err
 	}
 	wire := WireTargetOf(target)
-	out, err := b.Client.call(ctx, ControlRequest{Op: OpOpen, Binding: &binding, SourceDigest: b.SourceDigest, Target: &wire})
+	out, err := b.Client.call(ctx, ControlRequest{Op: OpOpen, Binding: &binding, SourceDigest: b.SourceDigest, Target: &wire, Login: b.Login})
 	if err != nil {
 		return nil, err
 	}
@@ -138,6 +141,28 @@ func (r ControlReader) Records(ctx context.Context) ([]Record, uint64, error) {
 			return out, resp.Omitted, nil
 		}
 		// 쪽 위치는 앞으로만 간다. 뒤로 가거나 제자리면 경계 응답이 어긋난 것이다.
+		if resp.Next <= offset {
+			return nil, 0, ErrUnavailable
+		}
+		offset = resp.Next
+	}
+	return nil, 0, ErrUnavailable
+}
+
+// LoginAttempts는 이 결속 세션의 로그인 시도 행 전체와 상한으로 생략한 행 수다. 쪽으로 나눠 읽는다. 세션을 닫은 뒤에도
+// 다음 세션을 열기 전까지 읽을 수 있다.
+func (r ControlReader) LoginAttempts(ctx context.Context) ([]loginattempt.Row, uint64, error) {
+	var out []loginattempt.Row
+	var offset uint64
+	for page := 0; page < maxRecordPages; page++ {
+		resp, err := r.Client.call(ctx, ControlRequest{Op: OpLoginAttempts, SessionRef: r.Binding.SessionRef, Offset: offset})
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, resp.LoginAttempts...)
+		if resp.Next == 0 {
+			return out, resp.Omitted, nil
+		}
 		if resp.Next <= offset {
 			return nil, 0, ErrUnavailable
 		}

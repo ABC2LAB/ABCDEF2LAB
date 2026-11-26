@@ -13,6 +13,7 @@ import (
 
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/exploration"
+	"github.com/Autumn-27/artex/loginattempt"
 )
 
 // 제어 소켓 연산(계약 §9-4). 줄 하나에 요청 JSON 하나, 응답 JSON 하나다. 소켓은 엔진 서버만 닿는다.
@@ -23,6 +24,8 @@ const (
 	OpSequences   = "sequences"
 	OpObservation = "observation"
 	OpRecords     = "records"
+	// OpLoginAttempts는 모델 직접 로그인 회차의 로그인 시도 행(쪽)이다(docs/contracts/model-login-attempts.md §3).
+	OpLoginAttempts = "login_attempts"
 )
 
 // 제어 오류 어휘다. 원문 오류·경로·대상 값은 소켓으로 내보내지 않는다.
@@ -52,6 +55,35 @@ type ControlRequest struct {
 	Offset uint64 `json:"offset,omitempty"`
 	// Cause는 close의 세부 원인이다. 서버가 보낼 수 있는 값은 restart_cleanup뿐이다(control_lost는 경계만 쓴다).
 	Cause string `json:"cause,omitempty"`
+	// Login은 open 때만 싣는 모델 직접 로그인 판정 설정이다. 등록 계정의 아이디·비밀번호가 들어 있어 서버 전용 소켓으로만
+	// 받고, 세션 메모리에만 둔다(기록·원자료·로그에 넣지 않음).
+	Login *WireLogin `json:"login,omitempty"`
+}
+
+// WireLogin은 LoginConfig의 소켓 표현이다.
+type WireLogin struct {
+	Accounts               []WireLoginAccount `json:"accounts"`
+	MaxConsecutiveFailures int                `json:"max_consecutive_failures"`
+	MaxContrastProbes      int                `json:"max_contrast_probes"`
+	TokenMinBytes          int                `json:"token_min_bytes"`
+}
+
+func (WireLogin) String() string { return "exploreboundary.WireLogin[protected]" }
+
+type WireLoginAccount struct {
+	Label    string `json:"label"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (WireLoginAccount) String() string { return "exploreboundary.WireLoginAccount[protected]" }
+
+func (w WireLogin) config() LoginConfig {
+	cfg := LoginConfig{MaxConsecutiveFailures: w.MaxConsecutiveFailures, MaxContrastProbes: w.MaxContrastProbes, TokenMinBytes: w.TokenMinBytes}
+	for _, a := range w.Accounts {
+		cfg.Accounts = append(cfg.Accounts, loginattempt.Account{Label: a.Label, Username: a.Username, Password: a.Password})
+	}
+	return cfg
 }
 
 // WireObservation은 private 관찰의 소켓 표현이다. 공개 JSON에서 빠지는 응답 형식·해시도 이 채널로만 넘긴다.
@@ -68,7 +100,9 @@ type ControlResponse struct {
 	Seqs        []uint64           `json:"seqs,omitempty"`
 	Observation *WireObservation   `json:"observation,omitempty"`
 	Records     []Record           `json:"records,omitempty"`
-	Omitted     uint64             `json:"omitted,omitempty"`
+	// LoginAttempts는 login_attempts의 쪽이다.
+	LoginAttempts []loginattempt.Row `json:"login_attempts,omitempty"`
+	Omitted       uint64             `json:"omitted,omitempty"`
 	// Next는 남은 기록 행이 있을 때 다음 쪽의 Offset이다. 0이면 끝이다.
 	Next uint64 `json:"next,omitempty"`
 }
@@ -204,6 +238,10 @@ func (m *Manager) Handle(ctx context.Context, in ControlRequest) ControlResponse
 		case err != nil:
 			return fail(ControlErrUnavailable)
 		}
+		// 로그인 판정기는 세션을 프록시에 드러내기 전에 붙인다(첫 요청부터 판정).
+		if in.Login != nil && s.AttachLogin(in.Login.config()) != nil {
+			return fail(ControlErrInvalid)
+		}
 		m.mu.Lock()
 		if m.current != nil && m.current.Status().Active {
 			m.mu.Unlock()
@@ -291,6 +329,13 @@ func (m *Manager) Handle(ctx context.Context, in ControlRequest) ControlResponse
 		// 한 쪽은 제어 소켓 한 줄에 담기는 만큼이다. 행 수를 묶어 탐색 요청 수를 줄이지 않고 쪽으로 나눠 읽는다.
 		records, omitted, next := s.RecordsPage(in.Offset, recordsPerPage)
 		return ControlResponse{OK: true, Records: records, Omitted: omitted, Next: next}
+	case OpLoginAttempts:
+		s := m.session(in.SessionRef)
+		if s == nil {
+			return fail(ControlErrInvalid)
+		}
+		rows, omitted, next := s.LoginAttemptsPage(in.Offset, loginRowsPerPage)
+		return ControlResponse{OK: true, LoginAttempts: rows, Omitted: omitted, Next: next}
 	}
 	return fail(ControlErrInvalid)
 }

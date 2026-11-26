@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"net/http"
 	"net/netip"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/exploration"
 	"github.com/Autumn-27/artex/internal/pathscope"
+	"github.com/Autumn-27/artex/loginattempt"
 )
 
 // ReasonUnresolved는 경계가 직접 푼 이름에 주소가 없을 때다. 계약 §4 목록에 더한 값이다.
@@ -53,6 +55,9 @@ type Record struct {
 
 // Result는 전달한 요청의 결과 메타데이터다. 값 대신 이름·형식·해시만 담는다.
 type Result struct {
+	// ResponseHeader·ResponseBody(앞부분)는 로그인 시도 판정에만 쓴다. 기록·관찰에 넣지 않는다.
+	ResponseHeader      http.Header
+	ResponseBody        []byte
 	Status              int
 	Bytes               int64
 	ResponseReceived    bool
@@ -65,6 +70,11 @@ type Result struct {
 
 // Session은 한 탐색 회차의 경계 상태다. 서버만 Open·Close하고 실행기는 이 값을 만들거나 넘기지 못한다.
 type Session struct {
+	// login은 모델 직접 로그인 회차의 로그인 시도 판정기다(AttachLogin). 없으면 판정하지 않는다.
+	login        *loginattempt.Tracker
+	loginMu      sync.Mutex
+	loginRows    []loginattempt.Row
+	loginOmitted uint64
 	policy       Policy
 	source       TargetSource
 	binding      exploration.Binding
@@ -244,13 +254,17 @@ func (s *Session) liveLocked(ctx context.Context) bool {
 
 // Ticket은 전달을 허용한 요청 하나의 마감 핸들이다. Done은 정확히 한 번만 효과가 있다.
 type Ticket struct {
-	s        *Session
-	seq      uint64
-	req      Request
-	dest     DestClass
-	path     string
-	external string
-	once     sync.Once
+	s   *Session
+	seq uint64
+	req Request
+	// 로그인 시도 판정(LoginConfig가 붙은 세션의 승인 대상 요청).
+	loginTracked bool
+	loginPlan    loginattempt.Plan
+	loginReq     loginattempt.Request
+	dest         DestClass
+	path         string
+	external     string
+	once         sync.Once
 }
 
 func (s *Session) recordLocked(r Record) {
@@ -410,17 +424,40 @@ func (s *Session) admitApproved(ctx context.Context, req Request) (Decision, *Ti
 		return s.denyLocked(req, DestApproved, ReasonWSReadOnly, ""), nil
 	case req.WebSocket && req.Method != "GET":
 		return s.denyLocked(req, DestApproved, ReasonProtocolUnsupported, ""), nil
+	}
+	// 모델 직접 로그인(계약 §2-2·§5): 범위·위험 경로 검사를 지난 요청만 판정기에 묻는다. 같은 아이디 연속 실패 상한과
+	// 예외 판정 대기 중인 계정의 예외 로그인은 여기서 막고, 쓰기 승인이 없는 회차에서는 그 계정이 '로그인 안 됨'일 때 등록
+	// 아이디·비밀번호 쌍이 정확히 든 로그인 POST만 메서드 검사의 예외로 보낸다.
+	var plan loginattempt.Plan
+	var loginReq loginattempt.Request
+	tracked := s.login != nil
+	if tracked {
+		loginReq = s.loginRequestLocked(req)
+		plan = s.login.Prepare(loginReq, s.loginWriteAllowed())
+		if plan.Refusal != "" {
+			return s.denyLocked(req, DestApproved, plan.Refusal, ""), nil
+		}
+	}
+	deny := func(reason string) (Decision, *Ticket) {
+		if plan.Login {
+			s.login.NotSent(plan, loginReq.TransportRef, reason)
+		}
+		return s.denyLocked(req, DestApproved, reason, ""), nil
+	}
+	switch {
 	case req.Method == "DELETE" || !hasMethod(s.target.Methods, req.Method):
-		return s.denyLocked(req, DestApproved, ReasonMethodNotApproved, ""), nil
-	case s.binding.WriteMode == exploration.ReadOnly && req.Method != "GET" && req.Method != "HEAD":
-		return s.denyLocked(req, DestApproved, ReasonMethodNotApproved, ""), nil
+		return deny(ReasonMethodNotApproved)
+	case s.binding.WriteMode == exploration.ReadOnly && req.Method != "GET" && req.Method != "HEAD" && !plan.Exception:
+		return deny(ReasonMethodNotApproved)
 	case s.inflight >= s.binding.Limits.MaxConcurrency:
-		return s.denyLocked(req, DestApproved, ReasonCapExhausted, ""), nil
+		return deny(ReasonCapExhausted)
 	case s.targetCount >= s.binding.Limits.MaxRequests:
 		s.closeLocked(exploration.CapExhausted)
-		return s.denyLocked(req, DestApproved, ReasonCapExhausted, ""), nil
+		return deny(ReasonCapExhausted)
 	}
-	return s.admitLocked(req, DestApproved, dial, s.target.SPKISHA256, canonical, "")
+	d, ticket := s.admitLocked(req, DestApproved, dial, s.target.SPKISHA256, canonical, "")
+	ticket.loginTracked, ticket.loginPlan, ticket.loginReq = tracked, plan, loginReq
+	return d, ticket
 }
 
 func (s *Session) admitExternal(ctx context.Context, req Request, host string) (Decision, *Ticket) {
@@ -542,6 +579,7 @@ func (t *Ticket) Done(r Result) {
 			s.observations[t.seq] = diagnosisflow.ExplorationObservation{Binding: s.flow, Seq: t.seq, At: at, Method: t.req.Method, Path: t.path, Source: source, Kind: kind, Transport: transport,
 				Status: r.Status, Forwarded: true, ResponseReceived: r.ResponseReceived, QueryKeys: boundedKeys(r.QueryKeys), BodyKeys: boundedKeys(r.BodyKeys), ContentType: r.ContentType,
 				ResponseContentType: r.ResponseContentType, ResponseSHA256: r.ResponseSHA256}
+			t.finishLogin(r)
 		}
 		s.inflight--
 		if s.inflight == 0 {

@@ -6,6 +6,7 @@ package exploreboundary
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/netip"
 	"path"
 	"strings"
@@ -52,6 +53,10 @@ const (
 	ReasonTargetEnded          = "target_ended"
 	ReasonWSReadOnly           = "ws_read_only"
 	ReasonProtocolUnsupported  = "protocol_unsupported"
+	// 모델 직접 로그인(docs/contracts/model-login-attempts.md §2-2·§5): 같은 아이디 연속 실패 상한, 그 계정의 예외 로그인
+	// 판정 대기 중(한 번에 하나).
+	ReasonLoginAttemptsExhausted   = "login_attempts_exhausted"
+	ReasonLoginVerificationPending = "login_verification_pending"
 )
 
 var (
@@ -133,6 +138,11 @@ type Request struct {
 	FetchDest   string
 	HasAuth     bool
 	WebSocket   bool
+	// 아래는 로그인 시도 판정(LoginConfig가 붙은 세션)에만 쓴다. 기록·관찰·원자료에 넣지 않는다.
+	RawQuery    string
+	ContentType string
+	Body        []byte
+	Header      http.Header
 }
 
 // Decision은 판정 결과다. Forward일 때만 Dial이 정해지고, 승인 대상이면 SPKI 검증값이 붙는다.

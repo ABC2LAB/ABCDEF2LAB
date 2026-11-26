@@ -27,7 +27,8 @@ FILES = (ROWS, MARKER)
 REASONS = frozenset({
     "out_of_scope_origin", "out_of_scope_path", "method_not_approved", "risky_path", "internal_address", "metadata_address",
     "control_endpoint", "external_blocked_local", "external_direct", "external_navigation", "external_method", "cap_exhausted",
-    "session_closed", "target_ended", "ws_read_only", "protocol_unsupported", "unresolved_host", "request_cancelled"})
+    "session_closed", "target_ended", "ws_read_only", "protocol_unsupported", "unresolved_host", "request_cancelled",
+    "login_attempts_exhausted", "login_verification_pending"})
 # 세션 마감 사유(exploration/session.go Reason). 봉인은 열린 세션을 cancelled로 닫으므로 봉인 표식의 세션은 늘 닫혀 있다.
 CLOSE_REASONS = frozenset({"completed", "model_error", "runtime_unavailable", "cancelled", "target_ended", "cap_exhausted",
                            "boundary_unavailable"})
