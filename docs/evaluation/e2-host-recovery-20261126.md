@@ -21,4 +21,16 @@ R01/R06의 기존 결과 불명 요청은 자동 재송신하지 않았다. 기�
 
 ## 한계와 팀 확인
 
-R03은 기존 #950 fixture만으로 재현할 수 없다. #950 수용 fixture가 동일 설치의 두 번째 일반 진단을 지원하도록 그래프 ID를 동적으로 선택하는 시험 전용 수정이 필요하다. R06은 재현 가능한 중간 장애를 위해 임시 이미지의 지연 지점에서 종료했다. 실제 운영의 임의 시점 전원 장애를 재현한 것은 아니다. 대상 GET/HEAD도 부작용이 없다는 보증은 없으므로 운영자는 대상 상태와 다음 회차 승인을 확인해야 한다. Docker daemon 소켓의 강한 호스트 권한, 컨테이너 종료 증거와 E③ 소비 경계는 팀 보안 계약 리뷰 후 활성화한다. `합성 통과` 라벨과 병합은 담당 러너 및 리뷰어 절차를 따른다.
+R03의 기존 결과는 임시 fixture 수정으로 얻었다. #950 `99536a7e`는 현재 그래프에서 저장 후보 사실을 선택하도록 합성 fixture를 고쳤고, 별도 소유 설치에서 같은 DB·Host 볼륨의 S02 일반 진단·선택 검증을 두 번 연속 PASS했다. 이는 **복구를 거친 R03 재시험과는 별개**다. 이 최신 HEAD 조합으로 복구 후 일반 진단을 다시 실행해야 R03 재현 완료라고 할 수 있다. R06의 기존 결과는 임시 이미지의 지연 지점에서 종료한 결과이며, 실제 운영의 임의 시점 전원 장애를 재현한 것은 아니다. 아래 오버레이는 같은 주입 지점을 다른 러너가 만들 수 있게 한다. 대상 GET/HEAD도 부작용이 없다는 보증은 없으므로 운영자는 대상 상태와 다음 회차 승인을 확인해야 한다. Docker daemon 소켓은 사실상 호스트 root 권한이다. 컨테이너 종료 증거와 E③ 소비 경계는 팀 보안 계약 리뷰 후 활성화한다. `합성 통과` 라벨과 병합은 담당 러너 및 리뷰어 절차를 따른다.
+
+## R06 시험 전용 결정적 장애 주입
+
+`scripts/eval/prepare_e2_recovery_fault.py <새 임시 디렉터리>`를 #950과 이 PR을 결합한 **임시 통합 worktree**에서 실행한다. 스크립트는 `e2host/recovery.go`의 `operator-recovery.json` 최종 hard link 직전에 `TEST_FAULT_BEFORE_LINK`를 stderr에 쓰고 무기한 대기하는 **Go build overlay만** 임시 디렉터리에 생성한다. 제품 소스나 영구 런타임 플래그는 바꾸지 않는다. 소스의 link 지점이 달라지면 스크립트가 실패한다.
+
+```sh
+python3 -I scripts/eval/prepare_e2_recovery_fault.py /tmp/<새-전용-디렉터리>
+go build -overlay=/tmp/<새-전용-디렉터리>/overlay.json -o /tmp/<새-전용-디렉터리>/first-controlled-diagnosis ./cmd/first-controlled-diagnosis
+docker build --build-arg BASE_IMAGE=<동일-통합-HEAD-제품-이미지> -t <전용-fault-이미지> /tmp/<새-전용-디렉터리>
+```
+
+정상 이미지로 원본 미완료 GET head를 만든 뒤 모든 송신 서비스를 정지한다. 전용 fault 이미지를 **복구 컨테이너에만** 사용해 `recover`를 시작하고, 해당 컨테이너 로그에서 `TEST_FAULT_BEFORE_LINK`가 나타난 뒤 그 컨테이너만 SIGKILL 한다. 최종 기록 부재, 원본 head `open`, 원본 journal/head 해시 불변을 확인한다. 이후 정상 이미지를 쓰는 일회성 복구 컨테이너로 같은 head를 재시도하고 기록 1개·멱등 응답·신규 실행 가능 여부를 검사한다. 시험 후 fault 컨테이너와 임시 overlay 디렉터리를 자신의 시험 환경에서만 제거한다. `go build -overlay` 컴파일과 독립 PostgreSQL 시험에서 marker 도달은 확인했으며, 이 오버레이 이미지의 새 제품 R06 종단 재실행은 별도로 기록한다.

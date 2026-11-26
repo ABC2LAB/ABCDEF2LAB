@@ -190,7 +190,7 @@ func (h *Host) RecoverUnfinished(ctx context.Context, request RecoveryRequest, d
 	if writeNewPrivateFile(dir, "operator-recovery.json", data) != nil {
 		return RecoveryStatus{}, ErrUnavailable
 	}
-	if h.checkRestoredHeads(ctx, false, "", nil) != nil {
+	if h.checkRestoredHeads(ctx, false, request.RunRef, nil) != nil {
 		return RecoveryStatus{}, ErrUnavailable
 	}
 	status.Recovered = true

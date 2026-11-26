@@ -122,6 +122,76 @@ func TestOperatorRecoveryPreservesOpenJournalAndNewRun(t *testing.T) {
 	}
 }
 
+func TestOperatorRecoveryHandlesTwoUnfinishedHeadsIndividually(t *testing.T) {
+	host, _, first := fixture(t)
+	session, err := host.Open(t.Context(), first, "revision-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, _ := hostSentEvents(first)
+	if err := session.Record(t.Context(), intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Abort(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a second historical open head with the same trusted recorder.
+	// Normal Host admission deliberately cannot create it while first is open.
+	second := first
+	second.RunRef = "second-unfinished-run"
+	dir, err := createRunDirectory(host.root, second.RunRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rctx, cancel := context.WithCancel(context.Background())
+	peer := &run{owner: host, scope: second, directory: dir, ctx: rctx, cancel: cancel}
+	host.mu.Lock()
+	host.active[second.RunRef] = peer
+	host.mu.Unlock()
+	recorder, err := e2checkpoint.OpenRecorder(t.Context(), e2checkpoint.RecorderConfig{
+		Store: host.store, Epoch: host.epoch, PublisherRef: "product-e2-host", Directory: dir,
+		Filename: "events.jsonl", Scope: second, KeyRef: host.keyRef, Key: host.key,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, _ = hostSentEvents(second)
+	if err := recorder.Record(t.Context(), intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.persistHead(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Abort(); err != nil {
+		t.Fatal(err)
+	}
+	host.remove(peer)
+	if host.CheckRestoredHeads(t.Context()) == nil {
+		t.Fatal("two unfinished heads were admitted without recovery")
+	}
+	socket := dockerFixture(t, "exited")
+	for i, scope := range []string{first.RunRef, second.RunRef} {
+		status, err := host.InspectUnfinished(t.Context(), scope)
+		if err != nil || len(status.Pending) != 1 {
+			t.Fatalf("head %d could not be inspected: %+v %v", i, status, err)
+		}
+		recovered, err := host.RecoverUnfinished(t.Context(), RecoveryRequest{
+			RunRef: scope, ExpectedRevision: status.Head.Revision,
+			ExpectedCheckpoint: status.Head.Checkpoint.MAC, Operator: "operator-1",
+		}, socket, "testproject", testSelfID)
+		if err != nil || !recovered.Recovered {
+			t.Fatalf("head %d could not be recovered: %+v %v", i, recovered, err)
+		}
+		if i == 0 && host.CheckRestoredHeads(t.Context()) == nil {
+			t.Fatal("unrecovered peer did not block normal admission")
+		}
+	}
+	if err := host.CheckRestoredHeads(t.Context()); err != nil {
+		t.Fatal("both recovered heads still block normal admission", err)
+	}
+}
+
 func TestRecoveryRecordDamageFailsClosed(t *testing.T) {
 	for _, mutation := range []string{"record_deleted", "record_tampered", "head_changed", "journal_changed", "epoch_changed"} {
 		t.Run(mutation, func(t *testing.T) {

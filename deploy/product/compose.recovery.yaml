@@ -1,5 +1,8 @@
 # Opt-in offline maintenance only. Never include this file in normal product up.
 # The operator stops all non-PostgreSQL product services before invoking run.
+# Docker socket access is effectively host-root authority. The :ro bind below
+# does not restrict Docker API write methods; only a trusted operator may run
+# this one-shot maintenance container, and --rm must remove it immediately.
 services:
   e2-recovery:
     image: abc2lab-product:${PRODUCT_TAG:-local}

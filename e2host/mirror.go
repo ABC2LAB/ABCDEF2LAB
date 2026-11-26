@@ -343,6 +343,22 @@ func (h *Host) checkRestoredHeads(ctx context.Context, recoverDisconnected bool,
 					}
 				}
 				acceptedOpen = err == nil
+			} else if recoveryTarget != "" {
+				// A targeted operator inspection may pass another unresolved open
+				// run, but it must still validate that peer's current head and
+				// journal. Normal Host admission remains blocked until every open
+				// run has a valid recovery record.
+				var events []e2proxy.Event
+				events, _, err = r.verifiedEvents(ctx)
+				if err == nil {
+					var pending []string
+					var valid bool
+					pending, valid = unfinishedAttempts(events)
+					if !valid || len(pending) == 0 {
+						err = ErrUnavailable
+					}
+				}
+				acceptedOpen = err == nil
 			} else {
 				err = ErrUnavailable
 			}
