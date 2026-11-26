@@ -364,8 +364,9 @@ func TestLearnedLoginReloginPriority(t *testing.T) {
 	creds := map[string]string{"tester-a": credentialOf(r, id, "tester-a"), "tester-b": credentialOf(r, id, "tester-b")}
 	runs, job := learnedRunDir(t, []learnedlogin.Row{modelSucceededRow("diagnosis-1", "tester-a", "/current")})
 	ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
-	if ll.stored != nil {
-		t.Fatal("learned 저장(⑤-B)이 없는데 저장 방법 읽기가 연결됨")
+	// ⑤-B가 레지스트리에 learned 저장 읽기를 구현했다(product_login_method.go).
+	if ll.stored == nil {
+		t.Fatal("레지스트리의 저장 방법 읽기가 연결되지 않음")
 	}
 	// ⑤-B가 레지스트리에 구현할 저장 방법 읽기를 흉내 낸다. A는 이 회차 성공이 먼저다.
 	stored := time.Date(2026, 11, 25, 0, 0, 0, 0, time.UTC)

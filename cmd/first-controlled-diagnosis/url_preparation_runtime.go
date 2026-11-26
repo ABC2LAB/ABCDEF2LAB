@@ -601,6 +601,10 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 	runner := &urlGatewayRunner{backend: b, launch: d, config: launch, loaded: l, taskID: taskID, operatorStop: func() bool {
 		return urlOperatorStop(parent, ctx)
 	}}
+	if b.product != nil && l.productTarget != nil && b.product.targets != nil {
+		registry, runsDir, jobID, target := b.product.targets, b.config.RunsDir, execution.Job.ID, *l.productTarget
+		runner.learnLoginMethods = func() { registry.learnLoginMethods(runsDir, jobID, target) }
+	}
 	b.mu.Lock()
 	if b.recovery == nil {
 		b.recovery = map[string]*urlGatewayRunner{}
@@ -714,9 +718,12 @@ type urlGatewayRunner struct {
 	// operatorStop은 실행이 운영자 중지(진단 준비 중지가 상위 문맥을 취소)나 대상 철회로 끝났는지 본다. 설치·위임
 	// 검사 실패, 상태 조회 실패, 시간 상한은 여기에 들지 않는다(저장 기록은 failed 그대로).
 	operatorStop func() bool
-	mu           sync.Mutex
-	closed       *diagnosis.Closure
-	runErr       error
+	// learnLoginMethods는 제품 대상 회차가 끝날 때 이 회차 모델 로그인에서 배운 방법을 남긴다(확정 단계가 없던 회차 포함,
+	// product_login_method.go). 없으면 하지 않는다.
+	learnLoginMethods func()
+	mu                sync.Mutex
+	closed            *diagnosis.Closure
+	runErr            error
 }
 
 func (r *urlGatewayRunner) Run(ctx context.Context) error {
@@ -882,6 +889,10 @@ func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error)
 	closureErr := resultErr
 	if drained {
 		closureErr = nil
+	}
+	// 회차 기록(로그인 시도 행)이 다 쓰인 뒤 배운 방법을 남긴다. 확정 단계가 이미 남겼으면 같은 시도라 다시 쓰지 않는다.
+	if drained && r.learnLoginMethods != nil {
+		r.learnLoginMethods()
 	}
 	stored, saveErr := r.launch.supervisor.PersistRunOutcomeStoredStop(ctx, closureErr, r.operatorStop != nil && r.operatorStop())
 	result := diagnosis.Closure{DrainComplete: drained, ResultReady: stored && saveErr == nil, Result: r.launch.supervisor.ClosureResult(), AccountAuth: launchAccountAuth(r.launch.runtime)}
