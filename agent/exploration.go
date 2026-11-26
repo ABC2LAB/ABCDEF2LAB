@@ -56,6 +56,9 @@ type ExplorationRunOptions struct {
 	// Credentials는 이 회차에 결속된 등록 계정의 로그인 자격이다(사용자 결정 2026-11-26: 탐색에서도 모델이 브라우저로 직접
 	// 로그인한다, CLAUDE.md 절대규칙 1). 비어 있으면 지금처럼 로그인하지 않는다.
 	Credentials []E2HTTPAccountCredential
+	// SwitchBrowser는 브라우저 문맥을 닫고 새 문맥을 연다(한 번에 한 계정 문맥, 사용자 결정 2026-11-26 (나)). 등록 계정이
+	// 있고 이 값이 있으면 switch_browser_account 도구를 준다.
+	SwitchBrowser func(ctx context.Context, account string) error
 }
 
 type ExplorationRunResult struct {
@@ -99,6 +102,14 @@ func explorationTools(o ExplorationRunOptions) ([]actool.CoreTool, error) {
 			}
 		}
 		out = append(out, bash)
+	}
+	if o.SwitchBrowser != nil && len(o.Credentials) > 0 {
+		labels := make([]string, 0, len(o.Credentials))
+		for _, c := range o.Credentials {
+			labels = append(labels, c.Label)
+		}
+		sort.Strings(labels)
+		out = append(out, newExploreSwitchTool(labels, o.SwitchBrowser))
 	}
 	out = append(out, newExploreDiscoveryTool(o.Reporter))
 	for i, t := range out {
@@ -173,7 +184,7 @@ const explorationAPIRecon = `The original api-recon skill is in the sandbox at /
 // explorationSystemPrompt는 직접 Bash가 결속된 세션에만 Bash 안내를 준다. 없는 세션은 지금처럼 셸이 없다고 말한다.
 // apiRecon은 직접 Bash 작업 공간에 api-recon 파일이 있을 때만 참이다. 등록 계정 자격이 있으면 로그인 금지 대신 브라우저
 // 로그인 안내와 자격 줄을 준다.
-func explorationSystemPrompt(shell, apiRecon bool, credentials []E2HTTPAccountCredential) string {
+func explorationSystemPrompt(shell, apiRecon bool, credentials []E2HTTPAccountCredential, switchBrowser bool) string {
 	out := explorationSystemBase + "\n"
 	limits := explorationNoShellLimits
 	if shell {
@@ -184,6 +195,9 @@ func explorationSystemPrompt(shell, apiRecon bool, credentials []E2HTTPAccountCr
 	}
 	if len(credentials) > 0 {
 		out += "\n" + explorationLogin + explorationCredentialLines(credentials)
+		if switchBrowser {
+			out += explorationBrowserAccounts + "\n"
+		}
 	} else {
 		out += "\n" + limits
 	}
@@ -249,7 +263,7 @@ func (w *Worker) ExecuteExploration(ctx context.Context, o ExplorationRunOptions
 		targetData["approved_paths"], targetData["start_points"] = o.ApprovedPaths, starts
 	}
 	target, _ := json.Marshal(targetData)
-	opts := agentcore.Options{Provider: w.prov, SystemPrompt: []string{explorationSystemPrompt(o.DirectBash != nil, o.DirectBash.HasSeed(), o.Credentials)}, Tools: tools, PermissionMode: permission.ModeBypass, DisableBackgroundTasks: true, MaxTurns: o.MaxTurns, MaxDuration: o.MaxDuration, Compaction: compactionConfig(w.compactionWindow()), NonStreaming: w.nonStreaming(), MaxTokens: w.maxTokens(), SessionID: "explore-" + o.Binding.SessionRef, Settlement: &harness.Settlement{Prompt: "Report only discovered endpoint metadata through report_discovery, then stop. Do not navigate or send more requests.", MaxTurns: 1, DisabledTools: explorationSettlementDisabled(tools)}}
+	opts := agentcore.Options{Provider: w.prov, SystemPrompt: []string{explorationSystemPrompt(o.DirectBash != nil, o.DirectBash.HasSeed(), o.Credentials, o.SwitchBrowser != nil)}, Tools: tools, PermissionMode: permission.ModeBypass, DisableBackgroundTasks: true, MaxTurns: o.MaxTurns, MaxDuration: o.MaxDuration, Compaction: compactionConfig(w.compactionWindow()), NonStreaming: w.nonStreaming(), MaxTokens: w.maxTokens(), SessionID: "explore-" + o.Binding.SessionRef, Settlement: &harness.Settlement{Prompt: "Report only discovered endpoint metadata through report_discovery, then stop. Do not navigate or send more requests.", MaxTurns: 1, DisabledTools: explorationSettlementDisabled(tools)}}
 	record := func(b []byte) []byte {
 		out := o.Redact(b)
 		if o.RedactRecord != nil {

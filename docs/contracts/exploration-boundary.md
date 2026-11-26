@@ -56,7 +56,7 @@
 |---|---|
 | `session_ref`·`seq`·`at` | 세션과 순번, 시각 |
 | `decision` | `forwarded` 또는 `denied` |
-| `reason` | 막은 이유. `out_of_scope_origin`, `out_of_scope_path`, `method_not_approved`, `risky_path`, `internal_address`, `metadata_address`, `control_endpoint`, `external_blocked_local`, `external_direct`, `external_navigation`, `external_method`, `cap_exhausted`, `session_closed`, `target_ended`, `ws_read_only`, `protocol_unsupported`, `login_attempts_exhausted`(같은 아이디 연속 실패 상한), `login_verification_pending`(그 계정의 예외 로그인 판정 대기 중) |
+| `reason` | 막은 이유. `out_of_scope_origin`, `out_of_scope_path`, `method_not_approved`, `risky_path`, `internal_address`, `metadata_address`, `control_endpoint`, `external_blocked_local`, `external_direct`, `external_navigation`, `external_method`, `cap_exhausted`, `session_closed`, `target_ended`, `ws_read_only`, `protocol_unsupported`, `login_attempts_exhausted`(같은 아이디 연속 실패 상한), `login_verification_pending`(그 계정의 예외 로그인 판정 대기 중), `browser_account_in_use`(같은 브라우저 문맥에 다른 등록 계정이 로그인해 있음) |
 | `ingress` | `browser`·`direct` |
 | `dest_class` | `approved`·`external`·`internal`·`metadata`·`control` |
 | `method`·`status`·`bytes` | 메서드, 응답 상태, 응답 바이트 수 |
@@ -170,6 +170,7 @@
 - 같은 아이디로 연달아 실패한 로그인은 회차당 3번까지다(진단 단계와 공통). 경계가 로그인 시도를 판정·기록하고 상한을 집행하는 방법과 쓰기 승인 없는 회차의 로그인 POST 예외 범위는 위 계약 §2·§5를 따른다.
 - 구현: 엔진 서버가 제어 소켓 `open`에 판정 설정(`login`: 등록 계정 라벨·아이디·비밀번호, 연속 실패 상한·대조 요청 상한·토큰 하한)을 싣는다. 경계는 세션 메모리에만 두고 기록·원자료·로그에 넣지 않는다. 판정 설정 없이는 제품 탐색을 열지 않는다.
   - 범위·제외·위험 경로 검사를 지난 승인 대상 요청만 판정기에 묻는다. 상한·판정 대기는 `login_attempts_exhausted`·`login_verification_pending`으로 막고, `read_only` 회차는 그 계정이 '로그인 안 됨'일 때 등록 아이디·비밀번호 쌍이 정확히 든 로그인 POST만 메서드 검사의 예외로 보낸다.
+  - 브라우저 문맥 하나에는 등록 계정 하나만 로그인한다(`browser_account_in_use`, 직접 입구는 제외). 탐색 모델이 `switch_browser_account`를 부르면 엔진이 지금 MCP 연결을 지워(문맥이 닫힘) 새 연결을 열고, 제어 소켓 `browser_context_reset`으로 경계에 알린다. 경계는 닫힌 문맥에서 로그인한 계정을 '로그인 안 됨'으로 돌린다(위 계약 §2-2).
   - 로그인 시도 행은 제어 소켓 `login_attempts`(쪽, 세션을 닫은 뒤에도 다음 세션 전까지)로 읽는다. 엔진은 탐색 단계가 끝나면 그 행을 회차 상태 디렉터리 `login-attempts.jsonl`에 옮기고, 진단 단계가 그 행으로 연속 실패를 이어 센다. 행의 `transport_ref`는 이 경계 기록 순번(`seq`)이다.
 - 실행기는 인증 헤더를 승인 origin 요청에만 붙인다. 브라우저 전체 요청에 헤더를 넣는 방식(예: Playwright `extraHTTPHeaders`)은 쓰지 않는다.
 
@@ -195,7 +196,7 @@
    - 평가 회차에서는 경계가 계측기의 탐색 입구(별칭 `eval-meter-explore`, 별도 리슨)로, E②가 진단 입구(기존 `eval-meter-upstream`)로 보낸다. 계측기는 입구별 리슨으로 전달 행에 입구를 남긴다(프로토콜 §2 경로 분리).
 2. **외부 호스트 TLS — 가로챈다.** 경계가 외부 호스트도 TLS를 가로채고, 대상 쪽 인증서는 시스템 루트로 검증한다. 그래야 메서드·`Sec-Fetch-*`를 보고 §3의 외부 이동·쓰기 차단을 할 수 있다. 브라우저는 승인 대상 때문에 이미 경계 CA를 신뢰하므로 추가 신뢰 설정은 없다.
 3. **WebSocket — 쓰기까지 승인한 회차의 승인 대상만.** 승인 origin·경로 안의 업그레이드는 `write_mode=approved_writes`일 때만 허용한다. WebSocket 메시지는 메서드로 읽기·쓰기를 가를 수 없어서, 읽기만 승인한 회차는 막는다(`ws_read_only`). 메시지 내용은 기록하지 않고 연결 수·바이트만 남긴다. 외부 호스트로 가는 WebSocket은 막는다.
-4. **세션 제어 — 유닉스 소켓 제어 API.** 엔진 서버와 경계 사이에 줄 단위 JSON 제어 소켓(`open`·`close`·`status`·`current`, 모델 직접 로그인 회차의 `login_attempts`는 §8)을 둔다. `current`는 세션 참조 없이 경계의 지금 세션 상태(없으면 상태 없음)를 준다. 세션이 제어 연결과 따로 살아서 준비 서비스가 재시작하면 참조를 잃으므로, 멈춘 작업 해제(C04)가 재시작 전후로 열린 세션이 없는지 이걸로 확인한다. 소켓은 엔진 서버 프로세스만 닿고, 브라우저·직접 샌드박스는 닿지 못한다. 세션 입력은 §2 그대로다.
+4. **세션 제어 — 유닉스 소켓 제어 API.** 엔진 서버와 경계 사이에 줄 단위 JSON 제어 소켓(`open`·`close`·`status`·`current`, 모델 직접 로그인 회차의 `login_attempts`·`browser_context_reset`은 §8)을 둔다. `current`는 세션 참조 없이 경계의 지금 세션 상태(없으면 상태 없음)를 준다. 세션이 제어 연결과 따로 살아서 준비 서비스가 재시작하면 참조를 잃으므로, 멈춘 작업 해제(C04)가 재시작 전후로 열린 세션이 없는지 이걸로 확인한다. 소켓은 엔진 서버 프로세스만 닿고, 브라우저·직접 샌드박스는 닿지 못한다. 세션 입력은 §2 그대로다.
 5. **원본 기록 프록시(`traffic/`)는 관찰 통로로 쓰지 않는다.** 대상 TLS를 검증하지 않고(`SslInsecure`), 실행 결속이 없고, 헤더를 평문으로 저장하고, 오류가 나면 기록 없이 통과시키기 때문이다. 경계 기록(§4)이 관찰의 정본이다.
 6. **브라우저 입구 외부 GET 유출(§3 한계) — 지금은 한계로 두고 잰다.** 경계 기록의 `external_host` 수를 보존 측정과 함께 보고, 줄이는 규칙(승인 origin 문서가 불러온 호스트만 허용, 허용 목록)은 측정 결과를 보고 정한다.
 7. **(남음, 이동찬·이경준)** `시험 계정` 분류의 저장 위치와 승인 주체. 효력 조건은 [개발 계획의 계정 항목](../archive/development-plan-v3.md#1111-개선-순서--원본-능력-보존-우선)을 따르고, 분류가 들어올 때 §8과 수용시험 S09를 함께 고친다.
