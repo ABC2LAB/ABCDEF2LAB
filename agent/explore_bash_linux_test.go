@@ -225,7 +225,7 @@ func TestExplorationRunsTypedDirectBashThroughTheBoundary(t *testing.T) {
 
 // 직접 Bash가 없는 세션은 지금처럼 셸이 없다고 안내하고, 감싸개가 Bash를 바꾸거나 없애면 프로필을 거부한다.
 func TestExplorationDirectBashProfileChecks(t *testing.T) {
-	if got := explorationSystemPrompt(false, false); !strings.Contains(got, "Direct shell commands and generic Skill execution are unavailable") || strings.Contains(got, "Bash runs") {
+	if got := explorationSystemPrompt(false, false, nil); !strings.Contains(got, "Direct shell commands and generic Skill execution are unavailable") || strings.Contains(got, "Bash runs") {
 		t.Fatal("shell-less prompt changed")
 	}
 	shell := exploreBashShell(t, "")
@@ -265,13 +265,13 @@ func TestExplorationDirectBashProfileChecks(t *testing.T) {
 
 // 직접 Bash 작업 공간에 api-recon 파일을 둔 세션만 그 안내를 받는다(docs/sandbox-data-decision.md §2-2).
 func TestExplorationPromptMentionsAPIReconOnlyWhenSeeded(t *testing.T) {
-	if got := explorationSystemPrompt(true, true); !strings.Contains(got, "/work/api-recon") || !strings.Contains(got, "Bash runs") {
+	if got := explorationSystemPrompt(true, true, nil); !strings.Contains(got, "/work/api-recon") || !strings.Contains(got, "Bash runs") {
 		t.Fatal("seeded prompt lacks the api-recon guidance")
 	}
-	if got := explorationSystemPrompt(true, false); strings.Contains(got, "/work/api-recon") {
+	if got := explorationSystemPrompt(true, false, nil); strings.Contains(got, "/work/api-recon") {
 		t.Fatal("unseeded prompt mentions api-recon")
 	}
-	if got := explorationSystemPrompt(false, true); strings.Contains(got, "/work/api-recon") {
+	if got := explorationSystemPrompt(false, true, nil); strings.Contains(got, "/work/api-recon") {
 		t.Fatal("shell-less prompt mentions api-recon")
 	}
 	// 이 시험은 Bash를 부르지 않으므로 helper 파일만 있으면 된다(프로필·지시문 검사).
