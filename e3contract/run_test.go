@@ -1048,23 +1048,25 @@ func TestRefusedAtRunStart(t *testing.T) {
 func TestRunReloginsBeforeIdentity(t *testing.T) {
 	type event struct{ kind, label string }
 	for name, c := range map[string]struct {
-		sent     bool
-		requests int
+		perAccount int
+		requests   int
 	}{
-		"sent":     {true, 8 + 2},
-		"not-sent": {false, 8},
+		"sent":     {1, 8 + 2},
+		"not-sent": {0, 8},
+		// 학습 로그인 재사용(로그인 화면 GET + 로그인 POST)은 계정마다 요청 둘을 센다.
+		"learned-with-prep": {2, 8 + 4},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t)
 			var order []event
 			deps := f.deps()
-			deps.Relogin = func(_ context.Context, label string) bool {
+			deps.Relogin = func(_ context.Context, label string) int {
 				// 다시 로그인 때는 아직 신원 요청이 없어야 한다.
 				if n := countCalls(f.fake.Calls(), func(k e3fake.Key) bool { return true }); n != 0 {
 					t.Errorf("다시 로그인 전에 확정 요청 %d건", n)
 				}
 				order = append(order, event{"relogin", label})
-				return c.sent
+				return c.perAccount
 			}
 			res := e3contract.Run(context.Background(), deps, f.in)
 			if res.Status != e3contract.StatusCompleted || res.Requests != c.requests {
@@ -1085,7 +1087,7 @@ func TestRunReloginsBeforeIdentity(t *testing.T) {
 		f.in.Owner.Authenticated = false
 		calls := 0
 		deps := f.deps()
-		deps.Relogin = func(context.Context, string) bool { calls++; return true }
+		deps.Relogin = func(context.Context, string) int { calls++; return 1 }
 		res := e3contract.Run(context.Background(), deps, f.in)
 		if res.Status != e3contract.StatusDisabled || calls != 0 || res.Requests != 0 {
 			t.Fatalf("꺼진 회차에서 다시 로그인: %s calls=%d requests=%d", res.Status, calls, res.Requests)
@@ -1096,7 +1098,7 @@ func TestRunReloginsBeforeIdentity(t *testing.T) {
 		f.in.AdmittedTypes = 0
 		calls := 0
 		deps := f.deps()
-		deps.Relogin = func(context.Context, string) bool { calls++; return true }
+		deps.Relogin = func(context.Context, string) int { calls++; return 1 }
 		res := e3contract.Run(context.Background(), deps, f.in)
 		if calls != 0 || res.Requests != 0 {
 			t.Fatalf("몫에 든 종류가 없는데 다시 로그인: calls=%d requests=%d", calls, res.Requests)
@@ -1108,7 +1110,7 @@ func TestRunReloginsBeforeIdentity(t *testing.T) {
 		calls := 0
 		deps := f.deps()
 		deps.Started = cancel // 시작 직후 중지된 것처럼
-		deps.Relogin = func(context.Context, string) bool { calls++; return true }
+		deps.Relogin = func(context.Context, string) int { calls++; return 1 }
 		res := e3contract.Run(ctx, deps, f.in)
 		noConfirmed(t, res)
 		if calls != 0 {
@@ -1268,9 +1270,9 @@ func TestRunWithoutExecution(t *testing.T) {
 			started := 0
 			deps := f.deps()
 			deps.Started = func() { started++ }
-			deps.Relogin = func(context.Context, string) bool {
+			deps.Relogin = func(context.Context, string) int {
 				t.Error("실행 없음 기록이 다시 로그인함")
-				return true
+				return 1
 			}
 			res := e3contract.RunWithoutExecution(context.Background(), deps, f.in)
 			if res.Status != c.status || res.Reason != c.reason || res.Requests != 0 || len(res.Verdicts) != 0 || started != 0 ||

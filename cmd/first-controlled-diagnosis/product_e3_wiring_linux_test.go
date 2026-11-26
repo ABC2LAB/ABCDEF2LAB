@@ -284,10 +284,10 @@ func TestProductE3WiredRelogin(t *testing.T) {
 	for name, tc := range map[string]struct {
 		accounts server.E2HTTPAccountBindings
 		relogin  bool
-		results  map[string]bool
+		results  map[string]int
 	}{
-		"relogin-authenticated": {&e3ReloginAccounts{result: server.E2HTTPAuthAuthenticated}, true, map[string]bool{"tester-a": true}},
-		"relogin-not-sent":      {&e3ReloginAccounts{result: server.E2HTTPRefreshCooldown}, true, map[string]bool{"tester-a": false}},
+		"relogin-authenticated": {&e3ReloginAccounts{result: server.E2HTTPAuthAuthenticated}, true, map[string]int{"tester-a": 1}},
+		"relogin-not-sent":      {&e3ReloginAccounts{result: server.E2HTTPRefreshCooldown}, true, map[string]int{"tester-a": 0}},
 		"no-relogin-path":       {e3PlainAccounts{}, false, nil},
 	} {
 		t.Run(name, func(t *testing.T) {
