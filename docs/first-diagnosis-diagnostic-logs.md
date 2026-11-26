@@ -58,6 +58,7 @@ task로 여러 준비/실행/조회 파일을 묶고, run/call/attempt 해시와
 9. `result_save_started/finished`, `run_summary`, `run_finished`, `diagnosis_finished`: 실행·감사·저장 마감과 실제 종료 단계.
 10. `service_request_finished`, `report_queried`: 보고서 서비스의 HTTP 응답 범주와 실제 저장 결과 조회. URL이나 본문을 기록하지 않는다.
 11. `account_auth_checked`: 최초 인증 준비 또는 재로그인에서 계정별 세션 확보 결과. `reason_code`는 자격 파일 읽기 실패, 로그인 거절, 응답에서 안전한 세션을 얻지 못함, 세션 가림 등록 실패·용량 초과, 결과 불명 등을 고정 코드로 구분한다. `auth_session_unavailable`은 토큰 위치 오류와 E②의 세션 안전성 거절을 함께 포함하므로 이 코드만으로 더 좁은 원인을 확정하지 않는다. 이 이벤트의 성공도 대상의 신원 경로 검증이나 이후 세션 유효성을 증명하지 않는다.
+12. `login_attempt_refused`: 모델 직접 로그인 회차에서 E②가 보내기 전에 막은 모델 로그인. `reason_code` `login_attempts_exhausted`는 같은 아이디의 연속 실패 상한(회차당)이다. E② 영수증 사유는 운영자 제외 경로처럼 `policy_denied`이고, 시도별 칸은 회차 상태 디렉터리의 `login-attempts.jsonl`(계약 `docs/contracts/model-login-attempts.md`)에 있다. `login_attempt_record_failed`는 그 기록을 쓰지 못한 것이며 송신을 멈추지 않는다.
 
 `run_summary`는 일반 HTTP의 기존 승인/실행 상태와 OpenRouterUsage를 재사용한다.
 실제 송신 수, 허용/거절/차단 수, 후보 수와 감사·drain·결과 저장 확인을 구분한다.
@@ -79,7 +80,7 @@ task로 여러 준비/실행/조회 파일을 묶고, run/call/attempt 해시와
 | `result_unknown`, `e2_http_execution_result_unknown` | 송신 결과를 확인 못함. 성공/미전송으로 추정하지 않음 |
 | `candidate_store_failed`, `result_storage_failed` | 후보 DB 저장 또는 최종 결과 저장 실패 |
 | `audit_failed`, `drain_failed` | 감사·실행 마감 실패. 로깅 장애와 다름 |
-| `closure_*`, `engine_task_failed` | 일반 HTTP 마감 판정에서 막은 검사(예: `closure_tool_outcome_invalid` 호출 분류, `closure_policy_limited_unmatched` 정책 제한 근거 없음, `closure_call_mismatch` 신뢰 결과와 E② 기록 불일치), 엔진이 작업을 실패로 표시함. 감독자 `stage_finished`·`run_finished`·`run_summary`에 `execution_failed` 대신 남음 |
+| `closure_*`, `engine_task_failed` | 일반 HTTP 마감 판정에서 막은 검사(예: `closure_tool_outcome_invalid` 호출 분류, `closure_policy_limited_unmatched` 정책 제한 근거 없음, `closure_call_mismatch` 신뢰 결과와 E② 기록 불일치), 엔진이 작업을 실패로 표시함. 감독자 `stage_finished`·`run_finished`·`run_summary`에 `execution_failed` 대신 남음. 엔진이 계획 준비 실패로 작업을 실패로 표시했으면 `engine_task_failed` 대신 그 분기 사유(`planning_exploration_failed` 등)가 남는다(B1). 실패 실행의 `run_finished` 사유는 진단 상태·진단 준비 Job의 `reason_code`로도 간다([실행 결과 상태 값 계약](contracts/run-outcome-states.md) §3.1) |
 | `user_cancelled`, `cancelled` | 사용자/문맥 취소. 일부 요청이 이미 나갔는지는 E② 감사 확인 |
 
 대상이 HTTP 4xx/5xx를 반환한 것은 응답을 받은 사실이며 모델 HTTP 오류나 정책 거절과 다르다.

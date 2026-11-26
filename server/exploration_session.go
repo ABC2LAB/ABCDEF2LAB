@@ -67,11 +67,15 @@ type ExplorationSession struct {
 	ctx     context.Context
 	cancel  context.CancelFunc
 	// cancelCause는 세션 문맥을 이름 붙은 원인으로 닫는다(agent.AbortCause). 탐색 작업자 취소 기록이 원인을 보인다.
-	cancelCause       context.CancelCauseFunc
-	boundary          exploration.Lease
-	browser           ExplorationBrowserLease
-	client            mcpClient
-	tools             []actool.CoreTool
+	cancelCause context.CancelCauseFunc
+	boundary    exploration.Lease
+	browser     ExplorationBrowserLease
+	client      mcpClient
+	tools       []actool.CoreTool
+	// mcp는 브라우저 MCP 연결 정보다. 계정을 바꿀 때 같은 정보로 새 연결(새 문맥)을 연다.
+	mcp db.MCPServer
+	// switchMu는 브라우저 문맥 바꾸기(쓰기)와 브라우저 도구 호출(읽기)을 가른다.
+	switchMu          sync.RWMutex
 	mu                sync.Mutex
 	closed            bool
 	ran               bool
@@ -139,6 +143,7 @@ func OpenExplorationSession(parent context.Context, o ExplorationSessionOptions)
 		exploration.ReportFailure("browser_start", exploration.ErrBinding)
 		return fail()
 	}
+	s.mcp = info.MCP
 	client, err := connectMCP(context.WithValue(ctx, explorationMCPContextKey{}, true), &info.MCP)
 	s.client = client
 	if err != nil || client == nil {
@@ -288,7 +293,10 @@ func (s *ExplorationSession) Run(ctx context.Context, w *agent.Worker, o agent.E
 	stop := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
 	defer func() { stop(); cancel(nil) }()
 	o.Binding = s.options.Binding
-	o.BrowserTools = append([]actool.CoreTool{}, s.tools...)
+	o.BrowserTools = s.browserTools()
+	if len(o.Credentials) > 0 {
+		o.SwitchBrowser = s.switchBrowser
+	}
 	if s.options.Observe != nil {
 		wrap := func(tool actool.CoreTool) actool.CoreTool {
 			if tool == nil {
@@ -395,9 +403,18 @@ func (s *ExplorationSession) Close(parent context.Context, reason exploration.Re
 				errs = append(errs, exploration.ReportFailure(stage, err))
 			}
 		}
-		if s.client != nil {
+		// 문맥 바꾸기가 끝난 뒤의 지금 연결을 닫는다. 바꾸기·도구 호출이 끝나기를 마감 몫만큼만 기다린다(멈춘 도구 호출이
+		// 마감을 막지 않게). 기다리지 못하면 그 순간의 연결을 닫는다.
+		locked := s.tryLockSwitch(budget)
+		s.mu.Lock()
+		client, tools := s.client, s.tools
+		s.mu.Unlock()
+		if locked {
+			s.switchMu.Unlock()
+		}
+		if client != nil {
 			clean("browser_close", func(ctx context.Context) error {
-				for _, tool := range s.tools {
+				for _, tool := range tools {
 					if tool.Name() == "mcp__"+exploration.MCPServerName+"__browser_close" {
 						result, err := tool.Call(ctx, json.RawMessage(`{}`), nil)
 						if err != nil {
@@ -416,12 +433,12 @@ func (s *ExplorationSession) Close(parent context.Context, reason exploration.Re
 		if s.finalizeReady && s.options.Finalize != nil {
 			clean("finalize", func(ctx context.Context) error { return s.options.Finalize(ctx, s.options.Binding) })
 		}
-		if s.client != nil {
+		if client != nil {
 			clean("mcp_delete", func(ctx context.Context) error {
-				if cl, ok := s.client.(interface{ CloseContext(context.Context) error }); ok {
+				if cl, ok := client.(interface{ CloseContext(context.Context) error }); ok {
 					return cl.CloseContext(ctx)
 				}
-				return s.client.Close()
+				return client.Close()
 			})
 		}
 		if s.browser != nil {

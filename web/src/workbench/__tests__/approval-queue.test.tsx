@@ -7,7 +7,14 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
 
-import { ApprovalQueue, type Approvals } from "../views/live/approvals";
+import {
+  APPROVAL_CLOSED_REASON_TEXT,
+  ApprovalFacts,
+  ApprovalQueue,
+  type Approvals,
+  approvalTagText,
+  precheck,
+} from "../views/live/approvals";
 
 afterEach(cleanup);
 
@@ -61,4 +68,28 @@ it("대기 요청은 먼저 온 하나만 펼쳐 보이고, 처리하면 다음 
   expect(within(sec()).getByRole("button", { name: "처리된 요청 1" })).toBeInTheDocument();
   // 다음도 처음부터 펼쳐져 있다
   expect(within(sec()).getByRole("button", { name: /\/api\/items\/2/ })).toHaveAttribute("aria-expanded", "true");
+});
+
+it("닫힌 까닭(closed_reason, #953): 줄 상태 글 · 승인 정보 · 결정 직전 안내에 서버 까닭을 붙인다", () => {
+  const cancelled: RequestApproval = { ...row(1, "cancelled"), closed_reason: "model_stage_closed" };
+  const expired: RequestApproval = { ...row(2, "expired"), closed_reason: "approval_expired" };
+  expect(approvalTagText(cancelled)).toBe("취소 · 모델 단계 마감");
+  expect(approvalTagText({ ...cancelled, closed_reason: "operator_stopped" })).toBe("취소 · 운영자 종료");
+  // 만료는 '만료'가 곧 까닭이라 붙이지 않고, 이전 서버(칸 없음)는 상태만
+  expect(approvalTagText(expired)).toBe("만료");
+  expect(approvalTagText(row(3, "cancelled"))).toBe("취소");
+
+  render(<ApprovalFacts row={cancelled} />);
+  expect(screen.getByText("닫힌 까닭")).toBeInTheDocument();
+  expect(screen.getByText(APPROVAL_CLOSED_REASON_TEXT.model_stage_closed)).toBeInTheDocument();
+  expect(APPROVAL_CLOSED_REASON_TEXT.model_stage_closed).toContain("다른 요청이 취소한 것이 아닙니다");
+  cleanup();
+  render(<ApprovalFacts row={row(4, "cancelled")} />);
+  expect(screen.queryByText("닫힌 까닭")).not.toBeInTheDocument();
+
+  expect(precheck(row(1), cancelled)).toBe(
+    `취소돼 닫힌 요청입니다. ${APPROVAL_CLOSED_REASON_TEXT.model_stage_closed} 결정을 보내지 않았습니다.`,
+  );
+  expect(precheck(row(3), row(3, "cancelled"))).toBe("취소돼 닫힌 요청입니다. 결정을 보내지 않았습니다.");
+  expect(precheck(row(2), expired)).toBe("승인 기한이 지나 닫힌 요청입니다. 결정을 보내지 않았습니다.");
 });

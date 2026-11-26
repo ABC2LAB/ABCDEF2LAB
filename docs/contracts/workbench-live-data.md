@@ -39,6 +39,8 @@
 
 `ProductAccount`: `label`, `classification`(`test`|`real`), `reason`(`target_reapproved`|`target_expired`|`manual_unmark`, 없을 수 있음), `registered_by`, `registered_at`, `classified_by`, `classified_at`, `marked_revision`, `credential_configured`(bool, 값 없음).
 
+계정마다 배운 로그인 방법 `login_method`(`state` `none`·`learned`·`verified`, 언제·근거·값 없는 방법)를 싣는다. 칸 이름·값·모양은 [모델 로그인 시도 기록 계약](model-login-attempts.md) §6-1-3이다(모델 로그인 PR에서 서버·웹 파서를 같이 고침).
+
 계정 목록과 계정 변경 응답에서 자격이 저장됐지만 대상 로그인 방식이 없으면 `login_method_missing: true`를 함께 준다. 이때 점검은 익명으로 진행한다. 로그인 방식을 등록하면 다음 조회부터 이 필드를 생략한다. 실제 로그인 결과는 회차의 `account_auth`에서 확인한다.
 
 계정 분류 폐지(사용자 결정 2026-11-26, [모델 로그인 시도 기록 계약](model-login-attempts.md) §0): 프로그램은 계정을 시험 · 실계정으로 나누지 않고, 서버는 자격이 저장된 등록 계정을 회차에 결속한다(#967). 화면은 `label`·`credential_configured`·`login_method_missing`만 읽고 `classification`·`reason`·`classified_by`·`classified_at`·`marked_revision`·`account_statement`는 읽지 않는다. 새 점검 · 진행 화면의 '시험 계정 있음'(`lib/diagnosis/target-account-presence.ts`)도 `credential_configured`가 참인 계정 수로 센다. 표시 · 해제 API와 이 칸들을 서버에서 걷는 것은 따로 한다. 실행에서 계정별 로그인 결과는 실행 결과 `account_auth` 칸이다([실행 결과 계약](run-outcome-states.md) 3.4).
@@ -98,7 +100,7 @@
 | 칸 | 뜻 | 출처 |
 |---|---|---|
 | `model` | 모델이 진단 단계에서 보낸 요청 | 검증한 E② 저널의 결과 행 중 `request_written`이고 프로그램 호출이 아닌 시도 수 |
-| `login` | 프로그램 로그인(인증 준비 `auth_prep` + 세션 다시 받기 `refresh_session`) | 같은 저널, 같은 기준 |
+| `login` | 프로그램 로그인(인증 준비 `auth_prep` + 세션 다시 받기 `refresh_session`) + 모델 로그인의 프로그램 대조 요청 `login_contrast`(사용자 결정 2026-11-26) | 같은 저널, 같은 기준 |
 | `confirmation` | 확정 단계(E③) 요청 | 같은 저널, 같은 기준. Host 모드 화면 사본의 확정 투영 행(E③ 프로그램 호출)을 센다. 그 전 회차의 사본에는 확정 행이 없어 0이다 |
 | `unclassified` | 이 판이 모르는 프로그램 호출 종류가 보낸 요청 | 같은 저널. 0이 아니면 `total`은 `null`이다(모르는 종류를 다른 내역에 넣지 않는다) |
 | `exploration` | 탐색 단계에서 탐색 경계를 지난 대상 요청 | 회차 상태 디렉터리의 `exploration-requests.json`(탐색 경계가 세션 마감 때 확정한 `target_requests`, 진단 E② 예산에서 빼는 그 몫). 탐색 중이면 경계가 지금 보고하는 수 |
@@ -178,7 +180,7 @@ e2-flow와 같은 결속·정책 확인을 지나, 검증한 E② 저널만 읽�
 **전체 기록** `GET /api/tasks/{id}/e2-flow/requests?cursor=&limit=` (형식 `abc2lab.e2-flow-requests/v1`)
 
 - 줄: 대상에 요청을 보낸 시도(결과 행이 `request_written`)만, 시도마다 마지막 결과 행 하나, 저널 순서. 모양은 흐름 이벤트 줄과 같다: `at`·`kind`·`method`·`path`(시도별 화면용 경로 틀, 가린 값)·`status`·`call_ref`·`attempt_id`, 그리고 쪽 넘김용 `index`.
-- `kind`: `request`(모델 진단 요청) · `auth_prep` · `refresh_session`(프로그램 로그인) · `confirmation`(E③ 확정) · `unclassified`(이 판이 모르는 프로그램 호출 종류).
+- `kind`: `request`(모델 진단 요청) · `auth_prep` · `refresh_session`(프로그램 로그인) · `login_contrast`(프로그램 대조 요청, 모델 로그인 성공 확인용 세션 없는 GET) · `confirmation`(E③ 확정) · `unclassified`(이 판이 모르는 프로그램 호출 종류).
 - `total`: 보낸 시도 전체 수다. e2-flow `target_requests`의 `model + login + confirmation + unclassified`와 같다(시험 `TestE2RequestsPagesMatchFlowTargetRequests`). 탐색 요청은 E② 저널에 없어 여기 없다.
 - `limit` 기본 100·최대 200, `cursor`는 앞 쪽 마지막 줄의 `index`다. 다음 쪽이 있으면 `next_cursor`가 붙는다. 그 밖의 조회 조건·중복·형식이 틀린 값은 400이다.
 

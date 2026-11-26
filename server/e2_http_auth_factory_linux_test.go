@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/loginattempt"
 )
 
 // 정책에 인증 준비 칸이 있으면 factory가 실행을 잡을 때 계정마다 로그인 요청을 E② 인증 준비 규칙으로 보내고, 결과와
@@ -773,5 +774,542 @@ func TestE2HTTPSessionStoreRefreshQueuesPerAccount(t *testing.T) {
 	}
 	if _, result := store.refresh(nil, "a", func() (http.Header, string) { return nil, E2HTTPAuthAuthenticated }); result != E2HTTPAuthNotSent { //nolint:staticcheck // nil 문맥 방어
 		t.Fatal("nil context", result)
+	}
+}
+
+// 모델 로그인 회차(인증 칸 model_login)는 실행을 잡을 때 프로그램이 로그인하지 않는다. 결속 계정의 자격을 읽어 Worker
+// 지침용으로 돌려주고, 모델이 대상에서 직접 로그인한다(사용자 결정 2026-11-26, docs/contracts/model-login-attempts.md).
+// 비밀번호는 저장 기록 가림 값으로 등록한다.
+func TestE2HTTPFactoryGivesCredentialsToModelWithoutLogin(t *testing.T) {
+	login := &authLoginTarget{token: "seeded-factory-session-44ee"}
+	target := httptest.NewServer(login.handler(t))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/read"
+	auth := policy.Rules[0]
+	auth.Ref, auth.PathScopeRef, auth.PathPrefix, auth.Methods, auth.Purpose, auth.Credentials = "auth-login", "auth-login-path", "/login", []string{"POST"}, e2proxy.PurposeAuthPrep, nil
+	policy.Rules = append(policy.Rules, auth)
+	pin := authCredentialPin(t, filepath.Dir(cfg.PolicyFile), "account-tester-a.json", "tester@owned.test", "seeded-pass-88ff")
+	a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
+	a.ModelLogin = true
+	policy.LoginAttempts = &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
+	policy.Auth, policy.HeaderMode = &a, e2proxy.HeaderTestAccountPassthrough
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+		t.Fatal("policy write")
+	}
+	options, err := LoadE2HTTPRuntimeOptions(t.Context(), E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	acquired, err := options.Acquire(run, E2HTTPRequest{TaskID: "17", TaskIDNumber: 17, ExplorationID: 1, IntentID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer acquired.Release(context.Background())
+	if login.posts.Load() != 0 || len(acquired.Sessions) != 0 || len(acquired.Execution.Calls()) != 0 || acquired.AccountAuth != nil {
+		t.Fatalf("모델 회차에서 프로그램이 로그인함: posts=%d sessions=%d calls=%d auth=%v", login.posts.Load(), len(acquired.Sessions), len(acquired.Execution.Calls()), acquired.AccountAuth)
+	}
+	if len(acquired.Credentials) != 1 || acquired.Credentials[0].Label != "tester-a" || acquired.Credentials[0].Username != "tester@owned.test" || acquired.Credentials[0].Password != "seeded-pass-88ff" {
+		t.Fatal("Worker 지침용 자격이 없음")
+	}
+	if got := e2HTTPWorkerCredentials(e2proxy.HeaderTestAccountPassthrough, &acquired); len(got) != 1 || got[0].Label != "tester-a" {
+		t.Fatal("시험 계정 실행 Worker에 자격이 안 감")
+	}
+	if got := e2HTTPWorkerCredentials(e2proxy.HeaderPreserve, &acquired); len(got) != 0 {
+		t.Fatal("자격 헤더 통과가 아닌 실행에 자격이 감")
+	}
+	if out := string(acquired.Execution.RedactRecord([]byte("pw seeded-pass-88ff"))); strings.Contains(out, "seeded-pass-88ff") {
+		t.Fatal("비밀번호가 저장 기록 가림 값으로 등록되지 않음")
+	}
+}
+
+// 저장 기록 가림 값으로 등록할 수 없는 짧은 비밀번호(1~5바이트, 제품 등록은 받음)의 계정은 모델 로그인 회차에서도 Worker에
+// 주지 않고 not_sent로 남긴다. 모델이 그 값을 다시 쓰면 저장 기록에 원문이 남기 때문이다(#967 동찬 리뷰 P1).
+func TestE2HTTPFactoryWithholdsUnmaskablePasswordFromModel(t *testing.T) {
+	login := &authLoginTarget{token: "seeded-factory-session-55ff"}
+	target := httptest.NewServer(login.handler(t))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/read"
+	auth := policy.Rules[0]
+	auth.Ref, auth.PathScopeRef, auth.PathPrefix, auth.Methods, auth.Purpose, auth.Credentials = "auth-login", "auth-login-path", "/login", []string{"POST"}, e2proxy.PurposeAuthPrep, nil
+	policy.Rules = append(policy.Rules, auth)
+	dir := filepath.Dir(cfg.PolicyFile)
+	long := authCredentialPin(t, dir, "account-tester-a.json", "tester@owned.test", "seeded-pass-88ff")
+	short := authCredentialPin(t, dir, "account-tester-b.json", "short@owned.test", "ab12")
+	a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: long}, E2HTTPFileAuthAccount{Label: "tester-b", Credential: short})
+	a.ModelLogin = true
+	policy.LoginAttempts = &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
+	policy.Auth, policy.HeaderMode = &a, e2proxy.HeaderTestAccountPassthrough
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+		t.Fatal("policy write")
+	}
+	options, err := LoadE2HTTPRuntimeOptions(t.Context(), E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	acquired, err := options.Acquire(run, E2HTTPRequest{TaskID: "17", TaskIDNumber: 17, ExplorationID: 1, IntentID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer acquired.Release(context.Background())
+	if len(acquired.Credentials) != 1 || acquired.Credentials[0].Label != "tester-a" {
+		t.Fatalf("짧은 비밀번호 계정이 Worker 자격에 감: %d", len(acquired.Credentials))
+	}
+	if acquired.AccountAuth["tester-b"] != E2HTTPAuthNotSent || acquired.AccountAuth["tester-a"] != "" {
+		t.Fatalf("계정 상태: %v", acquired.AccountAuth)
+	}
+	if login.posts.Load() != 0 {
+		t.Fatal("모델 로그인 회차에서 프로그램이 로그인함")
+	}
+}
+
+// 모델 직접 로그인 회차의 진단 단계: E②가 모델 요청마다 로그인 시도를 판정한다(계약 docs/contracts/model-login-attempts.md).
+// 틀린 로그인은 실패로 세고, 맞는 로그인은 세션 없는 막힘과 세션 열림이 같은 URL에서 대조될 때만 성공이다. 성공한 세션은
+// 세션 저장소에 묶여(확정 단계 계정 결속) 계정 귀속에 쓰이고, 같은 아이디로 세 번 연달아 실패하면 네 번째는 대상에 나가지
+// 않는다. 기록 파일에는 비밀번호·세션 값이 없다.
+func TestE2HTTPModelLoginAttemptsThroughE2(t *testing.T) {
+	const token = "model-login-session-77aa"
+	var posts atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/read/login":
+			posts.Add(1)
+			_ = r.ParseForm()
+			if r.PostForm.Get("email") != "tester@owned.test" || r.PostForm.Get("password") != "seeded-pass-88ff" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: token, Path: "/"})
+			http.Redirect(w, r, "/read/home", http.StatusFound)
+		case r.Method == "GET" && r.URL.Path == "/read/home":
+			if c, err := r.Cookie("session"); err == nil && c.Value == token {
+				io.WriteString(w, "home")
+				return
+			}
+			http.Redirect(w, r, "/read/login", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/read"
+	policy.Rules[0].Methods = []string{"GET", "POST"}
+	policy.MaxRequests = 64
+	// 대상의 401은 이 call의 거부 수로 세지 않지만, 상한 거부(policy_denied)는 센다. 호출 상한이 판정기 상한보다 먼저 닿지 않게 둔다.
+	policy.Limits.MaxDenials, policy.Limits.MaxAttempts = 16, 64
+	auth := policy.Rules[0]
+	auth.Ref, auth.PathScopeRef, auth.PathPrefix, auth.Methods, auth.Purpose, auth.Credentials = "auth-login", "auth-login-path", "/login", []string{"POST"}, e2proxy.PurposeAuthPrep, nil
+	policy.Rules = append(policy.Rules, auth)
+	pin := authCredentialPin(t, filepath.Dir(cfg.PolicyFile), "account-tester-a.json", "tester@owned.test", "seeded-pass-88ff")
+	a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
+	a.ModelLogin = true
+	policy.LoginAttempts = &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
+	policy.Auth, policy.HeaderMode = &a, e2proxy.HeaderTestAccountPassthrough
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+		t.Fatal("policy write")
+	}
+	options, err := LoadE2HTTPRuntimeOptions(t.Context(), E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	lease, err := options.Acquire(run, E2HTTPRequest{TaskID: "17", TaskIDNumber: 17, ExplorationID: 1, IntentID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(context.Background())
+	if lease.LoginAttempts == nil {
+		t.Fatal("모델 로그인 회차에 판정기가 없음")
+	}
+	call, err := lease.Execution.BeginCall(run, "model-login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer call.Close(context.Background())
+	send := func(method, path, body, cookie string) (int, e2proxy.Receipt, error) {
+		var reader io.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		}
+		req, _ := http.NewRequest(method, target.URL+path, reader)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		}
+		if cookie != "" {
+			req.Header.Set("Cookie", cookie)
+		}
+		resp, receipt, err := call.Do(run, req)
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+			resp.Body.Close()
+		}
+		return status, receipt, err
+	}
+	wrong := "email=tester%40owned.test&password=wrong-pass-1"
+	right := "email=tester%40owned.test&password=seeded-pass-88ff"
+	if status, _, err := send("GET", "/read/home", "", ""); err != nil || status != http.StatusFound {
+		t.Fatalf("세션 없는 GET: %d %v", status, err)
+	}
+	for i := 0; i < 2; i++ {
+		if status, receipt, err := send("POST", "/read/login", wrong, ""); err != nil || status != http.StatusUnauthorized {
+			t.Fatalf("틀린 로그인 %d: %d %v %+v", i, status, err, receipt)
+		}
+	}
+	if status, _, err := send("POST", "/read/login", right, ""); err != nil || status != http.StatusFound {
+		t.Fatalf("맞는 로그인: %d %v", status, err)
+	}
+	if got := lease.LoginAttempts.AccountAuth()["tester-a"]; got != loginattempt.AuthUnconfirmed {
+		t.Fatalf("대조 전 계정 상태: %s", got)
+	}
+	if status, _, err := send("GET", "/read/home", "", "theme=dark; session="+token); err != nil || status != http.StatusOK {
+		t.Fatalf("세션 GET: %d %v", status, err)
+	}
+	// 성공을 세운 요청부터 그 계정으로 귀속한다(다른 쿠키가 같이 실려도). 세션 없는 요청은 귀속하지 않는다.
+	observed := call.Result().Observations
+	wantRef := CandidateAccountRevision("tester-a", pin.SHA256)
+	if len(observed) < 2 || observed[len(observed)-1].RequestAccountRef != wantRef || observed[0].RequestAccountRef != "" {
+		t.Fatalf("모델 로그인 세션 요청의 계정 귀속: %+v", observed)
+	}
+	if got := lease.LoginAttempts.AccountAuth()["tester-a"]; got != loginattempt.AuthAuthenticated {
+		t.Fatalf("대조 뒤 계정 상태: %s", got)
+	}
+	store := lease.sessionStore
+	ref, ok := store.AccountBindingRef(lease.Execution.Snapshot().Scope.RunRef, "tester-a")
+	if !ok {
+		t.Fatal("성공한 모델 로그인 세션이 확정 단계 결속에 없음")
+	}
+	if h, err := store.BoundSession(lease.Execution.Snapshot().Scope.RunRef, "tester-a", ref); err != nil || h.Get("Cookie") != "session="+token {
+		t.Fatalf("결속 세션: %v %v", h, err)
+	}
+	for i := 0; i < 3; i++ {
+		send("POST", "/read/login", wrong, "")
+	}
+	before := posts.Load()
+	_, refusedReceipt, err := send("POST", "/read/login", right, "")
+	if err == nil || refusedReceipt.Reason != e2proxy.PolicyDenied || posts.Load() != before {
+		t.Fatalf("연속 실패 상한 뒤에도 보냄: %+v %v posts=%d→%d", refusedReceipt, err, before, posts.Load())
+	}
+	path := filepath.Join(policy.StateDir, E2HTTPLoginAttemptsFile)
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("기록 파일: %v %v", info, err)
+	}
+	rows, _, err := readLoginAttemptRows(path)
+	if err != nil || len(rows) == 0 {
+		t.Fatal("기록 행 없음")
+	}
+	last := rows[len(rows)-1]
+	if last.Refusal != loginattempt.RefusalExhausted || last.Transport != loginattempt.TransportNotSent || last.Stage != loginattempt.StageDiagnosis ||
+		last.TransportRef != refusedReceipt.CallRef+"/"+refusedReceipt.AttemptID || refusedReceipt.AttemptID == "" {
+		t.Fatalf("마지막 행(상한 거부는 E② 거부 영수증과 이어져야 함): %+v", last)
+	}
+	content, _ := os.ReadFile(path)
+	for _, v := range []string{"seeded-pass-88ff", "wrong-pass-1", token} {
+		if strings.Contains(string(content), v) {
+			t.Fatalf("기록 파일에 값이 남음: %s", v)
+		}
+	}
+}
+
+// 판정기가 로그인으로 본 뒤 다른 E② 규칙(송신 시도 상한)으로 보내지 못한 로그인도 미전송 행으로 남고, 그 거부 영수증의
+// call_ref·attempt_id로 E② 기록과 이어진다(#969 동찬 리뷰 P2).
+func TestE2HTTPModelLoginNotSentRowLinksReceipt(t *testing.T) {
+	var posts atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			posts.Add(1)
+		}
+		io.WriteString(w, "ok")
+	}))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/read"
+	policy.Rules[0].Methods = []string{"GET", "POST"}
+	policy.MaxRequests = 64
+	policy.Limits.MaxDenials, policy.Limits.MaxAttempts = 16, 1
+	auth := policy.Rules[0]
+	auth.Ref, auth.PathScopeRef, auth.PathPrefix, auth.Methods, auth.Purpose, auth.Credentials = "auth-login", "auth-login-path", "/login", []string{"POST"}, e2proxy.PurposeAuthPrep, nil
+	policy.Rules = append(policy.Rules, auth)
+	pin := authCredentialPin(t, filepath.Dir(cfg.PolicyFile), "account-tester-a.json", "tester@owned.test", "seeded-pass-88ff")
+	a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
+	a.ModelLogin = true
+	policy.LoginAttempts = &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
+	policy.Auth, policy.HeaderMode = &a, e2proxy.HeaderTestAccountPassthrough
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+		t.Fatal("policy write")
+	}
+	options, err := LoadE2HTTPRuntimeOptions(t.Context(), E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	lease, err := options.Acquire(run, E2HTTPRequest{TaskID: "17", TaskIDNumber: 17, ExplorationID: 1, IntentID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(context.Background())
+	call, err := lease.Execution.BeginCall(run, "model-login-budget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer call.Close(context.Background())
+	first, _ := http.NewRequest("GET", target.URL+"/read/home", nil)
+	if resp, _, err := call.Do(run, first); err != nil {
+		t.Fatal(err)
+	} else {
+		resp.Body.Close()
+	}
+	login, _ := http.NewRequest("POST", target.URL+"/read/login", strings.NewReader("email=tester%40owned.test&password=seeded-pass-88ff"))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	_, receipt, err := call.Do(run, login)
+	if err == nil || receipt.Reason != e2proxy.AttemptLimit || posts.Load() != 0 {
+		t.Fatalf("시도 상한인데 보냄: %+v %v", receipt, err)
+	}
+	rows, _, err := readLoginAttemptRows(filepath.Join(policy.StateDir, E2HTTPLoginAttemptsFile))
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("미전송 행: %d %v", len(rows), err)
+	}
+	if r := rows[0]; r.Transport != loginattempt.TransportNotSent || r.Refusal != string(e2proxy.AttemptLimit) || r.TransportRef != receipt.CallRef+"/"+receipt.AttemptID || receipt.AttemptID == "" {
+		t.Fatalf("미전송 행이 E② 거부 영수증과 이어지지 않음: %+v / %s/%s", r, receipt.CallRef, receipt.AttemptID)
+	}
+}
+
+// 프로그램 대조 요청(계약 §4): 모델이 로그인 세션으로 연 URL에 세션 없는 응답이 없으면, E² 프로그램 호출(login_contrast)로
+// 그 정확한 URL을 세션 없이 한 번 다시 연다. 막힘이면 성공이 서고(contrast_source probe), 대상은 쿠키 없는 GET을 받는다.
+// 대조 요청은 GET·본문 없음·인증 헤더 없음만 보낸다.
+func TestE2HTTPModelLoginContrastProbe(t *testing.T) {
+	const token = "model-login-session-88bb"
+	var anonymous atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/read/login":
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: token, Path: "/"})
+			http.Redirect(w, r, "/read/dashboard", http.StatusFound)
+		case r.Method == "GET" && r.URL.Path == "/read/dashboard":
+			if c, err := r.Cookie("session"); err == nil && c.Value == token {
+				io.WriteString(w, "dashboard")
+				return
+			}
+			if r.Header.Get("Cookie") == "" && r.Header.Get("Authorization") == "" {
+				anonymous.Add(1)
+			}
+			http.Redirect(w, r, "/read/login", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/read"
+	policy.Rules[0].Methods = []string{"GET", "POST"}
+	policy.MaxRequests = 64
+	policy.Limits.MaxDenials, policy.Limits.MaxAttempts = 16, 64
+	auth := policy.Rules[0]
+	auth.Ref, auth.PathScopeRef, auth.PathPrefix, auth.Methods, auth.Purpose, auth.Credentials = "auth-login", "auth-login-path", "/login", []string{"POST"}, e2proxy.PurposeAuthPrep, nil
+	policy.Rules = append(policy.Rules, auth)
+	pin := authCredentialPin(t, filepath.Dir(cfg.PolicyFile), "account-tester-a.json", "tester@owned.test", "seeded-pass-88ff")
+	a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
+	a.ModelLogin = true
+	policy.LoginAttempts = &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
+	policy.Auth, policy.HeaderMode = &a, e2proxy.HeaderTestAccountPassthrough
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+		t.Fatal("policy write")
+	}
+	options, err := LoadE2HTTPRuntimeOptions(t.Context(), E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	lease, err := options.Acquire(run, E2HTTPRequest{TaskID: "17", TaskIDNumber: 17, ExplorationID: 1, IntentID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(context.Background())
+	call, err := lease.Execution.BeginCall(run, "model-login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer call.Close(context.Background())
+	login, _ := http.NewRequest("POST", target.URL+"/read/login", strings.NewReader("email=tester%40owned.test&password=seeded-pass-88ff"))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if resp, _, err := call.Do(run, login); err != nil {
+		t.Fatal(err)
+	} else {
+		resp.Body.Close()
+	}
+	dash, _ := http.NewRequest("GET", target.URL+"/read/dashboard", nil)
+	dash.Header.Set("Cookie", "session="+token)
+	if resp, _, err := call.Do(run, dash); err != nil || resp.StatusCode != 200 {
+		t.Fatalf("세션 GET: %v", err)
+	} else {
+		resp.Body.Close()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for lease.LoginAttempts.AccountAuth()["tester-a"] != loginattempt.AuthAuthenticated && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := lease.LoginAttempts.AccountAuth()["tester-a"]; got != loginattempt.AuthAuthenticated || anonymous.Load() != 1 {
+		t.Fatalf("대조 요청으로 성공 안 함: %s 세션 없는 GET=%d", got, anonymous.Load())
+	}
+	rows, _, err := readLoginAttemptRows(filepath.Join(policy.StateDir, E2HTTPLoginAttemptsFile))
+	if err != nil || len(rows) == 0 {
+		t.Fatal("기록 없음")
+	}
+	last := rows[len(rows)-1]
+	if last.ContrastSource != loginattempt.ContrastProbe || last.ContrastProbes != 1 || last.Outcome != loginattempt.OutcomeSucceeded {
+		t.Fatalf("대조 요청 행: %+v", last)
+	}
+	contrast := 0
+	for _, c := range lease.Execution.Calls() {
+		if c.Program == e2proxy.ProgramLoginContrast {
+			contrast++
+		}
+	}
+	if contrast != 1 {
+		t.Fatalf("프로그램 대조 호출 수: %d", contrast)
+	}
+	// 대조 요청 호출은 세션·본문·쓰기 메서드를 싣지 못한다.
+	probeCall, err := lease.Execution.BeginProgramCall(run, e2proxy.ProgramLoginContrast, "login-contrast-check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probeCall.Close(context.Background())
+	for name, req := range map[string]*http.Request{
+		"cookie": func() *http.Request {
+			r, _ := http.NewRequest("GET", target.URL+"/read/dashboard", nil)
+			r.Header.Set("Cookie", "session="+token)
+			return r
+		}(),
+		"post": func() *http.Request {
+			r, _ := http.NewRequest("POST", target.URL+"/read/login", strings.NewReader("x=1"))
+			return r
+		}(),
+		"empty post": func() *http.Request {
+			r, _ := http.NewRequest("POST", target.URL+"/read/dashboard", nil)
+			return r
+		}(),
+	} {
+		if _, receipt, err := probeCall.Do(run, req); err == nil || receipt.Reason != e2proxy.Unsupported {
+			t.Fatalf("%s: 대조 요청이 막아야 할 요청을 보냄: %+v %v", name, receipt, err)
+		}
+	}
+}
+
+// 계정을 등록하지 않은 제품 회차도 판정기가 붙는다(사용자 결정 2026-11-26). 등록 밖 아이디(기본 계정 시험 등)로 같은 아이디
+// 세 번 연달아 실패하면 네 번째 로그인은 대상에 나가지 않는다(절대규칙 1·3). 이 회차는 세션을 싣지 못하는 것은 그대로다.
+func TestE2HTTPLoginAttemptsWithoutRegisteredAccounts(t *testing.T) {
+	var posts atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/read/login" {
+			posts.Add(1)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/read"
+	policy.Rules[0].Methods = []string{"GET", "POST"}
+	policy.MaxRequests = 64
+	policy.Limits.MaxDenials, policy.Limits.MaxAttempts = 16, 64
+	policy.LoginAttempts = &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
+	if policy.Auth != nil || policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough {
+		t.Fatal("시험 정책이 계정 없는 회차가 아님")
+	}
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+		t.Fatal("policy write")
+	}
+	options, err := LoadE2HTTPRuntimeOptions(t.Context(), E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	lease, err := options.Acquire(run, E2HTTPRequest{TaskID: "17", TaskIDNumber: 17, ExplorationID: 1, IntentID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(context.Background())
+	if lease.LoginAttempts == nil {
+		t.Fatal("계정 없는 제품 회차에 판정기가 없음")
+	}
+	call, err := lease.Execution.BeginCall(run, "default-creds")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer call.Close(context.Background())
+	send := func() (e2proxy.Receipt, error) {
+		req, _ := http.NewRequest("POST", target.URL+"/read/login", strings.NewReader("username=admin&password=admin123"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, receipt, err := call.Do(run, req)
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return receipt, err
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := send(); err != nil {
+			t.Fatalf("%d번째 기본 계정 로그인: %v", i+1, err)
+		}
+	}
+	if receipt, err := send(); err == nil || receipt.Reason != e2proxy.PolicyDenied || posts.Load() != 3 {
+		t.Fatalf("계정 없는 회차에서 연속 실패 상한 뒤에도 보냄: %+v %v posts=%d", receipt, err, posts.Load())
+	}
+	rows, _, err := readLoginAttemptRows(filepath.Join(policy.StateDir, E2HTTPLoginAttemptsFile))
+	if err != nil || len(rows) == 0 || rows[len(rows)-1].Refusal != loginattempt.RefusalExhausted || rows[len(rows)-1].AccountLabel != "" || rows[len(rows)-1].Identifier != "admin" {
+		t.Fatalf("기록: %v %+v", err, rows)
+	}
+}
+
+// 모델 로그인 인증 칸은 판정 설정 없이 받지 않고, 판정 설정은 있으면 맞는 값이어야 한다(상한 없이 로그인이 나가지 않게).
+func TestE2HTTPPolicyRequiresLoginAttemptLimits(t *testing.T) {
+	for name, change := range map[string]func(*E2HTTPFilePolicy, string){
+		"model login without limits": func(p *E2HTTPFilePolicy, dir string) {
+			pin := authCredentialPin(t, dir, "account-tester-a.json", "tester@owned.test", "seeded-pass-88ff")
+			a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
+			a.ModelLogin = true
+			auth := p.Rules[0]
+			auth.Ref, auth.PathScopeRef, auth.PathPrefix, auth.Methods, auth.Purpose, auth.Credentials = "auth-login", "auth-login-path", "/login", []string{"POST"}, e2proxy.PurposeAuthPrep, nil
+			p.Rules = append(p.Rules, auth)
+			p.Auth, p.HeaderMode = &a, e2proxy.HeaderTestAccountPassthrough
+		},
+		"zero failure limit": func(p *E2HTTPFilePolicy, _ string) {
+			p.LoginAttempts = &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 0, MaxContrastProbes: 3, TokenMinBytes: 16}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg, _, policy := e2HostPolicyFixture(t)
+			change(&policy, filepath.Dir(cfg.PolicyFile))
+			raw, err := json.Marshal(policy)
+			if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+				t.Fatal("policy write")
+			}
+			if _, err := LoadE2HTTPRuntimeOptions(t.Context(), E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}}); err == nil {
+				t.Fatal("판정 설정이 틀린 정책을 받음")
+			}
+		})
 	}
 }

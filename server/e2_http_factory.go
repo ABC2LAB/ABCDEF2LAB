@@ -28,6 +28,7 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/privateinput"
+	"github.com/Autumn-27/artex/loginattempt"
 	"github.com/Autumn-27/artex/transmit"
 	"github.com/Autumn-27/artex/transmit/budget"
 )
@@ -232,6 +233,9 @@ func (p E2HTTPFilePolicy) excludedPaths() []string {
 }
 
 type E2HTTPFilePolicy struct {
+	// LoginAttempts는 제품 회차의 로그인 시도 판정 설정이다(계약 docs/contracts/model-login-attempts.md §4·§5). 계정을 등록하지
+	// 않은 회차도 등록 밖 아이디(기본 계정 시험 등)의 연속 실패 상한을 지키도록 인증 칸과 따로 둔다(사용자 결정 2026-11-26).
+	LoginAttempts      *E2HTTPLoginAttemptLimits        `json:"login_attempts,omitempty"`
 	Workflow           *E2HTTPWorkflowPolicy            `json:"workflow,omitempty"`
 	ApprovalMode       e2proxy.ApprovalMode             `json:"approval_mode"`
 	Format             string                           `json:"format"`
@@ -346,7 +350,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 	if strictJSON(raw, &policy) != nil || !validE2HTTPRuleSelectorFields(raw) || !validE2HTTPPasswordResponseField(raw) || policy.Format != E2HTTPFilePolicyFormat || len(policy.Rules) == 0 || len(policy.Rules) > 256 || policy.MaxRequests == 0 || !policy.ValidUntil.After(policy.ValidFrom) || !policy.ValidUntil.After(time.Now()) || policy.ValidFrom.After(time.Now()) || privateinput.CheckDirectory(policy.StateDir, true) != nil {
 		return empty, ErrE2HTTPHost
 	}
-	if !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) {
+	if !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) || !validE2HTTPLoginAttempts(policy) {
 		return empty, ErrE2HTTPHost
 	}
 	if policy.Workflow != nil {
@@ -628,6 +632,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		var patternExecution atomic.Pointer[e2proxy.Execution]
 		var patternUsernames atomic.Pointer[map[string]bool]
 		var accountSessionStore atomic.Pointer[e2HTTPSessionStore]
+		var accountLoginAttempts atomic.Pointer[loginattempt.Tracker]
 		var resolveSentAccount func(http.Header) string
 		var selectedSessionHeaders func() (http.Header, bool)
 		credentialHeader := ""
@@ -638,6 +643,13 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				accountRefs[account.Label] = CandidateAccountRevision(account.Label, account.Credential.SHA256)
 			}
 			resolveSentAccount = func(sent http.Header) string {
+				// 모델 직접 로그인 회차: 모델 요청의 계정은 성공한 로그인 세션을 실었는지로 정한다(값이 정확히 같은 헤더가 아니어도,
+				// 브라우저·curl이 다른 쿠키를 같이 실어도). 성공하지 않은 세션이나 두 계정 세션은 귀속하지 않는다.
+				if tracker := accountLoginAttempts.Load(); tracker != nil {
+					if label := tracker.AccountOf(sent); label != "" {
+						return accountRefs[label]
+					}
+				}
 				store := accountSessionStore.Load()
 				if store == nil {
 					return ""
@@ -733,10 +745,16 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if createErr != nil || e2HTTPRecordRuntimeConditions(policy.StateDir, append(conditions, '\n')) != nil {
 			return failed(execution, runner)
 		}
-		// 인증 준비(C14): 계정마다 로그인 요청을 E② 인증 준비 규칙으로 한 번 보낸다. 세션 값은 출력 가림 전용 값으로 등록되고
-		// 실행 메모리에만 있다. 결과(값 없음)는 계정별로 실행 기록에 남긴다.
+		// 모델 직접 로그인(사용자 결정 2026-11-26, docs/contracts/model-login-attempts.md): 프로그램이 실행 시작 때 로그인하지
+		// 않는다. 결속된 등록 계정의 자격을 읽어 모델 지침에 넣고, 모델이 대상의 로그인 화면·API로 직접 로그인해 받은 세션을
+		// 스스로 실어 보낸다. 확정 단계 다시 로그인(E③)은 아래 sessionStore.relogin이 지금 로그인 방식으로 한다.
 		var auth E2HTTPAuthResult
-		if policy.Auth != nil {
+		var credentials []agent.E2HTTPAccountCredential
+		switch {
+		case policy.Auth != nil && (!policy.Auth.ModelLogin || policy.SelectedAccountRef != ""):
+			// 인증 준비(C14): 프로그램이 계정마다 로그인 요청을 E② 인증 준비 규칙으로 한 번 보낸다. 모델 로그인을 켜지 않은
+			// 정책(이전 결속)과 선택 후보 검증 회차(#950, 모델이 없는 프로그램 회차)다. 세션 값은 출력 가림 전용 값으로 등록되고
+			// 실행 메모리에만 있다. 결과(값 없음)는 계정별로 실행 기록에 남긴다.
 			origin := ""
 			for _, rule := range policy.Rules {
 				if rule.Ref == policy.Auth.RuleRef {
@@ -749,9 +767,19 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			if authErr != nil || current(taskctx) != nil {
 				return failed(execution, runner)
 			}
+		case policy.Auth != nil:
+			var unread map[string]string
+			credentials, unread = e2HTTPAccountCredentials(taskctx, execution, dir, *policy.Auth)
+			if len(unread) > 0 {
+				accountAuth = unread
+			}
+			if current(taskctx) != nil {
+				return failed(execution, runner)
+			}
 		}
-		// 인증된 시험 계정이 없으면 이 실행은 계정 없이 진행한다. 첫 모델 요청 전에 E②를 preserve처럼 묶는다(C14 결정 5·6).
-		if policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && len(auth.Sessions) == 0 {
+		// 쓸 계정이 없으면(자격을 못 읽었거나 선택 검증 로그인이 안 됨) 이 실행은 계정 없이 진행한다. 첫 요청 전에 E②를
+		// preserve처럼 묶는다(C14 결정 5·6).
+		if policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && len(credentials) == 0 && len(auth.Sessions) == 0 {
 			execution.DisableTestAccountPassthrough()
 		}
 		if input.OnAcquire != nil {
@@ -765,22 +793,48 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		var refresh func(context.Context, string) (http.Header, string)
 		sessionStore := newE2HTTPSessionStore(auth.Sessions, execution.Snapshot().Scope.RunRef, nil)
 		accountSessionStore.Store(sessionStore)
+		// 모델 직접 로그인 회차는 모델 요청마다 로그인 시도를 판정한다(계약 docs/contracts/model-login-attempts.md). Worker가
+		// 첫 요청을 보내기 전에 붙인다. 판정기를 못 만들면 상한을 지킬 수 없으므로 실행을 열지 않는다.
+		var loginAttempts *loginattempt.Tracker
+		var prober *loginContrastProber
+		// 계정 등록 여부와 상관없이 판정 설정이 있는 제품 회차면 붙인다. 이전 결속(프로그램 로그인)과 선택 후보 검증 회차는 제외다.
+		if policy.LoginAttempts != nil && policy.SelectedAccountRef == "" && (policy.Auth == nil || policy.Auth.ModelLogin) {
+			var trackerErr error
+			prober = newLoginContrastProber(nil)
+			loginAttempts, trackerErr = newE2HTTPLoginAttempts(taskctx, policy, credentials, sessionStore, prober)
+			if trackerErr != nil {
+				return failed(execution, runner)
+			}
+			execution.AttachLoginAttempts(loginAttempts)
+			accountLoginAttempts.Store(loginAttempts)
+
+		}
 		programCalls := newE2HTTPProgramCalls(auth.CallRefs...)
-		if policy.Auth != nil && policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && len(auth.Sessions) > 0 {
+		if prober != nil {
+			// 프로그램 대조 요청은 실행 문맥 동안만 보낸다(마감·취소면 멈춤). 호출 참조는 프로그램 호출로 마감 대조에서 뺀다.
+			prober.execution, prober.tracker, prober.calls = execution, loginAttempts, programCalls
+			go prober.run(taskctx)
+		}
+		if policy.Auth != nil && policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && (len(credentials) > 0 || len(auth.Sessions) > 0) {
 			authPolicy, origin := *policy.Auth, ""
 			for _, rule := range policy.Rules {
 				if rule.Ref == authPolicy.RuleRef {
 					origin = rule.Origin
 				}
 			}
-			refresh = func(ctx context.Context, label string) (http.Header, string) {
-				// 성공하면 다음 Worker도 새 세션으로 시작한다. 같은 계정 다시 로그인은 줄을 세운다.
-				return sessionStore.refresh(ctx, label, func() (http.Header, string) {
-					return e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, sessionStore.refreshes, programCalls, label, false)
-				})
+			// 모델 회차에는 Worker의 refresh_session이 없다(모델이 직접 다시 로그인한다, 2026-11-26). 선택 후보 검증 회차(#950)는
+			// 프로그램이 같은 계정 세션을 다시 받아야 하므로(두 번째 재검증 등) 그 경로를 남긴다.
+			if len(auth.Sessions) > 0 {
+				refresh = func(ctx context.Context, label string) (http.Header, string) {
+					// 성공하면 다음 호출도 새 세션으로 시작한다. 같은 계정 다시 로그인은 줄을 세운다.
+					return sessionStore.refresh(ctx, label, func() (http.Header, string) {
+						return e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, sessionStore.refreshes, programCalls, label, false)
+					})
+				}
 			}
-			// 확정 단계 직전 다시 로그인도 같은 경로·같은 상한이고, 확정 몫을 쓰는 호출로 연다(사용자 결정 2026-11-20 (가)).
-			// Worker의 refresh_session(위)은 확정 몫을 쓰지 못한다.
+			// 확정 단계 직전 다시 로그인은 지금 로그인 방식으로 프로그램이 하고, 확정 몫을 쓰는 호출로 연다(사용자 결정
+			// 2026-11-20 (가)). 처음 세션이 없어도 연다: 모델 회차의 확정 단계 계정 세션은 이 다시 로그인으로만 생긴다(모델 로그인
+			// 기록 재사용이 들어오기 전까지, 계약 §7).
 			sessionStore.relogin = func(ctx context.Context, label string) (http.Header, string) {
 				return sessionStore.refresh(ctx, label, func() (http.Header, string) {
 					return e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, sessionStore.refreshes, programCalls, label, true)
@@ -791,7 +845,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if hostRecorder != nil {
 			verifySelected = hostRecorder.ObservedAt
 		}
-		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, VerifySelected: verifySelected, AccountAuth: auth.AccountAuth, Sessions: auth.Sessions, RefreshSession: refresh, sessionStore: sessionStore, programCalls: programCalls}, nil
+		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, VerifySelected: verifySelected, AccountAuth: accountAuth, Sessions: auth.Sessions, RefreshSession: refresh, Credentials: credentials, LoginAttempts: loginAttempts, sessionStore: sessionStore, programCalls: programCalls}, nil
 	}
 	// 진단 Worker의 insert_assets는 검사를 거친 일반 규칙과 인증 준비 규칙의 origin을 쓴다(C24).
 	approvedOrigins := make([]string, 0, len(policy.Rules))

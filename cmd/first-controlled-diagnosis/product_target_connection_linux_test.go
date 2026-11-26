@@ -102,7 +102,7 @@ func TestC35ExplorationConnectionCannotCrossJobs(t *testing.T) {
 	// 승인 이력의 옛 주소로 연결하면 실패한다. 탐색도 새 실행 증거를 써야 수신기에 도달한다.
 	f.rec.SelectedIP = "192.0.2.254"
 	f.rec.Target.TLSSPKISHA256 = strings.Repeat("e", 64)
-	factory := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, &explorationPasswords{})
+	factory := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, &explorationPasswords{}, productExplorationLogin(nil))
 	connection.IP = "10.200.1.99" // factory가 참조 대신 값을 보존해야 한다.
 	host, err := factory(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
@@ -122,7 +122,7 @@ func TestC35ExplorationConnectionCannotCrossJobs(t *testing.T) {
 	if _, err := factory(t.Context(), wrong, &agent.Worker{}); err == nil {
 		t.Fatal("탐색에서 다른 job의 IP/SPKI 사용")
 	}
-	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, nil, &explorationPasswords{})(t.Context(), f.binding, &agent.Worker{}); err == nil {
+	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, nil, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{}); err == nil {
 		t.Fatal("접속 검증 없이 탐색 host 조립")
 	}
 }

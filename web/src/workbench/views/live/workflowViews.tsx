@@ -679,7 +679,16 @@ const LOG_SYSTEM_KINDS: ReadonlySet<string> = new Set(["created", "completed", "
  * 보고서 판정 집계 · 점검 진행 전송 통제와 같은 모양: 이름 · 수 · 설명. 발견한 API 설명은 경로 종류(조회 · 데이터 변경 · 제외)로
  * 나눠 합이 발견 수와 맞게 적는다. '승인 후 전송'은 데이터 변경과 같은 경로를 다시 센 수라 두지 않는다
  */
-export function CrawlMeters({ flow, e2 }: { flow: WorkflowSnapshot; e2: E2Flow | null | undefined }) {
+export function CrawlMeters({
+  flow,
+  e2,
+  e2Failed = false,
+}: {
+  flow: WorkflowSnapshot;
+  e2: E2Flow | null | undefined;
+  /** e2-flow 조회 실패(보낸 요청 칸이 '0건'이 아니라 '읽기 실패') */
+  e2Failed?: boolean;
+}) {
   const count = (k: Kind) => flow.endpoints.filter((e) => kindOf(e) === k).length;
   // 탐색 단계에서는 GET 만 보낸다(서버 Controller.Before). 심화 점검이 시작되면 보낸 요청에 그 요청도 들어간다
   const readOnly = flow.deep_runs === 0 && (flow.stage === "crawling" || flow.stage === "awaiting_selection");
@@ -697,7 +706,7 @@ export function CrawlMeters({ flow, e2 }: { flow: WorkflowSnapshot; e2: E2Flow |
             "cSent",
             "보낸 요청",
             // 대상에 나간 요청 총계(탐색 경계 + E② 모델 · 로그인 · 확정), 마우스 올리면 내역(사용자 11/25)
-            <SentRequestsValue key="sent" flow={e2} />,
+            <SentRequestsValue key="sent" flow={e2} failed={e2Failed} />,
             `${readOnly ? "조회만" : "심화 점검 포함"}${flow.counts.unknown ? ` · 결과 불명 ${flow.counts.unknown}` : ""}`,
           ],
           // 서버 counts.blocked 는 경로 수가 아니라 전송 통제가 거부 · 미지원으로 막은 요청 수
@@ -828,7 +837,10 @@ export function RequestSendResult({ task, callRef, attemptId }: { task: string; 
                 NONE
               ),
             ],
-            ["경로 표시", pathDetailText(d.path_detail_state, d.path_pattern)],
+            // 상태 칸이 없는 이전 서버 응답이면 '경로 표시'를 두지 않는다(모양을 지어내지 않음)
+            ...(d.path_detail_state
+              ? ([["경로 표시", pathDetailText(d.path_detail_state, d.path_pattern)]] as [string, ReactNode][])
+              : []),
             [
               "규칙",
               d.rule_ref ? (
@@ -1048,9 +1060,10 @@ function E2RequestLog({
                 <span className={cx(s.m, row.method ? s[row.method] : undefined)}>{row.method ?? NONE}</span>
                 <span
                   className={cx(s.p, row.path_detail_state === "unavailable" && s["sap-nopath"])}
-                  title={pathDetailText(row.path_detail_state, row.path)}
+                  title={pathDetailText(row.path_detail_state, row.path) ?? undefined}
                 >
-                  {row.path && row.path_detail_state !== "unavailable" ? <Pth p={row.path} /> : "경로 틀 없음"}
+                  {row.path && row.path_detail_state !== "unavailable" ? <Pth p={row.path} /> : null}
+                  {!row.path || row.path_detail_state === "unavailable" ? "경로 틀 없음" : null}
                 </span>
                 <span className={s.lk}>{requestKindText(row.kind)}</span>
                 <span className={cx(s.lk, s.mono)}>{`#${row.index}`}</span>
@@ -1457,7 +1470,7 @@ export function WorkflowCrawlLive() {
                     (crawlEndText, 사용자 11/19) */}
               </div>
               {/* 숫자 칸 3개(발견한 API · 보낸 요청 · 막은 요청) — 보고서도 같은 부품을 쓴다 */}
-              <CrawlMeters flow={flow} e2={e2.data} />
+              <CrawlMeters flow={flow} e2={e2.data} e2Failed={!!e2.error && !e2.data} />
               <section className={s.sec} aria-labelledby="cLogH">
                 <div className={s.sh}>
                   <h2 id="cLogH">탐색 기록</h2>

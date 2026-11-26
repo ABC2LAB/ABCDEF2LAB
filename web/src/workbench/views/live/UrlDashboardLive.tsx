@@ -11,7 +11,7 @@ import { type ReactNode, useState } from "react";
 
 import { activeURLRun, endedURLRun } from "@/lib/diagnosis/diagnosis-runs";
 import { diagnosticOutcome } from "@/lib/diagnosis/diagnostic-results";
-import { type E2Counts, getE2Flow } from "@/lib/diagnosis/e2flow";
+import { type E2Counts, type E2Flow, getE2Flow } from "@/lib/diagnosis/e2flow";
 import type { RemediationEntry } from "@/lib/diagnosis/remediation";
 import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
 import { entrySeverity } from "@/lib/diagnosis/severity";
@@ -26,7 +26,7 @@ import { LoadingRow, NotYet } from "../../live/parts";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { URL_ENDED_STATES, urlHost, urlStateText } from "../../live/urlMap";
 import { useUrlRuns } from "../../live/urlRunList";
-import { usePoll } from "../../live/usePoll";
+import { type Poll, usePoll } from "../../live/usePoll";
 import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import { InspHead, InspOpenButton, Isec, PaneToggle, useScrollTopOnChange } from "../../ui/parts";
@@ -333,6 +333,18 @@ export function dashFindings(entries: readonly RemediationEntry[]): RemediationE
 }
 
 /** live 대시보드 (URL 진단 서버). */
+/**
+ * 점검 정보 '보낸 요청' 칸에 넘길 e2-flow. 재조회가 한 번 실패해도 같은 점검에서 마지막으로 받은 값은 그대로 넘긴다 — usePoll 은
+ * 오류에도 data 를 지우지 않고, 점검(task)이 바뀌면 비운다. '읽기 실패'는 받은 값이 하나도 없을 때만이다(#976 이동찬 P2).
+ */
+export function dashSentFlow(
+  e2Task: string | null,
+  e2: Pick<Poll<E2Flow>, "data" | "error">,
+): { e2Flow: E2Flow | null; e2FlowFailed: boolean } {
+  if (!e2Task) return { e2Flow: null, e2FlowFailed: false };
+  return { e2Flow: e2.data ?? null, e2FlowFailed: !!e2.error && !e2.data };
+}
+
 export function UrlDashboardLive() {
   const { route, openInsp } = useShell();
   const handle = useUrl((st) => st.handle);
@@ -505,7 +517,7 @@ export function UrlDashboardLive() {
         onApprovals={first ? () => pick({ kind: "approval", id: first.id }) : undefined}
         result={result}
         coverage={coverage}
-        e2Flow={e2Task && !e2.error ? (e2.data ?? null) : null}
+        {...dashSentFlow(e2Task, e2)}
       />
     );
   } else {

@@ -139,9 +139,12 @@ func TestE2HTTPFactoryAttemptPatternsMaskSessionAndUsername(t *testing.T) {
 		}
 		response.Body.Close()
 	}
-	// 모델이 비밀번호를 경로에 넣으면 E②가 보내지 않지만(거부), 거부 시도의 표시 경로에도 비밀번호가 남으면 안 된다.
-	if response, _, err := call.Do(ctx, mustRequest(t, "GET", target.URL+"/allowed/seeded-pass-88ff")); err == nil || response != nil {
-		t.Fatal("비밀번호가 든 모델 요청을 보냄")
+	// 모델이 등록 비밀번호를 경로에 넣어도 E②는 그 이유로 막지 않는다(모델 직접 로그인, 2026-11-26). 그래도 저장 기록인 표시
+	// 경로에는 비밀번호가 남으면 안 된다(DLP 폐기 전까지 기록 가림은 그대로).
+	if response, _, err := call.Do(ctx, mustRequest(t, "GET", target.URL+"/allowed/seeded-pass-88ff")); err != nil || response == nil {
+		t.Fatal("등록 비밀번호가 든 모델 요청을 막음", err)
+	} else {
+		response.Body.Close()
 	}
 	closeCtx, done := context.WithTimeout(context.Background(), time.Second)
 	defer done()

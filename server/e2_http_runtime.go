@@ -18,6 +18,7 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
+	"github.com/Autumn-27/artex/loginattempt"
 )
 
 var (
@@ -126,6 +127,10 @@ type E2HTTPRunOptions struct {
 	// RefreshSession은 이 실행의 시험 계정 하나를 인증 준비 경로로 다시 로그인시킨다(refresh_session, C14). 시험 계정
 	// 실행이고 인증된 계정이 있을 때만 채운다.
 	RefreshSession func(ctx context.Context, label string) (http.Header, string)
+	// Credentials는 결속된 등록 계정의 로그인 자격이다(모델 직접 로그인, 사용자 결정 2026-11-26). Worker 지침에만 들어간다.
+	Credentials []agent.E2HTTPAccountCredential
+	// LoginAttempts는 모델 직접 로그인 회차의 로그인 시도 판정기다. 계정별 인증 상태(account_auth)를 여기서 읽는다.
+	LoginAttempts *loginattempt.Tracker
 	// sessionStore는 다시 로그인을 반영한 지금 세션이다. 있으면 Worker 지침은 이 사본으로 만든다.
 	sessionStore *e2HTTPSessionStore
 	// programCalls는 서버가 연 E② 호출(인증 준비 등)이다. 마감 대조가 Worker 결과 없이 따로 센다.
@@ -234,6 +239,9 @@ type E2HTTPRuntime struct {
 	// 실행 결과에 싣도록 남긴다. 다른 잠금과 섞이지 않게 따로 잠근다.
 	accountAuthMu sync.Mutex
 	accountAuth   map[string]string
+	// loginAttempts는 모델 직접 로그인 회차의 판정기다. 있으면 계정 상태는 처음 결과(자격을 못 읽은 계정의 not_sent)에
+	// 판정기 값을 더한 것이다(계약 §4 표).
+	loginAttempts *loginattempt.Tracker
 	// planResults는 작업별 마지막 계획(Plan) 한 번이 오류 없이 끝났는지다(작업 ID → bool). 흐름 모드 마감이 '계획은
 	// 정상인데 의도 0'과 '계획 호출이 실패해 의도 0'을 가르는 데 쓴다.
 	planResults sync.Map
@@ -275,6 +283,18 @@ func (r *E2HTTPRuntime) AccountAuth() map[string]string {
 	}
 	r.accountAuthMu.Lock()
 	defer r.accountAuthMu.Unlock()
+	if r.loginAttempts != nil {
+		merged := map[string]string{}
+		for label, result := range r.accountAuth {
+			merged[label] = result
+		}
+		for label, result := range r.loginAttempts.AccountAuth() {
+			if _, unread := merged[label]; !unread {
+				merged[label] = result
+			}
+		}
+		return diagnosis.CloneAccountAuth(merged)
+	}
 	return diagnosis.CloneAccountAuth(r.accountAuth)
 }
 
@@ -563,6 +583,13 @@ func (r *E2HTTPRuntime) planningFailure(ctx context.Context, status, reason stri
 	_ = diagnosticlog.Emit(logContext, diagnosticlog.Event{Component: "planner", Event: "stage_finished", Stage: "planning", Status: status, ReasonCode: reason})
 }
 
+// planningFailed는 계획 준비 실패를 진단 로그에 남기고, 같은 고정 사유를 오류에 싣는다. 엔진이 그 오류로 작업을 실패로
+// 표시하면 감독자가 이 사유를 실행 상태(reason_code)까지 싣는다(B1). 감싼 오류는 errors.Is로 원래 오류와 같게 보인다.
+func (r *E2HTTPRuntime) planningFailed(ctx context.Context, status, reason string, err error) error {
+	r.planningFailure(ctx, status, reason)
+	return firstDiagnosisCheckFailed(reason, err)
+}
+
 // timeBudgetDrained는 계획 준비 중(탐색 단계·범위 선택이나 흐름 일시정지 대기)에 감독자가 시간 상한 마감 유예를 다 써서
 // 실행을 멈춘 경우인지 본다(agent.AbortTimeBudgetDrain).
 func timeBudgetDrained(ctx context.Context) bool {
@@ -582,8 +609,7 @@ func (r *E2HTTPRuntime) planningTimeBudget(ctx context.Context, task *Task) erro
 func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (context.Context, error) {
 	t, err := r.taskFor(task)
 	if err != nil {
-		r.planningFailure(ctx, "failed", "planning_task_unavailable")
-		return ctx, ErrE2HTTPHost
+		return ctx, r.planningFailed(ctx, "failed", "planning_task_unavailable", ErrE2HTTPHost)
 	}
 	if ctx == nil || ctx.Err() != nil {
 		status := "failed"
@@ -594,42 +620,35 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 				status = "cancelled"
 			}
 		}
-		r.planningFailure(ctx, status, "planning_context_closed")
-		return ctx, ErrE2HTTPHost
+		return ctx, r.planningFailed(ctx, status, "planning_context_closed", ErrE2HTTPHost)
 	}
 	if r.options.CheckAuthority != nil && r.options.CheckAuthority(ctx) != nil {
-		r.planningFailure(ctx, "failed", "planning_authority_rejected")
-		return ctx, ErrE2HTTPHost
+		return ctx, r.planningFailed(ctx, "failed", "planning_authority_rejected", ErrE2HTTPHost)
 	}
 	if err := r.prepareExploration(ctx, task, t); err != nil {
 		if timeBudgetDrained(ctx) {
 			return ctx, r.planningTimeBudget(ctx, task)
 		}
-		r.planningFailure(ctx, "failed", "planning_exploration_failed")
-		return ctx, err
+		return ctx, r.planningFailed(ctx, "failed", "planning_exploration_failed", err)
 	}
 	if r.options.Workflow != nil {
 		if err := r.options.Workflow.BeforePlanning(ctx); err != nil {
 			if timeBudgetDrained(ctx) {
 				return ctx, r.planningTimeBudget(ctx, task)
 			}
-			r.planningFailure(ctx, "blocked", "planning_workflow_blocked")
-			return ctx, err
+			return ctx, r.planningFailed(ctx, "blocked", "planning_workflow_blocked", err)
 		}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
-		r.planningFailure(ctx, "failed", "planning_task_closed")
-		return ctx, ErrE2HTTPHost
+		return ctx, r.planningFailed(ctx, "failed", "planning_task_closed", ErrE2HTTPHost)
 	}
 	if t.blocked {
-		r.planningFailure(ctx, "blocked", "planning_task_blocked")
-		return ctx, ErrE2HTTPHost
+		return ctx, r.planningFailed(ctx, "blocked", "planning_task_blocked", ErrE2HTTPHost)
 	}
 	if t.ctx.Err() != nil {
-		r.planningFailure(ctx, "cancelled", "planning_task_cancelled")
-		return ctx, ErrE2HTTPHost
+		return ctx, r.planningFailed(ctx, "cancelled", "planning_task_cancelled", ErrE2HTTPHost)
 	}
 	if t.plannerRounds >= r.options.MaxPlannerRounds {
 		task.firstDiagnosisBudgetLimited.Store(true)
@@ -644,16 +663,14 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 	// Worker가 실행 중이어도 Planner를 깨운다(C27). 모델 동시성·예산·기존 lease 판정은 바꾸지 않는다.
 	if t.lease != nil {
 		if !t.validLease {
-			r.planningFailure(ctx, "failed", "planning_lease_invalid")
-			return ctx, ErrE2HTTPHost
+			return ctx, r.planningFailed(ctx, "failed", "planning_lease_invalid", ErrE2HTTPHost)
 		}
 		if err := r.leaseAdmission(task, t, *t.lease); err != nil {
 			status, reason := "failed", "planning_lease_invalid"
 			if errors.Is(err, ErrE2HTTPBudgetLimited) {
 				status, reason = "blocked", "planning_request_budget"
 			}
-			r.planningFailure(ctx, status, reason)
-			return ctx, err
+			return ctx, r.planningFailed(ctx, status, reason, err)
 		}
 	}
 	t.plannerRounds++
@@ -787,6 +804,11 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 			r.accountAuth = auth
 			r.accountAuthMu.Unlock()
 		}
+		if acquired.LoginAttempts != nil {
+			r.accountAuthMu.Lock()
+			r.loginAttempts = acquired.LoginAttempts
+			r.accountAuthMu.Unlock()
+		}
 		t.mu.Lock()
 		t.lease = &acquired
 		lease = t.lease
@@ -827,7 +849,7 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	t.mu.Unlock()
 	workCtx := agent.WithE2HTTPWebSearch(e2HTTPTaskContext(ctx, t.ctx), r.options.WebSearch)
 	observePrompt := r.promptObserver(ctx, t, actual.ID)
-	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Sessions: e2HTTPWorkerSessions(r.options.HeaderMode, lease), RefreshSession: e2HTTPRefreshFor(r.options.HeaderMode, lease), Workflow: r.options.Workflow, CaptureSelectedProof: r.options.CaptureSelectedProof, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ApprovedOrigins: append([]string(nil), r.options.ApprovedOrigins...), ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
+	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Sessions: e2HTTPWorkerSessions(r.options.HeaderMode, lease), RefreshSession: e2HTTPRefreshFor(r.options.HeaderMode, lease), Credentials: e2HTTPWorkerCredentials(r.options.HeaderMode, lease), Workflow: r.options.Workflow, CaptureSelectedProof: r.options.CaptureSelectedProof, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ApprovedOrigins: append([]string(nil), r.options.ApprovedOrigins...), ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
 		return r.observeResult(observeCtx, t, lease, actual.ID, result)
 	}})
 	var once sync.Once
@@ -1470,6 +1492,15 @@ func e2HTTPWorkerSessions(mode e2proxy.HeaderMode, lease *E2HTTPRunOptions) map[
 }
 
 // e2HTTPRefreshFor는 Worker의 refresh_session 경로다. 세션을 주는 실행(시험 계정 실행, 인증된 계정 있음)에만 준다.
+// e2HTTPWorkerCredentials는 Worker 지침에 넣을 등록 계정 자격이다. 시험 계정 실행(자격 헤더 통과)에서만 준다: 모델이 받은
+// 세션을 스스로 실어 보내야 하기 때문이다.
+func e2HTTPWorkerCredentials(mode e2proxy.HeaderMode, lease *E2HTTPRunOptions) []agent.E2HTTPAccountCredential {
+	if lease == nil || mode != e2proxy.HeaderTestAccountPassthrough {
+		return nil
+	}
+	return append([]agent.E2HTTPAccountCredential(nil), lease.Credentials...)
+}
+
 func e2HTTPRefreshFor(mode e2proxy.HeaderMode, lease *E2HTTPRunOptions) agent.E2HTTPRefreshSession {
 	if lease == nil || mode != e2proxy.HeaderTestAccountPassthrough || len(lease.CurrentSessions()) == 0 || lease.RefreshSession == nil {
 		return nil

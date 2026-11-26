@@ -78,3 +78,27 @@ func TestExplorationPasswordsFailClosed(t *testing.T) {
 		t.Fatal("unbound run")
 	}
 }
+
+// 기록에서 가릴 수 없는 짧은 비밀번호(1~5바이트)의 계정은 탐색 모델 지침에 넣지 않는다. 가림 목록(explorationPasswords)과
+// 같은 기준이라, 지침에 든 비밀번호는 모두 활동 기록에서 가려진다(#967 동찬 리뷰 P1).
+func TestExplorationCredentialsSkipUnmaskablePasswords(t *testing.T) {
+	materials := map[string][]byte{
+		"cred-a.json": []byte(`{"username":"tester-a","password":"alpha-password"}`),
+		"cred-b.json": []byte(`{"username":"tester-b","password":"12345"}`),
+		"cred-c.json": []byte(`{"username":"tester-c","password":"x"}`),
+	}
+	l := passwordProfile(materials, "cred-a.json", "cred-b.json", "cred-c.json")
+	creds, err := l.explorationCredentials()
+	if err != nil || len(creds) != 1 || creds[0].Username != "tester-a" {
+		t.Fatalf("짧은 비밀번호 계정이 지침에 감: %d %v", len(creds), err)
+	}
+	p, err := l.explorationPasswords()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range creds {
+		if strings.Contains(string(p.redact([]byte("pw "+c.Password))), c.Password) {
+			t.Fatal("지침에 준 비밀번호가 활동 기록에서 안 가려짐")
+		}
+	}
+}

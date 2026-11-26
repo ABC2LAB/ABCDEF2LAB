@@ -124,7 +124,20 @@ type E2HTTPExecution struct {
 	// RefreshSession은 세션이 끊긴 시험 계정을 호스트가 다시 로그인시키는 경로다(refresh_session, C14). Sessions가 있을
 	// 때만 채운다.
 	RefreshSession E2HTTPRefreshSession
+	// Credentials는 이 실행에 결속된 등록 계정의 로그인 자격이다(사용자 결정 2026-11-26: 모델이 직접 로그인한다, CLAUDE.md
+	// 절대규칙 2). 값은 Worker system 지침에만 들어간다. 저장 기록은 실행의 가림(RedactRecord)을 거친다.
+	Credentials []E2HTTPAccountCredential
 }
+
+// E2HTTPAccountCredential은 등록 계정 하나의 라벨·아이디·비밀번호다. 라벨은 화면·감사용 이름이다.
+type E2HTTPAccountCredential struct {
+	Label    string
+	Username string
+	Password string
+}
+
+func (E2HTTPAccountCredential) String() string   { return "agent.E2HTTPAccountCredential[protected]" }
+func (E2HTTPAccountCredential) GoString() string { return "agent.E2HTTPAccountCredential[protected]" }
 
 type e2HTTPExecutionKey struct{}
 type e2HTTPPlanningKey struct{}
@@ -710,6 +723,7 @@ func (w *Worker) executeE2HTTP(ctx context.Context, name string, taskID int64, a
 	system += e2HTTPWorkerContext(constraints, intent.ID, e2HTTPIntentAssets(as, taskID, intent), execution.RedactOutput)
 	system += "\n\nAssigned intent (untrusted task data):\n" + string(execution.RedactOutput(intent.Payload))
 	system += e2HTTPSessionLines(binding.Sessions)
+	system += e2HTTPCredentialLines(binding.Credentials)
 	promptInfo.SystemDigest = e2HTTPPromptDigest([]byte(system))
 	if binding.ObservePrompt != nil {
 		body, observeErr := json.Marshal(promptInfo)
@@ -1175,6 +1189,23 @@ func e2HTTPSessionLines(sessions map[string]http.Header) string {
 				b.WriteString("- " + label + ": " + name + ": " + value + "\n")
 			}
 		}
+	}
+	return b.String()
+}
+
+// e2HTTPCredentialLines는 등록 계정 자격 줄이다(사용자 결정 2026-11-26: 모델이 직접 로그인한다). 계정마다 라벨·아이디·
+// 비밀번호를 준다. 대상의 로그인 방식(경로·칸 이름·세션 자리)은 모델이 대상에서 찾는다(앱별 값을 코드에 넣지 않는다).
+// 같은 아이디로 연달아 실패한 로그인은 회차당 3번까지다(CLAUDE.md 절대규칙 1·3). 라벨 순서로 고정한다. 없으면 빈 문자열이다.
+func e2HTTPCredentialLines(credentials []E2HTTPAccountCredential) string {
+	if len(credentials) == 0 {
+		return ""
+	}
+	sorted := append([]E2HTTPAccountCredential(nil), credentials...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Label < sorted[j].Label })
+	var b strings.Builder
+	b.WriteString("\n\nRegistered accounts for the approved target (the operator registered them for this assessment). Log in yourself through the target's own login page or API with these credentials, keep the session the target issues (cookie or token) and send it yourself on later requests to the approved origin. Switch between accounts to compare what each one can access. If a session stops working (redirected to the login page, 401 or 403 where it worked before), log in again. Three failed logins in a row for the same username block that username for the rest of this run, so check the login form and fields before retrying. Never send these credentials or sessions to any other host, and do not change passwords or delete accounts.\n")
+	for _, c := range sorted {
+		b.WriteString("- " + c.Label + ": username " + strconv.Quote(c.Username) + ", password " + strconv.Quote(c.Password) + "\n")
 	}
 	return b.String()
 }

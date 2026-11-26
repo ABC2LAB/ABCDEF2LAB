@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -35,6 +36,7 @@ import (
 	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/exploration"
 	"github.com/Autumn-27/artex/exploreboundary"
+	"github.com/Autumn-27/artex/loginattempt"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -176,7 +178,7 @@ func (f hostFixture) current(productTargetRecord) error {
 // 브라우저 MCP 정보를 결속대로 주고, 마감하면 새 요청을 받지 않는다.
 func TestProductExplorationHostDrivesRealBoundary(t *testing.T) {
 	f := newHostFixture(t)
-	host, err := f.host.factory(f.rec, f.current, f.digest, []string{"/read/admin"}, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{})(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, []string{"/read/admin"}, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +242,7 @@ func TestProductExplorationHostDrivesRealBoundary(t *testing.T) {
 func TestProductExplorationHostHonorsTargetApproval(t *testing.T) {
 	f := newHostFixture(t)
 	f.ended.Store(true)
-	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{})(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +251,7 @@ func TestProductExplorationHostHonorsTargetApproval(t *testing.T) {
 	}
 	wrong := f.binding
 	wrong.TargetRevision = 3
-	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{})(t.Context(), wrong, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
+	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), wrong, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
 		t.Fatal("host accepted another target revision")
 	}
 }
@@ -333,11 +335,11 @@ func TestProductExplorationOptionsUseInstalledHost(t *testing.T) {
 func TestProductExplorationHostRecordRedaction(t *testing.T) {
 	f := newHostFixture(t)
 	connection := &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}
-	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, nil)(t.Context(), f.binding, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
+	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, nil, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
 		t.Fatalf("host opened without a password list: %v", err)
 	}
 	passwords := &explorationPasswords{values: [][]byte{[]byte("tester-password")}}
-	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, passwords)(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, passwords, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,5 +379,112 @@ func TestProductExplorationOptionsBindRunPasswords(t *testing.T) {
 	loaded.clearMaterials()
 	if got := string(host.Session.RedactRecord([]byte("after run"))); got != dlp.Redacted {
 		t.Fatalf("record after run end: %s", got)
+	}
+}
+
+// 모델 직접 로그인: 탐색 host는 경계 로그인 판정 설정 없이는 열지 않는다(연속 실패 상한 없이 로그인 POST가 나가지 않게).
+// 판정 설정은 실행 자료의 자격과 제품 기본 상한으로 만든다.
+func TestProductExplorationHostRequiresLoginConfig(t *testing.T) {
+	f := newHostFixture(t)
+	connection := &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}
+	passwords := &explorationPasswords{values: [][]byte{[]byte("tester-password")}}
+	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, passwords, nil)(t.Context(), f.binding, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
+		t.Fatalf("판정 설정 없이 탐색을 엶: %v", err)
+	}
+	login := productExplorationLogin([]agent.E2HTTPAccountCredential{{Label: "tester-a", Username: "user1", Password: "alpha-pass-1"}})
+	if len(login.Accounts) != 1 || login.Accounts[0].Label != "tester-a" || login.Accounts[0].Password != "alpha-pass-1" ||
+		login.MaxConsecutiveFailures != productLoginConsecutiveFailures || login.MaxContrastProbes != productLoginContrastProbes || login.TokenMinBytes != productLoginTokenMinBytes {
+		t.Fatalf("판정 설정: %+v", login.Accounts)
+	}
+	if empty := productExplorationLogin(nil); empty == nil || len(empty.Accounts) != 0 || empty.MaxConsecutiveFailures != productLoginConsecutiveFailures {
+		t.Fatal("계정 없는 회차도 상한을 지켜야 함")
+	}
+}
+
+// 탐색 로그인 요약(계약 §6): 탐색 단계 행만으로 계정별 결과를 §4 규칙으로 정해 0600 파일로 남긴다. 등록 계정마다 값이 있고
+// 시도가 없는 계정은 not_attempted다.
+func TestWriteLoginSummaryFromExplorationRows(t *testing.T) {
+	dir := t.TempDir()
+	rows := []loginattempt.Row{
+		{Schema: loginattempt.Schema, AttemptRef: "exploration-1", AccountLabel: "tester-a", Outcome: loginattempt.OutcomeFailed},
+		{Schema: loginattempt.Schema, AttemptRef: "exploration-2", AccountLabel: "tester-a", Outcome: loginattempt.OutcomeUnconfirmed},
+		{Schema: loginattempt.Schema, AttemptRef: "exploration-3", AccountLabel: "tester-b", Outcome: loginattempt.OutcomeUnconfirmed},
+		{Schema: loginattempt.Schema, AttemptRef: "exploration-3", AccountLabel: "tester-b", Outcome: loginattempt.OutcomeSucceeded},
+	}
+	if err := writeLoginSummary(dir, loginattempt.AccountAuthOfRows(rows, []string{"tester-a", "tester-b", "tester-c"})); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dir, loginSummaryFile))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("요약 파일: %v %v", info, err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, loginSummaryFile))
+	var got struct {
+		Format      string            `json:"format"`
+		Exploration map[string]string `json:"exploration"`
+	}
+	if json.Unmarshal(raw, &got) != nil || got.Format != loginSummaryFormat || got.Exploration["tester-a"] != loginattempt.AuthUnconfirmed ||
+		got.Exploration["tester-b"] != loginattempt.AuthAuthenticated || got.Exploration["tester-c"] != loginattempt.AuthNotAttempted {
+		t.Fatalf("요약: %s", raw)
+	}
+}
+
+// 탐색 로그인 기록 인계(#969 동찬 리뷰 P2): 표지는 탐색 시작 때 쓰고 모두 넘겼을 때만 지운다. 경계 조회 실패·빠진 행·기록
+// 쓰기 실패면 표지가 남고, 기록과 표지 저장이 모두 실패해도 시작 때 표지가 남아 진단 단계가 로그인 시도를 보내지 않는다.
+func TestExplorationLoginHandoverKeepsMarkerUntilConfirmed(t *testing.T) {
+	rows := []loginattempt.Row{{Schema: loginattempt.Schema, AttemptRef: "exploration-1", Identifier: "tester@owned.test", AccountLabel: "tester-a", Outcome: loginattempt.OutcomeFailed}}
+	marker := func(dir string) bool {
+		_, err := os.Lstat(filepath.Join(dir, server.E2HTTPLoginHistoryUnavailableFile))
+		return err == nil
+	}
+	ok := func() ([]loginattempt.Row, uint64, error) { return rows, 0, nil }
+	for _, tc := range []struct {
+		name       string
+		read       func() ([]loginattempt.Row, uint64, error)
+		readOnly   bool
+		block      string
+		handedOver bool
+	}{
+		{"handed over", ok, false, "", true},
+		{"no attempts", func() ([]loginattempt.Row, uint64, error) { return nil, 0, nil }, false, "", true},
+		{"read failure", func() ([]loginattempt.Row, uint64, error) { return nil, 0, errors.New("boundary unavailable") }, false, "", false},
+		{"omitted rows", func() ([]loginattempt.Row, uint64, error) { return rows, 1, nil }, false, "", false},
+		// 기록 쓰기만 실패한다(기록 자리에 디렉터리). 표지는 지울 수 있어도 남아야 한다.
+		{"record write fails", ok, false, server.E2HTTPLoginAttemptsFile, false},
+		// 기록은 넘겼지만 표지를 지우지 못한다(표지 자리에 비어 있지 않은 디렉터리). 인계 확인이 아니다.
+		{"marker removal fails", ok, false, server.E2HTTPLoginHistoryUnavailableFile, false},
+		// 기록 쓰기와 표지 다시 쓰기·지우기가 모두 실패한다(디렉터리 쓰기 불가).
+		{"record and marker writes fail", ok, true, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.block != "" {
+				if err := os.MkdirAll(filepath.Join(dir, tc.block, "keep"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.block != server.E2HTTPLoginHistoryUnavailableFile {
+				if err := server.MarkLoginHistoryUnavailable(dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.readOnly {
+				// 표지 파일도 읽기 전용으로 둬야 이미 있는 표지 다시 쓰기가 실패한다(디렉터리만 0500이면 0600 표지는 다시
+				// 써진다, #969 동찬 리뷰 P3). 기록 생성과 표지 다시 쓰기가 둘 다 실패하는지 먼저 확인한다.
+				if err := os.Chmod(filepath.Join(dir, server.E2HTTPLoginHistoryUnavailableFile), 0o400); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(dir, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+				if server.MarkLoginHistoryUnavailable(dir) == nil || server.AppendLoginAttemptRows(dir, rows) == nil {
+					t.Fatal("시험 조건: 기록 생성과 표지 다시 쓰기가 둘 다 실패해야 함")
+				}
+			}
+			if got := handOverExplorationLogins(dir, tc.read, []string{"tester-a"}); got != tc.handedOver || marker(dir) == tc.handedOver {
+				t.Fatalf("인계 %v·표지 %v, 기대 인계 %v", got, marker(dir), tc.handedOver)
+			}
+		})
 	}
 }

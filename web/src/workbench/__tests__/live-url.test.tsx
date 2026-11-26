@@ -24,6 +24,17 @@ vi.mock("../live/productVerdicts", async (original) => {
     },
   };
 });
+// 선택 검증(#950)은 제품 관리 중계에만 있다 — 이 시험들은 중계가 없는 서버(404)로 본다
+vi.mock("../live/candidateVerification", async (original) => {
+  const real = await original<typeof import("../live/candidateVerification")>();
+  const { ApiError: NotInstalled } = await import("@/lib/diagnosis/api");
+  return {
+    ...real,
+    readVerifications: async () => {
+      throw new NotInstalled(404, "route_not_found");
+    },
+  };
+});
 vi.mock("@/lib/diagnosis/diagnosis-url", async (original) => ({
   ...(await original<typeof import("@/lib/diagnosis/diagnosis-url")>()),
   readURLCatalog: vi.fn(),
