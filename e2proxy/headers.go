@@ -4,8 +4,17 @@ import (
 	"bytes"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 )
+
+func validExactQuery(raw string) bool {
+	if raw == "" || len(raw) > 512 || strings.ContainsAny(raw, "#\r\n") {
+		return false
+	}
+	values, err := url.ParseQuery(raw)
+	return err == nil && len(values) > 0 && values.Encode() == raw
+}
 
 func headerPresent(headers http.Header, name string) bool {
 	for key := range headers {
@@ -123,6 +132,28 @@ func forwardRequestHeaders(source http.Header, rule compiledRule) (http.Header, 
 			if actual[i] != expected[i] {
 				return nil, false
 			}
+		}
+	}
+	if rule.StrictHeaders {
+		for name, values := range out {
+			if _, approved := rule.Headers[name]; approved {
+				continue
+			}
+			switch name {
+			case "User-Agent":
+				if len(values) == 1 && strings.TrimSpace(values[0]) != "" {
+					continue
+				}
+			case "Accept":
+				if len(values) == 1 && values[0] == "*/*" {
+					continue
+				}
+			case "Accept-Encoding":
+				if len(values) == 1 && values[0] == "identity" {
+					continue
+				}
+			}
+			return nil, false
 		}
 	}
 	// net/http otherwise manufactures Go-http-client/1.1 for an absent field.

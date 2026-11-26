@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -148,6 +149,131 @@ func TestDiagnosticCandidatePostgres(t *testing.T) {
 	raw, _ := json.Marshal(list[0])
 	if len(raw) == 0 {
 		t.Fatal("missing detail")
+	}
+}
+
+func TestDiagnosticCandidateFirstSaveFencePostgres(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	task, err := d.CreateTask("synthetic save fence", "", nil, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec("DELETE FROM tasks WHERE id=$1", task.ID)
+	defer d.Exec("DELETE FROM explorations WHERE id=$1", task.ExplorationID)
+	s := d.Exploration(task.ExplorationID)
+	intent, err := s.AddIntent(map[string]any{"summary": "synthetic"}, 5, nil, "planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := syntheticDiagnosticCandidate(task.ID, intent, "fence-call")
+	var mu sync.Mutex
+	captures := 0
+	ids := make(chan int64, 2)
+	writeErrors := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			id, err := s.RecordDiagnosticCandidateWithFence(t.Context(), c, func() (DiagnosticCandidateSaveFence, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				captures++
+				return DiagnosticCandidateSaveFence{AttemptHighWater: 1, TaskRef: fmt.Sprint(task.ID), RunRef: c.RunRef, ScopeDigest: DiagnosticEvidenceDigest("{}")}, nil
+			})
+			ids <- id
+			writeErrors <- err
+		}()
+	}
+	wg.Wait()
+	close(ids)
+	close(writeErrors)
+	for err := range writeErrors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var first int64
+	for id := range ids {
+		if first == 0 {
+			first = id
+		} else if id != first {
+			t.Fatal("duplicate candidate received another ID")
+		}
+	}
+	if captures != 1 {
+		t.Fatalf("first-save fence captured %d times", captures)
+	}
+	rows, err := s.ListDiagnosticCandidates(task.ID, c.RunRef, 2)
+	if err != nil || len(rows) != 1 || rows[0].SaveFence == nil || rows[0].SaveFence.AttemptHighWater != 1 || rows[0].SaveFence.CapturedAt.IsZero() {
+		t.Fatalf("immutable save fence missing: n=%d err=%v", len(rows), err)
+	}
+	var candidatePayload []byte
+	if err := d.QueryRow(`SELECT payload->'diagnostic_candidate_v1' FROM exploration_nodes WHERE id=$1`, first).Scan(&candidatePayload); err != nil {
+		t.Fatal(err)
+	}
+	var markers int
+	if err := d.QueryRow(`SELECT count(*) FROM exploration_nodes WHERE exploration_id=$1 AND origin=$2 AND payload->>'candidate_id'=$3`, task.ExplorationID, diagnosticCandidateSaveFenceOrigin, fmt.Sprint(first)).Scan(&markers); err != nil || markers != 1 {
+		t.Fatalf("save marker count=%d err=%v", markers, err)
+	}
+	var original DiagnosticCandidate
+	if err := json.Unmarshal(candidatePayload, &original); err != nil || original.EvidenceDigest != c.EvidenceDigest || original.SaveFence != nil {
+		t.Fatal("candidate evidence changed by save fence")
+	}
+	// Hold the intent lock while another worker admits a request. The fence
+	// callback must observe the post-commit high-water, not a pre-insert value.
+	lockTx, err := d.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var locked int64
+	if err := lockTx.QueryRowContext(t.Context(), `SELECT id FROM exploration_nodes WHERE id=$1 FOR UPDATE`, intent).Scan(&locked); err != nil {
+		lockTx.Rollback()
+		t.Fatal(err)
+	}
+	var admitted atomic.Uint64
+	admitted.Store(1)
+	started := make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		close(started)
+		_, err := s.RecordDiagnosticCandidateWithFence(t.Context(), syntheticDiagnosticCandidate(task.ID, intent, "concurrent-call"), func() (DiagnosticCandidateSaveFence, error) {
+			return DiagnosticCandidateSaveFence{AttemptHighWater: admitted.Load(), TaskRef: fmt.Sprint(task.ID), RunRef: c.RunRef, ScopeDigest: DiagnosticEvidenceDigest("{}")}, nil
+		})
+		finished <- err
+	}()
+	<-started
+	admitted.Store(2)
+	if err := lockTx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	concurrent, err := s.ListDiagnosticCandidates(task.ID, c.RunRef, 3)
+	if err != nil || len(concurrent) != 2 || concurrent[1].SaveFence == nil || concurrent[1].SaveFence.AttemptHighWater != 2 {
+		t.Fatalf("concurrent save fence ignored admitted request: n=%d err=%v", len(concurrent), err)
+	}
+	failed := syntheticDiagnosticCandidate(task.ID, intent, "fence-failure-call")
+	failedID, err := s.RecordDiagnosticCandidateWithFence(t.Context(), failed, func() (DiagnosticCandidateSaveFence, error) {
+		return DiagnosticCandidateSaveFence{}, errors.New("synthetic fence capture failed")
+	})
+	if failedID == 0 || err == nil {
+		t.Fatal("failed fence was reported as a verified save")
+	}
+	if _, err := s.RecordDiagnosticCandidateWithFence(t.Context(), failed, func() (DiagnosticCandidateSaveFence, error) {
+		t.Fatal("duplicate unexpectedly refreshed first-save fence")
+		return DiagnosticCandidateSaveFence{}, nil
+	}); err == nil {
+		t.Fatal("duplicate without original fence reported success")
+	}
+	all, err := s.ListDiagnosticCandidates(task.ID, c.RunRef, 4)
+	if err != nil || len(all) != 3 || all[2].SaveFence != nil {
+		t.Fatalf("failed original fence was backfilled: n=%d err=%v", len(all), err)
 	}
 }
 

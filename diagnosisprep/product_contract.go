@@ -3,6 +3,7 @@ package diagnosisprep
 import (
 	"github.com/Autumn-27/artex/e3contract"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ const MaxTargetApprovalHours = 720
 // ProductControl is private IPC, never an execution grant or a public v2 command.
 // Only the installed product wrapper implements it; generic coordinators reject it.
 const ProductControl Command = "product_control"
+
+var candidateControlDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type ProductRequest struct {
 	JobID            string              `json:"job_id,omitempty"`
@@ -284,6 +287,12 @@ func validProductRequest(r *ProductRequest) bool {
 	}
 	if r.ExternalConsent != nil {
 		return false
+	}
+	if r.Operation == "candidate_execute" || r.Operation == "candidate_cancel" || r.Operation == "candidate_analyze" || r.Operation == "candidate_analysis_cancel" || r.Operation == "candidate_llm_execute" || r.Operation == "candidate_llm_cancel" || r.Operation == "candidate_stored_cancel" {
+		id, err := strconv.ParseInt(r.JobID, 10, 64)
+		return err == nil && id > 0 && strconv.FormatInt(id, 10) == r.JobID && candidateControlDigest.MatchString(r.CommandKey) &&
+			r.TargetID == "" && r.ProfileID == "" && r.Registration == nil && r.ExpectedRevision == 0 && len(r.SelectedIDs) == 0 &&
+			r.Account == nil && r.Login == nil && r.Credential == nil && r.Declaration == nil && r.Reset == nil
 	}
 	if strings.HasPrefix(r.Operation, "reset_confirm") {
 		if !reference.MatchString(r.TargetID) || r.ProfileID != "" || r.Registration != nil || r.TargetURL != "" || r.JobID != "" || r.CommandKey != "" || r.ExpectedRevision != 0 || len(r.SelectedIDs) > 0 || r.Account != nil || r.Login != nil || r.Credential != nil || r.Declaration != nil {

@@ -4,7 +4,7 @@
 
 ## 최초 설치
 
-Linux Docker Engine 26 이상과 Compose 2.35 이상이 필요하다. UID 1000의 user/PID/mount/net/IPC/UTS namespace 생성이 허용되어야 한다. 준비 서비스의 고정 probe가 실패하면 운영자가 호스트 정책을 확인한다. 호스트 정책을 자동 변경하지 않는다. privileged, SYS_ADMIN, Docker 소켓, host network는 사용하지 않는다.
+Linux Docker Engine 26 이상과 Compose 2.35 이상이 필요하다. UID 1000의 user/PID/mount/net/IPC/UTS namespace 생성이 허용되어야 한다. 준비 서비스의 고정 probe가 실패하면 운영자가 호스트 정책을 확인한다. 호스트 정책을 자동 변경하지 않는다. 일반 제품 서비스는 privileged, SYS_ADMIN, Docker 소켓, host network를 사용하지 않는다. 별도의 수동 E② 장애 복구 컨테이너만 운영자 실행 시 Docker 소켓을 일시적으로 사용한다.
 
 저장소 밖의 0700 디렉터리에 `install.json`과 임의 PostgreSQL 비밀번호 파일을 0600으로 준비한다. API 키는 설치 JSON에 넣지 않는다. 다음 주소·모델·비밀번호는 실제 승인된 값으로 바꾼다.
 
@@ -226,3 +226,23 @@ fixture-init이 만든 새 `/target-tls/control-token`을 stdout에 노출하지
 동일 이미지·볼륨 재시작은 `stop workbench api preparation postgres` 뒤 같은 Compose의 `up -d --no-build --wait postgres preparation api workbench`로 확인한다. 설치 당시와 helper 지문이 다른 이미지는 기존 pin 검사에서 거절된다. 보호 파일을 고치거나 unknown 저널·예산 예약을 지워 이미지 변경을 우회하지 않는다. 이미지 교체·설치 세대 마이그레이션은 별도 검토가 필요하다.
 
 비밀번호 재설정은 실행 중인 Workbench의 `product-password-hash`가 stdin으로 받은 비밀번호를 Go bcrypt로 해시하고 PostgreSQL에는 해시만 전달한다. `pgcrypto` 확장이나 스키마를 추가하지 않는다. 새 비밀번호는 12~72 bytes이며 명령행·컨테이너 환경변수·파일에 원문을 넣지 않는다. 공통 Compose 진입점은 설치 입력의 실제 경로가 저장소 밖이고 파일 권한이 0600인지 확인한 뒤 Docker를 호출한다.
+
+## E② 미완료 intent 수동 복구
+
+기존 Host가 `open` 저널의 미완료 intent 때문에 기동하지 못할 때만 [격리 계약](../../docs/contracts/e2-host-operator-recovery.md)을 적용한다. 정상 봉인이나 `interrupted`로 바꾸는 절차가 아니다. 먼저 기존 회차의 결과 불명, 상태 변경 가능 요청의 대상 리셋 필요 여부, 현재 예산을 운영자가 확인한다. 기존 실행을 재전송하지 않는다.
+
+운영자는 실제 설치 Compose 프로젝트와 이미지 SHA를 확인하고 모든 제품 서비스를 정지한다. PostgreSQL만 다시 시작한 상태에서, 기존 설치의 `e2-host-state` 및 `e2-host-ipc` 볼륨을 그대로 마운트한 일회성 복구 컨테이너를 실행한다. `DOCKER_GID`는 Docker 소켓 그룹 ID다. Docker 소켓에 접근하는 컨테이너는 사실상 호스트 root와 같은 권한을 가진다. `:ro` 바인드, 읽기 전용 rootfs, capability 제거는 Docker API의 쓰기 요청을 막지 않는다. 따라서 신뢰할 수 있는 호스트 운영자만 이 오버레이를 일회성으로 실행하고, `run --rm` 종료 직후 컨테이너가 제거됐는지 확인한다. 소켓을 컨테이너에 주지 않는 호스트 측 운영 도구 또는 권한을 제한한 Docker API 프록시는 향후 대안이지만 이 복구 명령의 현재 증거 계약은 이를 구현하지 않는다. 기존 설치 환경변수와 Compose 프로젝트명을 그대로 유지한다. 다음 명령은 형식 예시이며 `RUN_REF`, `REVISION`, `CHECKPOINT`, `OPERATOR`를 실제 비민감 참조로 바꾼다.
+
+```bash
+export DOCKER_GID="$(stat -c %g /var/run/docker.sock)"
+docker compose -f deploy/product/compose.yaml stop
+docker compose -f deploy/product/compose.yaml up -d --no-deps postgres
+docker compose -f deploy/product/compose.yaml -f deploy/product/compose.recovery.yaml run --rm --no-deps e2-recovery \
+  product-e2-recover -mode status -root /h -run "$RUN_REF"
+docker compose -f deploy/product/compose.yaml -f deploy/product/compose.recovery.yaml run --rm --no-deps e2-recovery \
+  product-e2-recover -mode recover -root /h -run "$RUN_REF" -revision "$REVISION" \
+  -checkpoint "$CHECKPOINT" -operator "$OPERATOR" -project abc2lab-product \
+  -docker-socket /var/run/docker.sock
+```
+
+조회 결과의 `Head.Revision`과 `Head.Checkpoint.MAC`을 변경 없이 복구 명령에 넣는다. head가 바뀌면 거부된다. Docker가 동일 설치의 다른 실행 컨테이너가 아직 작동 중이라고 보고하면 `recovery_not_eligible`로 차단된다. 이때 강제 파일 삭제·epoch 교체·볼륨 교체를 하지 않는다. 미완료 head가 여러 개이면 각각 조회·복구한다. 한 head의 복구가 끝나도 나머지가 미복구이면 일반 Host 기동은 계속 차단된다. 복구 기록은 `operator-recovery.json`으로 보호 Host 볼륨에 한 번만 남으며, 원본 `events.jsonl`과 `head.json`은 그대로다. 모든 head를 복구한 뒤 서비스를 정상 기동하고 새 회차를 시작한다. 기록이 삭제·손상되면 다시 차단된다. 기본 제품 Compose에는 Docker 소켓이 마운트되지 않으며, 복구 오버레이는 정상 `up`에 포함하지 않는다.

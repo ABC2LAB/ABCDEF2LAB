@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/e2runner"
@@ -78,6 +79,10 @@ type diagnosticCandidateStore interface {
 	RecordDiagnosticCandidate(context.Context, db.DiagnosticCandidate) (int64, error)
 }
 
+type diagnosticCandidateFenceStore interface {
+	RecordDiagnosticCandidateWithFence(context.Context, db.DiagnosticCandidate, func() (db.DiagnosticCandidateSaveFence, error)) (int64, error)
+}
+
 func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTPExecution, state *e2HTTPToolState, onSaved ...func()) actool.CoreTool {
 	// 같은 워커 안의 중복 제출은 순차 처리하고 DB는 intent 잠금으로 중복을 제어한다.
 	var mu sync.Mutex
@@ -94,7 +99,28 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 	languagePending := map[string]*languageWait{}
 	languageDone := map[string]int{}
 	saved := func(ctx context.Context, c db.DiagnosticCandidate, event func(name, status, reason, ref string)) (int64, bool) {
-		id, err := store.RecordDiagnosticCandidate(ctx, c)
+		var id int64
+		var err error
+		// Selected verification uses the same post-save E² attempt fence for
+		// every candidate class. Legacy runs retain their previous behavior.
+		if fenced, ok := store.(diagnosticCandidateFenceStore); ok && (candidateverify.SupportedV2(c) || binding.CaptureSelectedProof) {
+			id, err = fenced.RecordDiagnosticCandidateWithFence(ctx, c, func() (db.DiagnosticCandidateSaveFence, error) {
+				if binding.Runner == nil {
+					return db.DiagnosticCandidateSaveFence{}, db.ErrDiagnosticCandidate
+				}
+				view := binding.Runner.SnapshotForIntent(c.IntentID)
+				if !view.AuditComplete || view.IntentID != c.IntentID || view.Scope.TaskRef != strconv.FormatInt(c.TaskID, 10) || view.Scope.RunRef != c.RunRef || view.Counts.Attempts == 0 {
+					return db.DiagnosticCandidateSaveFence{}, db.ErrDiagnosticCandidate
+				}
+				scope, marshalErr := json.Marshal(view.Scope)
+				if marshalErr != nil {
+					return db.DiagnosticCandidateSaveFence{}, marshalErr
+				}
+				return db.DiagnosticCandidateSaveFence{AttemptHighWater: view.Counts.Attempts, TaskRef: view.Scope.TaskRef, RunRef: view.Scope.RunRef, ScopeDigest: db.DiagnosticEvidenceDigest(string(scope)), PolicyRevision: view.PolicyRevision}, nil
+			})
+		} else {
+			id, err = store.RecordDiagnosticCandidate(ctx, c)
+		}
 		if err != nil {
 			event("candidate_saved", "failed", "candidate_store_failed", c.CallRef)
 			return 0, false
@@ -133,6 +159,7 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 		"related_call_refs":  map[string]any{"type": "array", "maxItems": 8, "items": map[string]any{"type": "string", "maxLength": 256}},
 		"call_ref":           map[string]any{"type": "string", "maxLength": 256},
 		"vulnclass":          map[string]any{"type": "string", "maxLength": 128},
+		"verification_claim": map[string]any{"type": "string", "enum": []string{"html_nosniff_missing", "server_version_banner"}, "description": "Optional legacy metadata for historical passive/v2 records. It does not confirm a new candidate and does not require additional target calls."},
 		"name":               map[string]any{"type": "string", "maxLength": 512},
 		"summary":            map[string]any{"type": "string", "maxLength": 8192},
 		"remediation":        map[string]any{"type": "string", "maxLength": 8192},
@@ -148,7 +175,7 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 	coreSchema := map[string]any{"type": "object", "properties": coreProperties, "required": []any{"call_ref", "vulnclass", "name", "summary"}}
 	return actool.Build(actool.Spec{
 		Name:        "submit_diagnostic_candidate",
-		Description: "Preserve a potential vulnerability for manual review using an actual Bash call_ref from this intent. This tool cannot confirm a vulnerability, change approval, send requests, or invent evidence. Display text must be Korean. Optionally suggest severity only from observed impact, resource sensitivity and known prerequisites in a completed HTTP observation; never infer a rating from the vulnerability class alone. Omit the estimate when evidence is insufficient. Estimates never confirm a finding.",
+		Description: "Preserve a potential vulnerability for review using an actual Bash call_ref from this intent. This tool cannot confirm a vulnerability, change approval, send requests, or invent evidence. Include related_call_refs only for separately recorded calls already available; do not make requests to satisfy a fixed verification claim or count. Explain plausible normal behavior in the summary. Display text must be Korean. Optionally suggest severity only from observed impact, resource sensitivity and known prerequisites in a completed HTTP observation; never infer a rating from the vulnerability class alone. Omit the estimate when evidence is insufficient. Estimates never confirm a finding.",
 		Schema:      schema,
 		RawInput:    true,
 		Concurrent:  func(json.RawMessage) bool { return false },
@@ -178,6 +205,7 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 				RelatedCallRefs   []string        `json:"related_call_refs"`
 				CallRef           string          `json:"call_ref"`
 				VulnClass         string          `json:"vulnclass"`
+				VerificationClaim string          `json:"verification_claim"`
 				Name              string          `json:"name"`
 				Summary           string          `json:"summary"`
 				Remediation       string          `json:"remediation"`
@@ -236,7 +264,7 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 			redact := func(s string) string { return dlp.DiagnosticText(string(execution.RedactRecord([]byte(s)))) }
 			candidate := db.DiagnosticCandidate{
 				TaskID: binding.TaskID, IntentID: binding.IntentID, RunRef: binding.RunRef, CallRef: in.CallRef,
-				VulnClass: redact(in.VulnClass), Name: redact(in.Name), Summary: redact(in.Summary), Remediation: redact(in.Remediation),
+				VulnClass: redact(in.VulnClass), VerificationClaim: in.VerificationClaim, Name: redact(in.Name), Summary: redact(in.Summary), Remediation: redact(in.Remediation),
 				Classification: observed.Classification, Verification: "manual_review_required", EvidenceVersion: 1,
 				Evidence: observed.Evidence, EvidenceDigest: db.DiagnosticEvidenceDigest(observed.Evidence), ObservedAt: observed.At,
 				OutputTruncated: observed.Truncated,

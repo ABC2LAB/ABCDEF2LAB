@@ -45,6 +45,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 	if len(args) > 0 && args[0] == "product-e2-host" {
 		return runProductE2Host(ctx, args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "product-e2-recover" {
+		return runProductE2Recover(ctx, args[1:], stdout, stderr)
+	}
 	if len(args) > 0 && args[0] == "product-preflight" {
 		return runProductPreflight(ctx, args[1:], stdout, stderr)
 	}

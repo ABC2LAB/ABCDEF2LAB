@@ -14,6 +14,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/diagnosisflow"
+	"github.com/Autumn-27/artex/e2host"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
@@ -113,8 +114,11 @@ func (r localE2HTTPRun) Close(ctx context.Context) error { return r.runner.Close
 type E2HTTPRunOptions struct {
 	Execution     *e2proxy.Execution
 	ObserveResult func(context.Context, e2runner.Result) error
-	Runner        E2HTTPLeaseRunner
-	Release       func(context.Context) error
+	// VerifySelected asks the audit Host to authenticate one ordinary result
+	// against the current journal head before it can become candidate evidence.
+	VerifySelected func(context.Context, e2host.ObservationRef) (e2host.Verification, error)
+	Runner         E2HTTPLeaseRunner
+	Release        func(context.Context) error
 	// AccountAuth는 인증 준비의 계정별 결과(라벨 → authenticated·login_failed·session_not_found·result_unknown·not_sent),
 	// Sessions는 인증된 시험 계정의 보낼 세션 헤더다(실행 메모리에만, C14). 인증 준비가 없으면 둘 다 비어 있다.
 	AccountAuth map[string]string
@@ -177,6 +181,9 @@ type E2HTTPExplorationStage func(context.Context, *Task) (ExplorationCharge, err
 
 type E2HTTPRuntimeOptions struct {
 	Exploration E2HTTPExplorationStage
+	// CaptureSelectedProof asks the audit Host for per-call checkpoints only
+	// in URL diagnosis runs that preserve candidate observations.
+	CaptureSelectedProof bool
 	// RunRequests는 회차 승인 요청 수 N이다. 탐색 단계가 있으면 탐색 몫을 뺀 나머지만 진단에 쓴다.
 	// 0이면 탐색 몫을 나눌 근거가 없어 탐색 뒤 진단 예산을 열지 않는다.
 	RunRequests             uint64
@@ -780,7 +787,7 @@ func (r *E2HTTPRuntime) PrepareWork(ctx context.Context, task *Task, intent *db.
 	t.mu.Unlock()
 	workCtx := agent.WithE2HTTPWebSearch(e2HTTPTaskContext(ctx, t.ctx), r.options.WebSearch)
 	observePrompt := r.promptObserver(ctx, t, actual.ID)
-	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Sessions: e2HTTPWorkerSessions(r.options.HeaderMode, lease), RefreshSession: e2HTTPRefreshFor(r.options.HeaderMode, lease), Workflow: r.options.Workflow, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ApprovedOrigins: append([]string(nil), r.options.ApprovedOrigins...), ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
+	bound := agent.WithE2HTTPExecution(workCtx, agent.E2HTTPExecution{Sessions: e2HTTPWorkerSessions(r.options.HeaderMode, lease), RefreshSession: e2HTTPRefreshFor(r.options.HeaderMode, lease), Workflow: r.options.Workflow, CaptureSelectedProof: r.options.CaptureSelectedProof, ObservePrompt: observePrompt, Runner: lease.Runner, Control: t.control, TaskID: t.number, IntentID: actual.ID, TaskRef: t.id, RunRef: r.options.Expected.RunRef, MaxTurns: r.options.MaxWorkerTurns, MaxDuration: r.options.WorkerTimeout, ApprovedOrigins: append([]string(nil), r.options.ApprovedOrigins...), ObserveResult: func(observeCtx context.Context, result e2runner.Result) error {
 		return r.observeResult(observeCtx, t, lease, actual.ID, result)
 	}})
 	var once sync.Once
@@ -1193,6 +1200,15 @@ func (r *E2HTTPRuntime) observeResult(ctx context.Context, t *e2HTTPRuntimeTask,
 			// 신뢰 결과가 실행기 쪽에서 마감·드레인·감사까지 끝났다는 표시다. 이 중 하나라도 빠졌으면 내용 대조 실패로
 			// 낮추지 않고 실행 결과 기록 실패로 둔다(#492 이동찬 지적: Final만 보면 드레인·감사 미완료가 빠져나감).
 			closed := trusted.Final && trusted.ProcessDrained && trusted.ProxyDrained && trusted.Call.Final && trusted.Call.AuditComplete && trusted.Execution.AuditComplete
+			if r.options.CaptureSelectedProof && valid && found && closed && lease.VerifySelected != nil && len(trusted.Call.Observations) == 1 {
+				observation := trusted.Call.Observations[0]
+				verified, err := lease.VerifySelected(ctx, e2host.ObservationRef{
+					CallRef: trusted.Call.CallRef, AttemptID: observation.AttemptRef, Sequence: observation.Sequence,
+				})
+				if err == nil && selectedVerifiedResult(trusted, verified) {
+					trusted.SelectedProof = &e2runner.SelectedAuditProof{Event: verified.Event, Checkpoint: verified.Checkpoint}
+				}
+			}
 			t.mu.Lock()
 			// 같은 호출을 두 번 최종 관찰하면 내용과 관계없이 기록 실패다. 저장한 결과와 대조 실패로 표시한 호출을 함께 본다.
 			seen := t.untrustedCalls[trusted.Call.CallRef]

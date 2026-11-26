@@ -149,6 +149,26 @@ func NewProductDiagnosisHandler(ctx context.Context, pool *sql.DB, keyDir, dataD
 			productExternalConsentHTTP(w, r, owner, endpoint)
 			return
 		}
+		if strings.HasPrefix(r.URL.Path, candidateVerificationPrefix) && strings.Contains(r.URL.Path, "/verifications") {
+			if strings.HasSuffix(r.URL.Path, "/answers") {
+				candidateVerificationAnswerHTTP(w, r, pool, authenticate, endpoint)
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/plan") {
+				candidateVerificationLLMPlanHTTP(w, r, pool, authenticate, endpoint)
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/decision") {
+				candidateVerificationDecisionHTTP(w, r, pool, authenticate, endpoint)
+				return
+			}
+			if strings.HasSuffix(r.URL.Path, "/cancel") {
+				candidateVerificationCancelHTTP(w, r, pool, authenticate, endpoint)
+				return
+			}
+			candidateVerificationHTTP(w, r, pool, authenticate, endpoint)
+			return
+		}
 		if r.URL.Path == productReleasePath {
 			owner, e := authenticate(r)
 			if e != nil {
