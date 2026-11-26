@@ -65,6 +65,23 @@ type productInstallInput struct {
 	// WebSearch는 진단 Planner·Worker의 원본 검색 도구를 켜는 선택 블록이다(루프 복원 결정안 §2-1). 외부 API(OpenRouter)만
 	// 쓰는 설치만 받는다. 로컬 모델이 있는 설치(완전 로컬 모드)는 외부 송신 전면 차단이라 거부한다(규칙 8).
 	WebSearch *productWebSearch `json:"web_search,omitempty"`
+	// ExternalTransferConsent는 외부 모델(OpenRouter) 전송에 대한 설치 단위 동의다(사용자 결정 2026-11-26: 외부 전송 동의는
+	// 설치 때 한 번). Statement는 productExternalTransferStatement와 글자 그대로 같아야 하고, openrouter_manifest가 있는
+	// 설치만 받는다. 없으면 설치 뒤 관리자가 화면에서 한 번 동의한다(그 전에는 외부 모델 회차가 시작하지 않음).
+	ExternalTransferConsent *productInstallConsent `json:"external_transfer_consent,omitempty"`
+}
+
+type productInstallConsent struct {
+	Statement string `json:"statement"`
+}
+
+// validProductInstallConsent는 설치 입력의 외부 전송 동의 칸이다. 칸이 없으면 통과(설치 뒤 화면에서 동의)이고, 있으면 외부
+// 모델이 있는 설치이며 문장이 지금 문장과 같아야 한다(다른 문장 · 옛 문장에 한 동의를 지금 동의로 읽지 않는다).
+func validProductInstallConsent(c productInstallInput) bool {
+	if c.ExternalTransferConsent == nil {
+		return true
+	}
+	return len(c.OpenRouterManifest) > 0 && c.ExternalTransferConsent.Statement == productExternalTransferStatement
 }
 
 // productWebSearch는 검색 백엔드와 키 파일이다. ddgs(DuckDuckGo)는 키가 없고, brave-free·tavily는 키 파일(설치 보호
@@ -203,6 +220,9 @@ func runProductInstall(ctx context.Context, args []string, stdout, stderr io.Wri
 		return 2
 	}
 	if !validProductWebSearch(c) {
+		return 2
+	}
+	if !validProductInstallConsent(c) {
 		return 2
 	}
 	c.TargetPolicy = withTargetPolicyDefaults(c.TargetPolicy)
@@ -650,6 +670,13 @@ func productInstall(ctx context.Context, root string, c productInstallInput, hos
 	installation.APILaunch.SHA256, err = productJSON(installation.APILaunch.File, first)
 	if err != nil {
 		return errPreparation
+	}
+	// 설치 입력의 외부 전송 동의는 설치 기록보다 먼저 상태 디렉터리에 남긴다 — 설치 기록이 있는데 동의가 빠진 설치가 생기지
+	// 않게(설치가 중간에 실패하면 다시 설치하고, 이미 남은 같은 문장의 동의는 그대로 쓴다).
+	if c.ExternalTransferConsent != nil {
+		if _, err = writeProductExternalConsent(installation.StateDir, productExternalConsentInstall, "ARTEX", now); err != nil {
+			return errPreparation
+		}
 	}
 	if _, err = productJSON(filepath.Join(config, "installation.json"), installation); err != nil {
 		return errPreparation

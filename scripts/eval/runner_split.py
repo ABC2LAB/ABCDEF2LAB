@@ -124,6 +124,27 @@ REGISTRATION_PATHS = ("/",)
 READ_METHODS = ("GET", "HEAD")
 # 대상 등록의 읽기 전용 근거 글(제품은 20자 이상을 요구한다). 평가 대상은 회차마다 새로 띄우는 리셋 대상이다.
 REGISTRATION_BASIS = "평가 회차 전용 연습 대상: 회차마다 새 컨테이너로 띄우고 회차 뒤 지운다(리셋 대상)."
+# 외부 전송 동의(설치 때 한 번, 2026-11-26 사용자 결정 · #965): 실제 모델(OpenRouter) 설치는 설치 입력에 동의 문장을 넣어야
+# 외부 모델 회차가 시작한다(없으면 external_transfer_consent_required). 문장 정본은 제품 소스 상수
+# productExternalTransferStatement이고, 러너는 사본을 두지 않고 그 파일을 읽는다(설치기는 글자 그대로 같은지 본다).
+EXTERNAL_CONSENT_SOURCE = REPO_ROOT / "cmd" / "first-controlled-diagnosis" / "product_external_consent.go"
+_EXTERNAL_CONSENT_CONST = re.compile(r'^const productExternalTransferStatement = ("(?:[^"\\\n]|\\.)*")$', re.M)
+
+
+def read_external_transfer_statement(path: Path = EXTERNAL_CONSENT_SOURCE) -> str:
+    """제품 소스의 외부 전송 동의 문장. 상수가 정확히 하나가 아니거나 읽을 수 없으면 거부한다(다른 문장으로 설치하지 않음)."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        raise SplitInputError("split_consent_statement_unavailable") from None
+    found = _EXTERNAL_CONSENT_CONST.findall(text)
+    try:
+        statement = json.loads(found[0]) if len(found) == 1 else None
+    except ValueError:
+        statement = None
+    if not isinstance(statement, str) or not statement:
+        raise SplitInputError("split_consent_statement_unavailable")
+    return statement
 
 
 def read_workflow_defaults(path: Path = WORKFLOW_DEFAULTS) -> tuple[dict, str]:
@@ -196,7 +217,9 @@ def install_input(*, admin_password: str, manifest: dict | None, meter_port: int
                               "resolver_address": f"{FIXTURE_DNS_IP}:{FIXTURE_DNS_PORT}", "workflow": workflow,
                               "exploration": dict(EXPLORATION_BLOCK)},
             "runtime_limits": {"workflow": {"run_seconds": run_seconds}},
-            **({"openrouter_manifest": manifest} if real else {"local_model": dict(local_model)})}
+            # 실제 모델 설치만 외부 전송 동의를 넣는다(합성 local_model 설치는 외부 전송이 없고, 설치기가 거부한다).
+            **({"openrouter_manifest": manifest, "external_transfer_consent": {"statement": read_external_transfer_statement()}}
+               if real else {"local_model": dict(local_model)})}
 
 
 def _is_ip(value: str) -> bool:

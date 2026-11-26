@@ -24,17 +24,16 @@ import (
 // productAccountStatement는 시험 계정 표시 때 승인자가 동의하는 진술이다. 저널에는 이 문장의 SHA-256만 남긴다.
 const productAccountStatement = "이 계정은 우리 조직이 소유한 일회용 시험 계정이고 실제 사용자 데이터가 없으며, 대상 운영 주체가 이 계정으로 시험하는 것을 허락했다."
 
-// productExternalConsentStatement는 외부 API 모델 실행에 시험 계정 세션과 대상에서 온 정보(대상 응답·도구 출력)를 보내는 것에
-// 대한 진술이다(CLAUDE.md 규칙 2, C14 결정 4, docs/external-llm-notice-ko.md, 사용자 결정 2026-11-23: 대상에서 온 정보는
-// 외부 모델로 나가도 되고 책임은 사용자에게 있다고 공지한다). 초안 입력 external_test_accounts가 이 진술에 동의한다는 뜻이고,
-// 저널에는 이 문장의 SHA-256과 주체·시각·작업만 남긴다. 화면은 이 문장을 서버에서 받아 그대로 보인다.
-const productExternalConsentStatement = "이 점검 회차에서 시험 계정 세션(대상이 발급한 쿠키·토큰)을 외부 모델 제공자에게 보내는 것을 대상 운영 주체에게 사전 공지했고 승인을 받았습니다. 대상 응답·도구 출력(대상이 돌려준 비밀번호·개인정보 등 포함)이 외부 모델 제공자로 전송되며, 외부 전송된 정보에 대한 책임은 사용자에게 있습니다. 로그인 비밀번호는 프로그램이 입력하며 모델에 넣지 않습니다."
+// productExternalConsentStatementV2는 11/23~11/26 회차별 동의 진술이다(초안 입력 external_test_accounts). 2026-11-26부터
+// 동의는 설치 단위 문장(productExternalTransferStatement)이고, 이 문장은 이미 계정 저널에 남은 동의 줄을 다시 읽을 때만 받는다.
+const productExternalConsentStatementV2 = "이 점검 회차에서 시험 계정 세션(대상이 발급한 쿠키·토큰)을 외부 모델 제공자에게 보내는 것을 대상 운영 주체에게 사전 공지했고 승인을 받았습니다. 대상 응답·도구 출력(대상이 돌려준 비밀번호·개인정보 등 포함)이 외부 모델 제공자로 전송되며, 외부 전송된 정보에 대한 책임은 사용자에게 있습니다. 로그인 비밀번호는 프로그램이 입력하며 모델에 넣지 않습니다."
 
 // productExternalConsentStatementV1은 11/23 전 진술이다. 이미 계정 저널에 남은 동의 줄을 다시 읽을 때만 받고 새로 남기지 않는다.
 const productExternalConsentStatementV1 = "이 점검 회차에서 시험 계정 세션(대상이 발급한 쿠키·토큰)을 외부 모델 제공자에게 보내는 것을 대상 운영 주체에게 사전 공지했고 승인을 받았다. 비밀번호는 보내지 않는다."
 
+// productExternalConsentStatementSHA256은 회차 감사 줄(external_consent)에 남기는 문장 해시다 — 지금은 설치 단위 문장이다.
 func productExternalConsentStatementSHA256() string {
-	return statementSHA256(productExternalConsentStatement)
+	return productExternalTransferStatementSHA256()
 }
 
 func statementSHA256(statement string) string {
@@ -42,9 +41,23 @@ func statementSHA256(statement string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// knownExternalConsentStatementSHA256은 저널 재생이 받는 동의 진술 해시다(지금 진술 + 이전 진술).
+// productExternalTransferStatementHistory는 예전 설치 단위 동의 문장들의 SHA-256이다. 설치 문장을 바꾸면 바꾸기 전 해시를 여기에
+// 남긴다 — 그 문장으로 남은 회차 감사 줄(external_consent)을 재생할 수 있어야 대상 레지스트리가 열린다(#965 리뷰 최민준 P2).
+// 지금 문장 해시는 시험(TestExternalTransferStatementPinned)이 고정해, 문장만 바꾸고 여기를 빠뜨리면 시험이 먼저 깨진다.
+var productExternalTransferStatementHistory = []string{}
+
+// knownExternalConsentStatementSHA256은 저널 재생이 받는 동의 진술 해시다(지금 · 예전 설치 단위 문장 + 이전 회차별 진술 둘).
 func knownExternalConsentStatementSHA256(digest string) bool {
-	return digest == productExternalConsentStatementSHA256() || digest == statementSHA256(productExternalConsentStatementV1)
+	if digest == productExternalConsentStatementSHA256() || digest == statementSHA256(productExternalConsentStatementV2) ||
+		digest == statementSHA256(productExternalConsentStatementV1) {
+		return true
+	}
+	for _, old := range productExternalTransferStatementHistory {
+		if digest == old {
+			return true
+		}
+	}
+	return false
 }
 
 func productAccountStatementSHA256() string {
@@ -271,9 +284,10 @@ func (r *productTargetRegistry) markTestAccount(principal, id, label string, sta
 	return r.accountResponse(rec, st), nil
 }
 
-// recordExternalConsent는 외부 API 실행의 시험 계정 동의를 대상 계정 저널에 남긴다(진술 해시·주체·시각·작업). 남길 수
-// 있는 주체는 대상 승인자(등록 운영자, accountTarget)뿐이고 대상은 지금 승인 상태여야 한다. 남기지 못하면 그 실행은
-// 시작하지 않는다(#552 윤재상 리뷰: 시험 계정 표시와 같은 수준의 기록).
+// recordExternalConsent는 외부 모델 실행이 시험 계정을 썼다는 감사 줄을 대상 계정 저널에 남긴다(설치 단위 동의 문장 해시·
+// 주체·시각·작업). 동의 자체는 설치 단위 기록이 정하고(product_external_consent.go), 이 줄은 어느 회차가 그 동의로 계정을
+// 썼는지 남긴다. 남길 수 있는 주체는 대상 승인자(등록 운영자, accountTarget)뿐이고 대상은 지금 승인 상태여야 한다.
+// 남기지 못하면 그 실행은 시작하지 않는다(#552 윤재상 리뷰: 시험 계정 표시와 같은 수준의 기록).
 func (r *productTargetRegistry) recordExternalConsent(principal, id, jobRef string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
