@@ -405,7 +405,11 @@ func ValidateResponse(r Request, response Response) error {
 		if response.Product.AccountStatement != "" && (r.Product.Operation != "accounts" || !validText(response.Product.AccountStatement, 1024)) {
 			return ErrProtocol
 		}
-		if response.Product.ExternalConsentStatement != "" && (r.Product.Operation != "accounts" || !validText(response.Product.ExternalConsentStatement, 1024)) {
+		consentOp := r.Product.Operation == "external_consent" || r.Product.Operation == "external_consent_record"
+		if response.Product.ExternalConsent != nil && (!consentOp || response.Product.Reason != "" || !validProductExternalConsent(*response.Product.ExternalConsent)) {
+			return ErrProtocol
+		}
+		if consentOp && response.Product.Reason == "" && response.Product.ExternalConsent == nil {
 			return ErrProtocol
 		}
 		if response.Product.Login != nil && !ValidTargetLogin(*response.Product.Login) {

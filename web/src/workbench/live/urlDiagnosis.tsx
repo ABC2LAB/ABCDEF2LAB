@@ -503,7 +503,6 @@ async function runUrlActionNow(
           input.display_name ?? "",
           input.workflow_mode,
           input.excluded_paths ?? "",
-          input.external_test_accounts === true,
           {
             exclusionsReviewed: input.exclusions_reviewed === true,
             backupConfirmed: input.backup_confirmed === true,
