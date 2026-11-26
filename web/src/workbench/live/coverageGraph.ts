@@ -33,7 +33,7 @@ export type CgNode = {
   displayPath: string | null;
   /**
    * 엔드포인트만: 표시 경로의 상세 수준(coverage-graph-display-path.md). `exact` = 루트 `/` 그대로, `pattern_only` = 조각을
-   * 가린 구조, `unavailable` = 표시할 경로가 기록되지 않음. 이전 서버(칸 없음) · 모르는 값 · 표시 경로와 어긋난 값이면 null
+   * 가린 구조, `unavailable` = 표시할 경로를 만들 수 없음(경로 없음 · 조각 상한 · 빈 조각). 이전 서버(칸 없음) · 모르는 값 · 표시 경로와 어긋난 값이면 null
    */
   pathDetail: CgPathDetail | null;
 };
@@ -170,7 +170,9 @@ const HIDDEN_LABEL = /^자산 #0$/;
  */
 export function coveragePathDetailLine(n: CgNode): string | null {
   if (n.kind !== "endpoint") return null;
-  if (n.pathDetail === "unavailable") return "상세 경로 미기록 — 이 자산은 표시할 경로가 기록되지 않았습니다";
+  // unavailable 은 저장된 경로가 없을 때만이 아니라 조각 수 상한 · 빈 조각 때문에 표시값을 못 만들 때도 온다
+  // (server coverageGraphDisplayPath) — '기록되지 않음'으로 단정하지 않고 응답이 말하는 것만 적는다(#970 이동찬 P3)
+  if (n.pathDetail === "unavailable") return "상세 경로 표시 불가 — 이 자산은 표시할 경로를 만들 수 없습니다";
   if (!n.displayPath) return null;
   if (n.pathDetail === "exact") return `표시 경로 ${n.displayPath} — 루트 경로 그대로입니다(요청 · 진단 근거 아님)`;
   return `표시 경로 ${n.displayPath} — 경로 조각을 가린 구조입니다(요청 · 진단 근거 아님)`;

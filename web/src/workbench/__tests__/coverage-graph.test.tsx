@@ -255,11 +255,11 @@ describe("표시 경로 상세 수준(path_detail_state, #945)", () => {
     expect(by.get("a:25")?.pathDetail).toBe("unavailable");
     expect(line(by, "a:21")).toBe("표시 경로 /{id}/{id} — 경로 조각을 가린 구조입니다(요청 · 진단 근거 아님)");
     expect(line(by, "a:24")).toBe("표시 경로 / — 루트 경로 그대로입니다(요청 · 진단 근거 아님)");
-    expect(line(by, "a:25")).toBe("상세 경로 미기록 — 이 자산은 표시할 경로가 기록되지 않았습니다");
+    expect(line(by, "a:25")).toBe("상세 경로 표시 불가 — 이 자산은 표시할 경로를 만들 수 없습니다");
     expect(line(by, "a:14")).toBeNull();
   });
 
-  it("이전 응답(칸 없음)은 상세 수준을 모름 — 표시 경로가 없으면 '미기록'으로 단정하지 않는다", () => {
+  it("이전 응답(칸 없음)은 상세 수준을 모름 — 표시 경로가 없으면 '표시 불가'로 단정하지 않는다", () => {
     const by = nodes(LEGACY_FIXTURE);
     expect(by.get("a:22")?.pathDetail).toBeNull();
     expect(line(by, "a:22")).toBeNull();
@@ -290,13 +290,14 @@ describe("표시 경로 상세 수준(path_detail_state, #945)", () => {
     expect(line(by, "s:1")).toBeNull();
   });
 
-  it("상세에 '상세 경로 미기록'을 보인다", async () => {
+  it("상세에 '상세 경로 표시 불가'를 보이고 '기록되지 않음'으로 단정하지 않는다", async () => {
     serve(DISPLAY_FIXTURE);
     render(<CoverageGraphSection taskId="1" active />);
     const svg = await screen.findByTestId("coverage-graph");
     fireEvent.keyDown(within(svg).getByRole("button", { name: /엔드포인트 #25/ }), { key: "Enter" });
     const detail = screen.getByTestId("coverage-graph-detail");
-    expect(detail).toHaveTextContent("상세 경로 미기록");
+    expect(detail).toHaveTextContent("상세 경로 표시 불가");
+    expect(detail).not.toHaveTextContent(/기록되지 않/);
     expect(detail).not.toHaveTextContent("표시 경로");
   });
 });
