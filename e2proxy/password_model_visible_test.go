@@ -2,7 +2,6 @@ package e2proxy
 
 import (
 	"bytes"
-	"encoding/base64"
 	"errors"
 	"io"
 	"net/http"
@@ -102,30 +101,24 @@ func TestPasswordResponseModelVisibleKeepsControlSecretsWithheld(t *testing.T) {
 	}
 }
 
-// 모델 요청에 이 실행의 시험 계정 비밀번호가 들어 있으면 보내지 않는다(사용자 결정 2026-11-23: 로그인은 프로그램 몫).
-// 대상이 흘린 다른 비밀번호(등록 안 된 값)와 깨진 인코딩만 있는 진단 페이로드는 막지 않는다.
-func TestModelRequestCarryingTestAccountPasswordIsDenied(t *testing.T) {
+// 모델이 등록 계정 비밀번호로 직접 로그인한다(사용자 결정 2026-11-26, CLAUDE.md 절대규칙 2: 모델 입력에 등록 계정의
+// 아이디·비밀번호를 넣을 수 있다). 그래서 모델 요청에 등록 비밀번호가 들어 있어도 E②가 그 이유로 막지 않는다. 메서드·범위·
+// 자격 헤더 모드·예산 같은 다른 검사는 그대로다(자격 헤더 Basic은 헤더 모드 시험이 맡는다).
+func TestModelRequestCarryingRegisteredPasswordIsSent(t *testing.T) {
 	password := "seeded-pass-77!"
 	type req struct {
 		method, path, body, media string
 		header                    map[string]string
 	}
-	cases := map[string]struct {
-		r    req
-		deny bool
-	}{
-		"json body":        {req{method: "POST", path: "/allowed/login", body: `{"username":"alice","password":"` + password + `"}`, media: "application/json"}, true},
-		"json escaped":     {req{method: "POST", path: "/allowed/login", body: `{"password":"` + passwordUnicode(password) + `"}`, media: "application/json"}, true},
-		"form body":        {req{method: "POST", path: "/allowed/login", body: "user=alice&pw=" + url.QueryEscape(password), media: "application/x-www-form-urlencoded"}, true},
-		"query":            {req{method: "GET", path: "/allowed/page?pw=" + passwordPercent(password)}, true},
-		"case folded":      {req{method: "GET", path: "/allowed/page?pw=" + url.QueryEscape(strings.ToUpper(password))}, true},
-		"basic auth":       {req{method: "GET", path: "/allowed/page", header: map[string]string{"Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("alice:"+password))}}, true},
-		"raw header":       {req{method: "GET", path: "/allowed/page", header: map[string]string{"X-Note": "pw " + password}}, true},
-		"broken escape":    {req{method: "POST", path: "/allowed/login", body: `{"p":"\u12` + password + `"}`, media: "application/json"}, true},
-		"other user pw":    {req{method: "POST", path: "/allowed/login", body: `{"username":"bob","password":"leaked-by-target-1"}`, media: "application/json"}, false},
-		"broken only":      {req{method: "GET", path: "/allowed/page?q=%ZZ%27--"}, false},
-		"broken json only": {req{method: "POST", path: "/allowed/login", body: `{"p":"\u12zz' OR 1=1--"}`, media: "application/json"}, false},
-		"plain":            {req{method: "GET", path: "/allowed/page"}, false},
+	cases := map[string]req{
+		"json body":     {method: "POST", path: "/allowed/login", body: `{"username":"alice","password":"` + password + `"}`, media: "application/json"},
+		"json escaped":  {method: "POST", path: "/allowed/login", body: `{"password":"` + passwordUnicode(password) + `"}`, media: "application/json"},
+		"form body":     {method: "POST", path: "/allowed/login", body: "user=alice&pw=" + url.QueryEscape(password), media: "application/x-www-form-urlencoded"},
+		"query":         {method: "GET", path: "/allowed/page?pw=" + passwordPercent(password)},
+		"case folded":   {method: "GET", path: "/allowed/page?pw=" + url.QueryEscape(strings.ToUpper(password))},
+		"raw header":    {method: "GET", path: "/allowed/page", header: map[string]string{"X-Note": "pw " + password}},
+		"broken escape": {method: "POST", path: "/allowed/login", body: `{"p":"\u12` + password + `"}`, media: "application/json"},
+		"plain":         {method: "GET", path: "/allowed/page"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -143,31 +136,25 @@ func TestModelRequestCarryingTestAccountPasswordIsDenied(t *testing.T) {
 				t.Fatal(err)
 			}
 			var body io.Reader
-			if tc.r.body != "" {
-				body = strings.NewReader(tc.r.body)
+			if tc.body != "" {
+				body = strings.NewReader(tc.body)
 			}
-			r, err := http.NewRequest(tc.r.method, srv.URL+tc.r.path, body)
+			r, err := http.NewRequest(tc.method, srv.URL+tc.path, body)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.r.media != "" {
-				r.Header.Set("Content-Type", tc.r.media)
+			if tc.media != "" {
+				r.Header.Set("Content-Type", tc.media)
 			}
-			for k, v := range tc.r.header {
+			for k, v := range tc.header {
 				r.Header.Set(k, v)
 			}
 			resp, receipt, err := c.Do(t.Context(), r)
 			if resp != nil {
 				resp.Body.Close()
 			}
-			if tc.deny {
-				if !errors.Is(err, ErrDenied) || receipt.Reason != PolicyDenied || received.Load() != 0 {
-					t.Fatalf("비밀번호가 든 모델 요청을 보냄: err=%v reason=%s received=%d", err, receipt.Reason, received.Load())
-				}
-				return
-			}
 			if err != nil || received.Load() != 1 {
-				t.Fatalf("비밀번호 없는 요청을 막음: err=%v reason=%s", err, receipt.Reason)
+				t.Fatalf("등록 비밀번호가 든 모델 요청을 막음: err=%v reason=%s received=%d", err, receipt.Reason, received.Load())
 			}
 		})
 	}

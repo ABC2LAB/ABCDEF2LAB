@@ -42,6 +42,23 @@ intent 결과는 **그래프의 지금 상태에서 계산하는 투영**이다.
 | `failed` | 감사 저장 실패, E② 집행 장애, 격리 실패, 권한 철회·만료·결속 실패, 저장소 읽기 실패, 워크플로 실패. |
 | `unknown` | 실행 마감·결과 저장·모델 사용량을 확인하지 못했다(지금과 같음). |
 
+`reason_code`(진단 실행 상태와 진단 준비 Job, 2026-11-26 B1: NodeGoat 화면 회차에서 실패 초안의 사유가 비어 화면에 '실패'만 보였다): 실행이 이미 분류한 고정 사유를 끝 상태까지 싣는다. 원문 오류는 싣지 않는다. 형식은 `^[a-z][a-z0-9_]{0,63}$`이고 화면은 모르는 코드를 코드 그대로 보인다.
+
+| `state` | `reason_code` | 뜻 |
+|---|---|---|
+| `failed` | 진단 로그 `run_finished`와 같은 값 | 계획 준비 실패로 엔진이 작업을 실패로 표시했으면 그 분기 사유(`planning_exploration_failed` 탐색 단계 실패, `planning_workflow_blocked` 진단 흐름 막힘, `planning_authority_rejected`·`planning_lease_invalid`·`planning_task_*`·`planning_context_closed`), 그 밖의 엔진 실패는 `engine_task_failed`, 감독자 마감 검사는 `closure_*`, 실행 시한은 `timeout`, 단계 일반 사유(`task_binding_failed`·`e2_policy_failed`·`drain_failed`·`audit_failed`·`execution_failed` 등). 진단 로그 사유 표(`docs/first-diagnosis-diagnostic-logs.md`)와 같은 어휘다 |
+| `unknown` | `execution_closure_unconfirmed`, `execution_result_unconfirmed`, `status_read_failed`, `model_usage_unknown` | 마감(감사·결과 저장) 미확인, 마감은 확인했지만 실행 결과가 없거나 계약에 맞지 않음, 상태 조회 포기, 모델 사용량 미확인 |
+| `cancelled` | `stop_requested`, `target_ended`, `account_binding_changed`, `authority_recheck_failed`, `progress_save_failed`, `run_time_limit_reached`, 없음 | 운영자 중지 요청(진단 준비 서비스가 중지 요청 때 붙이고 끝 상태에 남김), 대상 승인 철회·만료, 결속 계정 변경(3.4), 실행 중 설치·위임 재확인 실패(승인 기간 밖·보호 파일 변경·대상 기록 확인 실패, 0.25초마다 확인), 실행 중 진행 상태(실행 시작·계정별 인증 상태) 저장 실패, 회차 실행 시간 한도(실행 문맥 기한)에 닿아 끊김. 원인을 모르는 중지는 사유가 없다 |
+| `completed` | 없음(옛 기록은 `diagnostic_logging_incomplete`일 수 있음) | 완료의 내용은 `outcome`·`closing_reason`이 말한다. 시간 상한 마감은 `closing_reason: budget_limited`다(3.5) |
+
+탐색 실패(`failed` + `planning_exploration_failed`)·시간 상한(`completed` + `budget_limited`)·운영자 중지(`cancelled` + `stop_requested`)는 이 세 칸으로 구분된다. 화면 문구는 이경준 몫이다.
+
+진단 로그와의 관계: `failed`의 사유는 감독자 `run_finished`와 같은 값이다. `cancelled`의 사유는 진단 로그와 어휘가 다르다. 감독자는 실행 문맥이 취소된 것만 알아 원인과 관계없이 `user_cancelled`(기존 어휘)로 남기고, 원인 이름(`stop_requested`·`target_ended`·`authority_recheck_failed` 등)은 진단 준비 서비스와 URL 실행기가 알아 상태 칸에만 싣는다(2026-11-27 러너 합성에서 확인).
+
+설치·위임 재확인 실패·진행 저장 실패·실행 시간 한도는 운영자 중지가 아닌데도 지금은 `cancelled`다. 사유로 운영자 중지와 구분하고, 상태 값을 바꿀지는 측정 뒤에 정한다(2026-11-26 사용자 결정).
+
+실행 시간 한도(`run_time_limit_reached`)는 시간 상한 마감(3.5, `completed` + `budget_limited`, #830·#964)과 다른 경로다. 감독자는 실행 끝 시각에서 확정 단계 몫·진행 중 작업 유예·결과 저장 여유를 뺀 때 마감을 시작해 보통 `budget_limited`로 끝낸다(범위 선택 대기 중이어도 #964). 그 마감이 남긴 여유 안에 끝나지 않으면 실행 문맥 기한(설치 승인 실행 시간)이 실행을 끊고, 그때 `cancelled` + `run_time_limit_reached`(마감을 확인하지 못하면 `unknown`)다.
+
 바뀌는 것: intent 결과, Planner 라운드·도구 호출·intent 재실행 상한, 모델 예산 소진(사용량은 확인됨), E② 승인 요청 예산 소진은 더 이상 `failed`가 아니다. 감사가 닫히면 `completed`이고, 아래 칸이 내용을 말한다.
 
 ### 3.2 새 칸

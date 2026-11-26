@@ -242,13 +242,18 @@ type ProgramCallKind string
 const (
 	ProgramAuthPrep       ProgramCallKind = "auth_prep"
 	ProgramRefreshSession ProgramCallKind = "refresh_session"
-	ProgramE3Identity     ProgramCallKind = ProgramCallKind(PurposeE3Identity)
-	ProgramE3Create       ProgramCallKind = ProgramCallKind(PurposeE3Create)
-	ProgramE3Read         ProgramCallKind = ProgramCallKind(PurposeE3Read)
+	// ProgramLoginContrast는 모델 직접 로그인의 프로그램 대조 요청이다(docs/contracts/model-login-attempts.md §4). 모델이 이미
+	// 세션으로 GET한 정확한 URL을 세션 없이 한 번 다시 연다. GET만, 본문·인증 헤더 없이 보낸다.
+	ProgramLoginContrast ProgramCallKind = "login_contrast"
+	ProgramE3Identity    ProgramCallKind = ProgramCallKind(PurposeE3Identity)
+	ProgramE3Create      ProgramCallKind = ProgramCallKind(PurposeE3Create)
+	ProgramE3Read        ProgramCallKind = ProgramCallKind(PurposeE3Read)
 )
 
 // Valid는 현재 영수증·저널에서 인정하는 프로그램 호출만 판별한다.
-func (k ProgramCallKind) Valid() bool { return k == ProgramAuthPrep || k == ProgramRefreshSession }
+func (k ProgramCallKind) Valid() bool {
+	return k == ProgramAuthPrep || k == ProgramRefreshSession || k == ProgramLoginContrast
+}
 
 func (k ProgramCallKind) isE3() bool {
 	return k == ProgramE3Identity || k == ProgramE3Create || k == ProgramE3Read

@@ -45,7 +45,8 @@ E2_HEADER_MODES = frozenset({"preserve", "protected_session_proposal", HEADER_PA
 # 평가 회차가 받는 값이다. 시험 계정 모드는 제품의 프로그램 로그인(인증 준비)과 묶인 모드라 평가 조건(프로토콜 §2의 caller
 # 자격 통과 모드) 밖이다.
 EVAL_HEADER_MODES = E2_HEADER_MODES - {HEADER_TEST_ACCOUNT}
-PROGRAM_CALL_KINDS = frozenset({"auth_prep", "refresh_session"})
+# login_contrast는 모델 직접 로그인의 프로그램 대조 요청이다(docs/contracts/model-login-attempts.md §4).
+PROGRAM_CALL_KINDS = frozenset({"auth_prep", "refresh_session", "login_contrast"})
 # E③ 프로그램 호출(v3 계약 §8.1). v3 행에만 있다.
 E3_PROGRAMS = frozenset({"e3_identity", "e3_create", "e3_read"})
 MODEL_PROGRAM = "model"
