@@ -1977,8 +1977,9 @@ func stripHeaders(h http.Header) {
 }
 
 // RedactOutput은 모델에 가는 글의 가림이다. E③ 표식과 우리 제어 비밀(설정한 보호 값)은 늘 가린다(절대규칙 2). 시험 계정
-// 실행(제품)은 대상이 발급한 세션·응답과 시험 계정 자격을 모델에 준다(절대규칙 2, 2026-11-26 DLP 폐기). 시험 계정 실행이
-// 아닌 실행은 이전 정책대로 비밀번호(model_visible_v1 제외)·출력 가림 전용 세션 값도 가린다.
+// 실행은 대상이 발급한 세션·응답을 모델에 주고(세션 값을 가림 목록에 넣지 않는다), model_visible_v1(제품)은 시험 계정
+// 비밀번호도 준다(절대규칙 2, 2026-11-26 DLP 폐기). 이전 비밀번호 정책(보류·mask_spans_v1)은 비밀번호를, 시험 계정 실행이
+// 아닌 실행은 출력 가림 전용 세션 값을 지금처럼 가린다.
 func (e *Execution) RedactOutput(b []byte) []byte {
 	return e.redact(b, false)
 }
@@ -1998,10 +1999,13 @@ func (e *Execution) redact(b []byte, record bool) []byte {
 		out = redactMarker(out, e.marker)
 	}
 	values := append([][]byte(nil), e.secrets...)
-	if !record && !e.testAccountPassthrough() {
+	if !record {
+		// 이전 비밀번호 정책(보류·mask_spans_v1)은 헤더 모드와 상관없이 모델 출력에서 비밀번호를 가린다. model_visible_v1은
+		// 비밀번호를 등록하지 않는다(AddProtectedPasswords).
 		if e.cfg.PasswordResponse != PasswordResponseModelVisible {
 			values = append(values, e.passwords...)
 		}
+		// 출력 가림 전용 세션 값은 시험 계정 실행이 아닌 실행에만 있다(AddRedactValues가 시험 계정 실행에서는 넣지 않는다).
 		values = append(values, e.redactOnly...)
 	}
 	// 긴 값부터 가려 한 값이 다른 값의 일부여도 남지 않게 한다. JSON 문자열 안에 이스케이프된 값도 가린다.
