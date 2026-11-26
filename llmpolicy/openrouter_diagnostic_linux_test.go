@@ -245,3 +245,83 @@ func TestOpenRouterCallSlotReuseDiagnosticEvent(t *testing.T) {
 		t.Fatal("slot reuse not recorded")
 	}
 }
+
+// 요청 한도(429) 응답의 Retry-After와 본문의 제공자 이름·원문 오류를 진단 기록에 남긴다(사용자 결정 2026-11-26). 원문
+// 오류는 길이를 자르고 제어 문자를 빼며, 이 호출의 API 키(제어 비밀)는 어디에도 남지 않는다. Retry-After는 호출 칸에도
+// 남아 모델 예산이 다시 보낼 때 따른다.
+func TestOpenRouterRateLimitDetailRecorded(t *testing.T) {
+	const key = "sk-or-v1-synthetic-control-key-123456"
+	now := time.Now()
+	for _, tc := range []struct {
+		name, retryAfter, body string
+		wantWait               time.Duration
+		hasWait                bool
+		wantName, wantError    string
+	}{
+		{"seconds", "7", `{"error":{"message":"Provider returned error","code":429,"metadata":{"provider_name":"PrimeIntellect","raw":"rate limited for ` + key + `\nretry later"}}}`, 7 * time.Second, true, "PrimeIntellect", "rate limited for [REDACTED] retry later"},
+		{"http date", now.Add(5 * time.Second).UTC().Format(http.TimeFormat), `{"error":{"message":"Rate limit exceeded","metadata":{"provider_name":"DeepInfra"}}}`, 5 * time.Second, true, "DeepInfra", "Rate limit exceeded"},
+		{"invalid header", "soon", `{"error":{"message":"busy","metadata":{"provider_name":"Prime<Intellect>","raw":{"detail":"quota"}}}}`, 0, false, "PrimeIntellect", `{"detail":"quota"}`},
+		{"no header long raw", "", `{"error":{"message":"x","metadata":{"raw":"` + strings.Repeat("a", 2000) + `"}}}`, 0, false, "", strings.Repeat("a", 512)},
+		{"not json", "3", `upstream busy ` + key, 3 * time.Second, true, "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, log := routerDiagnosticFixture(t)
+			p := openRouterFixture(t)
+			call := &OpenRouterCall{}
+			tr := &openRouterTransport{policy: p, base: openRouterRT(func(*http.Request) (*http.Response, error) {
+				h := make(http.Header)
+				if tc.retryAfter != "" {
+					h.Set("Retry-After", tc.retryAfter)
+				}
+				return &http.Response{StatusCode: 429, Body: io.NopCloser(strings.NewReader(tc.body)), Header: h}, nil
+			})}
+			req := openRouterRequest().WithContext(WithOpenRouterCall(ctx, call))
+			req.Header.Set("Authorization", "Bearer "+key)
+			req.Body = io.NopCloser(strings.NewReader(`{"model":"qwen/qwen3.6-35b-a3b","messages":[{"role":"user","content":"hello"}],"max_tokens":100,"stream":false}`))
+			if resp, err := tr.RoundTrip(req); err == nil {
+				_ = resp.Body.Close()
+				t.Fatal("429가 성공으로 보임")
+			}
+			raw, err := os.ReadFile(log.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), key) {
+				t.Fatal("API 키가 진단 기록에 남음")
+			}
+			events := routerDiagnosticEvents(t, log)
+			end := events[len(events)-1]
+			if end.ReasonCode != "http_rate_limited" || end.ProviderName != tc.wantName || end.ProviderError != tc.wantError {
+				t.Fatalf("기록: reason=%s name=%q error=%q", end.ReasonCode, end.ProviderName, end.ProviderError)
+			}
+			got := call.Result()
+			if got.HasRetryAfter != tc.hasWait || !tc.hasWait && (got.RetryAfter != 0 || end.RetryAfterMS != 0) {
+				t.Fatalf("Retry-After 칸: %+v ms=%d", got, end.RetryAfterMS)
+			}
+			if tc.hasWait && (got.RetryAfter > tc.wantWait || got.RetryAfter < tc.wantWait-2*time.Second || end.RetryAfterMS != got.RetryAfter.Milliseconds()) {
+				t.Fatalf("Retry-After 값: %v ms=%d 기대 %v", got.RetryAfter, end.RetryAfterMS, tc.wantWait)
+			}
+		})
+	}
+}
+
+func TestOpenRouterRetryAfterParse(t *testing.T) {
+	now := time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC)
+	for value, want := range map[string]struct {
+		wait time.Duration
+		ok   bool
+	}{
+		"0": {0, true}, "12": {12 * time.Second, true}, " 4 ": {4 * time.Second, true}, "-1": {0, false}, "": {0, false}, "1.5": {0, false},
+		"99999999": {openRouterRetryAfterLimit, true},
+		now.Add(-time.Minute).Format(http.TimeFormat):    {0, true},
+		now.Add(9 * time.Second).Format(http.TimeFormat): {9 * time.Second, true},
+		now.Add(48 * time.Hour).Format(http.TimeFormat):  {openRouterRetryAfterLimit, true},
+	} {
+		if wait, ok := openRouterRetryAfter(value, now); wait != want.wait || ok != want.ok {
+			t.Fatalf("%q: %v %v, 기대 %v %v", value, wait, ok, want.wait, want.ok)
+		}
+	}
+	if openRouterBearer("Bearer abc ") != "abc" || openRouterBearer("abc") != "" || openRouterBearer("") != "" {
+		t.Fatal("Bearer 토큰 읽기")
+	}
+}
