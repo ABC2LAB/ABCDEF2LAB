@@ -258,9 +258,14 @@ func TestE2FlowViewFailsClosed(t *testing.T) {
 	if w, out := liveGet(t, runsDir, "/api/tasks/9/e2-flow"); w.Code != http.StatusOK || out["journal"] != "invalid" {
 		t.Fatalf("key differs from pin: %d %s", w.Code, w.Body.String())
 	}
+	// 실행은 결속됐지만 E② 저널이 아직 없으면 404가 아니라 저널 상태 none이다(사건을 지어내지 않음, 계약 §4).
 	noJournal, _ := liveRunFixture(t, nil)
-	if w, _ := liveGet(t, noJournal, "/api/tasks/9/e2-flow"); w.Code != http.StatusNotFound {
-		t.Fatalf("missing journal: %d", w.Code)
+	if w, out := liveGet(t, noJournal, "/api/tasks/9/e2-flow"); w.Code != http.StatusOK || out["journal"] != "none" || len(out["calls"].([]any)) != 0 {
+		t.Fatalf("missing journal: %d %s", w.Code, w.Body.String())
+	}
+	// 실행 결속 전(실행 디렉터리·정책 없음)은 지금처럼 404다.
+	if w, _ := liveGet(t, t.TempDir(), "/api/tasks/9/e2-flow"); w.Code != http.StatusNotFound {
+		t.Fatalf("missing run e2-flow: %d", w.Code)
 	}
 	if w, _ := liveGet(t, t.TempDir(), "/api/tasks/9/control-policy"); w.Code != http.StatusNotFound {
 		t.Fatalf("missing run: %d", w.Code)
@@ -422,5 +427,35 @@ func TestE2FlowViewAttachesAttemptPatterns(t *testing.T) {
 	write(`{"attempt_id":"` + a1 + `","path_pattern":"/api/{username}/items/{title}","display_version":2}` + "\n")
 	if p1, p2 := pattern(); p1 != "/api/{username}/items/{title}" || p2 != "" {
 		t.Fatalf("new display pattern: %q %q", p1, p2)
+	}
+}
+
+// E②를 거치지 않고 끝난 회차(저널 없음)의 e2-flow는 저널 상태 none·누계 0·진단 갈래 0이고, 대상 요청 내역은 탐색 기록의
+// 수 그대로다(끝난 회차의 '보낸 요청'이 '읽기 실패'로 보이지 않게, 2026-11-27 사용자 결정 (가)). 탐색 기록이 없으면 모름이다.
+func TestE2FlowWithoutJournalShowsExplorationRequests(t *testing.T) {
+	runsDir, _ := liveRunFixture(t, nil)
+	stateDir := filepath.Join(runsDir, liveJob, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if w, out := liveGet(t, runsDir, "/api/tasks/9/e2-flow"); w.Code != http.StatusOK || out["journal"] != "none" {
+		t.Fatalf("no exploration record: %d %s", w.Code, w.Body.String())
+	} else if req := out["target_requests"].(map[string]any); req["exploration_state"] != "unknown" || req["exploration"] != nil || req["total"] != nil {
+		t.Fatalf("탐색 기록이 없는데 수를 지어냄: %v", req)
+	}
+	recordExplorationStage(stateDir, explorationKnown(explorationClosed, 37))
+	w, out := liveGet(t, runsDir, "/api/tasks/9/e2-flow")
+	if w.Code != http.StatusOK || out["journal"] != "none" || out["last_index"] != float64(0) || out["more"] != false || len(out["calls"].([]any)) != 0 {
+		t.Fatalf("저널 없음 응답: %d %s", w.Code, w.Body.String())
+	}
+	for key, value := range out["counts"].(map[string]any) {
+		if value != float64(0) {
+			t.Fatalf("저널 없는데 누계 %s=%v", key, value)
+		}
+	}
+	req := out["target_requests"].(map[string]any)
+	if req["model"] != float64(0) || req["login"] != float64(0) || req["confirmation"] != float64(0) || req["unclassified"] != float64(0) ||
+		req["exploration"] != float64(37) || req["exploration_state"] != "closed" || req["total"] != float64(37) {
+		t.Fatalf("대상 요청 내역: %v", req)
 	}
 }

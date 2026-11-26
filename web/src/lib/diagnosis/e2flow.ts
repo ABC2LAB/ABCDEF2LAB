@@ -70,7 +70,8 @@ export const COUNT_LABEL = {
 export type E2Counts = Record<keyof typeof COUNT_LABEL, number>;
 export type E2Flow = {
   format: "abc2lab.e2-flow-view/v1";
-  journal: "verified" | "invalid";
+  /** none: 실행은 결속됐지만 E② 저널이 아직 없음(진단 요청 전, 또는 E②를 거치지 않고 끝난 회차 — 계약 §4). 사건 0 · 탐색 수만 */
+  journal: "verified" | "invalid" | "none";
   last_index: number;
   more: boolean;
   omitted_calls: number;
@@ -173,7 +174,11 @@ function attempt(v: unknown): E2Attempt {
   };
 }
 export function parseE2Flow(v: unknown): E2Flow {
-  if (!object(v) || v.format !== "abc2lab.e2-flow-view/v1" || !["verified", "invalid"].includes(String(v.journal)))
+  if (
+    !object(v) ||
+    v.format !== "abc2lab.e2-flow-view/v1" ||
+    !["verified", "invalid", "none"].includes(String(v.journal))
+  )
     return invalid();
   exact(v, [
     "format",
@@ -203,6 +208,16 @@ export function parseE2Flow(v: unknown): E2Flow {
   // 검증 실패 응답에 사건이 섞여 와도 절대 그리지 않는다.
   if (v.journal === "invalid")
     return { format: v.format, journal: "invalid", last_index: 0, more: false, omitted_calls: 0, counts, calls: [] };
+  // 저널 없음은 사건이 없다는 뜻이다. 사건 · 누계 · 커서가 실려 오면 계약 밖이다(지어낸 사건을 그리지 않는다).
+  if (
+    v.journal === "none" &&
+    (v.calls.length !== 0 ||
+      v.last_index !== 0 ||
+      v.more ||
+      v.omitted_calls !== 0 ||
+      Object.values(counts).some((n) => n !== 0))
+  )
+    return invalid();
   let modelWrites: E2Flow["model_writes"];
   if (v.model_writes !== undefined) {
     const raw = v.model_writes;
@@ -242,9 +257,15 @@ export function parseE2Flow(v: unknown): E2Flow {
       attempts: [...attempts.values()].sort((a, b) => a.index - b.index),
     });
   }
+  if (v.journal === "none") {
+    const t = targetRequests;
+    // 저널이 없으면 진단 갈래는 0 이다(탐색 수만 있음)
+    if (t && (t.model !== 0 || t.login !== 0 || t.confirmation !== 0 || t.unclassified !== 0)) return invalid();
+    if (modelWrites && (modelWrites.responded_2xx !== 0 || modelWrites.unverified !== 0)) return invalid();
+  }
   return {
     format: v.format,
-    journal: "verified",
+    journal: v.journal === "none" ? "none" : "verified",
     last_index: v.last_index,
     more: v.more,
     omitted_calls: v.omitted_calls,
@@ -328,7 +349,7 @@ export function decisionClass(a: E2Attempt): DecisionClass {
 }
 /** 같은 시도는 마지막 사건 번호로 교체한다. 누계 counts는 매 응답의 전체 저널 값이며 더하지 않는다. */
 export function mergeE2Flow(previous: E2Flow | null, next: E2Flow): E2Flow {
-  if (next.journal === "invalid" || !previous || previous.journal !== "verified") return next;
+  if (next.journal !== "verified" || !previous || previous.journal !== "verified") return next;
   if (next.last_index < previous.last_index) return invalid();
   const calls = new Map(previous.calls.map((c) => [c.call_ref, c]));
   for (const c of next.calls) {

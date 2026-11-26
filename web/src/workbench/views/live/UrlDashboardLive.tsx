@@ -566,7 +566,7 @@ export function UrlDashboardLive() {
             explore={
               flow && job?.input.workflow_mode ? { found: flow.counts.found, visited: flow.counts.visited } : null
             }
-            e2={e2Task && !e2.error && e2.data?.journal === "verified" ? e2.data.counts : null}
+            e2={e2Task && !e2.error && e2.data && e2.data.journal !== "invalid" ? e2.data.counts : null}
             e2Note={e2Note}
             approvals={pending ? pending.length : null}
             selecting={!!job && flow?.stage === "awaiting_selection"}

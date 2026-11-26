@@ -335,3 +335,74 @@ describe("sentRequestsOf — '보낸 요청' 칸(사용자 11/25: 총계 + 마�
     expect(sentRequestsOf(null)).toBeNull();
   });
 });
+
+describe("저널 없음(journal none — 계약 workbench-live-data §4, 2026-11-27)", () => {
+  const zero = {
+    attempts: 0,
+    allowed: 0,
+    denied: 0,
+    unsupported: 0,
+    forward_attempted: 0,
+    responses: 0,
+    unknown: 0,
+    transient: 0,
+    withheld: 0,
+    calls: 0,
+  };
+  const none = (over: Record<string, unknown> = {}) => ({
+    format: "abc2lab.e2-flow-view/v1",
+    journal: "none",
+    last_index: 0,
+    more: false,
+    omitted_calls: 0,
+    counts: zero,
+    calls: [],
+    target_requests: {
+      model: 0,
+      login: 0,
+      confirmation: 0,
+      unclassified: 0,
+      exploration: 37,
+      exploration_state: "closed",
+      total: 37,
+    },
+    ...over,
+  });
+
+  it("받고, '보낸 요청'은 탐색 요청 수로 보인다(E②를 거치지 않고 끝난 회차)", () => {
+    const flow = parseE2Flow(none());
+    expect(flow.journal).toBe("none");
+    expect(flow.calls).toEqual([]);
+    expect(sentRequestsOf(flow)).toEqual({ value: "37건", detail: "모델 0 · 탐색 37" });
+  });
+
+  it.each([
+    ["사건이 실려 옴", none({ calls: [{ call_ref: "call-1", intent_id: 9, closed: false, attempts: [e2Attempt()] }] })],
+    ["누계가 0 이 아님", none({ counts: { ...zero, attempts: 1 } })],
+    ["커서가 0 이 아님", none({ last_index: 3 })],
+    ["더 있음", none({ more: true })],
+    [
+      "진단 갈래 수가 있음",
+      none({
+        target_requests: {
+          model: 2,
+          login: 0,
+          confirmation: 0,
+          unclassified: 0,
+          exploration: 37,
+          exploration_state: "closed",
+          total: 39,
+        },
+      }),
+    ],
+    ["모델 쓰기가 0 이 아님", none({ model_writes: { responded_2xx: 1, unverified: 0 } })],
+  ])("계약 밖은 거부한다: %s", (_, value) => {
+    expect(() => parseE2Flow(value)).toThrow();
+  });
+
+  it("앞 응답이 verified 여도 none 이면 그대로 none 이다(지어낸 병합 없음)", () => {
+    const merged = mergeE2Flow(e2Flow(), parseE2Flow(none()));
+    expect(merged.journal).toBe("none");
+    expect(merged.calls).toEqual([]);
+  });
+});

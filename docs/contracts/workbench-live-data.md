@@ -114,6 +114,8 @@
 
 그 task의 전송 통제 감사 기록(실행 결속 디렉터리의 저널, HMAC 체인 검증 뒤)을 호출(call) 단위로 묶은 투영이다. 저널 검증이 실패하면 사건을 하나도 보이지 않고 `journal: "invalid"`로 답한다(일부만 보이고 "정상"으로 보이게 하지 않는다).
 
+**저널 없음(`journal: "none"`, 2026-11-27 사용자 결정)**: 실행은 결속됐지만 E② 저널이 아직 없으면(저널은 첫 진단 작업이 E②를 잡을 때 만든다 — 탐색·계획 중이거나, E②를 한 번도 잡지 않고 끝난 회차: 탐색 실패·의도 0·범위 선택 대기 중 시간 상한 등) 404가 아니라 200으로 `journal: "none"`을 준다. 호출은 빈 목록, `counts`는 모두 0, `last_index` 0, `more` 거짓, `omitted_calls` 0이고, `target_requests`는 진단 갈래(`model`·`login`·`confirmation`·`unclassified`)가 0이고 탐색 수는 탐색 기록 그대로다(`exploration_state` 규칙 같음). 헤더로 모델 쓰기 요약을 청하면 `model_writes`도 0으로 싣는다. 그래서 E②를 거치지 않고 끝난 회차의 '보낸 요청'도 탐색 요청 수로 보인다(이전에는 404라 '읽기 실패'). 실행 결속 전(실행 디렉터리·정책이 없음)은 지금처럼 404다. 화면은 `none`을 '진단 요청 전·아직 전송 통제 기록이 없음'으로 보인다(문구는 이경준). 요청 전체 기록·요청 상세(아래)의 `not_journaled` 404는 그대로다.
+
 현재 [제품 조회](../../cmd/first-controlled-diagnosis/url_live_views.go)는 감사 키 pin과 읽은 저널의 HMAC 체인을 검증한다. `VerifyJournalEvents`에 신뢰 체크포인트를 전달하지 않아 끝 행이 삭제된 유효 접두부도 `journal: "verified"`로 표시될 수 있다.
 
 **후속 PR — 제품 `e2-flow`에 신뢰 체크포인트 연결.** 회차별 최종 체크포인트는 저널과 쓰기 권한·보존이 분리된 [내구 감사 체크포인트 저장소](e2-audit-journal.md)에 보관하는 방향으로 연결한다. 서버가 해당 회차 `Scope`와 `JournalID`의 현재 epoch·head·마감 상태를 인증된 경로로 읽고, 같은 저널 사본을 `VerifyJournalEvents(..., checkpoint)`에 전달한다. 완료 회차는 `sealed` 최종 head를 기준으로 대조한다. 체크포인트 조회 실패·불일치·끝 행 삭제 시 사건을 반환하지 않는지를 후속 PR에서 검증한다. 실행 디렉터리에 저널과 함께 놓인 체크포인트와 `e2export`의 `checkpoint.json`은 오프라인 검증 자료로 다룬다. 기존 회차와 진행 중 조회의 표시 방식은 연결 PR에서 정한다.
