@@ -41,6 +41,7 @@ import {
 import { usePoll } from "../../live/usePoll";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
+import { KgAssetDetail, KgOverview, type KgState, useKgQuery } from "./kgAssetDetail";
 
 /** 종류 색(옛 ARTEX 자산 그래프와 같은 갈래). 위험도 색(--crit 등)과 섞이지 않게 따로 둔다. */
 const KIND_COLOR: Record<CoverageKind, string> = {
@@ -80,8 +81,17 @@ const LABEL_MAX = 26;
 
 type View = { x: number; y: number; k: number };
 
-/** 그래프 탭 맨 위 구획. 탭이 보일 때만 읽고, 탭에 다시 들어오거나 [다시 읽기]를 누르면 다시 읽는다(주기 조회 없음). */
-export function CoverageGraphSection({ taskId, active }: { taskId: string | null; active: boolean }) {
+/** 보고서 '자산 지식 그래프' 탭 몸통 — 자산 관계 그래프에 KG 조회 v1 포함 근거 · 출처를 붙여 한 구획으로 그린다. */
+export function AssetGraphTab({ taskId, active }: { taskId: string; active: boolean }) {
+  const kg = useKgQuery(taskId, active);
+  return <CoverageGraphSection taskId={taskId} active={active} kg={kg} />;
+}
+
+/**
+ * 그래프 탭 구획. 탭이 보일 때만 읽고, 탭에 다시 들어오거나 [다시 읽기]를 누르면 다시 읽는다(주기 조회 없음).
+ * kg(KG 조회 v1)를 주면 노드 상세에 그 자산의 포함 근거 · 출처를, 그래프 아래에 요약 한 줄을 붙인다(kgAssetDetail).
+ */
+export function CoverageGraphSection({ taskId, active, kg }: { taskId: string | null; active: boolean; kg?: KgState }) {
   const poll = usePoll(() => fetchCoverageGraph(taskId as string), [taskId], { enabled: active && !!taskId });
   const graph = useMemo(() => (poll.data ? parseCoverageGraph(poll.data) : null), [poll.data]);
   if (!taskId) return null;
@@ -100,7 +110,7 @@ export function CoverageGraphSection({ taskId, active }: { taskId: string | null
       </div>
     );
   } else if (graph) {
-    body = <Graph graph={graph} onReload={poll.reload} />;
+    body = <Graph graph={graph} onReload={poll.reload} kg={kg} />;
   } else if (poll.fetchedAt !== null) {
     // 503 → null: 저장된 자산 그래프를 지금 확인할 수 없다(자산 저장소 꺼짐 · 조회 실패). 빈 그래프로 대신하지 않는다
     body = (
@@ -127,8 +137,15 @@ export function CoverageGraphSection({ taskId, active }: { taskId: string | null
         구조는 그리지 않습니다.
       </p>
       {body}
+      {kg ? <KgOverview kg={kg} graphAssetIds={graphAssetIds(graph)} /> : null}
     </section>
   );
+}
+
+/** 지금 그래프에 있는 자산 번호(그래프를 못 읽었거나 형식 오류면 빈 집합 — 그 KG 자산은 그래프에서 고를 수 없다) */
+function graphAssetIds(graph: CgGraph | null): ReadonlySet<string> {
+  if (!graph || graph.malformed) return new Set();
+  return new Set(graph.nodes.flatMap((n) => (n.assetId ? [String(n.assetId)] : [])));
 }
 
 function failText(error: unknown): string {
@@ -184,7 +201,7 @@ type Gesture =
  * 응답 상태(형식 오류 · 버린 수 · 빈 그래프)와 그림을 나눈다. 그림(Canvas)은 노드가 있을 때만 붙고 내용이 바뀌면 새로 붙는다 —
  * 빈 그래프 뒤 노드가 들어와도 휠 리스너 · 화면 맞춤이 새 svg 에 다시 잡힌다(#902 리뷰 이동찬 · 윤재상).
  */
-function Graph({ graph, onReload }: { graph: CgGraph; onReload: () => void }) {
+function Graph({ graph, onReload, kg }: { graph: CgGraph; onReload: () => void; kg?: KgState }) {
   const reload = (
     <button className={cx(s.btn, s.sm)} type="button" onClick={onReload}>
       다시 읽기
@@ -217,13 +234,13 @@ function Graph({ graph, onReload }: { graph: CgGraph; onReload: () => void }) {
           {reload}
         </div>
       ) : (
-        <Canvas key={shape} graph={graph} onReload={onReload} />
+        <Canvas key={shape} graph={graph} onReload={onReload} kg={kg} />
       )}
     </>
   );
 }
 
-function Canvas({ graph, onReload }: { graph: CgGraph; onReload: () => void }) {
+function Canvas({ graph, onReload, kg }: { graph: CgGraph; onReload: () => void; kg?: KgState }) {
   const [expanded, setExpanded] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [picked, setPicked] = useState<string | null>(null);
   const [hover, setHover] = useState<string | null>(null);
@@ -393,7 +410,7 @@ function Canvas({ graph, onReload }: { graph: CgGraph; onReload: () => void }) {
           </g>
         </svg>
       </div>
-      <Detail graph={graph} node={chosen ?? null} />
+      <Detail graph={graph} node={chosen ?? null} kg={kg} />
     </>
   );
 }
@@ -564,11 +581,13 @@ function Legend({
   );
 }
 
-function Detail({ graph, node }: { graph: CgGraph; node: CgNode | null }) {
+function Detail({ graph, node, kg }: { graph: CgGraph; node: CgNode | null; kg?: KgState }) {
   if (!node) {
     return (
       <p className={s.help} data-testid="coverage-graph-detail">
-        노드를 고르면 종류 · 범위 · 검사 여부와 연결을 봅니다.
+        {kg
+          ? "노드를 고르면 종류 · 범위 · 검사 여부와 연결, 포함 근거 · 출처를 봅니다."
+          : "노드를 고르면 종류 · 범위 · 검사 여부와 연결을 봅니다."}
       </p>
     );
   }
@@ -591,6 +610,7 @@ function Detail({ graph, node }: { graph: CgGraph; node: CgNode | null }) {
         <li>{parent ? `속한 자산: ${coverageNodeTitle(parent)}` : "최상위 자산"}</li>
         <li>{`직접 포함한 자산 ${children}`}</li>
       </ul>
+      {kg ? <KgAssetDetail kg={kg} assetId={node.assetId} /> : null}
     </section>
   );
 }

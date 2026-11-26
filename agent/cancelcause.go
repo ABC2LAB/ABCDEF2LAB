@@ -85,6 +85,18 @@ var (
 	AbortRunHardTimeout = cause("run_hard_timeout", "단일 실행 강제 시간 초과가 작동함",
 		"단일 실행이 소프트 벽시계 예산과 추가 유예를 넘겼다. 모델 요청이나 도구가 오래 돌아오지 않아 정상 턴 경계 마무리를 못 한 것이다. 중단 전 마지막으로 돌아오지 않은 도구 호출을 먼저 확인한다",
 		"A single run exceeded the soft wall-clock budget and the extra grace, which means a model request or a tool didn't return for a long time and the normal turn-boundary wrap-up couldn't run. Check the last unreturned tool call before the interruption first")
+
+	// Exploration session context (server.ExplorationSession). 탐색 작업자 취소에 원인 이름이 없어 canceled_no_cause로만
+	// 남던 것을 가른다(2026-11-26 NodeGoat 회차 1).
+	AbortExplorationSessionClosed = cause("exploration_session_closed", "탐색 세션이 닫힘",
+		"탐색 세션이 닫혀 탐색 작업자 실행을 취소했다. 닫힌 사유(경계 장애·대상 철회·운영자 중지 등)는 탐색 마감 사유로 따로 남고, 이미 저장한 발견은 유지한다",
+		"The exploration session closed, so this exploration worker run was cancelled. The closing reason is recorded separately and discoveries already saved are kept")
+	AbortExplorationObservation = cause("exploration_observation_unavailable", "탐색 관찰 기록을 진단 흐름에 싣지 못함",
+		"탐색 도구 호출 뒤 경계 관찰 기록을 진단 흐름에 싣지 못해(관찰 조회 실패·결속 불일치·흐름이 범위 밖으로 보는 관찰 등) 탐색 세션을 닫고 작업자 실행을 취소했다. 탐색 마감 사유는 boundary_unavailable이다",
+		"After a tool call the boundary observations could not be recorded in the diagnosis flow, so the exploration session closed and this run was cancelled. Discoveries already saved are kept")
+	AbortExplorationTimeBudget = cause("exploration_time_budget", "탐색 시간 상한에 닿음",
+		"탐색 세션이 탐색 시간 상한에 닿아 탐색 작업자 실행을 취소했다. 이미 저장한 발견은 유지하고 다음 단계로 넘어간다",
+		"The exploration session reached its time budget, so this exploration worker run was cancelled. Discoveries already saved are kept")
 )
 
 // abortCauseOf resolves the named cause attached to a cancelled run context. 이름을 붙이지 않은 취소도 같은 형태로 돌려준다.
