@@ -11,13 +11,13 @@
 // - 위험도 색은 확정의 위험도에만 쓴다. 판정은 강조색(확정) · 같은 색 빗금(검토 필요) · 회색 두 단계로 가르고 범례를 늘 둔다.
 // - 원형 차트는 쓰지 않는다(양은 막대 길이로). 막대 · 줄은 누르면 그 점검으로 간다.
 
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { activeURLRun, endedURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
 import { readURLStatus, type URLDiagnosisJob, urlReasonLabels } from "@/lib/diagnosis/diagnosis-url";
 import { diagnosticOutcome } from "@/lib/diagnosis/diagnostic-results";
-import { getE2Flow } from "@/lib/diagnosis/e2flow";
-import type { RemediationEntry } from "@/lib/diagnosis/remediation";
+import { type E2Flow, getE2Flow } from "@/lib/diagnosis/e2flow";
+import type { RemediationData, RemediationEntry } from "@/lib/diagnosis/remediation";
 import type { RequestApproval } from "@/lib/diagnosis/request-approvals";
 import { entrySeverity } from "@/lib/diagnosis/severity";
 
@@ -25,8 +25,8 @@ import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import { fetchRemediation, fetchRequestApprovals } from "../../live/api";
 import { useHiddenRunIDs } from "../../live/hiddenRuns";
-import { dateTimeOf, fmtDur, sevKey } from "../../live/map";
-import { fetchProductVerdicts, type ProductVerdictShown } from "../../live/productVerdicts";
+import { dateTimeOf, fmtDur, isUnsupported, sevKey } from "../../live/map";
+import { fetchProductVerdicts, type ProductVerdictList, type ProductVerdictShown } from "../../live/productVerdicts";
 import { useRunInput } from "../../live/runInput";
 import { runDurationSec, runElapsedSec } from "../../live/runTiming";
 import { HEALTH_PATH } from "../../live/stuckRelease";
@@ -50,6 +50,11 @@ const TREND_RUNS = 14;
 const LIST_ROWS = 6;
 /** 진행 중 점검(승인 대기 · 단계 · 전송 통제)을 다시 읽는 간격(ms) */
 const ACTIVE_POLL_MS = 10_000;
+/** 끝난 점검 읽기가 일부 실패했을 때 실패한 점검만 다시 읽는 간격(ms)과 횟수 상한(#978 이동찬 리뷰: 일시 오류가 남지 않게) */
+const ENDED_RETRY_MS = 15_000;
+const ENDED_RETRIES = 4;
+/** 점검마다 읽는 요청을 한 번에 보내는 점검 수(#978 이경준 리뷰 P3: 최근 25건을 한꺼번에 보내지 않는다) */
+const READ_CONCURRENCY = 5;
 /** 대상 승인이 이 안에 끝나면 '만료 임박'(ms) */
 const EXPIRY_SOON_MS = 60 * 60 * 1000;
 /** 큰 막대 안에 수를 적는 최소 비율(더 좁으면 범례가 수를 맡는다) */
@@ -68,7 +73,38 @@ const sevText = (k: SevF) => (k === "none" ? "위험도 미평가" : SEVL[k]);
 
 /** 전송 통제 수(허용은 응답까지 받은 것만 — 결과 불명 · 송신 실패와 겹쳐 세지 않게, #917 리뷰) */
 type E2Sum = { allowed: number; denied: number; unsupported: number; unsure: number };
-type E2Read = E2Sum | "invalid" | null;
+/** 전송 기록 읽기: 수 · invalid(검증 실패) · absent(기록이 없음 — 그 경로가 없거나 아직 없음) · failed(조회 실패) */
+type E2Read = E2Sum | "invalid" | "absent" | "failed";
+const isE2Sum = (x: E2Read): x is E2Sum => typeof x === "object";
+
+/**
+ * 출처 하나를 읽은 결과. '이 서버에 그 경로가 없음 · 아직 없음'(absent)과 '조회 실패'(failed)를 가른다 — 실패를 0건 · 없음으로
+ * 보이지 않으려는 것이다(절대 규칙 5, #978 이동찬 · 이경준 리뷰).
+ */
+export type SourceRead<T> = { state: "ok"; value: T } | { state: "absent" } | { state: "failed" };
+/** 미지원 응답(isUnsupported: 403 · 404 · 409 · 501 · 503)은 absent, 그 밖의 오류는 failed. 중단은 그대로 올린다 */
+export async function sourceOf<T>(p: Promise<T>): Promise<SourceRead<T>> {
+  try {
+    return { state: "ok", value: await p };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    return isUnsupported(error) ? { state: "absent" } : { state: "failed" };
+  }
+}
+/** 한 번에 limit 개씩만 돌린다(결과 순서는 입력 순서) */
+export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const at = next;
+      next += 1;
+      out[at] = await fn(items[at] as T);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return out;
+}
 
 /** 확정 하나(확정 목록 줄). where = 관련 경로(같은 제목이 여러 줄일 때 가르는 칸) · 제품 판정이면 자원 참조 */
 type Confirmed = {
@@ -93,9 +129,18 @@ export type EndedStat = {
   sev: Record<SevF, number>;
   items: Confirmed[];
   e2: E2Read;
+  /** 제품 판정 읽기: failed 면 위 수에 제품 판정이 빠져 있다(부분 결과) */
+  pv: "ok" | "absent" | "failed";
 };
-/** 끝난 점검 하나: 주소 · 모드(상태를 읽어 앎) + 결과(none = 결과 없이 끝남, error = 못 읽음) */
-export type EndedRun = { host: string | null; stat: EndedStat | "none" | "error" };
+/**
+ * 끝난 점검 하나: 주소(상태를 읽어 앎, hostFailed = 상태 조회 실패) + 결과(none = 결과 없이 끝남, error = 못 읽음)
+ */
+export type EndedRun = { host: string | null; hostFailed: boolean; stat: EndedStat | "none" | "error" };
+/** 일시 실패일 수 있어 다시 읽을 점검인지: 상태 · 결과 · 제품 판정 · 전송 기록 중 하나라도 조회에 실패함 */
+export function needsRetry(run: EndedRun): boolean {
+  if (run.hostFailed || run.stat === "error") return true;
+  return isStat(run.stat) && (run.stat.pv === "failed" || run.stat.e2 === "failed");
+}
 const isStat = (x: EndedRun["stat"] | undefined): x is EndedStat => !!x && typeof x === "object";
 /** 끝까지 못 간 점검: 진단 실패(failed) · 운영자 중지(cancelled). 정상으로 끝났으면 null */
 export type Cut = "failed" | "stopped";
@@ -117,8 +162,9 @@ export function usableStat(row: Pick<URLRunSummary, "state">, run: EndedRun | un
   return cutOf(row.state) && total === 0 ? null : st;
 }
 
-function e2SumOf(flow: Awaited<ReturnType<typeof getE2Flow>> | null): E2Read {
-  if (!flow) return null;
+function e2SumOf(read: SourceRead<E2Flow>): E2Read {
+  if (read.state !== "ok") return read.state;
+  const flow = read.value;
   if (flow.journal !== "verified") return "invalid";
   const c = flow.counts;
   const blocked = c.denied + c.unsupported;
@@ -129,13 +175,25 @@ function e2SumOf(flow: Awaited<ReturnType<typeof getE2Flow>> | null): E2Read {
 async function readEnded(task: string, signal: AbortSignal): Promise<EndedStat> {
   const [rem, pv, flow] = await Promise.all([
     fetchRemediation(task, "internal"),
-    // 제품 판정 경로가 없는 서버(404)거나 못 읽으면 제품 판정은 더하지 않는다
-    fetchProductVerdicts(task, signal).catch(() => null),
-    getE2Flow(task, undefined, signal).catch(() => null),
+    sourceOf(fetchProductVerdicts(task, signal)),
+    sourceOf(getE2Flow(task, undefined, signal)),
   ]);
+  return endedStatOf(rem, pv, flow);
+}
+
+/**
+ * 끝난 점검 하나의 집계. 제품 판정 경로가 없는 서버(absent)면 제품 판정 없이 센다. 조회에 실패(failed)했으면 제품 판정이 빠진
+ * 부분 결과라는 것을 pv 에 남긴다 — 가짜 0건을 확정 수치로 보이지 않는다(#978 이동찬 P2).
+ */
+export function endedStatOf(
+  rem: Pick<RemediationData, "entries">,
+  pv: SourceRead<Pick<ProductVerdictList, "items">>,
+  flow: SourceRead<E2Flow>,
+): EndedStat {
   const found = rem.entries.filter((e) => diagnosticOutcome(e) !== "negative");
   const by = (o: string) => found.filter((e) => diagnosticOutcome(e) === o).length;
-  const pvRows = pv ? pv.items.filter((r): r is ProductVerdictShown => r.recordStatus === "verified") : [];
+  const pvRows =
+    pv.state === "ok" ? pv.value.items.filter((r): r is ProductVerdictShown => r.recordStatus === "verified") : [];
   const pvBy = (v: string) => pvRows.filter((r) => r.oracleValue === v).length;
   const sev = Object.fromEntries(SEV_RANK.map((k) => [k, 0])) as Record<SevF, number>;
   const confirmedEntries = found.filter((e) => diagnosticOutcome(e) === "confirmed");
@@ -168,70 +226,107 @@ async function readEnded(task: string, signal: AbortSignal): Promise<EndedStat> 
     sev,
     items,
     e2: e2SumOf(flow),
+    pv: pv.state,
   };
 }
 
 async function readEndedRun(row: URLRunSummary, owner: string | null, signal: AbortSignal): Promise<EndedRun> {
-  const job = owner ? await readURLStatus(row.id, owner, signal).catch(() => null) : null;
+  const status: SourceRead<URLDiagnosisJob> = owner
+    ? await sourceOf(readURLStatus(row.id, owner, signal))
+    : { state: "absent" };
+  const job = status.state === "ok" ? status.value : null;
   const host = job ? urlHost(job.input.target_url) : null;
+  const hostFailed = status.state === "failed";
   const task = row.task_id ?? job?.task_id ?? null;
-  if (!row.report_available || !task) return { host, stat: "none" };
+  if (!row.report_available || !task) return { host, hostFailed, stat: "none" };
   try {
-    return { host, stat: await readEnded(task, signal) };
-  } catch {
-    return { host, stat: "error" };
+    return { host, hostFailed, stat: await readEnded(task, signal) };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
+    return { host, hostFailed, stat: "error" };
   }
 }
 
-/** 끝난 점검 표 '전송 기록' 칸: 감사 기록 검증 결과(못 읽었으면 —) */
+/** 끝난 점검 표 '전송 기록' 칸: 감사 기록 검증 결과(기록이 없으면 —, 조회에 실패했으면 못 읽음) */
 function journalText(e2: E2Read): string {
-  if (e2 === null) return "—";
+  if (e2 === "absent") return "—";
+  if (e2 === "failed") return "못 읽음";
   return e2 === "invalid" ? "검증 실패" : "검증됨";
 }
 
 /** 진행 중 점검 하나: 상태 · 탐색 흐름(단계) · 승인 대기 · 전송 통제 */
-type ActiveInfo = {
+export type ActiveInfo = {
   job: URLDiagnosisJob | null;
+  /** 상태 조회 실패(어느 모드 · 단계인지 모른다 — 승인 대기 · 만료 임박을 확인하지 못함) */
+  jobFailed: boolean;
   flow: WorkflowSnapshot | null;
   pending: RequestApproval[] | null;
+  /** 사용자 승인 모드인데 승인 대기 조회에 실패함 */
+  pendingFailed: boolean;
   e2: E2Read;
 };
 
 async function readActive(row: URLRunSummary, owner: string, signal: AbortSignal): Promise<ActiveInfo> {
-  const job = await readURLStatus(row.id, owner, signal).catch(() => null);
+  const status = await sourceOf(readURLStatus(row.id, owner, signal));
+  const job = status.state === "ok" ? status.value : null;
   const task = row.task_id ?? job?.task_id ?? null;
+  const none: SourceRead<never> = { state: "absent" };
   const [flow, ap, e2] = await Promise.all([
     job?.input.workflow_mode && job.started ? readWorkflow(job).catch(() => null) : Promise.resolve(null),
-    task && job?.input.workflow_mode === "user_approval_v1"
-      ? fetchRequestApprovals(task).catch(() => null)
-      : Promise.resolve(null),
-    task && job?.started ? getE2Flow(task, undefined, signal).catch(() => null) : Promise.resolve(null),
+    task && job?.input.workflow_mode === "user_approval_v1" ? sourceOf(fetchRequestApprovals(task)) : none,
+    task && job?.started ? sourceOf(getE2Flow(task, undefined, signal)) : none,
   ]);
   return {
     job,
+    jobFailed: status.state === "failed",
     flow,
-    pending: ap ? ap.approvals.filter((a) => a.state === "pending") : null,
+    pending: ap.state === "ok" ? ap.value.approvals.filter((a) => a.state === "pending") : null,
+    pendingFailed: ap.state === "failed",
     e2: e2SumOf(e2),
   };
 }
 
+/**
+ * 끝난 점검들을 읽는다. 한 번에 READ_CONCURRENCY 건씩만 보내고, 조회에 실패한 출처가 있는 점검은 ENDED_RETRY_MS 뒤에 그
+ * 점검만 다시 읽는다(최대 ENDED_RETRIES 번). 다 읽은 점검은 목록 revision 이 바뀔 때까지 다시 읽지 않는다.
+ */
 function useEndedRuns(rows: readonly URLRunSummary[], owner: string | null, enabled: boolean) {
-  return usePoll(
+  const key = `${rows.map((r) => `${r.id}:${r.revision}`).join(",")}|${owner ?? ""}`;
+  const cache = useRef<{ key: string; runs: Map<string, EndedRun>; tries: number }>({ key, runs: new Map(), tries: 0 });
+  if (cache.current.key !== key) cache.current = { key, runs: new Map(), tries: 0 };
+  const [retry, setRetry] = useState(false);
+  const poll = usePoll(
     async (signal) => {
+      const held = cache.current;
       const out = new Map<string, EndedRun>();
-      await Promise.all(rows.map(async (r) => out.set(r.id, await readEndedRun(r, owner, signal))));
+      await mapLimit(rows, READ_CONCURRENCY, async (r) => {
+        const kept = held.runs.get(r.id);
+        out.set(r.id, kept && !needsRetry(kept) ? kept : await readEndedRun(r, owner, signal));
+      });
+      if (cache.current === held) held.runs = out;
       return out;
     },
-    [rows.map((r) => `${r.id}:${r.revision}`).join(","), owner ?? ""],
-    { enabled: enabled && rows.length > 0 },
+    [key],
+    { enabled: enabled && rows.length > 0, intervalMs: retry ? ENDED_RETRY_MS : 0 },
   );
+  const failed = poll.data ? [...poll.data.values()].some(needsRetry) : false;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 읽기가 끝날 때마다(fetchedAt) 다시 읽을지 정한다
+  useEffect(() => {
+    if (poll.fetchedAt === null) return;
+    const held = cache.current;
+    held.tries = failed ? held.tries + 1 : 0;
+    setRetry(failed && held.tries <= ENDED_RETRIES);
+  }, [poll.fetchedAt]);
+  return poll;
 }
 
 function useActiveInfos(rows: readonly URLRunSummary[], owner: string | null, enabled: boolean) {
   return usePoll(
     async (signal) => {
       const out = new Map<string, ActiveInfo>();
-      await Promise.all(rows.map(async (r) => out.set(r.id, await readActive(r, owner as string, signal))));
+      await mapLimit(rows, READ_CONCURRENCY, async (r) => {
+        out.set(r.id, await readActive(r, owner as string, signal));
+      });
       return out;
     },
     [rows.map((r) => `${r.id}:${r.revision}`).join(",")],
@@ -663,13 +758,113 @@ function stageAt(info: ActiveInfo | undefined): number {
 }
 
 /** 대상 하나: 그 대상의 끝난 점검(새것부터) · 결과가 있는 마지막 점검 */
-type TargetGroup = {
+export type TargetGroup = {
   key: string;
   host: string;
   rows: URLRunSummary[];
   latest: URLRunSummary | null;
   stat: EndedStat | null;
 };
+
+/**
+ * 대상별 묶음(대상마다 결과가 있는 마지막 점검). 주소를 모르는 점검(상태를 못 읽음)은 어느 대상인지 알 수 없어 묶음에 넣지
+ * 않고 unknownTargets 로 따로 돌려준다 — 점검 하나를 별도 '대상'으로 세면 같은 대상의 예전 결과가 한 번 더 합쳐진다
+ * (#978 이경준 P2-4). 아직 읽지 않은 점검은 어디에도 넣지 않는다. rows 는 최신 순이다.
+ */
+export function targetGroupsOf(
+  rows: readonly URLRunSummary[],
+  runOf: (r: URLRunSummary) => EndedRun | undefined,
+): { groups: TargetGroup[]; unknownTargets: URLRunSummary[] } {
+  const map = new Map<string, TargetGroup>();
+  const unknownTargets: URLRunSummary[] = [];
+  for (const r of rows) {
+    const run = runOf(r);
+    if (!run) continue;
+    if (run.host === null) {
+      unknownTargets.push(r);
+      continue;
+    }
+    const g = map.get(run.host) ?? { key: run.host, host: run.host, rows: [], latest: null, stat: null };
+    g.rows.push(r);
+    const st = usableStat(r, run);
+    if (!g.stat && st) {
+      g.latest = r;
+      g.stat = st;
+    }
+    map.set(run.host, g);
+  }
+  return { groups: [...map.values()], unknownTargets };
+}
+
+/** 합계에 든 대상 중 제품 판정을 못 읽은 곳이 있으면 그 합계가 부분 결과라는 안내(없으면 null) */
+export function partialNoteOf(groups: readonly TargetGroup[]): string | null {
+  const n = groups.filter((g) => g.stat?.pv === "failed").length;
+  return n ? `제품 판정을 못 읽은 대상 ${n}곳 — 합계는 부분 결과` : null;
+}
+
+/**
+ * 끝난 점검의 전송 기록 집계. 분모(total)는 끝난 점검 수다. verified = 검증된 기록, invalid = 검증 실패, unread = 조회 실패
+ * (결과를 통째로 못 읽은 점검 포함), absent = 기록이 없음(결과 없이 끝남 포함). loaded = 하나라도 읽었는지(#978 이경준 P2-3)
+ */
+export type E2Tally = {
+  total: number;
+  verified: { row: URLRunSummary; e2: E2Sum }[];
+  invalid: number;
+  unread: number;
+  absent: number;
+  loaded: boolean;
+};
+export function e2TallyOf(rows: readonly URLRunSummary[], runOf: (r: URLRunSummary) => EndedRun | undefined): E2Tally {
+  const tally: E2Tally = { total: rows.length, verified: [], invalid: 0, unread: 0, absent: 0, loaded: false };
+  for (const row of rows) {
+    const run = runOf(row);
+    if (!run) continue;
+    tally.loaded = true;
+    let e2: E2Read = run.stat === "error" ? "failed" : "absent";
+    if (isStat(run.stat)) e2 = run.stat.e2;
+    if (isE2Sum(e2)) tally.verified.push({ row, e2 });
+    else if (e2 === "invalid") tally.invalid += 1;
+    else if (e2 === "failed") tally.unread += 1;
+    else tally.absent += 1;
+  }
+  return tally;
+}
+/** 운영 상태의 전송 기록 칩. 끝난 점검을 모두 읽고 모두 검증됐을 때만 초록이다 */
+export function e2ChipOf(tally: E2Tally): { tone: "ok" | "warn" | "unk"; text: string } {
+  if (!tally.loaded || !tally.total) return { tone: "unk", text: "전송 기록 읽기 전" };
+  const base = tally.invalid
+    ? `전송 기록 검증 실패 ${tally.invalid} / ${tally.total}`
+    : `전송 기록 검증 ${tally.verified.length} / ${tally.total}`;
+  const text = [
+    base,
+    tally.unread ? `못 읽음 ${tally.unread}` : null,
+    tally.absent ? `기록 없음 ${tally.absent}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  if (tally.invalid) return { tone: "warn", text };
+  return { tone: tally.verified.length === tally.total ? "ok" : "unk", text };
+}
+
+/**
+ * 진행 중 점검의 승인 대기. unread = 승인 대기를 확인하지 못한 점검 수(상태 조회 실패 · 사용자 승인 모드인데 승인 대기 조회
+ * 실패). 못 읽은 점검이 있으면 대기 0 을 '할 일 없음'으로 단정하지 않는다(#978 이경준 P2-2).
+ */
+export type PendingTally = { pending: { row: URLRunSummary; a: RequestApproval }[]; unread: number };
+export function pendingTallyOf(infos: readonly { row: URLRunSummary; info: ActiveInfo | undefined }[]): PendingTally {
+  return {
+    pending: infos.flatMap(({ row, info }) => (info?.pending ?? []).map((a) => ({ row, a }))),
+    unread: infos.filter(({ info }) => !!info && (info.jobFailed || info.pendingFailed)).length,
+  };
+}
+/** '승인 대기' 칸의 수와 덧글. 못 읽은 점검이 있고 읽은 대기가 0 이면 수를 적지 않는다(0 으로 단정하지 않음) */
+export function pendingTileOf(tally: PendingTally, loaded: boolean): { n: number | null; note: string | null } {
+  if (!loaded) return { n: null, note: null };
+  if (!tally.unread) return { n: tally.pending.length, note: null };
+  return tally.pending.length
+    ? { n: tally.pending.length, note: `못 읽은 점검 ${tally.unread}건` }
+    : { n: null, note: `못 읽은 점검 ${tally.unread}건 · 승인 대기가 있을 수 있음` };
+}
 
 /** 통합 대시보드. tabs = 머리 제목 옆 보기 전환(전체 · 점검별) */
 export function DashOverview({ tabs }: { tabs?: ReactNode }) {
@@ -691,22 +886,9 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
   const runOf = (r: URLRunSummary) => ended.data?.get(r.id);
   const loading = doneRows.length > 0 && !ended.data;
 
-  // ── 대상별 묶음(대상마다 결과가 있는 마지막 점검) ──
-  const groupMap = new Map<string, TargetGroup>();
-  for (const r of doneRows) {
-    const run = runOf(r);
-    const host = run?.host ?? (r.display_name?.trim() || r.id);
-    const key = run?.host ?? `run:${r.id}`;
-    const g = groupMap.get(key) ?? { key, host, rows: [], latest: null, stat: null };
-    g.rows.push(r);
-    const st = usableStat(r, run);
-    if (!g.stat && st) {
-      g.latest = r;
-      g.stat = st;
-    }
-    groupMap.set(key, g);
-  }
-  const groups = [...groupMap.values()];
+  // ── 대상별 묶음(대상마다 결과가 있는 마지막 점검). 주소를 모르는 점검은 합계에서 빼고 따로 센다 ──
+  const { groups, unknownTargets } = targetGroupsOf(doneRows, runOf);
+  const partialNote = partialNoteOf(groups);
   const latestStats = groups.map((g) => g.stat).filter((x): x is EndedStat => !!x);
   const sum = (f: (x: EndedStat) => number) => latestStats.reduce((n, x) => n + f(x), 0);
   const now4: Record<VKey, number> = {
@@ -740,14 +922,9 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
   const noVerdict = !loading && latestStats.length === 0;
 
   // ── 전송 통제(최근 끝난 점검 전부 — 판정이 아니라 보낸 요청이라 겹쳐 세지 않음) ──
-  const e2Reads = doneRows
-    .map((r) => {
-      const st = runOf(r)?.stat;
-      return isStat(st) ? { row: r, e2: st.e2 } : null;
-    })
-    .filter((x): x is { row: URLRunSummary; e2: E2Sum | "invalid" } => !!x && x.e2 !== null);
-  const e2Ok = e2Reads.filter((x): x is { row: URLRunSummary; e2: E2Sum } => x.e2 !== "invalid");
-  const e2Invalid = e2Reads.length - e2Ok.length;
+  const e2Tally = e2TallyOf(doneRows, runOf);
+  const e2Ok = e2Tally.verified;
+  const e2Invalid = e2Tally.invalid;
   const e2Total = (k: keyof E2Sum) => e2Ok.reduce((n, x) => n + x.e2[k], 0);
   const e2All = E2_PARTS.reduce((n, [k]) => n + e2Total(k), 0);
 
@@ -758,7 +935,9 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
 
   // ── 진행 중 ──
   const infos = actRows.map((r) => ({ row: r, info: active.data?.get(r.id) }));
-  const pendingAll = infos.flatMap(({ row, info }) => (info?.pending ?? []).map((a) => ({ row, a })));
+  const pendingTally = pendingTallyOf(infos);
+  const pendingAll = pendingTally.pending;
+  const pendingTile = pendingTileOf(pendingTally, !!active.data || !actRows.length);
   const oldest = pendingAll.reduce<{ row: URLRunSummary; a: RequestApproval } | null>(
     (m, x) => (!m || Date.parse(x.a.created_at) < Date.parse(m.a.created_at) ? x : m),
     null,
@@ -767,7 +946,15 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
     (m, x) => (!m || Date.parse(x.a.expires_at) < Date.parse(m.expires_at) ? x.a : m),
     null,
   );
+  /** '승인 대기' 칸 덧글: 가장 오래된 대기 · 만료, 못 읽은 점검이 있으면 그 수 */
+  let pendingLead: string | null = "보낼 요청 승인 · 만료되면 보내지 않음";
+  if (oldest && soonest)
+    pendingLead = `가장 오래 ${minutesAgo(oldest.a.created_at, now)}분 · ${Math.max(0, minutesLeft(soonest.expires_at, now))}분 뒤 만료`;
+  else if (pendingTile.note) pendingLead = null;
+  const pendingSub = [pendingLead, pendingTile.note].filter(Boolean).join(" · ");
   const selecting = infos.filter(({ info }) => info?.flow?.stage === "awaiting_selection");
+  /** 상태를 못 읽어 단계 · 승인 만료를 확인하지 못한 진행 중 점검 수 */
+  const statusUnread = infos.filter(({ info }) => info?.jobFailed).length;
   const approvalIssue = rows.filter(
     (r) =>
       r.action_required &&
@@ -790,10 +977,8 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
     ? `최근 점검 ${rows.length}건 기준${page?.more ? " · 더 있음(그 뒤는 세지 않음)" : ""}`
     : "점검 목록을 읽는 중";
 
-  let e2Chip: ReactNode = <Chip tone="unk">전송 기록 읽기 전</Chip>;
-  if (e2Reads.length && e2Invalid)
-    e2Chip = <Chip tone="warn">{`전송 기록 검증 실패 ${e2Invalid} / ${e2Reads.length}`}</Chip>;
-  else if (e2Reads.length) e2Chip = <Chip tone="ok">{`전송 기록 검증 ${e2Reads.length} / ${e2Reads.length}`}</Chip>;
+  const e2ChipView = e2ChipOf(e2Tally);
+  const e2Chip: ReactNode = <Chip tone={e2ChipView.tone}>{e2ChipView.text}</Chip>;
   let healthChip: ReactNode = null;
   if (health.data === "ready") healthChip = <Chip tone="ok">준비 서비스 준비됨</Chip>;
   else if (health.data === "not_ready") healthChip = <Chip tone="warn">준비 서비스 준비 안 됨</Chip>;
@@ -826,6 +1011,8 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
   const notReadText = [
     noResult ? `결과 없이 끝남 ${noResult}건` : null,
     failedReads ? `결과 못 읽음 ${failedReads}건` : null,
+    // 주소를 못 읽은 점검은 어느 대상인지 몰라 합계에 넣지 않는다(#978 이경준 P2-4)
+    unknownTargets.length ? `대상 확인 못 함 ${unknownTargets.length}건(합계에서 뺌)` : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -870,18 +1057,18 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
           <section className={s["ov-todo"]} aria-label="지금 할 일">
             <TodoTile
               k="승인 대기"
-              n={active.data || !actRows.length ? pendingAll.length : null}
-              sub={
-                oldest && soonest
-                  ? `가장 오래 ${minutesAgo(oldest.a.created_at, now)}분 · ${Math.max(0, minutesLeft(soonest.expires_at, now))}분 뒤 만료`
-                  : "보낼 요청 승인 · 만료되면 보내지 않음"
-              }
+              n={pendingTile.n}
+              sub={pendingSub}
               onOpen={oldest ? () => open(oldest.row, "live") : undefined}
             />
             <TodoTile
               k="범위 확인 대기"
-              n={active.data || !actRows.length ? selecting.length : null}
-              sub="탐색이 끝나 점검할 경로를 골라야 함"
+              n={(active.data || !actRows.length) && (selecting.length > 0 || !statusUnread) ? selecting.length : null}
+              sub={
+                statusUnread
+                  ? `탐색이 끝나 점검할 경로를 골라야 함 · 상태를 못 읽은 점검 ${statusUnread}건`
+                  : "탐색이 끝나 점검할 경로를 골라야 함"
+              }
               onOpen={selecting[0] ? () => open(selecting[0].row, "scope") : undefined}
             />
             <TodoTile
@@ -942,6 +1129,7 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
               {!loading && cutPartial ? (
                 <p className={s["ov-note"]}>{`마지막 점검이 끝까지 못 간 ${cutPartial}곳은 남은 결과만 셌어요`}</p>
               ) : null}
+              {!loading && partialNote ? <p className={s["ov-note"]}>{partialNote}</p> : null}
               <div className={s["ov-hero"]}>
                 <span className={s["ov-hn"]}>{loading || noVerdict ? "—" : now4.c}</span>
                 <span className={s["ov-hl"]}>{noVerdict ? "판정할 결과 없음" : "확정 취약점"}</span>
@@ -1055,7 +1243,13 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
             <Card
               id="ovE2H"
               title="전송 통제"
-              sub={`진단 요청 · 끝난 점검 ${e2Ok.length}건${e2Invalid ? ` · 검증 실패 ${e2Invalid}건 뺌` : ""}`}
+              sub={[
+                `진단 요청 · 끝난 점검 ${e2Tally.total}건 중 ${e2Ok.length}건`,
+                e2Invalid ? `검증 실패 ${e2Invalid}건 뺌` : null,
+                e2Tally.unread ? `못 읽음 ${e2Tally.unread}건 뺌` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
               wide="w5"
             >
               <div className={s["ov-hero"]}>
@@ -1196,8 +1390,9 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
                         <span className={s["ov-mut"]}>
                           {[
                             el !== null ? `경과 ${fmtDur(el)}` : null,
-                            e2 && e2 !== "invalid" ? `허용 ${e2.allowed} · 막음 ${e2Blocked(e2)}` : null,
+                            e2 && isE2Sum(e2) ? `허용 ${e2.allowed} · 막음 ${e2Blocked(e2)}` : null,
                             e2 === "invalid" ? "전송 기록 검증 실패" : null,
+                            e2 === "failed" ? "전송 기록 못 읽음" : null,
                           ]
                             .filter(Boolean)
                             .join(" · ") || "—"}
@@ -1270,6 +1465,7 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
                           <span>{journalText(st.e2)}</span>
                         </>
                       );
+                    const partialRow = st !== "cut-empty" && isStat(st) && st.pv === "failed";
                     return (
                       <button
                         key={row.id}
@@ -1294,7 +1490,11 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
                             {reason ? <span className={s["ov-mut"]}>{reason}</span> : null}
                           </span>
                         ) : (
-                          <span>{[urlStateText(row.state), reason].filter(Boolean).join(" · ")}</span>
+                          <span>
+                            {[urlStateText(row.state), reason, partialRow ? "제품 판정 못 읽음(부분 결과)" : null]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          </span>
                         )}
                         {cells}
                       </button>
