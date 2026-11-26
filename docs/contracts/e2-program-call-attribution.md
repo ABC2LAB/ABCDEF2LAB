@@ -3,8 +3,8 @@
 #611의 인증 집계 분리 계약이다. 대상·IP·TLS·요청 승인·쓰기 범위나 실행 예산을 발급하거나 넓히지 않는다.
 
 `BeginCall`과 `BeginCallForIntent`는 등록된 양수 Worker intent만 받는다. 호스트의 인증 준비와 재로그인은
-`BeginProgramCall`을 사용한다. 이 API는 고정 종류 `auth_prep`·`refresh_session`만 받고 `AuthPrep` 전송 API만 쓴다.
-Worker 호출에서 인증 전용 전송을 하거나 프로그램 호출에서 Worker `Do`를 쓰는 것은 구성 오류다.
+`BeginProgramCall`을 사용한다. 이 API는 고정 종류 `auth_prep`·`refresh_session`·`login_contrast`(모델 로그인의 프로그램 대조 요청: GET만, 본문·인증 헤더 없이, 진단 흐름 경계·요청 승인 없이 승인 규칙 범위·제외 경로·예산만, [모델 로그인 시도 기록 계약](model-login-attempts.md) §4)만 받고 `AuthPrep` 전송 API만 쓴다.
+Worker 호출에서 인증 전용 전송을 하거나 인증 호출(`auth_prep`·`refresh_session`)에서 Worker `Do`를 쓰는 것은 구성 오류다. `login_contrast`는 `Do`로 보내고 E²가 GET·본문 없음·인증 헤더 없음을 강제한다.
 
 귀속은 Call에 고정돼 영수증·감사 행·CallResult에 `program`으로 함께 전달된다. Worker는 양수 `intent_id`와 빈
 `program`, 프로그램은 명시적인 종류와 Worker intent 없음으로 표현한다. 기존 숫자 칸의 0은 이 경우에만 intent 부재를

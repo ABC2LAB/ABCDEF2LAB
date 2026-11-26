@@ -91,7 +91,7 @@ func TestE2RequestsPagesMatchFlowTargetRequests(t *testing.T) {
 		}
 		kinds[row.Kind]++
 	}
-	if kinds[e2RequestKindModel] != flow.Model || kinds[string(e2proxy.ProgramAuthPrep)]+kinds[string(e2proxy.ProgramRefreshSession)] != flow.Login || kinds[string(e2proxy.ProgramAuthPrep)] != 1 {
+	if kinds[e2RequestKindModel] != flow.Model || kinds[string(e2proxy.ProgramAuthPrep)]+kinds[string(e2proxy.ProgramRefreshSession)]+kinds[string(e2proxy.ProgramLoginContrast)] != flow.Login || kinds[string(e2proxy.ProgramAuthPrep)] != 1 {
 		t.Fatalf("줄 종류 %+v, e2-flow %+v", kinds, flow)
 	}
 	if rows[1].Path != "/api/users/{id}" || rows[1].PathDetailState != server.PathDetailPatternOnly || rows[1].Kind != e2RequestKindModel || rows[1].Status != 200 {
