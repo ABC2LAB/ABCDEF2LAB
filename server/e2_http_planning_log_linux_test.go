@@ -172,6 +172,10 @@ func TestPlanningFailureReasonsPreserveReturnAndBudgets(t *testing.T) {
 			if reason, ok := diagnosisCheckReason(err); tc.want != nil && !tc.limited && (!ok || reason != tc.reason) {
 				t.Fatalf("실패 오류의 사유 %q, 기대 %q", reason, tc.reason)
 			}
+			// 사유를 남기지 않은 작업 실패는 일반 엔진 실패 사유다.
+			if (&Task{ID: task.ID}).firstDiagnosisFailure() != reasonEngineTaskFailed {
+				t.Fatal("사유 없는 엔진 실패가 일반 사유로 돌아가지 않음")
+			}
 			if tc.want != nil && !tc.limited {
 				failed := &Task{ID: task.ID}
 				failed.recordFirstDiagnosisFailure(err)
