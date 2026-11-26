@@ -427,18 +427,19 @@ export function ApprovalQueue({
   );
 }
 
-/** 처리된 요청 거르기: 허용 · 거부 · 만료(만료 + 취소, 보내지 않고 닫힘) */
-type DoneFilter = "allowed" | "denied" | "closed";
+/** 처리된 요청 거르기: 허용 · 거부 · 만료 · 취소(사용자 11/26: '만료'를 누르면 만료만 모이게 — 취소는 따로) */
+type DoneFilter = Exclude<RequestApproval["state"], "pending">;
 const DONE_FILTERS: readonly (readonly [DoneFilter, string])[] = [
   ["allowed", "허용"],
   ["denied", "거부"],
-  ["closed", "만료"],
+  ["expired", "만료"],
+  ["cancelled", "취소"],
 ];
-const doneGroup = (r: RequestApproval): DoneFilter =>
-  r.state === "allowed" || r.state === "denied" ? r.state : "closed";
+// done 은 대기(pending)를 뺀 줄만 받는다(doneApprovals)
+const doneGroup = (r: RequestApproval): DoneFilter | null => (r.state === "pending" ? null : r.state);
 
 /**
- * 오른쪽 패널의 처리된 요청 목록(최근 것부터). 위 거르기(허용 · 거부 · 만료, 수와 함께 — 있는 것만)로 나눠 보고, 다시 누르면
+ * 오른쪽 패널의 처리된 요청 목록(최근 것부터). 위 거르기(허용 · 거부 · 만료 · 취소, 수와 함께 — 있는 것만)로 나눠 보고, 다시 누르면
  * 전체. 줄을 누르면 미리보기 · 승인 정보가 펼쳐진다(승인 · 거부 버튼은 없다).
  */
 export function ApprovalHistory({

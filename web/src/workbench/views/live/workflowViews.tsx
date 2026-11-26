@@ -828,7 +828,10 @@ export function RequestSendResult({ task, callRef, attemptId }: { task: string; 
                 NONE
               ),
             ],
-            ["경로 표시", pathDetailText(d.path_detail_state, d.path_pattern)],
+            // 상태 칸이 없는 이전 서버 응답이면 '경로 표시'를 두지 않는다(모양을 지어내지 않음)
+            ...(d.path_detail_state
+              ? ([["경로 표시", pathDetailText(d.path_detail_state, d.path_pattern)]] as [string, ReactNode][])
+              : []),
             [
               "규칙",
               d.rule_ref ? (
@@ -1048,9 +1051,10 @@ function E2RequestLog({
                 <span className={cx(s.m, row.method ? s[row.method] : undefined)}>{row.method ?? NONE}</span>
                 <span
                   className={cx(s.p, row.path_detail_state === "unavailable" && s["sap-nopath"])}
-                  title={pathDetailText(row.path_detail_state, row.path)}
+                  title={pathDetailText(row.path_detail_state, row.path) ?? undefined}
                 >
-                  {row.path && row.path_detail_state !== "unavailable" ? <Pth p={row.path} /> : "경로 틀 없음"}
+                  {row.path && row.path_detail_state !== "unavailable" ? <Pth p={row.path} /> : null}
+                  {!row.path || row.path_detail_state === "unavailable" ? "경로 틀 없음" : null}
                 </span>
                 <span className={s.lk}>{requestKindText(row.kind)}</span>
                 <span className={cx(s.lk, s.mono)}>{`#${row.index}`}</span>
