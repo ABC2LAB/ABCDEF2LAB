@@ -279,11 +279,11 @@
 - `method_sha256`은 방법 객체를 키 순서 고정 JSON으로 만든 SHA-256이다. `verified`는 지금 `learned` 방법의 해시와 같을 때만 상태에 반영한다.
 - `credential_sha256`·`target_revision`은 그 회차에 결속된 자격 해시와 대상 판이다(위 '따로 지우는 사건은 없다'의 근거).
 
-**방법 객체(`login_method`)** — §6 E③ 재사용이 쓰는 칸과 같다. 모두 §3 기록 행의 같은 이름 칸에서 가져온다.
+**방법 객체(`login_method`)** — §6 E③ 재사용이 쓰는 칸과 같다. `http_method`는 §3 기록 행의 `method`에서, 나머지는 §3의 같은 이름 칸에서 가져온다(#969 동찬 리뷰 P3).
 
 | 칸 | 예 |
 |---|---|
-| `http_method` | `POST` |
+| `http_method` (§3 `method`) | `POST` |
 | `path` | `/login` |
 | `format` | `form`·`json`·`multipart` |
 | `identifier_field`·`password_field` | `email`, `password` (JSON은 점 경로) |

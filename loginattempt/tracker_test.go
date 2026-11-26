@@ -535,3 +535,28 @@ func TestNotSentRowsKeepTransportRef(t *testing.T) {
 		t.Fatalf("다른 거부 행: %+v", r)
 	}
 }
+
+// 성공 뒤 계정 귀속은 성공 대조에서 확인한 헤더 이름·접두와 정확한 토큰 값으로만 한다. 관계없는 메타데이터 헤더에 토큰
+// 문자열이 들어 있거나 값이 덧붙은 요청은 귀속하지 않는다(#969 동찬 리뷰 P2).
+func TestAccountOfUsesConfirmedHeaderOnly(t *testing.T) {
+	tr, _ := newTracker(t, false)
+	tok := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyMiJ9.c2lnbmF0dXJlLWI"
+	tr.Observe(get("/api/me"), Response{Status: 401, Header: http.Header{}})
+	jl := Request{Method: "POST", Path: "/api/login", ContentType: "application/json", Body: []byte(`{"username":"user2","password":"bravo-pass-2"}`), Header: http.Header{}}
+	p := tr.Prepare(jl, true)
+	tr.Complete(p, "1", jl, Response{Status: 200, Header: hdr("Content-Type", "application/json"), Body: []byte(`{"token":"` + tok + `"}`)})
+	tr.Observe(get("/api/me", "Authorization", "Bearer "+tok), Response{Status: 200, Header: http.Header{}})
+	if got := tr.AccountOf(hdr("Authorization", "Bearer "+tok)); got != "tester-b" {
+		t.Fatalf("확인한 헤더 귀속: %q", got)
+	}
+	for name, h := range map[string]http.Header{
+		"metadata header": hdr("X-Trace-Context", "Bearer "+tok),
+		"other prefix":    hdr("Authorization", "Token "+tok),
+		"extra suffix":    hdr("Authorization", "Bearer "+tok+"x"),
+		"no session":      hdr("Accept", "application/json"),
+	} {
+		if got := tr.AccountOf(h); got != "" {
+			t.Fatalf("%s: 확인 안 한 방식을 귀속함 %q", name, got)
+		}
+	}
+}

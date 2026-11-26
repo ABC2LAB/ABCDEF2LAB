@@ -486,14 +486,17 @@ func (t *Tracker) AccountOf(h http.Header) string {
 		if a.seeded || a.row.Outcome != OutcomeSucceeded || a.cand.AccountLabel == "" {
 			continue
 		}
+		// 귀속은 성공 대조에서 확인한 방식으로만 한다(#969 동찬 리뷰 P2). 처음 세션 자리를 찾을 때(carrierLocked)처럼 아무
+		// 헤더에서나 토큰을 찾으면 관계없는 메타데이터 헤더에 토큰 문자열이 든 요청도 그 계정으로 귀속된다.
 		carried := false
-		for name, value := range a.cookies {
-			carried = carried || sent[name] == value
-		}
-		for _, tk := range a.tokens {
-			for _, values := range h {
-				for _, v := range values {
-					carried = carried || strings.Contains(v, tk.value)
+		if a.row.SessionSentAs == "cookie" {
+			for name, value := range a.cookies {
+				carried = carried || sent[name] == value
+			}
+		} else if want := sessionHeader(a); len(want) == 1 {
+			for name, values := range want {
+				for _, v := range h.Values(name) {
+					carried = carried || v == values[0]
 				}
 			}
 		}
