@@ -203,10 +203,9 @@ def main():
                     "format": "json", "username_field": "username", "password_field": "password",
                     "json_field": "auth_token", "header": "Authorization", "prefix": "Bearer "}, method="PUT")
                 request(product, account_base + "/accounts", token, body={"label": "owned-a"})
+                # 계정 분류 폐지(2026-11-26): 자격이 저장된 등록 계정을 결속한다. 시험 계정 표시(mark-test)는 없다
                 request(product, account_base + "/accounts/owned-a/credential", token,
                         body={"username": "owned-a", "password": "synthetic-secret-a"}, method="PUT")
-                request(product, account_base + "/accounts/owned-a/mark-test", token,
-                        body={"statement_confirmed": True})
         draft = request(product, "/api/diagnoses/v2/drafts", token, body={"version": "diagnosis-api.v2", "input": {
             "target_url": "https://synthetic.test:9443/rest/products/search", "profile_id": "product-model-local_only",
             "display_name": "Owned selected candidate acceptance"}}, key=secrets.token_hex(16), expected=201)["draft"]
@@ -336,9 +335,10 @@ def main():
                 request(product, account_base + "/accounts", token, body={"label": "owned-b"})
                 request(product, account_base + "/accounts/owned-b/credential", token,
                         body={"username": "owned-b", "password": "synthetic-secret-b"}, method="PUT")
-                request(product, account_base + "/accounts/owned-b/mark-test", token,
-                        body={"statement_confirmed": True})
-                request(product, account_base + "/accounts/owned-a/unmark", token, body={})
+                # 계획 뒤 결속 계정 바꾸기: 예전에는 owned-a 표시 해제(unmark)였다. 해제가 없어졌으므로 owned-a 자격을 바꿔
+                # 결속 요약을 바꾼다(제품 제어 account_credential_set이 결속 사본을 지움)
+                request(product, account_base + "/accounts/owned-a/credential", token,
+                        body={"username": "owned-a", "password": "synthetic-secret-a-replaced"}, method="PUT")
             decision_status, _ = request(product, route + "/" + verification + "/decision", token,
                     body={"plan_digest": plan_response["plan_digest"], "decision": "approved"},
                     expected=(200, 409) if args.scenario == "S04" else 200, return_status=True)
