@@ -192,6 +192,20 @@ func TestE2HTTPFactoryLearnedReloginWithCSRF(t *testing.T) {
 		!learnedlogin.Blocked(contrast.Status, contrast.RedirectPath, res.LoginPaths) {
 		t.Fatalf("대조 %+v", contrast)
 	}
+	// 집계 일치: 학습 로그인이 보낸 요청(화면 GET·로그인 POST)과 대조 GET은 모두 감사 완료된 다시 로그인(refresh_session)
+	// 결과 사건이고(화면 target_requests의 login 몫), 확정 몫에서 나가 모델 단계 예산을 쓰지 않는다. 대상이 받은 수와 같다.
+	written := 0
+	for _, ev := range lease.Execution.Events(0, 0) {
+		if ev.Stage == "result" && ev.RequestWritten && ev.Program == e2proxy.ProgramRefreshSession && ev.AuditComplete {
+			written++
+		}
+	}
+	if written != res.Requests+1 || len(target.requests())-before != res.Requests+1 {
+		t.Fatalf("감사 사건 %d, 학습 로그인 %d + 대조 1, 대상 수신 %d", written, res.Requests, len(target.requests())-before)
+	}
+	if after, err := lease.Execution.BudgetRemaining(); err != nil || after != modelBudget {
+		t.Fatalf("대조 요청이 모델 단계 예산을 씀: %d → %d %v", modelBudget, after, err)
+	}
 	// 간격 상한 안의 같은 계정 다시 로그인은 보내지 않는다.
 	before = len(target.requests())
 	if again := learned.LearnedRelogin(ctx, E2HTTPLearnedLoginRequest{Label: "tester-a", Method: csrfMethod(), MaxFailures: 3}); again.Result != E2HTTPRefreshCooldown || again.Requests != 0 {
