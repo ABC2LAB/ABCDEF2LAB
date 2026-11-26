@@ -73,6 +73,7 @@ import { Markdown } from "../../ui/Markdown";
 import { InspHead, InspOpenButton, Isec, PaneToggle, useScrollTopOnChange, vulnClassParts } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalHistory, ApprovalQueue, useRequestApprovals } from "./approvals";
+import { SelectedVerificationCard } from "./candidateVerificationView";
 import { AssetGraphTab } from "./coverageGraphView";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
 import { AccountAuthWarning, LoginMethodMissingWarning } from "./liveAccountWarnings";
@@ -1346,6 +1347,7 @@ export function FindingDetail({
   taskId,
   onReload,
   onOpen,
+  verify = false,
 }: {
   e: RemediationEntry | undefined;
   host: string | null;
@@ -1353,6 +1355,8 @@ export function FindingDetail({
   onReload: () => void;
   /** 있으면 머리 딱지 줄 오른쪽 끝(패널 열고 닫기 버튼 밑)에 '상세 보기' — 이 발견의 상세 페이지를 연다 (보고서) */
   onOpen?: (e: RemediationEntry) => void;
+  /** 선택 검증 칸을 둘지(보고서만 — 검증은 정상 종료된 점검에서만 된다) */
+  verify?: boolean;
 }) {
   if (!e) {
     return (
@@ -1392,6 +1396,8 @@ export function FindingDetail({
           ARTEX 와 달리 위험도 · 처리 상태를 여기서 바꾸지 않는다 — 판정은 저장된 E③ 근거만 따른다(절대규칙 3 · 5) */}
       <div className={s.fdet}>
         <StatusCard e={e} />
+        {/* 검토 필요 후보의 선택 검증(#950) — 선택 검증 대상이거나 기록이 있을 때만, 보고서에서만 */}
+        {verify ? <SelectedVerificationCard taskId={taskId} entryId={e.entry_id} /> : null}
         {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
           <Isec t="심각도 근거 · 모델 제안">
             <p>{maskSecrets(e.severity_rationale ?? "")}</p>
@@ -1535,6 +1541,7 @@ export function FindingPage({
           <StatusCard e={e} host={host} />
           {/* E③ 확정 단계 판정: 이 후보를 참조하는 제품 판정이 있을 때만(목록과 같은 표시 규칙) */}
           <VerdictDetailCard taskId={taskId} entryId={e.entry_id} />
+          <SelectedVerificationCard taskId={taskId} entryId={e.entry_id} />
           {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
             <Isec t="심각도 근거 · 모델 제안">
               <p>{maskSecrets(e.severity_rationale ?? "")}</p>
@@ -2242,6 +2249,7 @@ export function UrlReportLive() {
                 host={host}
                 taskId={taskId}
                 onReload={rem.reload}
+                verify
                 onOpen={(e) => {
                   setDetail(e.entry_id);
                   // 좁은 화면은 상세가 서랍이라 닫아야 가운데 페이지가 보인다(넓은 화면은 페이지가 패널 자리를 쓴다)
