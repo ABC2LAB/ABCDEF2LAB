@@ -2151,7 +2151,7 @@ export function UrlReportLive() {
                 </div>
               </section>
             ) : null}
-            {flow ? <CrawlMeters flow={flow} e2={crawlE2.data} /> : null}
+            {flow ? <CrawlMeters flow={flow} e2={crawlE2.data} e2Failed={!!crawlE2.error && !crawlE2.data} /> : null}
             <section className={s.sec}>
               <div className={s["seg-tabs"]} role="tablist" aria-label="보고서 내용" id="rTabs">
                 {rTabs.map(([k, label], i) => (

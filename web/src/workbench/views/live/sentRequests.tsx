@@ -19,15 +19,28 @@ export function useE2FlowFor(taskId: string | null, visible: boolean, ended: boo
   });
 }
 
-/** 총계 + 마우스 올림 내역. 아직 못 읽었거나 내역이 없는 서버면 '—'(모델 수로 대신하지 않음). */
-export function SentRequestsValue({ flow }: { flow: E2Flow | null | undefined }) {
+/**
+ * 총계 + 마우스 올림 내역. 셀 수 없으면 왜인지를 가른다(모델 수로 대신하지 않음): 조회 실패는 '읽기 실패'(0건이 아님),
+ * 받았는데 내역 칸이 없는 서버는 '—'(내역 없음), 아직 받기 전도 '—'(읽는 중).
+ */
+export function SentRequestsValue({ flow, failed = false }: { flow: E2Flow | null | undefined; failed?: boolean }) {
   const sent = sentRequestsOf(flow);
-  if (!sent)
+  if (!sent) {
+    if (failed)
+      return (
+        <span title="전송 기록을 읽지 못했습니다 — 보낸 요청이 없다는 뜻이 아닙니다" data-sent="failed">
+          읽기 실패
+        </span>
+      );
     return (
-      <span title="전송 기록을 아직 읽지 못했습니다" data-sent="none">
+      <span
+        title={flow ? "이 서버는 보낸 요청 내역을 주지 않습니다" : "전송 기록을 아직 읽지 못했습니다"}
+        data-sent={flow ? "absent" : "none"}
+      >
         —
       </span>
     );
+  }
   return (
     <span title={sent.detail} data-sent={sent.value}>
       {sent.value}
