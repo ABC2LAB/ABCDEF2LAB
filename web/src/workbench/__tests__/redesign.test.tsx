@@ -134,17 +134,17 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("증거 펼치기", () => {
-  it("안에 든 JSON 문자열까지 들여 펼치고 비밀 값은 가린다", () => {
+  it("안에 든 JSON 문자열까지 들여 펼치고 값은 가리지 않는다(DLP 폐기)", () => {
     const raw = JSON.stringify({
       tool_output: JSON.stringify({ status: 200, body: JSON.stringify({ token: "abc123", ok: true }) }),
     });
     const out = prettyEvidence(raw);
     expect(out).toContain('"status": 200');
     expect(out).toContain('"ok": true');
-    expect(out).not.toContain("abc123");
+    expect(out).toContain('"token": "abc123"');
     expect(out).not.toContain('\\"');
   });
-  it("JSON 이 아니면 글 그대로(가림만)", () => {
+  it("JSON 이 아니면 글 그대로", () => {
     expect(prettyEvidence("GET / HTTP/1.1")).toBe("GET / HTTP/1.1");
   });
 });

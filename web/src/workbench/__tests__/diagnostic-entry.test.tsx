@@ -139,7 +139,7 @@ it("fetches images only on explicit view and rejects a mismatched image hash", a
   expect(screen.queryByRole("img")).not.toBeInTheDocument();
 });
 
-it("상세 보고는 Markdown 으로 그리되 원문 HTML · 링크 이동 · 이미지 불러오기는 하지 않고, 복사는 가린 글 그대로", async () => {
+it("상세 보고는 Markdown 으로 그리되 원문 HTML · 링크 이동 · 이미지 불러오기는 하지 않고, 화면은 그대로 · 복사만 가린다", async () => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
   const entry = {
@@ -156,33 +156,50 @@ it("상세 보고는 Markdown 으로 그리되 원문 HTML · 링크 이동 · �
   expect(within(card).getByText("[이미지: 캡처]")).toBeInTheDocument();
   expect(card).not.toHaveTextContent("outside.example");
   expect(card.querySelector("b")).toBeNull();
-  expect(document.body.textContent).not.toContain("synthetic-private-token");
+  // 제품 화면은 내부 담당자만 보므로 대상 세션 값을 가리지 않는다(CLAUDE.md 절대규칙 2, 2026-11-26)
+  expect(card).toHaveTextContent("Authorization: Bearer synthetic-private-token");
   fireEvent.click(within(card).getByRole("button", { name: "복사" }));
   await within(card).findByText("상세 보고를 복사했습니다.");
   expect(writeText).toHaveBeenCalledTimes(1);
+  // 클립보드는 화면 밖(팀 채팅 · 이슈)으로 나가므로 가린다(#975 이동찬 P2, 절대규칙 2)
   expect(writeText.mock.calls[0][0]).not.toContain("synthetic-private-token");
+  expect(writeText.mock.calls[0][0]).toContain("Authorization: Bearer [REDACTED]");
 });
 
 it.each(
   MARKUP_HIDDEN_SECRETS,
-)("상세 보고 Markdown 은 파서가 푼 글에도 가림을 건다 — %s (#677 리뷰)", async (_, report, secret) => {
+)("상세 보고 복사는 파서가 푼 글도 가린다 — %s (#677 · #709 리뷰, #975)", async (_, report, secret) => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
-  // 대조: 원문 가림만으로는 못 잡는 모양이다
   render(<DiagnosticEntrySections task="42" entry={{ ...fixture(), report }} onReload={vi.fn()} />);
   const card = screen.getByRole("region", { name: "상세 보고" });
-  expect(card).not.toHaveTextContent(secret);
-  expect(document.body.textContent).not.toContain(secret);
-  // 복사도 화면에 그려진 가린 글이라 원문(엔티티)이 클립보드로 나가지 않는다
+  // 화면에는 그대로 보이고(DLP 폐기), 복사는 블록 · 표 줄 단위로 모아 가려 원문(엔티티)도 값도 클립보드로 나가지 않는다
+  expect(card).toHaveTextContent(secret);
   fireEvent.click(within(card).getByRole("button", { name: "복사" }));
   await within(card).findByText("상세 보고를 복사했습니다.");
   expect(writeText.mock.calls[0][0]).not.toContain(secret);
   expect(writeText.mock.calls[0][0]).not.toContain("&#");
 });
 
+// #975 이동찬 P2: 실제 Markdown 부품이 그린 중첩 목록에서도 복사 가림이 빠지지 않는다
+it("상세 보고 복사: 하위 목록이 있는 항목의 서식으로 나뉜 키 · 값도 가린다(화면엔 보임)", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  const report = "- **pass**word=synthetic-nested-report\n  - 하위 항목 token=synthetic-nested-child\n- 다음 항목";
+  render(<DiagnosticEntrySections task="42" entry={{ ...fixture(), report }} onReload={vi.fn()} />);
+  const card = screen.getByRole("region", { name: "상세 보고" });
+  expect(card).toHaveTextContent("synthetic-nested-report");
+  expect(card).toHaveTextContent("synthetic-nested-child");
+  fireEvent.click(within(card).getByRole("button", { name: "복사" }));
+  await within(card).findByText("상세 보고를 복사했습니다.");
+  const text = writeText.mock.calls[0][0] as string;
+  expect(text).not.toMatch(/synthetic-nested-report|synthetic-nested-child/);
+  expect(text).toContain("다음 항목");
+});
+
 it.each(
   MARKUP_HIDDEN_SECRETS,
-)("'PoC 복사'는 응답 증거의 같은 모양도 클립보드에 남기지 않는다 — %s (#709 리뷰)", async (_, evidence, secret) => {
+)("'PoC 복사'는 응답 증거의 같은 모양도 클립보드에 남기지 않는다 — %s (#709 리뷰, #975)", async (_, evidence, secret) => {
   const writeText = vi.fn().mockResolvedValue(undefined);
   vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
   render(
@@ -207,7 +224,7 @@ it.each([
   "unknown",
   "not_executed",
   "negative",
-])("keeps %s results neutral and preserves masked stored detail", (outcome) => {
+])("keeps %s results neutral and preserves stored detail", (outcome) => {
   const entry = {
     ...fixture(),
     outcome,
@@ -219,11 +236,11 @@ it.each([
   // ② 는 E②가 기록한 시도와 관찰이며 미송신·응답 없음도 포함할 수 있다.
   expect(screen.getByRole("heading", { name: "② 요청 시도 · 응답 관찰" })).toBeVisible();
   expect(screen.queryByText(/① 확인된 취약점/)).not.toBeInTheDocument();
-  // 상세 보고는 ARTEX 발견 상세처럼 카드에 펼쳐 둔다(높이를 묶은 상자) — 가린 글이 보인다
+  // 상세 보고는 ARTEX 발견 상세처럼 카드에 펼쳐 둔다(높이를 묶은 상자) — 저장된 글 그대로 보인다
   expect(
     within(screen.getByRole("region", { name: "상세 보고" })).getByText(/저장된 owner-read → cross-read 단계/),
   ).toBeVisible();
-  expect(document.body.textContent).not.toContain("synthetic-private-token");
+  expect(document.body.textContent).toContain("synthetic-private-token");
   expect(screen.getByText(/실제 도구 출력이 잘렸습니다/)).toBeVisible();
 });
 
@@ -275,8 +292,8 @@ it("실행 단계 제목은 '요청 n' — 서버 기본 제목('저장된 실�
   expect(stepHeading({ number: 1, title: "저장된 실행 관찰 1" })).toBe("요청 1");
   expect(stepHeading({ number: 2, title: "" })).toBe("요청 2");
   expect(stepHeading({ number: 3, title: "계정 B로 계정 A 주문 조회" })).toBe("요청 3 · 계정 B로 계정 A 주문 조회");
-  // 제목의 비밀 값은 가린다
-  expect(stepHeading({ number: 4, title: "token=synthetic-step-secret" })).toBe("요청 4 · token=[REDACTED]");
+  // 제목의 값은 가리지 않는다(DLP 폐기)
+  expect(stepHeading({ number: 4, title: "token=synthetic-step-secret" })).toBe("요청 4 · token=synthetic-step-secret");
   const e = fixture();
   const step = e.steps?.[0];
   if (!step) throw new Error("fixture");

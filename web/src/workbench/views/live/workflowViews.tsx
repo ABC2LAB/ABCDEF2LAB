@@ -24,7 +24,6 @@ import {
   requestKindText,
 } from "../../live/e2Requests";
 import { clockOf } from "../../live/map";
-import { maskSecrets } from "../../live/mask";
 import { retryWorkflowAction, runUrlAction, runWorkflowAction, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { URL_ENDED_STATES } from "../../live/urlMap";
 import { usePoll } from "../../live/usePoll";
@@ -651,12 +650,12 @@ function EndpointDetail({
         {/* 서버가 가린 값이지만 화면 쪽에서도 한 번 더 가린다 (대시보드와 같은 방어 · 리뷰 #473) */}
         <div className={s.expanel}>
           {e.request ? (
-            <CodeCard title="요청" src="실제 관찰" text={maskSecrets(e.request)} id={`ep-req-${e.id}`} />
+            <CodeCard title="요청" src="실제 관찰" text={e.request} id={`ep-req-${e.id}`} />
           ) : (
             <NoneCard title="요청" text="저장된 요청이 없습니다." />
           )}
           {e.response ? (
-            <CodeCard title="응답" src="실제 관찰" text={maskSecrets(e.response)} id={`ep-res-${e.id}`} />
+            <CodeCard title="응답" src="실제 관찰" text={e.response} id={`ep-res-${e.id}`} />
           ) : (
             <NoneCard title="응답" text="저장된 응답이 없습니다." />
           )}
