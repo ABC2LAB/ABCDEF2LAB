@@ -1,0 +1,19 @@
+# Opt-in offline maintenance only. Never include this file in normal product up.
+# The operator stops all non-PostgreSQL product services before invoking run.
+services:
+  e2-recovery:
+    image: abc2lab-product:${PRODUCT_TAG:-local}
+    profiles: [recovery]
+    user: '1002:1000'
+    group_add: ['${DOCKER_GID:?Docker socket group ID required}']
+    entrypoint: [/app/first-controlled-diagnosis]
+    volumes:
+      - e2-host-state:/h
+      - e2-host-ipc:/run/e2-host:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    networks: [control]
+    restart: 'no'

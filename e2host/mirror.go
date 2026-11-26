@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/Autumn-27/artex/e2checkpoint"
 	"github.com/Autumn-27/artex/e2proxy"
@@ -137,18 +138,25 @@ func (r *run) verifiedSnapshot(ctx context.Context) ([]byte, e2checkpoint.Head, 
 // allAttemptsFinished는 실제 송신에 앞서는 intent ACK와 마지막 result를
 // 같은 시도에 결속한다. 전송 전 거부에는 intent 없이 result만 남을 수 있다.
 func allAttemptsFinished(events []e2proxy.Event) bool {
+	pending, valid := unfinishedAttempts(events)
+	return valid && len(pending) == 0
+}
+
+// unfinishedAttempts validates pairing without guessing whether an unpaired
+// intent was sent. Malformed pairings are not eligible for recovery.
+func unfinishedAttempts(events []e2proxy.Event) ([]string, bool) {
 	pending := make(map[string]e2proxy.Event)
 	finished := make(map[string]bool)
 	for _, event := range events {
 		switch event.Stage {
 		case "intent":
 			if _, exists := pending[event.AttemptID]; exists || finished[event.AttemptID] {
-				return false
+				return nil, false
 			}
 			pending[event.AttemptID] = event
 		case "result":
 			if finished[event.AttemptID] {
-				return false
+				return nil, false
 			}
 			intent, exists := pending[event.AttemptID]
 			if exists {
@@ -157,17 +165,22 @@ func allAttemptsFinished(events []e2proxy.Event) bool {
 					intent.CommandRef != event.CommandRef || intent.PolicyRevision != event.PolicyRevision ||
 					intent.RuleRef != event.RuleRef || intent.Sequence != event.Sequence || intent.Method != event.Method ||
 					!sameE3IntentBinding(intent.E3Audit, event.E3Audit) {
-					return false
+					return nil, false
 				}
 				delete(pending, event.AttemptID)
 			} else if event.Decision == "allowed" || !event.NotSent || event.ForwardAttempted ||
 				event.RequestWritten || event.ResponseReceived {
-				return false
+				return nil, false
 			}
 			finished[event.AttemptID] = true
 		}
 	}
-	return len(pending) == 0
+	refs := make([]string, 0, len(pending))
+	for ref := range pending {
+		refs = append(refs, ref)
+	}
+	slices.Sort(refs)
+	return refs, true
 }
 
 func sameE3IntentBinding(intent, result *e2proxy.E3Audit) bool {
@@ -187,7 +200,7 @@ func (h *Host) CheckRestoredHeads(ctx context.Context) error {
 	}
 	h.scanMu.Lock()
 	defer h.scanMu.Unlock()
-	return h.checkRestoredHeads(ctx, false)
+	return h.checkRestoredHeads(ctx, false, "", nil)
 }
 
 // RecoverDisconnectedHeads는 소켓 단절 뒤 또는 독점 Host 프로세스 잠금을
@@ -199,12 +212,12 @@ func (h *Host) RecoverDisconnectedHeads(ctx context.Context) error {
 	}
 	h.scanMu.Lock()
 	defer h.scanMu.Unlock()
-	return h.checkRestoredHeads(ctx, true)
+	return h.checkRestoredHeads(ctx, true, "", nil)
 }
 
 // DB와 Host 볼륨을 함께 같은 과거 시점으로 되돌린 경우는 독립적인
 // 외부 단조 anchor 없이는 탐지할 수 없으므로 운영 복구 대상이다.
-func (h *Host) checkRestoredHeads(ctx context.Context, recoverDisconnected bool) error {
+func (h *Host) checkRestoredHeads(ctx context.Context, recoverDisconnected bool, recoveryTarget string, status *RecoveryStatus) error {
 	if h == nil || h.db == nil || ctx == nil || ctx.Err() != nil {
 		return ErrUnavailable
 	}
@@ -219,6 +232,7 @@ func (h *Host) checkRestoredHeads(ctx context.Context, recoverDisconnected bool)
 		return ErrUnavailable
 	}
 	stored := make(map[string]bool)
+	targetSeen := recoveryTarget == ""
 	for rows.Next() {
 		var runRef string
 		if rows.Scan(&runRef) != nil || runRef == "" || stored[runRef] {
@@ -250,7 +264,7 @@ func (h *Host) checkRestoredHeads(ctx context.Context, recoverDisconnected bool)
 			return ErrUnavailable
 		}
 		if expected.Phase != e2checkpoint.Sealed && expected.Phase != e2checkpoint.Interrupted &&
-			(!recoverDisconnected || expected.Phase != e2checkpoint.Open) {
+			expected.Phase != e2checkpoint.Open {
 			return ErrUnavailable
 		}
 		digest := sha256.Sum256([]byte(expected.Binding.Scope.RunRef))
@@ -259,6 +273,9 @@ func (h *Host) checkRestoredHeads(ctx context.Context, recoverDisconnected bool)
 		}
 		if !stored[expected.Binding.Scope.RunRef] {
 			return ErrUnavailable
+		}
+		if expected.Binding.Scope.RunRef == recoveryTarget {
+			targetSeen = true
 		}
 		delete(stored, expected.Binding.Scope.RunRef)
 		rctx, cancel := context.WithCancel(context.Background())
@@ -273,8 +290,22 @@ func (h *Host) checkRestoredHeads(ctx context.Context, recoverDisconnected bool)
 		h.mu.Unlock()
 		actual, headErr := h.store.Head(ctx, e2checkpoint.Query{Epoch: h.epoch, Binding: r.binding})
 		matched := headErr == nil && actual == expected
+		acceptedOpen := false
 		if matched && expected.Phase == e2checkpoint.Open {
-			if r.completeAudit(ctx, e2checkpoint.Open) == nil {
+			record, exists, recordErr := r.readRecoveryRecord()
+			if recordErr != nil {
+				err = ErrUnavailable
+			} else if exists {
+				var events []e2proxy.Event
+				events, _, err = r.verifiedEvents(ctx)
+				if err == nil {
+					err = h.verifyRecoveryRecord(record, expected, events)
+				}
+				acceptedOpen = err == nil
+				if acceptedOpen && status != nil && recoveryTarget == r.scope.RunRef {
+					status.Head, status.Pending, status.Recovered = expected, append([]string(nil), record.Pending...), true
+				}
+			} else if recoverDisconnected && r.completeAudit(ctx, e2checkpoint.Open) == nil {
 				h.mu.Lock()
 				r.interruptOK = true
 				h.mu.Unlock()
@@ -297,6 +328,21 @@ func (h *Host) checkRestoredHeads(ctx context.Context, recoverDisconnected bool)
 						_, _ = r.phaseChecks(ctx, e2checkpoint.Interrupted, issued)
 					}
 				}
+			} else if recoveryTarget == r.scope.RunRef {
+				var events []e2proxy.Event
+				events, _, err = r.verifiedEvents(ctx)
+				if err == nil {
+					var pending []string
+					var valid bool
+					pending, valid = unfinishedAttempts(events)
+					if !valid || len(pending) == 0 {
+						err = ErrUnavailable
+					} else if status != nil {
+						status.Head, status.Pending, status.PendingStateChange =
+							expected, pending, pendingStateChange(events, pending)
+					}
+				}
+				acceptedOpen = err == nil
 			} else {
 				err = ErrUnavailable
 			}
@@ -305,11 +351,11 @@ func (h *Host) checkRestoredHeads(ctx context.Context, recoverDisconnected bool)
 		}
 		h.remove(r)
 		if !matched || err != nil ||
-			(actual.Phase != e2checkpoint.Sealed && actual.Phase != e2checkpoint.Interrupted) || actual != expected {
+			(actual.Phase != e2checkpoint.Sealed && actual.Phase != e2checkpoint.Interrupted && !acceptedOpen) || actual != expected {
 			return ErrUnavailable
 		}
 	}
-	if len(stored) != 0 {
+	if len(stored) != 0 || !targetSeen {
 		return ErrUnavailable
 	}
 	return nil
