@@ -17,6 +17,13 @@ import { useShell } from "../../shell";
 import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 
+/** 목록 줄 상태 알약 색: 결과 불명 · 승인 문제 노랑, 점검 완료 초록, 진단 실패 빨강, 나머지(중지 등) 회색 */
+function rowTone(state: URLRunSummary["state"], approvalIssue: boolean): string | undefined {
+  if (state === "unknown" || approvalIssue) return s.wait;
+  if (state === "completed") return s.ok;
+  return state === "failed" ? s.fail : undefined;
+}
+
 export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => void }) {
   const selected = useUrl((st) => st.selectedID === row.id);
   // 이미 열어 둔 점검을 다시 누르면 상태를 다시 읽지 않는다 — 다시 읽으면 화면을 새로 그려 오른쪽이 깜빡였다(사용자 11/23).
@@ -102,10 +109,8 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
         ) : null}
       </span>
       <span className={s["r-side"]}>
-        {/* 점검 완료는 초록(사용자 11/24, 게이지 '점검 완료'와 같은 색). 결과 불명 · 승인 문제는 노랑 */}
-        <span
-          className={cx(s.pill, row.state === "unknown" || approvalIssue ? s.wait : row.state === "completed" && s.ok)}
-        >
+        {/* 점검 완료는 초록(사용자 11/24, 게이지 '점검 완료'와 같은 색). 결과 불명 · 승인 문제는 노랑, 진단 실패는 빨강(11/26) */}
+        <span className={cx(s.pill, rowTone(row.state, approvalIssue))}>
           {row.state === "unknown"
             ? "상태 확인 필요 · 결과 불명"
             : `${urlStateText(row.state)}${approvalIssue ? ` · ${runApprovalLabels[row.approval_status]}` : ""}`}

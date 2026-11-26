@@ -425,7 +425,8 @@ describe("URL 진단 계산", () => {
     expect(urlViewFor(running)).toBe("live");
     expect(urlViewFor(completed)).toBe("report");
     expect(urlViewFor({ ...completed, result_ready: false })).toBe("live");
-    expect(urlTone("failed")).toBe("stop");
+    expect(urlTone("failed")).toBe("fail");
+    expect(urlTone("cancelled")).toBe("stop");
     expect(urlTone("running")).toBe("run");
   });
 

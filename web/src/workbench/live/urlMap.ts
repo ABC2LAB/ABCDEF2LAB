@@ -30,8 +30,8 @@ export const URL_ENDED_STATES: readonly UrlState[] = ["completed", "cancelled", 
 /** 시작 전 상태 (초안 · 범위 확인). */
 export const URL_PRESTART_STATES: readonly UrlState[] = ["awaiting_approval", "ready"];
 
-/** 상태 알약 색. stop = 회색(끝남·중지·실패). */
-export type UrlTone = "run" | "wait" | "ok" | "stop";
+/** 상태 알약 색. stop = 회색(중지), fail = 빨강(실패, 사용자 11/26). */
+export type UrlTone = "run" | "wait" | "ok" | "stop" | "fail";
 
 const TONE: Readonly<Record<UrlState, UrlTone>> = {
   awaiting_approval: "wait",
@@ -41,7 +41,7 @@ const TONE: Readonly<Record<UrlState, UrlTone>> = {
   stopping: "wait",
   completed: "ok",
   cancelled: "stop",
-  failed: "stop",
+  failed: "fail",
   unknown: "wait",
 };
 

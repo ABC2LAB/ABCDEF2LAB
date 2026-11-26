@@ -264,3 +264,25 @@ it("recovered binding (reopened from the run list) can still send the scope sele
   expect(useUrl.getState().flow?.stage).toBe("diagnosing");
   expect(urlGates(useUrl.getState()).canStart).toBe(false);
 });
+// 요청을 보낸 흐름 기록 줄에는 요청 식별자 두 개가 같이 붙는다(계약 workbench-engine-workflow, 11/25)
+const reqEvent = (over: Record<string, unknown> = {}) => ({
+  at: "2026-11-25T01:00:00Z",
+  kind: "request",
+  method: "GET",
+  path: "/read",
+  status: 200,
+  call_ref: "call-1",
+  attempt_id: "a".repeat(32),
+  ...over,
+});
+it("흐름 기록 줄의 요청 식별자(call_ref · attempt_id)를 받는다", () => {
+  const parsed = parseWorkflow({ workflow: { ...snapshot, events: [reqEvent()] } }, job);
+  expect(parsed.events[0]).toMatchObject({ call_ref: "call-1", attempt_id: "a".repeat(32) });
+});
+it.each([
+  ["하나만 옴", { attempt_id: undefined }],
+  ["시도 식별자 모양이 틀림", { attempt_id: "XYZ" }],
+  ["호출 식별자 모양이 틀림", { call_ref: "a/b" }],
+])("흐름 기록 줄의 요청 식별자가 %s 이면 받지 않는다(다른 요청을 열 수 있음)", (_name, change) => {
+  expect(() => parseWorkflow({ workflow: { ...snapshot, events: [reqEvent(change)] } }, job)).toThrow();
+});
