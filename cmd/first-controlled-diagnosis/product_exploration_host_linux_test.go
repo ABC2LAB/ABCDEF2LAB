@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -35,6 +36,7 @@ import (
 	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/exploration"
 	"github.com/Autumn-27/artex/exploreboundary"
+	"github.com/Autumn-27/artex/loginattempt"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -396,5 +398,33 @@ func TestProductExplorationHostRequiresLoginConfig(t *testing.T) {
 	}
 	if empty := productExplorationLogin(nil); empty == nil || len(empty.Accounts) != 0 || empty.MaxConsecutiveFailures != productLoginConsecutiveFailures {
 		t.Fatal("계정 없는 회차도 상한을 지켜야 함")
+	}
+}
+
+// 탐색 로그인 요약(계약 §6): 탐색 단계 행만으로 계정별 결과를 §4 규칙으로 정해 0600 파일로 남긴다. 등록 계정마다 값이 있고
+// 시도가 없는 계정은 not_attempted다.
+func TestWriteLoginSummaryFromExplorationRows(t *testing.T) {
+	dir := t.TempDir()
+	rows := []loginattempt.Row{
+		{Schema: loginattempt.Schema, AttemptRef: "exploration-1", AccountLabel: "tester-a", Outcome: loginattempt.OutcomeFailed},
+		{Schema: loginattempt.Schema, AttemptRef: "exploration-2", AccountLabel: "tester-a", Outcome: loginattempt.OutcomeUnconfirmed},
+		{Schema: loginattempt.Schema, AttemptRef: "exploration-3", AccountLabel: "tester-b", Outcome: loginattempt.OutcomeUnconfirmed},
+		{Schema: loginattempt.Schema, AttemptRef: "exploration-3", AccountLabel: "tester-b", Outcome: loginattempt.OutcomeSucceeded},
+	}
+	if err := writeLoginSummary(dir, loginattempt.AccountAuthOfRows(rows, []string{"tester-a", "tester-b", "tester-c"})); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dir, loginSummaryFile))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("요약 파일: %v %v", info, err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, loginSummaryFile))
+	var got struct {
+		Format      string            `json:"format"`
+		Exploration map[string]string `json:"exploration"`
+	}
+	if json.Unmarshal(raw, &got) != nil || got.Format != loginSummaryFormat || got.Exploration["tester-a"] != loginattempt.AuthUnconfirmed ||
+		got.Exploration["tester-b"] != loginattempt.AuthAuthenticated || got.Exploration["tester-c"] != loginattempt.AuthNotAttempted {
+		t.Fatalf("요약: %s", raw)
 	}
 }

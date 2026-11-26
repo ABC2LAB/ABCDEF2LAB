@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/exploration"
 	"github.com/Autumn-27/artex/exploreboundary"
+	"github.com/Autumn-27/artex/loginattempt"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -105,7 +108,7 @@ func (b *urlPreparationRuntime) productExplorationStage(l *urlLoadedProfile, e d
 			result, err := host.RunExplorationPipeline(ctx, task, options)
 			recordExplorationStage(stateDir, explorationResultRecord(result.Status == "NOT_RUN", result.Charge.Known, result.Charge.Requests))
 			// 탐색 단계 로그인 시도 행을 회차 기록에 옮긴다. 진단 단계(E②)가 이 행으로 아이디별 연속 실패를 이어 센다(계약 §5).
-			b.recordExplorationLoginAttempts(ctx, stateDir, options.Binding)
+			b.recordExplorationLoginAttempts(ctx, stateDir, options.Binding, options.Credentials)
 			return result.Charge, err
 		}
 	}
@@ -132,7 +135,7 @@ func productExplorationLogin(credentials []agent.E2HTTPAccountCredential) *explo
 
 // recordExplorationLoginAttempts는 탐색 경계의 로그인 시도 행을 회차 상태 디렉터리 기록에 덧붙인다. 읽거나 쓰지 못하면
 // 로그만 남긴다(진단 단계는 탐색 실패 수를 모르는 채 0부터 센다).
-func (b *urlPreparationRuntime) recordExplorationLoginAttempts(ctx context.Context, stateDir string, binding exploration.Binding) {
+func (b *urlPreparationRuntime) recordExplorationLoginAttempts(ctx context.Context, stateDir string, binding exploration.Binding, credentials []agent.E2HTTPAccountCredential) {
 	host := b.product.exploration
 	if host == nil || b.hostCapabilities.Exploration != nil {
 		return
@@ -150,4 +153,32 @@ func (b *urlPreparationRuntime) recordExplorationLoginAttempts(ctx context.Conte
 	if err := server.AppendLoginAttemptRows(stateDir, rows); err != nil {
 		log.Print("[first-diagnosis] 탐색 로그인 시도 기록을 쓰지 못함")
 	}
+	labels := make([]string, 0, len(credentials))
+	for _, c := range credentials {
+		labels = append(labels, c.Label)
+	}
+	if err := writeLoginSummary(stateDir, loginattempt.AccountAuthOfRows(rows, labels)); err != nil {
+		log.Print("[first-diagnosis] 탐색 로그인 요약을 쓰지 못함")
+	}
+}
+
+// loginSummaryFile은 회차 상태 디렉터리의 탐색 로그인 요약(0600)이다(계약 model-login-attempts §6). 탐색 단계 행만으로 정한
+// 계정별 결과를 남겨, 탐색이 대조를 못 세운 비율을 회차마다 본다(사용자 결정 2026-11-26). 화면 API에는 싣지 않는다.
+const (
+	loginSummaryFile   = "login-summary.json"
+	loginSummaryFormat = "abc2lab.login-summary/v1"
+)
+
+func writeLoginSummary(stateDir string, exploration map[string]string) error {
+	if stateDir == "" {
+		return errPreparation
+	}
+	raw, err := json.Marshal(struct {
+		Format      string            `json:"format"`
+		Exploration map[string]string `json:"exploration"`
+	}{loginSummaryFormat, exploration})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(stateDir, loginSummaryFile), append(raw, '\n'), 0o600)
 }

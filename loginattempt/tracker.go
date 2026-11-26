@@ -841,15 +841,48 @@ func (t *Tracker) ExceptionState(label string) string {
 func (t *Tracker) AccountAuth() map[string]string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	out := map[string]string{}
+	labels := make([]string, 0, len(t.cfg.Accounts))
 	for _, acc := range t.cfg.Accounts {
-		if acc.Label == "" {
+		labels = append(labels, acc.Label)
+	}
+	return accountAuthOf(labels, t.attempts)
+}
+
+// AccountAuthOfRows는 기록 행만으로 라벨마다 §4 표의 계정 상태를 정한다(탐색 로그인 요약 등). 같은 attempt_ref의 마지막
+// 행이 그 시도의 지금 값이고, 시도 순서는 처음 나온 순서다.
+func AccountAuthOfRows(rows []Row, labels []string) map[string]string {
+	return accountAuthOf(labels, attemptsOfRows(rows))
+}
+
+func attemptsOfRows(rows []Row) []*attempt {
+	byRef := map[string]*attempt{}
+	var order []*attempt
+	for _, r := range rows {
+		if r.Schema != Schema || r.AttemptRef == "" {
+			continue
+		}
+		a, ok := byRef[r.AttemptRef]
+		if !ok {
+			a = &attempt{seeded: true, done: true, order: len(order) + 1}
+			byRef[r.AttemptRef] = a
+			order = append(order, a)
+		}
+		a.row = r
+		a.cand.Identifier, a.cand.AccountLabel = r.Identifier, r.AccountLabel
+	}
+	return order
+}
+
+func accountAuthOf(labels []string, attempts []*attempt) map[string]string {
+	out := map[string]string{}
+	for _, label := range labels {
+		if label == "" {
 			continue
 		}
 		var records, sent []*attempt
 		succeeded := false
-		for _, a := range t.attempts {
-			if a.row.AccountLabel != acc.Label || a.row.Outcome == "" {
+		for _, a := range attempts {
+			if a.row.AccountLabel != label || a.row.Outcome == "" {
 				continue
 			}
 			records = append(records, a)
@@ -860,11 +893,11 @@ func (t *Tracker) AccountAuth() map[string]string {
 		}
 		switch {
 		case len(records) == 0:
-			out[acc.Label] = AuthNotAttempted
+			out[label] = AuthNotAttempted
 		case succeeded:
-			out[acc.Label] = AuthAuthenticated
+			out[label] = AuthAuthenticated
 		case len(sent) == 0:
-			out[acc.Label] = AuthNotSent
+			out[label] = AuthNotSent
 		default:
 			last := sent[0]
 			for _, a := range sent {
@@ -874,11 +907,11 @@ func (t *Tracker) AccountAuth() map[string]string {
 			}
 			switch last.row.Outcome {
 			case OutcomeFailed:
-				out[acc.Label] = AuthLoginFailed
+				out[label] = AuthLoginFailed
 			case OutcomeUnconfirmed:
-				out[acc.Label] = AuthUnconfirmed
+				out[label] = AuthUnconfirmed
 			default:
-				out[acc.Label] = AuthResultUnknown
+				out[label] = AuthResultUnknown
 			}
 		}
 	}
@@ -890,22 +923,7 @@ func (t *Tracker) AccountAuth() map[string]string {
 func (t *Tracker) Seed(rows []Row) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	byRef := map[string]*attempt{}
-	var order []*attempt
-	for _, r := range rows {
-		if r.Schema != Schema || r.AttemptRef == "" {
-			continue
-		}
-		a, ok := byRef[r.AttemptRef]
-		if !ok {
-			a = &attempt{seeded: true, done: true}
-			byRef[r.AttemptRef] = a
-			order = append(order, a)
-		}
-		a.row = r
-		a.cand.Identifier, a.cand.AccountLabel = r.Identifier, r.AccountLabel
-	}
-	for _, a := range order {
+	for _, a := range attemptsOfRows(rows) {
 		t.n++
 		a.order = t.n
 		switch a.row.Outcome {
