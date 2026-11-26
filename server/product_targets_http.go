@@ -133,6 +133,7 @@ func productTargetsHTTP(w http.ResponseWriter, r *http.Request, owner string, en
 //	GET  /api/product/targets/{id}/accounts                   목록(라벨·등록자·등록 시각·자격 등록 여부)
 //	POST /api/product/targets/{id}/accounts                   {"label": "..."} 등록
 //	PUT  /api/product/targets/{id}/accounts/{label}/credential {"username","password"} 자격 등록(값은 응답·목록에 없음)
+//	DELETE /api/product/targets/{id}/accounts/{label}/credential (본문 없음 또는 {}) 그 계정만 자격 철회(결속 사본도 지움)
 //
 // 계정 분류 폐지(사용자 결정 2026-11-26, docs/contracts/model-login-attempts.md §0): 시험 계정 표시(mark-test)·해제(unmark)
 // 경로는 없앴다(404). 프로그램은 계정을 분류하지 않고, 자격이 저장된 등록 계정을 회차에 결속한다.
@@ -168,6 +169,15 @@ func productAccountRequest(w http.ResponseWriter, r *http.Request, parts []strin
 		request.Operation = "account_credential_set"
 		request.Account = &diagnosisprep.AccountRequest{Label: parts[2]}
 		request.Credential = &cred
+		return true
+	case len(parts) == 4 && r.Method == "DELETE" && parts[3] == "credential":
+		raw, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 128))
+		if !diagnosisprep.ValidAccountLabel(parts[2]) || e != nil || len(raw) > 0 && string(raw) != "{}" {
+			writeJSON(w, 400, map[string]string{"error": "invalid_account_request"})
+			return false
+		}
+		request.Operation = "account_credential_clear"
+		request.Account = &diagnosisprep.AccountRequest{Label: parts[2]}
 		return true
 	}
 	http.NotFound(w, r)

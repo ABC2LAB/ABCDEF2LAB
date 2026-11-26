@@ -413,6 +413,9 @@ func TestProductControlAccountDispatch(t *testing.T) {
 	if got.Account == nil || !got.Account.CredentialConfigured || strings.Contains(string(encoded), "seeded-") {
 		t.Fatalf("credential response: %s", encoded)
 	}
+	if got := call(&diagnosisprep.ProductRequest{Operation: "account_credential_clear", TargetID: target.ID, Account: &diagnosisprep.AccountRequest{Label: "tester-a"}}); got.Account == nil || got.Account.CredentialConfigured {
+		t.Fatalf("credential clear: %+v", got)
+	}
 	// 시험 계정 표시 · 해제 작업은 없다(요청 계약이 받지 않음)
 	for _, op := range []string{"account_mark_test", "account_unmark"} {
 		req := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "product-control", Principal: "ARTEX", Command: diagnosisprep.ProductControl,
@@ -459,6 +462,93 @@ func TestProductAccountCredentialHashIsSalted(t *testing.T) {
 	sum := sha256.Sum256(plain)
 	if len(hashes) != 2 || hashes[hex.EncodeToString(sum[:])] {
 		t.Fatalf("credential hash not salted: %v", hashes)
+	}
+}
+
+// 그 계정만 자격을 철회한다(#982 이동찬 P2): 저널에 철회 줄을 남기고 자격 파일을 지우며, 다른 계정 자격 · 등록은 그대로다.
+// 자격이 없으면 기록하지 않고, 철회된 대상에도 받는다(더 안전한 쪽). 다시 열어도(저널 재생) 미설정이다.
+func TestProductAccountCredentialClear(t *testing.T) {
+	r, root, target := accountTestTarget(t, true)
+	for _, label := range []string{"tester-a", "tester-b"} {
+		if _, err := r.registerAccount("ARTEX", target.ID, label); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.setAccountCredential("ARTEX", target.ID, label, diagnosisprep.AccountCredential{Username: "u-" + label, Password: "p-" + label}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.clearAccountCredential("ARTEX", target.ID, "missing"); err == nil || err.Error() != "account_not_found" {
+		t.Fatalf("clear of a missing account: %v", err)
+	}
+	if _, err := r.clearAccountCredential("other", target.ID, "tester-a"); err == nil || err.Error() != "target_not_found" {
+		t.Fatalf("another principal cleared: %v", err)
+	}
+	a, err := r.clearAccountCredential("ARTEX", target.ID, "tester-a")
+	if err != nil || a.CredentialConfigured || a.Label != "tester-a" {
+		t.Fatalf("clear: %+v %v", a, err)
+	}
+	if _, err := os.Stat(r.credentialPath(target.ID, "tester-a")); !os.IsNotExist(err) {
+		t.Fatal("credential file left after clear")
+	}
+	if !accountByLabel(t, r, target.ID, "tester-b").CredentialConfigured {
+		t.Fatal("clearing one account removed another account's credential")
+	}
+	before := accountJournalLines(t, root)
+	if again, err := r.clearAccountCredential("ARTEX", target.ID, "tester-a"); err != nil || again.CredentialConfigured || accountJournalLines(t, root) != before {
+		t.Fatalf("repeated clear wrote again: %+v %v", again, err)
+	}
+	if _, err := r.revoke("ARTEX", target.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if accountByLabel(t, reopened, target.ID, "tester-a").CredentialConfigured {
+		t.Fatal("cleared credential configured after replay")
+	}
+}
+
+// 자격 철회 줄은 자격이 있는 계정에만 있다 — 자격 없는 계정 · 진술 해시 · 자격 해시가 붙은 줄은 재생이 받지 않는다(설치 정지).
+func TestProductAccountCredentialClearReplayRejectsForged(t *testing.T) {
+	for name, forge := range map[string]func(productAccountEvent) productAccountEvent{
+		"no credential": func(e productAccountEvent) productAccountEvent { e.Label = "tester-b"; return e },
+		"statement": func(e productAccountEvent) productAccountEvent {
+			e.StatementSHA256 = productAccountStatementSHA256()
+			return e
+		},
+		"hash": func(e productAccountEvent) productAccountEvent {
+			e.CredentialSHA256 = strings.Repeat("a", 64)
+			return e
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, root, target := accountTestTarget(t, true)
+			for _, label := range []string{"tester-a", "tester-b"} {
+				if _, err := r.registerAccount("ARTEX", target.ID, label); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: "u", Password: "p"}); err != nil {
+				t.Fatal(err)
+			}
+			e := forge(productAccountEvent{TargetID: target.ID, Label: "tester-a", Action: accountCredentialClear, Actor: "ARTEX", At: time.Now().UTC(), TargetRevision: target.Revision})
+			raw, _ := json.Marshal(e)
+			if err := r.accountJournal.Append(raw); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil }); err == nil {
+				reopened.Close()
+				t.Fatal("forged credential clear replayed")
+			}
+		})
 	}
 }
 

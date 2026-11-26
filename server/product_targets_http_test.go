@@ -79,6 +79,12 @@ func TestProductAccountHTTPPassesOnlyLabel(t *testing.T) {
 	if invoke("POST", base, `{"label":"tester-a"}`).Code != 200 || last().Operation != "account_register" || last().Account.Label != "tester-a" {
 		t.Fatal("account registration not forwarded")
 	}
+	// 그 계정만 자격 철회(#982 이동찬 P2): 본문 없음 · {} 둘 다 받는다
+	for _, body := range []string{"", "{}"} {
+		if invoke("DELETE", base+"/tester-a/credential", body).Code != 200 || last().Operation != "account_credential_clear" || last().Account.Label != "tester-a" || last().Credential != nil {
+			t.Fatalf("credential clear (body %q) not forwarded", body)
+		}
+	}
 	before := len(p.requests)
 	for name, c := range map[string][3]string{
 		"password field":      {"POST", base, `{"label":"tester-a","password":"seeded-secret"}`},
@@ -87,6 +93,8 @@ func TestProductAccountHTTPPassesOnlyLabel(t *testing.T) {
 		"mark test removed":   {"POST", base + "/tester-a/mark-test", `{"statement_confirmed":true}`},
 		"unmark removed":      {"POST", base + "/tester-a/unmark", "{}"},
 		"bad label path":      {"PUT", base + "/Tester/credential", `{"username":"u","password":"p"}`},
+		"clear bad label":     {"DELETE", base + "/Tester/credential", ""},
+		"clear with body":     {"DELETE", base + "/tester-a/credential", `{"username":"u"}`},
 		"unknown action":      {"POST", base + "/tester-a/delete", "{}"},
 		"get one account":     {"GET", base + "/tester-a", ""},
 		"approve with suffix": {"POST", "/api/product/targets/" + id + "/approve/x", "{}"},

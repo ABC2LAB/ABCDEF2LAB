@@ -262,6 +262,21 @@ func TestProductRunAccountsSelection(t *testing.T) {
 	if r.accountsCurrent(rec, nil) != nil {
 		t.Fatal("run without bound accounts stopped")
 	}
+	// 그 계정만 자격을 철회하면(#982 이동찬 P2) 다음 결속에서 빠지고, 그 계정을 결속한 실행은 멈춘다
+	fresh, _, err := r.runAccounts(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.clearAccountCredential("ARTEX", target.ID, "tester-a"); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(r.accountsCurrent(rec, fresh.Accounts), errAccountBindingChanged) {
+		t.Fatal("run bound to a cleared credential kept sending")
+	}
+	after, _, err := r.runAccounts(rec)
+	if err != nil || len(after.Accounts) != 1 || after.Accounts[0].Label != "real-c" {
+		t.Fatalf("selection after clear: %+v %v", after, err)
+	}
 }
 
 // 저장 보고서는 현재 송신 권한·계정 선택과 상관없이 그 실행의 결속을 다시 찾는다: 계정 없는 실행은 대상 철회 뒤에도,

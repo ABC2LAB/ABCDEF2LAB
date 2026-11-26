@@ -317,6 +317,8 @@ func validProductRequest(r *ProductRequest) bool {
 			return r.Account != nil && ValidAccountLabel(r.Account.Label) && r.Login == nil && r.Credential == nil
 		case "account_credential_set":
 			return r.Account != nil && ValidAccountLabel(r.Account.Label) && r.Login == nil && r.Credential != nil && ValidAccountCredential(*r.Credential)
+		case "account_credential_clear":
+			return r.Account != nil && ValidAccountLabel(r.Account.Label) && r.Login == nil && r.Credential == nil
 		}
 		return false
 	}

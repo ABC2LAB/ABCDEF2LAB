@@ -10,6 +10,7 @@ func TestProductAccountRequestValidation(t *testing.T) {
 	ok := []ProductRequest{
 		{Operation: "accounts", TargetID: id},
 		{Operation: "account_register", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
+		{Operation: "account_credential_clear", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
 	}
 	for _, r := range ok {
 		r := r
@@ -22,11 +23,13 @@ func TestProductAccountRequestValidation(t *testing.T) {
 		"register without target": {Operation: "account_register", Account: &AccountRequest{Label: "tester-a"}},
 		"register bad label":      {Operation: "account_register", TargetID: id, Account: &AccountRequest{Label: "user@example.test"}},
 		// 계정 분류 폐지(2026-11-26): 시험 계정 표시 · 해제 작업은 없다
-		"mark test removed":    {Operation: "account_mark_test", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
-		"unmark removed":       {Operation: "account_unmark", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
-		"unknown account op":   {Operation: "account_delete", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
-		"account on target op": {Operation: "approve", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
-		"account with job":     {Operation: "accounts", TargetID: id, JobID: "job-1"},
+		"mark test removed":     {Operation: "account_mark_test", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
+		"unmark removed":        {Operation: "account_unmark", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
+		"clear without account": {Operation: "account_credential_clear", TargetID: id},
+		"clear with credential": {Operation: "account_credential_clear", TargetID: id, Account: &AccountRequest{Label: "tester-a"}, Credential: &AccountCredential{Username: "u", Password: "p"}},
+		"unknown account op":    {Operation: "account_delete", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
+		"account on target op":  {Operation: "approve", TargetID: id, Account: &AccountRequest{Label: "tester-a"}},
+		"account with job":      {Operation: "accounts", TargetID: id, JobID: "job-1"},
 	}
 	for name, r := range bad {
 		r := r

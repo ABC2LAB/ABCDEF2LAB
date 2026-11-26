@@ -492,7 +492,7 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 			}
 			clear(raw)
 		}
-		// 시험 계정 자격 사본을 결속 디렉터리에 고정한다(해시 대조). 철회·자격 교체 때 removeBindingCredentials가 지운다.
+		// 시험 계정 자격 사본을 결속 디렉터리에 고정한다(해시 대조). 철회·자격 교체 · 자격 철회 때 removeBindingCredentials가 지운다.
 		for _, a := range accounts.Accounts {
 			raw, e := readPrivateFile(a.credentialPath, maxCredentialFileBytes)
 			if e != nil {
@@ -745,6 +745,14 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 				p.removeBindingCredentials(r.Product.TargetID, r.Product.Account.Label)
 			}
 			if err == nil {
+				control.Account = &a
+			}
+		case "account_credential_clear":
+			// 그 계정만 자격 철회(#982 이동찬 P2): 저널 기록 · 자격 파일 삭제 뒤 결속 · 실행 디렉터리의 그 계정 사본도 지운다
+			var a diagnosisprep.ProductAccount
+			a, err = p.targets.clearAccountCredential(r.Principal, r.Product.TargetID, r.Product.Account.Label)
+			if err == nil {
+				p.removeBindingCredentials(r.Product.TargetID, r.Product.Account.Label)
 				control.Account = &a
 			}
 		case "account_register":

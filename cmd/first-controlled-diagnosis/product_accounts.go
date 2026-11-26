@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -88,6 +89,8 @@ const (
 	accountUnmark      = "unmark"
 	accountLoginConfig = "login_config"
 	accountCredential  = "credential"
+	// accountCredentialClear는 그 계정만 저장 자격을 철회한 줄이다(#982 이동찬 P2). 그 뒤 자격을 다시 넣기 전까지 결속하지 않는다.
+	accountCredentialClear = "credential_clear"
 	// accountExternalConsent는 외부 API 실행의 시험 계정 동의다(감사만, 계정 상태는 바꾸지 않음).
 	accountExternalConsent = "external_consent"
 )
@@ -157,6 +160,11 @@ func (r *productTargetRegistry) replayAccount(e productAccountEvent) error {
 			return errPreparation
 		}
 		st.credentialSHA256 = e.CredentialSHA256
+	case accountCredentialClear:
+		if st == nil || st.credentialSHA256 == "" || e.StatementSHA256 != "" {
+			return errPreparation
+		}
+		st.credentialSHA256 = ""
 	default:
 		return errPreparation
 	}
@@ -388,6 +396,33 @@ func (r *productTargetRegistry) setAccountCredential(principal, id, label string
 	if err := r.appendAccount(productAccountEvent{TargetID: id, Label: label, Action: accountCredential, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision,
 		CredentialSHA256: hex.EncodeToString(sum[:])}); err != nil {
 		return diagnosisprep.ProductAccount{}, errPreparation
+	}
+	return r.accountResponse(rec, st), nil
+}
+
+// clearAccountCredential은 그 계정만 저장 자격을 철회한다(#982 이동찬 P2 — 표시 해제가 하던 '계정 하나 자격 철회'를 분류 없이
+// 남긴다). 철회 사건을 저널에 남기고 자격 파일을 지운다. 결속 사본(실행 · 결속 디렉터리)은 부르는 쪽(제품 제어)이 지우고,
+// 저널 해시가 빠지므로 그 계정을 결속한 실행은 다음 확인에서 멈춘다(errAccountBindingChanged). 더 안전한 쪽이라 철회된 대상에도
+// 받고, 파일을 못 지워도 기록한다(해시가 빠져 남은 파일은 쓰이지 않음). 자격이 없으면 기록하지 않는다.
+func (r *productTargetRegistry) clearAccountCredential(principal, id, label string) (diagnosisprep.ProductAccount, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, byTarget, err := r.accountTarget(principal, id)
+	if err != nil {
+		return diagnosisprep.ProductAccount{}, err
+	}
+	st := byTarget[label]
+	if st == nil {
+		return diagnosisprep.ProductAccount{}, errors.New("account_not_found")
+	}
+	if st.credentialSHA256 == "" {
+		return r.accountResponse(rec, st), nil
+	}
+	if err := r.appendAccount(productAccountEvent{TargetID: id, Label: label, Action: accountCredentialClear, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision}); err != nil {
+		return diagnosisprep.ProductAccount{}, errPreparation
+	}
+	if err := r.removeCredential(id, label); err != nil {
+		log.Printf("[preparation] 계정 자격 철회 때 자격 파일 삭제 실패: 대상=%s", id)
 	}
 	return r.accountResponse(rec, st), nil
 }
