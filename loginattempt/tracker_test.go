@@ -448,3 +448,41 @@ func TestLoginRedirectBackToLoginPathFails(t *testing.T) {
 		t.Fatalf("다른 origin 리다이렉트를 같은 경로로 봄: %+v", r)
 	}
 }
+
+// 성공한 등록 계정 로그인은 뒤 요청이 실어 보낸 방식 그대로 세션 헤더를 넘기고(세션 저장소·확정 단계용), 보낸 요청의
+// 계정은 성공한 세션만 귀속한다. 두 계정 세션이 같이 실리면 귀속하지 않는다.
+func TestSucceededSessionHandoffAndAccountOf(t *testing.T) {
+	origin, _ := url.Parse("http://target.test:4000")
+	got := map[string]http.Header{}
+	tr, err := New(Config{RunRef: "run-1", Stage: StageDiagnosis, Origin: origin, Accounts: testAccounts, MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16,
+		OnSucceeded: func(label string, h http.Header) { got[label] = h.Clone() }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.Observe(get("/home"), redirect("/login"))
+	login := formLogin("user2", "bravo-pass-2")
+	p := tr.Prepare(login, true)
+	tr.Complete(p, "1", login, redirect("/home", "Set-Cookie", "sid=user-session-0004", "Set-Cookie", "csrf=csrf-cookie-value-1"))
+	if tr.AccountOf(hdr("Cookie", "sid=user-session-0004")) != "" {
+		t.Fatal("성공 전 세션을 귀속함")
+	}
+	tr.Observe(get("/home", "Cookie", "sid=user-session-0004; theme=dark"), html(200, "<p>home</p>"))
+	if h := got["tester-b"]; h.Get("Cookie") != "csrf=csrf-cookie-value-1; sid=user-session-0004" {
+		t.Fatalf("세션 헤더: %v", h)
+	}
+	if tr.AccountOf(hdr("Cookie", "theme=dark; sid=user-session-0004")) != "tester-b" || tr.AccountOf(hdr("Cookie", "sid=other")) != "" {
+		t.Fatal("계정 귀속")
+	}
+	tok := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyMSJ9.c2lnbmF0dXJlLWE"
+	tr.Observe(get("/api/me"), Response{Status: 401, Header: http.Header{}})
+	jl := Request{Method: "POST", Path: "/api/login", ContentType: "application/json", Body: []byte(`{"email":"user1@owned.test","password":"alpha-pass-1"}`), Header: http.Header{}}
+	p = tr.Prepare(jl, true)
+	tr.Complete(p, "2", jl, Response{Status: 200, Header: hdr("Content-Type", "application/json"), Body: []byte(`{"token":"` + tok + `"}`)})
+	tr.Observe(get("/api/me", "Authorization", "Bearer "+tok), Response{Status: 200, Header: http.Header{}})
+	if h := got["tester-a"]; h.Get("Authorization") != "Bearer "+tok {
+		t.Fatalf("토큰 세션 헤더: %v", h)
+	}
+	if tr.AccountOf(hdr("Authorization", "Bearer "+tok, "Cookie", "sid=user-session-0004")) != "" {
+		t.Fatal("두 계정 세션이 같이 실렸는데 귀속함")
+	}
+}

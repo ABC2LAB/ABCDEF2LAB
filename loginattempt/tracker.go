@@ -83,8 +83,10 @@ const (
 	maxOpenedPerAttempt = 64
 	maxAnonURLs         = 4096
 	maxRecentBodies     = 32
-	maxRecentBodyBytes  = 64 << 10
-	maxSentAsPrefix     = 16
+	// MaxObservedBodyBytes는 경계가 판정기에 넘기는 응답 본문 앞부분 상한이다(로그인 화면·토큰 칸 판정용).
+	MaxObservedBodyBytes = 64 << 10
+	maxRecentBodyBytes   = 64 << 10
+	maxSentAsPrefix      = 16
 )
 
 var ErrConfig = errors.New("loginattempt: invalid config")
@@ -146,6 +148,9 @@ type Config struct {
 	Now       func() time.Time
 	// Sink는 행이 바뀔 때마다 받는다. 판정기 잠금 안에서 부르므로 판정기를 다시 부르지 않는다.
 	Sink func(Row)
+	// OnSucceeded는 등록 계정 라벨의 시도가 성공한 순간 그 세션을 실어 보낼 헤더(Cookie 또는 토큰 헤더)로 받는다. 값은
+	// 회차 메모리에만 둔다(세션 저장소·확정 단계 계정 결속). 판정기 잠금 안에서 부른다.
+	OnSucceeded func(label string, session http.Header)
 }
 
 type observation struct {
@@ -433,8 +438,70 @@ func (t *Tracker) setOutcomeLocked(a *attempt, outcome string) {
 		}
 	case OutcomeSucceeded:
 		t.failures[a.cand.Identifier] = 0
+		if t.cfg.OnSucceeded != nil && a.cand.AccountLabel != "" && !a.seeded {
+			if h := sessionHeader(a); len(h) > 0 {
+				t.cfg.OnSucceeded(a.cand.AccountLabel, h)
+			}
+		}
 	}
 	a.row.ConsecutiveFailures = t.failures[a.cand.Identifier]
+}
+
+// sessionHeader는 성공한 시도의 세션을 뒤 요청이 실어 보낸 방식 그대로 헤더로 만든다. 쿠키는 이름 순으로 붙인다.
+func sessionHeader(a *attempt) http.Header {
+	h := http.Header{}
+	if a.row.SessionSentAs == "cookie" && len(a.cookies) > 0 {
+		parts := make([]string, 0, len(a.cookies))
+		for _, name := range sortedKeys(a.cookies) {
+			parts = append(parts, name+"="+a.cookies[name])
+		}
+		h.Set("Cookie", strings.Join(parts, "; "))
+		return h
+	}
+	name, prefix, ok := strings.Cut(a.row.SessionSentAs, ":")
+	if !ok || name == "" {
+		return nil
+	}
+	for _, tk := range a.tokens {
+		if tk.source == a.row.SessionSource && (len(a.row.SessionNames) == 0 || a.row.SessionNames[0] == tk.name) {
+			h.Set(name, prefix+tk.value)
+			return h
+		}
+	}
+	return nil
+}
+
+// AccountOf는 요청 헤더가 실은 세션이 성공한 등록 계정 로그인의 것이면 그 라벨을 준다. 둘 이상의 계정 세션이 맞거나
+// 성공하지 않은 세션이면 빈 값이다(모르면 귀속하지 않는다).
+func (t *Tracker) AccountOf(h http.Header) string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	sent := requestCookies(h)
+	label := ""
+	for _, a := range t.attempts {
+		if a.seeded || a.row.Outcome != OutcomeSucceeded || a.cand.AccountLabel == "" {
+			continue
+		}
+		carried := false
+		for name, value := range a.cookies {
+			carried = carried || sent[name] == value
+		}
+		for _, tk := range a.tokens {
+			for _, values := range h {
+				for _, v := range values {
+					carried = carried || strings.Contains(v, tk.value)
+				}
+			}
+		}
+		if !carried {
+			continue
+		}
+		if label != "" && label != a.cand.AccountLabel {
+			return ""
+		}
+		label = a.cand.AccountLabel
+	}
+	return label
 }
 
 func (t *Tracker) rememberLocked(body []byte) {
