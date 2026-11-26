@@ -436,13 +436,15 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 		}
 		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "target-path-" + string(rune('a'+i)), Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: scope.Path, PathMatch: string(scope.Mode), PathScopeRef: "readonly-path-" + string(rune('a'+i)), Methods: methods, ApprovalDisplay: server.RequestApprovalDisplay{PublicPath: input.WorkflowMode == diagnosisflow.Manual, QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
 	}
+	// 로그인 시도 판정은 계정 등록 여부와 상관없이 제품 회차마다 한다(같은 아이디 연속 실패 회차당 3번, 절대규칙 1·3). 계정이
+	// 없는 회차도 등록 밖 아이디(기본 계정 시험 등)의 로그인을 센다.
+	policy.LoginAttempts = &server.E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: productLoginConsecutiveFailures, MaxContrastProbes: productLoginContrastProbes, TokenMinBytes: productLoginTokenMinBytes}
 	if len(accounts.Accounts) > 0 {
 		// 로그인 경로 하나만 정확히 가리키는 인증 준비 규칙. 모델 요청은 이 규칙을 쓰지 못한다(E② Purpose).
 		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: accounts.Login.Path, PathScopeRef: "auth-login-path",
 			Methods: []string{accounts.Login.Method}, Purpose: e2proxy.PurposeAuthPrep, ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
 		// 모델이 직접 로그인한다(사용자 결정 2026-11-26). 확정 단계 다시 로그인만 프로그램이 지금 로그인 방식으로 한다.
-		auth := &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: *accounts.Login, PasswordResponse: accounts.PasswordResponse, ModelLogin: true,
-			LoginAttempts: &server.E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: productLoginConsecutiveFailures, MaxContrastProbes: productLoginContrastProbes, TokenMinBytes: productLoginTokenMinBytes}}
+		auth := &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: *accounts.Login, PasswordResponse: accounts.PasswordResponse, ModelLogin: true}
 		for _, a := range accounts.Accounts {
 			auth.Accounts = append(auth.Accounts, server.E2HTTPFileAuthAccount{Label: a.Label, Credential: server.E2HTTPFilePin{File: bindingCredentialName(rec.Target.ID, a.Label, a.CredentialSHA256), SHA256: a.CredentialSHA256}})
 		}

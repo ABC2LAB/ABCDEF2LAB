@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -104,11 +105,21 @@ func (b *urlPreparationRuntime) productExplorationStage(l *urlLoadedProfile, e d
 			if task == nil || task.ID != taskID {
 				return server.ExplorationCharge{}, exploration.ErrBinding
 			}
+			// 탐색 경계 로그인 기록 인계는 확인되기 전까지 '넘겨받지 못함'이다. 경계를 열기 전에 표지를 쓰고 인계가 확인될 때만
+			// 지운다(#969 동찬 리뷰 P2). 표지를 못 쓰면 진단이 탐색 실패 수를 알 수 없으므로 탐색을 열지 않는다(대상 송신 없음).
+			tracked := b.explorationLoginTracked()
+			if tracked && server.MarkLoginHistoryUnavailable(stateDir) != nil {
+				log.Print("[first-diagnosis] 탐색 로그인 기록 인계 표지를 쓰지 못해 탐색을 열지 않음")
+				return server.ExplorationCharge{Known: true}, errExplorationLoginHandover
+			}
 			recordExplorationStage(stateDir, explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationRunning})
 			result, err := host.RunExplorationPipeline(ctx, task, options)
-			recordExplorationStage(stateDir, explorationResultRecord(result.Status == "NOT_RUN", result.Charge.Known, result.Charge.Requests))
+			notRun := result.Status == "NOT_RUN"
+			recordExplorationStage(stateDir, explorationResultRecord(notRun, result.Charge.Known, result.Charge.Requests))
 			// 탐색 단계 로그인 시도 행을 회차 기록에 옮긴다. 진단 단계(E②)가 이 행으로 아이디별 연속 실패를 이어 센다(계약 §5).
-			b.recordExplorationLoginAttempts(ctx, stateDir, options.Binding, options.Credentials)
+			if tracked {
+				b.recordExplorationLoginAttempts(ctx, stateDir, options.Binding, options.Credentials, notRun)
+			}
 			return result.Charge, err
 		}
 	}
@@ -133,33 +144,65 @@ func productExplorationLogin(credentials []agent.E2HTTPAccountCredential) *explo
 	return login
 }
 
-// recordExplorationLoginAttempts는 탐색 경계의 로그인 시도 행을 회차 상태 디렉터리 기록에 덧붙인다. 읽거나 쓰지 못하면
-// 로그만 남긴다(진단 단계는 탐색 실패 수를 모르는 채 0부터 센다).
-func (b *urlPreparationRuntime) recordExplorationLoginAttempts(ctx context.Context, stateDir string, binding exploration.Binding, credentials []agent.E2HTTPAccountCredential) {
+// errExplorationLoginHandover는 탐색 로그인 기록 인계 표지를 쓰지 못해 탐색을 열지 않은 경우다.
+var errExplorationLoginHandover = errors.New("first-diagnosis: exploration login handover marker unavailable")
+
+// explorationLoginTracked는 이 회차 탐색이 제품 탐색 경계(로그인 시도 판정·기록)를 쓰는지다. 외부 호스트 탐색은 경계 기록이
+// 여기 없어 인계하지 않는다.
+func (b *urlPreparationRuntime) explorationLoginTracked() bool {
+	return b.product.exploration != nil && b.hostCapabilities.Exploration == nil
+}
+
+// recordExplorationLoginAttempts는 탐색 경계의 로그인 시도 행을 회차 상태 디렉터리 기록에 덧붙인다. 탐색이 경계를 열기 전에
+// 끝났으면(NOT_RUN) 탐색 로그인이 없으므로 읽지 않고 인계를 확인한다.
+func (b *urlPreparationRuntime) recordExplorationLoginAttempts(ctx context.Context, stateDir string, binding exploration.Binding, credentials []agent.E2HTTPAccountCredential, notRun bool) {
 	host := b.product.exploration
-	if host == nil || b.hostCapabilities.Exploration != nil {
-		return
+	read := func() ([]loginattempt.Row, uint64, error) {
+		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), explorationCloseTimeout)
+		defer cancel()
+		return host.loginAttempts(readCtx, binding)
 	}
-	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), explorationCloseTimeout)
-	defer cancel()
-	rows, omitted, err := host.loginAttempts(readCtx, binding)
-	if err != nil {
-		log.Print("[first-diagnosis] 탐색 로그인 시도 기록을 경계에서 읽지 못함(진단 단계 연속 실패는 0부터)")
-		return
-	}
-	if omitted > 0 {
-		log.Printf("[first-diagnosis] 탐색 로그인 시도 행 %d개가 경계 상한으로 빠짐", omitted)
-	}
-	if err := server.AppendLoginAttemptRows(stateDir, rows); err != nil {
-		log.Print("[first-diagnosis] 탐색 로그인 시도 기록을 쓰지 못함")
+	if notRun {
+		read = func() ([]loginattempt.Row, uint64, error) { return nil, 0, nil }
 	}
 	labels := make([]string, 0, len(credentials))
 	for _, c := range credentials {
 		labels = append(labels, c.Label)
 	}
+	handOverExplorationLogins(stateDir, read, labels)
+}
+
+// handOverExplorationLogins는 탐색 로그인 시도 행을 회차 기록에 덧붙이고, 모두 넘겼을 때만 인계 표지를 지운다. 읽기 실패·
+// 상한으로 빠진 행·기록 쓰기 실패·표지 지우기 실패면 표지가 남아 진단 단계는 로그인 시도를 보내지 않는다(회차 공통 연속 실패
+// 상한을 지킬 수 없으므로, #969 동찬 리뷰 P2). 일반 조회·감사 기록은 그대로다. 인계를 확인했으면 true다.
+func handOverExplorationLogins(stateDir string, read func() ([]loginattempt.Row, uint64, error), labels []string) bool {
+	unavailable := func(why string) bool {
+		log.Print("[first-diagnosis] 탐색 로그인 시도 기록을 넘겨받지 못함: " + why + "(진단 단계는 로그인 시도를 보내지 않음)")
+		// 표지는 탐색 시작 때 썼다. 다시 써 두되 못 써도 시작 때 표지가 남아 있다.
+		if server.MarkLoginHistoryUnavailable(stateDir) != nil {
+			log.Print("[first-diagnosis] 탐색 로그인 기록 인계 실패 표지를 다시 쓰지 못함")
+		}
+		return false
+	}
+	rows, omitted, err := read()
+	if err != nil {
+		return unavailable("경계 조회 실패")
+	}
+	if err := server.AppendLoginAttemptRows(stateDir, rows); err != nil {
+		return unavailable("기록 쓰기 실패")
+	}
 	if err := writeLoginSummary(stateDir, loginattempt.AccountAuthOfRows(rows, labels)); err != nil {
 		log.Print("[first-diagnosis] 탐색 로그인 요약을 쓰지 못함")
 	}
+	if omitted > 0 {
+		log.Printf("[first-diagnosis] 탐색 로그인 시도 행 %d개가 경계 상한으로 빠짐", omitted)
+		return unavailable("행 빠짐")
+	}
+	if server.ClearLoginHistoryUnavailable(stateDir) != nil {
+		log.Print("[first-diagnosis] 탐색 로그인 기록 인계 표지를 지우지 못함(진단 단계는 로그인 시도를 보내지 않음)")
+		return false
+	}
+	return true
 }
 
 // loginSummaryFile은 회차 상태 디렉터리의 탐색 로그인 요약(0600)이다(계약 model-login-attempts §6). 탐색 단계 행만으로 정한

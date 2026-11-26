@@ -428,3 +428,63 @@ func TestWriteLoginSummaryFromExplorationRows(t *testing.T) {
 		t.Fatalf("요약: %s", raw)
 	}
 }
+
+// 탐색 로그인 기록 인계(#969 동찬 리뷰 P2): 표지는 탐색 시작 때 쓰고 모두 넘겼을 때만 지운다. 경계 조회 실패·빠진 행·기록
+// 쓰기 실패면 표지가 남고, 기록과 표지 저장이 모두 실패해도 시작 때 표지가 남아 진단 단계가 로그인 시도를 보내지 않는다.
+func TestExplorationLoginHandoverKeepsMarkerUntilConfirmed(t *testing.T) {
+	rows := []loginattempt.Row{{Schema: loginattempt.Schema, AttemptRef: "exploration-1", Identifier: "tester@owned.test", AccountLabel: "tester-a", Outcome: loginattempt.OutcomeFailed}}
+	marker := func(dir string) bool {
+		_, err := os.Lstat(filepath.Join(dir, server.E2HTTPLoginHistoryUnavailableFile))
+		return err == nil
+	}
+	ok := func() ([]loginattempt.Row, uint64, error) { return rows, 0, nil }
+	for _, tc := range []struct {
+		name       string
+		read       func() ([]loginattempt.Row, uint64, error)
+		readOnly   bool
+		block      string
+		handedOver bool
+	}{
+		{"handed over", ok, false, "", true},
+		{"no attempts", func() ([]loginattempt.Row, uint64, error) { return nil, 0, nil }, false, "", true},
+		{"read failure", func() ([]loginattempt.Row, uint64, error) { return nil, 0, errors.New("boundary unavailable") }, false, "", false},
+		{"omitted rows", func() ([]loginattempt.Row, uint64, error) { return rows, 1, nil }, false, "", false},
+		// 기록 쓰기만 실패한다(기록 자리에 디렉터리). 표지는 지울 수 있어도 남아야 한다.
+		{"record write fails", ok, false, server.E2HTTPLoginAttemptsFile, false},
+		// 기록은 넘겼지만 표지를 지우지 못한다(표지 자리에 비어 있지 않은 디렉터리). 인계 확인이 아니다.
+		{"marker removal fails", ok, false, server.E2HTTPLoginHistoryUnavailableFile, false},
+		// 기록 쓰기와 표지 다시 쓰기·지우기가 모두 실패한다(디렉터리 쓰기 불가).
+		{"record and marker writes fail", ok, true, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.block != "" {
+				if err := os.MkdirAll(filepath.Join(dir, tc.block, "keep"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.block != server.E2HTTPLoginHistoryUnavailableFile {
+				if err := server.MarkLoginHistoryUnavailable(dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.readOnly {
+				// 표지 파일도 읽기 전용으로 둬야 이미 있는 표지 다시 쓰기가 실패한다(디렉터리만 0500이면 0600 표지는 다시
+				// 써진다, #969 동찬 리뷰 P3). 기록 생성과 표지 다시 쓰기가 둘 다 실패하는지 먼저 확인한다.
+				if err := os.Chmod(filepath.Join(dir, server.E2HTTPLoginHistoryUnavailableFile), 0o400); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(dir, 0o500); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+				if server.MarkLoginHistoryUnavailable(dir) == nil || server.AppendLoginAttemptRows(dir, rows) == nil {
+					t.Fatal("시험 조건: 기록 생성과 표지 다시 쓰기가 둘 다 실패해야 함")
+				}
+			}
+			if got := handOverExplorationLogins(dir, tc.read, []string{"tester-a"}); got != tc.handedOver || marker(dir) == tc.handedOver {
+				t.Fatalf("인계 %v·표지 %v, 기대 인계 %v", got, marker(dir), tc.handedOver)
+			}
+		})
+	}
+}

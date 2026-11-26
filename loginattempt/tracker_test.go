@@ -629,3 +629,29 @@ func TestExceptionNotForRequestsCarryingConfirmedSession(t *testing.T) {
 		t.Fatal("세션 없는 새 문맥 로그인에 예외를 안 줌")
 	}
 }
+
+// 앞 로그인이 대조를 기다리는 사이 뒤 로그인이 실패하고, 그 뒤 앞 로그인의 성공이 확인되면 실시간 실패 수는 0이다. 진단
+// 단계가 탐색 기록으로 이어받은 수도 같아야 한다(#969 동찬 리뷰 P2).
+func TestSeedFollowsTransitionOrder(t *testing.T) {
+	explore, rec := newTracker(t, false)
+	explore.Observe(get("/home"), redirect("/login"))
+	first := formLogin("user2", "bravo-pass-2")
+	p1 := explore.Prepare(first, true)
+	explore.Complete(p1, "1", first, redirect("/home", "Set-Cookie", "sid=user-session-01"))
+	second := formLogin("user2", "nope")
+	p2 := explore.Prepare(second, true)
+	explore.Complete(p2, "2", second, Response{Status: 401, Header: http.Header{}})
+	explore.Observe(get("/home", "Cookie", "sid=user-session-01"), html(200, "<p>home</p>"))
+	if got := rec.last("exploration-1"); got.Outcome != OutcomeSucceeded || got.ConsecutiveFailures != 0 {
+		t.Fatalf("실시간 판정: %+v", got)
+	}
+	origin, _ := url.Parse("http://target.test:4000")
+	diag, err := New(Config{RunRef: "run-1", Stage: StageDiagnosis, Origin: origin, Accounts: testAccounts, MaxConsecutiveFailures: 1, MaxContrastProbes: 3, TokenMinBytes: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	diag.Seed(rec.rows)
+	if p := diag.Prepare(formLogin("user2", "bravo-pass-2"), true); p.Refusal != "" {
+		t.Fatalf("탐색 최종 실패 수 0을 이어받지 못함(상한 1에 걸림): %+v", p)
+	}
+}

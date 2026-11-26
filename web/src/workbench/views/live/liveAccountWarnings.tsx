@@ -31,7 +31,12 @@ export const ACCOUNT_AUTH_FAIL_TEXT: Record<Exclude<URLAccountAuthResult, "authe
 };
 
 /** 인증이 안 돼 그 계정으로 요청하지 못한 결과다. 끝난 점검의 not_attempted도 여기 든다(그 계정은 쓰이지 않았다). */
-const NOT_AUTHENTICATED: ReadonlyArray<URLAccountAuthResult> = ["login_failed", "session_not_found", "result_unknown", "not_sent"];
+const NOT_AUTHENTICATED: ReadonlyArray<URLAccountAuthResult> = [
+  "login_failed",
+  "session_not_found",
+  "result_unknown",
+  "not_sent",
+];
 
 /** 계정 표시 이름: 라벨 순서로 A · B · …(점검 정보의 '시험 계정 인증' 칸과 같은 규칙). */
 function accountName(i: number): string {
@@ -80,7 +85,8 @@ export function accountAuthConsequences(auth: URLAccountAuth | undefined, ended 
   if (!auth) return [];
   const results = Object.values(auth);
   const out: string[] = [];
-  if (results.some((r) => NOT_AUTHENTICATED.includes(r) || (ended && r === "not_attempted"))) out.push(AUTH_CONSEQUENCE);
+  if (results.some((r) => NOT_AUTHENTICATED.includes(r) || (ended && r === "not_attempted")))
+    out.push(AUTH_CONSEQUENCE);
   if (results.includes("unconfirmed")) out.push(AUTH_UNCONFIRMED_CONSEQUENCE);
   return out;
 }

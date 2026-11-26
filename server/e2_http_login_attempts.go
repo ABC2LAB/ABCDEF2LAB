@@ -20,6 +20,11 @@ import (
 // 파일에 쓰고, 진단 단계는 시작 때 앞 단계 행으로 연속 실패 수를 잇는다(§5 회차당).
 const E2HTTPLoginAttemptsFile = "login-attempts.jsonl"
 
+// E2HTTPLoginHistoryUnavailableFile은 앞 단계(탐색)의 로그인 기록 인계가 확인되지 않았다는 표지(0600)다. 탐색이 경계를 열기
+// 전에 쓰고 인계가 확인될 때만 지운다. 있으면 진단 단계는 회차 공통 연속 실패 상한을 지킬 수 없으므로 로그인 시도만 보내지
+// 않는다(계약 §5, #969 동찬 리뷰 P2 두 번: 인계 뒤 기록·표지 저장이 모두 실패해도 표지가 남는다).
+const E2HTTPLoginHistoryUnavailableFile = "login-attempts.unavailable"
+
 // maxLoginAttemptRowBytes는 기록 한 줄 상한이다. 넘는 줄은 읽지 않는다(행은 칸 이름·상한 있는 목록뿐이라 닿지 않는다).
 const maxLoginAttemptRowBytes = 64 << 10
 
@@ -39,15 +44,25 @@ func (l *E2HTTPLoginAttemptLimits) valid() bool {
 
 var errLoginAttempts = errors.New("server: login attempt tracker unavailable")
 
+// validE2HTTPLoginAttempts는 판정 설정이 있으면 맞는 값인지, 모델 로그인 인증 칸에 판정 설정이 있는지 본다(상한 없이 로그인이
+// 나가지 않게). 정책 문서 검증과 실행 정책 읽기가 같이 쓴다.
+func validE2HTTPLoginAttempts(policy E2HTTPFilePolicy) bool {
+	if policy.LoginAttempts != nil && !policy.LoginAttempts.valid() {
+		return false
+	}
+	return policy.Auth == nil || !policy.Auth.ModelLogin || policy.LoginAttempts != nil
+}
+
 // newE2HTTPLoginAttempts는 모델 직접 로그인 회차의 진단 단계 판정기를 만든다. 성공한 등록 계정 로그인의 세션은 세션
 // 저장소에 넣어 확정 단계 계정 결속(E③)과 보낸 요청의 계정 귀속에 쓴다. 기록 파일의 앞 단계 행으로 연속 실패 수를 잇는다.
 func newE2HTTPLoginAttempts(ctx context.Context, policy E2HTTPFilePolicy, credentials []agent.E2HTTPAccountCredential, store *e2HTTPSessionStore, prober *loginContrastProber) (*loginattempt.Tracker, error) {
-	if policy.Auth == nil || !policy.Auth.LoginAttempts.valid() || store == nil {
+	if !policy.LoginAttempts.valid() || store == nil {
 		return nil, errLoginAttempts
 	}
+	// 판정 기준 origin: 인증 칸이 있으면 그 로그인 규칙, 없으면 모델 요청 규칙(목적 없음)의 origin이다.
 	origin := ""
 	for _, rule := range policy.Rules {
-		if rule.Ref == policy.Auth.RuleRef {
+		if policy.Auth != nil && rule.Ref == policy.Auth.RuleRef || policy.Auth == nil && rule.Purpose == "" && origin == "" {
 			origin = rule.Origin
 		}
 	}
@@ -61,16 +76,23 @@ func newE2HTTPLoginAttempts(ctx context.Context, policy E2HTTPFilePolicy, creden
 		accounts = append(accounts, loginattempt.Account{Label: c.Label, Username: c.Username, Password: c.Password})
 	}
 	path := filepath.Join(policy.StateDir, E2HTTPLoginAttemptsFile)
-	seed, err := readLoginAttemptRows(path)
+	seed, complete, err := readLoginAttemptRows(path)
 	if err != nil {
 		return nil, err
 	}
-	limits := policy.Auth.LoginAttempts
+	unavailable := !complete
+	if _, statErr := os.Lstat(filepath.Join(policy.StateDir, E2HTTPLoginHistoryUnavailableFile)); statErr == nil || !errors.Is(statErr, os.ErrNotExist) {
+		unavailable = true
+	}
+	if unavailable {
+		log.Print("[e2-http] 앞 단계 로그인 기록을 넘겨받지 못함: 이 실행은 로그인 시도를 보내지 않음(일반 요청은 계속)")
+	}
+	limits := policy.LoginAttempts
 	tracker, err := loginattempt.New(loginattempt.Config{RunRef: policy.RunRef, Stage: loginattempt.StageDiagnosis, Origin: u, Accounts: accounts,
 		MaxConsecutiveFailures: limits.MaxConsecutiveFailures, MaxContrastProbes: limits.MaxContrastProbes, TokenMinBytes: limits.TokenMinBytes,
 		Sink:        func(row loginattempt.Row) { appendLoginAttemptRow(ctx, path, row) },
 		OnSucceeded: func(label string, session http.Header) { store.replace(label, session) },
-		OnProbe:     prober.notify})
+		OnProbe:     prober.notify, HistoryUnavailable: unavailable})
 	if err != nil {
 		return nil, errLoginAttempts
 	}
@@ -78,18 +100,17 @@ func newE2HTTPLoginAttempts(ctx context.Context, policy E2HTTPFilePolicy, creden
 	return tracker, nil
 }
 
-// readLoginAttemptRows는 앞 단계가 남긴 행을 읽는다. 파일이 없으면 빈 목록이다. 형식이 틀린 줄은 건너뛰고 로그만 남긴다
-// (기록은 감사가 아니라 판정 보조다).
-func readLoginAttemptRows(path string) ([]loginattempt.Row, error) {
+// readLoginAttemptRows는 앞 단계가 남긴 행을 읽는다. 파일이 없으면 빈 목록이다. 형식이 틀린 줄이 있으면 그 줄은 건너뛰고
+// complete를 거짓으로 돌려준다(빠진 행이 있으면 연속 실패 수를 알 수 없다). 파일을 읽지 못하면 오류다.
+func readLoginAttemptRows(path string) (rows []loginattempt.Row, complete bool, err error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
+		return nil, true, nil
 	}
 	if err != nil {
-		return nil, errLoginAttempts
+		return nil, false, nil
 	}
 	defer f.Close()
-	var rows []loginattempt.Row
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 4096), maxLoginAttemptRowBytes)
 	skipped := 0
@@ -102,12 +123,32 @@ func readLoginAttemptRows(path string) ([]loginattempt.Row, error) {
 		rows = append(rows, row)
 	}
 	if scanner.Err() != nil {
-		return nil, errLoginAttempts
+		return rows, false, nil
 	}
 	if skipped > 0 {
 		log.Printf("[e2-http] 로그인 시도 기록에서 읽지 못한 줄 %d개를 건너뜀", skipped)
 	}
-	return rows, nil
+	return rows, skipped == 0, nil
+}
+
+// MarkLoginHistoryUnavailable은 앞 단계 로그인 기록 인계가 확인되지 않았다고 남긴다(표지 파일, 0600). 쓰지 못하면 오류다.
+func MarkLoginHistoryUnavailable(stateDir string) error {
+	if stateDir == "" {
+		return errLoginAttempts
+	}
+	return os.WriteFile(filepath.Join(stateDir, E2HTTPLoginHistoryUnavailableFile), []byte("unavailable\n"), 0o600)
+}
+
+// ClearLoginHistoryUnavailable은 앞 단계 로그인 기록 인계가 확인됐을 때 표지를 지운다. 이미 없으면 성공이다. 지우지 못하면
+// 오류다(표지가 남아 진단 단계가 로그인 시도를 보내지 않는다).
+func ClearLoginHistoryUnavailable(stateDir string) error {
+	if stateDir == "" {
+		return errLoginAttempts
+	}
+	if err := os.Remove(filepath.Join(stateDir, E2HTTPLoginHistoryUnavailableFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // appendLoginAttemptRow는 행 하나를 덧붙인다. 쓰지 못해도 송신은 멈추지 않는다(감사 기록이 아님). 로그와 진단 사건만 남긴다.

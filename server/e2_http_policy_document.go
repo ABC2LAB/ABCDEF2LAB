@@ -61,7 +61,7 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 	if prepared {
 		top = append(top, "audit_key")
 	}
-	optional := []string{"upstream_ca", "auth"}
+	optional := []string{"upstream_ca", "auth", "login_attempts"}
 	approvalMode := policy.ApprovalMode == e2proxy.ApprovalPreauthorizedScope
 	if run {
 		// e3_write_consent·e3_resettable은 제품 발급(productE3PolicyRules)이 E③ 확정 단계를 켤 때 싣는 칸이다. factory는
@@ -73,6 +73,10 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 		policy.Format != E2HTTPFilePolicyFormat || !approvalMode ||
 		policy.HeaderMode == "" || policy.MaxRequests == 0 || policy.MaxRequests > uint64(math.MaxInt) || len(policy.Rules) == 0 || len(policy.Rules) > 128 ||
 		!policy.ValidUntil.After(policy.ValidFrom) {
+		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
+	}
+	// 판정 설정은 있으면 맞는 값이어야 하고, 모델 로그인 인증 칸은 판정 설정 없이 받지 않는다(상한 없이 로그인이 나가지 않게).
+	if !validE2HTTPLoginAttempts(policy) {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 	}
 	if policy.SelectedAccountRef != "" && (!run || policy.Auth == nil || len(policy.Auth.Accounts) != 1 ||
