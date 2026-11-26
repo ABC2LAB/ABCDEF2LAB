@@ -78,6 +78,7 @@ import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections"
 import { AccountAuthWarning, LoginMethodMissingWarning } from "./liveAccountWarnings";
 import { PriceCapsNotice } from "./PriceCapsNotice";
 import { ProductVerdictReport, productConfirmationSummary, useProductVerdicts } from "./productVerdictViews";
+import { useReportFollowup } from "./remediationFollowupView";
 import { ReportReadError } from "./runRows";
 import {
   ReportApprovalDetail,
@@ -1799,6 +1800,8 @@ const R_TABS = [
   ["doc", "보고서"],
   // 끝난 점검의 승인 · 거부 기록(사용자 11/26) — 기록이 있을 때만(showApprovalTab)
   ["approvals", "승인 기록"],
+  // 이행점검(사용자 11/26, 이동찬 구상): 이 점검 뒤에 같은 대상으로 돌린 점검들의 조치별 판정 — 저장된 조치가 있을 때만
+  ["followup", "이행점검"],
 ] as const;
 type RTab = (typeof R_TABS)[number][0];
 
@@ -1822,7 +1825,11 @@ export function UrlReportLive() {
   const verdicts = useProductVerdicts(taskId, visible);
   // 승인 기록 탭: 끝난 점검의 저장 승인 이력(계약 saved-request-approvals). 기록이 없으면 탭을 두지 않는다
   const savedAp = useSavedApprovals(taskId, visible);
-  const rTabs = R_TABS.filter(([k]) => k !== "approvals" || showApprovalTab(savedAp));
+  const [tab, setTab] = useState<RTab>("list");
+  const fu = useReportFollowup(taskId ?? "", visible && !!taskId, tab === "followup", openInsp);
+  const rTabs = R_TABS.filter(
+    ([k]) => (k !== "approvals" || showApprovalTab(savedAp)) && (k !== "followup" || fu.showTab),
+  );
   const { confirmed: productConfirmed, notice: productConfirmationNotice } = productConfirmationSummary(verdicts);
   // 저장된 실행 기록(diagnosis-run)은 보고서에서 더 쓰지 않는다(사용자 11/19 — 실행 종료 기록 · 요청 수를 뺌)
   // 자산 탐색 숫자 칸 3개(발견한 API · 보낸 요청 · 막은 요청)를 보고서에도(사용자 11/25). 보고서는 끝난 점검이라 전송 기록을
@@ -1835,7 +1842,6 @@ export function UrlReportLive() {
     enabled: visible && !!taskId && !covOff.forbidden,
   });
   const covPct = cov.data?.enabled && cov.data.pct !== null ? Math.round(cov.data.pct * 100) : null;
-  const [tab, setTab] = useState<RTab>("list");
   const tabRefs = useRef<Partial<Record<RTab, HTMLButtonElement | null>>>({});
   const [sel, setSel] = useState<string | null>(null);
   // 다른 취약점을 고르면 오른쪽 패널을 맨 위로(사용자 11/24)
@@ -1847,7 +1853,14 @@ export function UrlReportLive() {
   } | null>(null);
   const apSel = apPick && apPick.task === taskId ? apPick : null;
   const apMode = tab === "approvals";
-  const reportInspRef = useScrollTopOnChange<HTMLElement>(apMode ? `ap:${apSel?.row.id ?? ""}` : sel);
+  const fuMode = tab === "followup";
+  let inspKey = sel;
+  if (apMode) inspKey = `ap:${apSel?.row.id ?? ""}`;
+  else if (fuMode) inspKey = `fu:${fu.pickKey}`;
+  const reportInspRef = useScrollTopOnChange<HTMLElement>(inspKey);
+  let rInspLabel = "취약점 상세";
+  if (apMode) rInspLabel = "승인 기록 상세";
+  else if (fuMode) rInspLabel = "이행점검 상세";
   // 오른쪽 패널 머리 '상세 보기'로 연 발견 (그 발견이 목록에서 사라지면 — 다른 점검 등 — 목록으로 돌아간다).
   // 단독 발견 상세(#finding)도 같은 발견을 보도록 공용 상태(findingPick)에 둔다
   const detail = usePickedFinding(taskId);
@@ -2154,6 +2167,7 @@ export function UrlReportLive() {
                     {k === "approvals" && savedAp.data ? (
                       <span className={s.c}>{savedAp.data.approvals.length}</span>
                     ) : null}
+                    {k === "followup" && fu.count ? <span className={s.c}>{fu.count}</span> : null}
                   </button>
                 ))}
               </div>
@@ -2214,12 +2228,15 @@ export function UrlReportLive() {
                   />
                 ) : null}
               </div>
+              <div role="tabpanel" id="rp-followup" aria-label="이행점검" hidden={tab !== "followup"}>
+                {fuMode ? fu.body : null}
+              </div>
             </section>
           </div>
-          <aside className={s.vi} id="rInsp" ref={reportInspRef} aria-label={apMode ? "승인 기록 상세" : "취약점 상세"}>
-            {apMode ? (
-              <ReportApprovalDetail pick={apSel} task={taskId} />
-            ) : (
+          <aside className={s.vi} id="rInsp" ref={reportInspRef} aria-label={rInspLabel}>
+            {apMode ? <ReportApprovalDetail pick={apSel} task={taskId} /> : null}
+            {fuMode ? fu.panel : null}
+            {apMode || fuMode ? null : (
               <FindingDetail
                 e={chosen}
                 host={host}
