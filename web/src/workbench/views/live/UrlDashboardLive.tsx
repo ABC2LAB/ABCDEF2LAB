@@ -506,6 +506,7 @@ export function UrlDashboardLive() {
         result={result}
         coverage={coverage}
         e2Flow={e2Task && !e2.error ? (e2.data ?? null) : null}
+        e2FlowFailed={!!e2Task && !!e2.error}
       />
     );
   } else {
