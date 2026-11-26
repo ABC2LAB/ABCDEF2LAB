@@ -94,6 +94,23 @@ func TestPlanningFailureReasonsPreserveReturnAndBudgets(t *testing.T) {
 			r.options.Workflow = flow
 			return task, ctx
 		}},
+		// 흐름이 일시정지(범위 선택 대기와 같은 기다림)인 동안 시간 상한 마감 유예가 끝나 감독자가 멈추면 실패가 아니라 실행
+		// 상한이다(2026-11-26 NodeGoat 회차 2 발견 5). 다른 까닭의 취소는 지금처럼 workflow 차단이다.
+		{"time-budget-wait", "planning_time_budget", "blocked", ErrE2HTTPBudgetLimited, true, func(r *E2HTTPRuntime, task *Task, ctx context.Context) (*Task, context.Context) {
+			return task, pausedWorkflowCancelled(t, r, task, ctx, agent.AbortTimeBudgetDrain)
+		}},
+		{"other-cancel-wait", "planning_workflow_blocked", "blocked", context.Canceled, false, func(r *E2HTTPRuntime, task *Task, ctx context.Context) (*Task, context.Context) {
+			return task, pausedWorkflowCancelled(t, r, task, ctx, agent.AbortPausedByUser)
+		}},
+		{"time-budget-exploration", "planning_time_budget", "blocked", ErrE2HTTPBudgetLimited, true, func(r *E2HTTPRuntime, task *Task, ctx context.Context) (*Task, context.Context) {
+			ctx, cancel := context.WithCancelCause(ctx)
+			r.options.Exploration = func(stage context.Context, _ *Task) (ExplorationCharge, error) {
+				cancel(agent.AbortTimeBudgetDrain)
+				<-stage.Done()
+				return ExplorationCharge{}, private
+			}
+			return task, ctx
+		}},
 		{"closed", "planning_task_closed", "failed", ErrE2HTTPHost, false, func(r *E2HTTPRuntime, task *Task, ctx context.Context) (*Task, context.Context) {
 			r.task.closed = true
 			return task, ctx
@@ -237,4 +254,24 @@ func TestPlanningToolLimitAfterActualWorkerAdmissionOwnedPostgres(t *testing.T) 
 	if !found {
 		t.Fatal("도구 상한의 고정 사유 누락")
 	}
+}
+
+// pausedWorkflowCancelled는 일시정지한 흐름을 붙이고, 계획 준비가 흐름을 기다리기 시작한 뒤 cause로 취소하는 문맥을 돌려준다.
+func pausedWorkflowCancelled(t *testing.T, r *E2HTTPRuntime, task *Task, ctx context.Context, cause error) context.Context {
+	t.Helper()
+	flow, err := diagnosisflow.New(ctx, diagnosisflow.Binding{JobID: "planning-log", TaskID: task.ID, RunRef: "owned", SourceDigest: strings.Repeat("a", 64), Owner: "ARTEX", Mode: diagnosisflow.Auto, TargetURL: "https://owned.test/read", PathPrefixes: []string{"/read"}, ReadonlyPrefixes: []string{"/read"}, Methods: []string{"GET"}, Limits: diagnosisflow.Limits{Format: diagnosisflow.Version, MaxPages: 1, MaxEndpoints: 1, MaxResponseBytes: 4096}, Current: func() error { return nil }}, workflowLoopStore{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := flow.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = flow.Command(ctx, "ARTEX", "pause", "pause-1", snapshot.Revision, nil); err != nil {
+		t.Fatal("pause", err)
+	}
+	r.options.Workflow = flow
+	waiting, cancel := context.WithCancelCause(ctx)
+	time.AfterFunc(50*time.Millisecond, func() { cancel(cause) })
+	return waiting
 }

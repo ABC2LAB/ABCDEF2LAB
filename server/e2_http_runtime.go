@@ -549,6 +549,22 @@ func (r *E2HTTPRuntime) planningFailure(ctx context.Context, status, reason stri
 	}
 	_ = diagnosticlog.Emit(logContext, diagnosticlog.Event{Component: "planner", Event: "stage_finished", Stage: "planning", Status: status, ReasonCode: reason})
 }
+
+// timeBudgetDrained는 계획 준비 중(탐색 단계·범위 선택이나 흐름 일시정지 대기)에 감독자가 시간 상한 마감 유예를 다 써서
+// 실행을 멈춘 경우인지 본다(agent.AbortTimeBudgetDrain).
+func timeBudgetDrained(ctx context.Context) bool {
+	return ctx != nil && ctx.Err() != nil && errors.Is(context.Cause(ctx), agent.AbortTimeBudgetDrain)
+}
+
+// planningTimeBudget은 시간 상한 마감으로 멈춘 계획 준비를 실패가 아니라 실행 상한으로 돌려준다. 그래야 탐색 결과가 있는
+// 회차가 failed가 아니라 정한 마감 상태(completed·budget_limited)로 끝난다(계약 §3.4 시간 상한 마감, 2026-11-26 NodeGoat
+// 회차 2 발견 5: 범위 선택을 기다리다 시간 상한에 닿아 planning_workflow_blocked → engine_task_failed).
+func (r *E2HTTPRuntime) planningTimeBudget(ctx context.Context, task *Task) error {
+	task.firstDiagnosisBudgetLimited.Store(true)
+	r.planningFailure(ctx, "blocked", "planning_time_budget")
+	return ErrE2HTTPBudgetLimited
+}
+
 func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (context.Context, error) {
 	t, err := r.taskFor(task)
 	if err != nil {
@@ -572,11 +588,17 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 		return ctx, ErrE2HTTPHost
 	}
 	if err := r.prepareExploration(ctx, task, t); err != nil {
+		if timeBudgetDrained(ctx) {
+			return ctx, r.planningTimeBudget(ctx, task)
+		}
 		r.planningFailure(ctx, "failed", "planning_exploration_failed")
 		return ctx, err
 	}
 	if r.options.Workflow != nil {
 		if err := r.options.Workflow.BeforePlanning(ctx); err != nil {
+			if timeBudgetDrained(ctx) {
+				return ctx, r.planningTimeBudget(ctx, task)
+			}
 			r.planningFailure(ctx, "blocked", "planning_workflow_blocked")
 			return ctx, err
 		}
