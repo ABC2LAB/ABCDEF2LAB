@@ -539,3 +539,84 @@ func TestExplorationTargetCheckRejectsRebindingBeforeFactory(t *testing.T) {
 		t.Fatal("factory check reopened a bound session")
 	}
 }
+
+// 흐름 표기로 담지 못하는 경로(셸 글롭이 안 풀린 `*`·괄호, 흐름 길이 상한을 넘는 경로)의 관찰은 그 한 건만 발견 목록에
+// 올리지 않고 세션은 계속한다. 요청 수와 형식 밖 경로 수는 센다(사용자 결정 2026-11-26 (가), NodeGoat 회차 1).
+func TestObservedUnrepresentablePathSkipsOnlyThatObservation(t *testing.T) {
+	for name, path := range map[string]string{
+		"glob":   "/read/api/*",
+		"parens": "/read/A_(b)",
+		"quote":  "/read/a'b",
+		"long":   "/read/" + strings.Repeat("a", maxPathBytes),
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _, r, b := explorationFixture(t, Manual)
+			r.rows[1] = observationFor(b, 1, path)
+			r.rows[2] = observationFor(b, 2, "/read/api")
+			if accepted, err := c.ReportObserved(t.Context(), b, 1); err != nil || accepted != 0 {
+				t.Fatal("unrepresentable observation failed the session", accepted, err)
+			}
+			// 같은 순번을 다시 읽어도 두 번 세지 않는다.
+			if accepted, err := c.ReportObserved(t.Context(), b, 1); err != nil || accepted != 0 {
+				t.Fatal("replayed skip", accepted, err)
+			}
+			if accepted, err := c.ReportObserved(t.Context(), b, 2); err != nil || accepted != 1 {
+				t.Fatal("later observation rejected after skip", accepted, err)
+			}
+			s, _ := c.Snapshot()
+			if s.Counts.ExplorationRequests != 2 || s.Counts.InvalidPaths != 1 || s.Stage != "crawling" {
+				t.Fatal("skip not counted once", s.Stage, s.Counts)
+			}
+			skipped := 0
+			for _, e := range s.Events {
+				if e.Kind == EventExplorationObservedSkipped {
+					skipped++
+					if e.Path != "" || e.Method != "GET" || e.Status != 200 {
+						t.Fatal("skip event carries path or wrong fields", e)
+					}
+				}
+			}
+			if skipped != 1 {
+				t.Fatal("skip event count", skipped)
+			}
+			for _, entry := range c.DiscoveryInventory() {
+				if entry.Path != "/read/api" {
+					t.Fatal("unrepresentable path persisted", entry.Path)
+				}
+			}
+			if discoveredEndpoint(t, c, "GET", path) != nil {
+				t.Fatal("unrepresentable path added as endpoint")
+			}
+		})
+	}
+}
+
+// 건너뛰는 것은 표기 차이·길이뿐이다. 흐름 범위 밖·질의·다른 origin·점 조각·승인 안 된 메서드는 경계와 흐름의 판정이
+// 어긋난 것이라 지금처럼 관찰 오류다.
+func TestObservedUnrepresentablePathStillChecksScope(t *testing.T) {
+	for name, change := range map[string]func(*ExplorationObservation){
+		"outside glob":    func(o *ExplorationObservation) { o.Path = "/other/*" },
+		"outside long":    func(o *ExplorationObservation) { o.Path = "/other/" + strings.Repeat("a", maxPathBytes) },
+		"glob with query": func(o *ExplorationObservation) { o.Path = "/read/*?q=1" },
+		"foreign glob":    func(o *ExplorationObservation) { o.Path = "https://foreign.test/read/*" },
+		"double slash":    func(o *ExplorationObservation) { o.Path = "/read//*" },
+		"dot segment":     func(o *ExplorationObservation) { o.Path = "/read/../read/*" },
+		"space":           func(o *ExplorationObservation) { o.Path = "/read/a b*" },
+		"control":         func(o *ExplorationObservation) { o.Path = "/read/a\tb*" },
+		"method":          func(o *ExplorationObservation) { o.Path, o.Method = "/read/*", "DELETE" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, _, r, b := explorationFixture(t, Manual)
+			o := observationFor(b, 1, "/read/api")
+			change(&o)
+			r.rows[1] = o
+			if _, err := c.ReportObserved(t.Context(), b, 1); !errors.Is(err, ErrExplorationObservation) {
+				t.Fatal("mismatched observation skipped", err)
+			}
+			s, _ := c.Snapshot()
+			if s.Counts.InvalidPaths != 0 || s.Counts.ExplorationRequests != 0 {
+				t.Fatal("mismatch counted as skip", s.Counts)
+			}
+		})
+	}
+}
