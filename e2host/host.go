@@ -177,7 +177,7 @@ func (h *Host) Open(ctx context.Context, scope transmit.Scope, policyRevision st
 	h.scanMu.Lock()
 	defer h.scanMu.Unlock()
 	// 검증과 새 실행 등록을 직렬화하여 종료 복구와 새 송신이 경합하지 않게 한다.
-	if h.checkRestoredHeads(ctx, false) != nil {
+	if h.checkRestoredHeads(ctx, false, "", nil) != nil {
 		return nil, ErrUnavailable
 	}
 	h.mu.Lock()
