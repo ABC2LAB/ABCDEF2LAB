@@ -956,7 +956,7 @@ export function UrlLiveLive() {
           <UrlNotices />
           <WorkflowNotice />
           {/* 시험 계정 인증 경고(#936 account_auth, 2초 조회로 갱신) · 로그인 방식 없음(#914). 알림만, 회차는 멈추지 않는다 */}
-          <AccountAuthWarning auth={job.account_auth} at={job.account_auth_updated_at} />
+          <AccountAuthWarning auth={job.account_auth} at={job.account_auth_updated_at} ended={ended} />
           <LoginMethodMissingWarning
             targetUrl={handle.input.target_url}
             active={visible && !ended}
