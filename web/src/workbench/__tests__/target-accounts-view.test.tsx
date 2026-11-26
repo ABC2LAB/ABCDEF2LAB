@@ -8,9 +8,9 @@ import { apiFetch } from "@/lib/diagnosis/api";
 
 import { type Shell, ShellContext, type View } from "../shell";
 import { useWb } from "../store";
-import { AccountClassifyLive } from "../views/live/AccountClassifyLive";
+import { TargetAccountsLive } from "../views/live/TargetAccountsLive";
 
-/** 계정 분류 화면은 보일 때(경로 classify) 대상 목록을 읽는다(F2). 시험은 그 경로로 그린다. */
+/** 시험 계정 화면은 보일 때(경로 classify) 대상 목록을 읽는다(F2). 시험은 그 경로로 그린다. */
 function withRoute(route: View, goTo: (v: View) => void = () => undefined) {
   const shell = {
     route,
@@ -31,16 +31,16 @@ function withRoute(route: View, goTo: (v: View) => void = () => undefined) {
   } as Shell;
   return (
     <ShellContext.Provider value={shell}>
-      <AccountClassifyLive />
+      <TargetAccountsLive />
     </ShellContext.Provider>
   );
 }
 
 const api = vi.mocked(apiFetch);
 
-/** 경로·메서드별 응답. GET=대상/계정 목록, POST=쓰기(빈 응답). 쓰기 뒤 뷰는 GET 으로 다시 읽는다. */
-const OMIT = Symbol("진술 칸 없음");
-function serve(statement: unknown = "소유·승인된 일회용 시험 계정이라는 진술") {
+/** 경로·메서드별 응답. GET=대상/계정 목록, POST · PUT=쓰기. 쓰기 뒤 뷰는 GET 으로 다시 읽는다. */
+// 서버는 아직 classification · account_statement 를 싣는다(표시 · 해제 API를 서버에서 걷기 전) — 화면은 읽지 않는다
+function serve() {
   api.mockImplementation((path: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
     if (path === "/api/product/targets")
@@ -49,12 +49,15 @@ function serve(statement: unknown = "소유·승인된 일회용 시험 계정�
       return Promise.resolve({
         accounts: [
           { label: "owner", classification: "test", classified_by: "op-1" },
+          { label: "peer", classification: "test", classified_by: "op-1" },
           { label: "legacy", classification: "real" },
         ],
-        ...(statement === OMIT ? {} : { account_statement: statement }),
+        account_statement: "소유·승인된 일회용 시험 계정이라는 진술",
       }) as never;
     if (path === "/api/product/targets/t1/login" && method === "GET") return Promise.resolve({}) as never;
-    if (method === "POST") return Promise.resolve({}) as never; // 등록·mark-test·unmark
+    if (method === "POST") return Promise.resolve({}) as never; // 등록
+    if (method === "PUT" && path.endsWith("/credential"))
+      return Promise.resolve({ account: { credential_configured: true } }) as never;
     return Promise.reject(new Error(`unexpected ${method} ${path}`)) as never;
   });
 }
@@ -65,29 +68,31 @@ afterEach(() => {
 });
 
 async function pickTarget() {
-  fireEvent.change(await screen.findByLabelText("분류할 대상"), { target: { value: "t1" } });
+  fireEvent.change(await screen.findByLabelText("계정을 관리할 대상"), { target: { value: "t1" } });
   await screen.findByLabelText("계정 목록");
 }
 
-describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
+describe("TargetAccountsLive (실 API 읽기·쓰기)", () => {
   it("새 점검에서 오면 그 대상을 미리 고르고, '새 점검으로'로 돌아간다(사용자 11/23)", async () => {
     serve();
     useWb.setState({ focusTarget: { id: "t1", seq: 1 } });
     const goTo = vi.fn();
     render(withRoute("classify", goTo));
     expect(await screen.findByLabelText("계정 목록")).toBeInTheDocument();
-    expect(screen.getByLabelText("분류할 대상")).toHaveValue("t1");
+    expect(screen.getByLabelText("계정을 관리할 대상")).toHaveValue("t1");
     fireEvent.click(screen.getByRole("button", { name: "새 점검으로 돌아가기" }));
     expect(goTo).toHaveBeenCalledWith("new");
     useWb.setState({ focusTarget: null });
   });
 
-  it("규칙2 고지 + 대상 선택 후 분류 목록(시험/실계정)을 그린다", async () => {
+  // 계정 분류 폐지(사용자 결정 2026-11-26): 분류 딱지 · 시험 표시 · 표시 해제 · 표시 진술이 없다
+  it("시험 계정만 등록하라는 안내 + 대상 선택 후 계정 목록을 분류 없이 그린다", async () => {
     serve();
     render(withRoute("classify"));
-    expect(screen.getByText(/비밀번호 · 토큰 · 세션 값은 읽지도 보이지도 않/)).toBeInTheDocument();
+    expect(screen.getByText(/대상에서 쓸 시험 계정만 등록하세요/)).toBeInTheDocument();
     await pickTarget();
-    // 시험 계정 A(owner)는 위 로그인 상자, 그 밖의 계정(legacy · 실계정 취급)은 아래 '다른 계정' 목록(사용자 11/24)
+    // 시험 계정 A · B(owner · peer)는 위 로그인 상자, 그 밖의 계정(legacy)은 아래 '다른 계정' 목록(사용자 11/24).
+    // A · B 는 등록 순서대로 고르고 분류(real)와 상관없다
     const box = within(screen.getByRole("region", { name: "시험 계정" }));
     await waitFor(() =>
       expect(within(box.getByRole("group", { name: "계정 A" })).getByText("계정 A")).toHaveAttribute(
@@ -98,7 +103,10 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
     const list = within(screen.getByLabelText("계정 목록"));
     expect(list.getByText("legacy")).toBeInTheDocument();
     expect(list.queryByText("owner")).toBeNull();
-    expect(list.getAllByText(/실계정 취급/).length).toBeGreaterThan(0);
+    expect(list.queryByText("peer")).toBeNull();
+    expect(document.body).not.toHaveTextContent(/실계정 취급|시험 표시|표시 해제|미표시|진술/);
+    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: /시험 표시|표시 해제|동의하고 표시/ })).toBeNull();
   });
 
   it("§2: 내보내기·공유·export 버튼을 두지 않는다", async () => {
@@ -120,14 +128,14 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
     expect(document.body).not.toHaveTextContent(/모델 입력 가능/);
   });
 
-  // 사용자 11/24: 라벨을 적어 등록하던 칸 대신 맨 위 시험 계정 A · B 로그인 상자(이름 고정)에서 등록 → 시험 표시 → 자격을 한 번에
-  it("시험 계정 A · B 상자: 이름은 고정이고, 빈 줄(B)을 채워 저장하면 등록 → 시험 표시 → 자격 순서로 보낸다", async () => {
+  // 사용자 11/24: 라벨을 적어 등록하던 칸 대신 맨 위 시험 계정 A · B 로그인 상자(이름 고정)에서 등록 → 자격을 한 번에
+  it("시험 계정 A · B 상자: 이름은 고정이고, 빈 줄(B)을 채워 저장하면 등록 → 자격 순서로 보내고 시험 표시는 보내지 않는다", async () => {
     serve();
     render(withRoute("classify"));
     await pickTarget();
     expect(screen.queryByLabelText("새 계정 라벨")).toBeNull();
     const box = within(screen.getByRole("region", { name: "시험 계정" }));
-    // 선언을 못 읽으면 이미 있는 시험 계정(owner)을 A 로, B 는 기본 이름
+    // 선언을 못 읽으면 이미 있는 등록 계정(owner)을 A 로, B 는 그다음 등록 계정(peer)
     await waitFor(() =>
       expect(within(box.getByRole("group", { name: "계정 A" })).getByText("계정 A")).toHaveAttribute(
         "title",
@@ -136,25 +144,109 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
     );
     expect(within(box.getByRole("group", { name: "계정 B" })).getByText("계정 B")).toHaveAttribute(
       "title",
-      "별칭 tester-b",
+      "별칭 peer",
     );
     fireEvent.change(box.getByLabelText("계정 B 아이디"), { target: { value: "u-b" } });
     fireEvent.change(box.getByLabelText("계정 B 비밀번호"), { target: { value: "synthetic-pass-b-1234" } });
-    fireEvent.click(box.getByRole("checkbox"));
     fireEvent.click(box.getByRole("button", { name: "저장" }));
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
-        "/api/product/targets/t1/accounts",
-        expect.objectContaining({ method: "POST", body: JSON.stringify({ label: "tester-b" }) }),
+        "/api/product/targets/t1/accounts/peer/credential",
+        expect.objectContaining({ method: "PUT" }),
       ),
     );
+    // 이미 등록된 계정이라 등록은 건너뛰고, 시험 표시는 어디에도 없다
+    expect(api).not.toHaveBeenCalledWith(
+      "/api/product/targets/t1/accounts",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(api).not.toHaveBeenCalledWith(expect.stringContaining("/mark-test"), expect.anything());
+    expect(box.getByLabelText("계정 B 비밀번호")).toHaveValue("");
+    expect(await box.findByText("저장함")).toBeInTheDocument();
+  });
+
+  // #972 이동찬 P2: 서버 목록은 라벨순이다. 선언이 없으면 A · B 는 등록 순서라, 뒤에 등록한 라벨 앞 계정이 A 를 빼앗지 않는다
+  it("선언이 없으면 A · B 는 등록 시각 순 — 라벨순 서버 목록에서 뒤에 등록한 tester-a 가 A 를 빼앗지 않는다", async () => {
+    api.mockImplementation((path: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (path === "/api/product/targets")
+        return Promise.resolve({ targets: [{ id: "t1", origin: "https://a.example", state: "approved" }] }) as never;
+      if (path === "/api/product/targets/t1/accounts" && method === "GET")
+        return Promise.resolve({
+          // 서버 listAccounts 처럼 라벨 오름차순. tester-z 를 먼저 등록했다
+          accounts: [
+            { label: "tester-a", registered_at: "2026-11-26T10:05:00Z" },
+            { label: "tester-m", registered_at: "2026-11-26T10:10:00Z" },
+            { label: "tester-z", registered_at: "2026-11-26T10:00:00Z" },
+          ],
+        }) as never;
+      if (path === "/api/product/targets/t1/login" && method === "GET") return Promise.resolve({}) as never;
+      if (method === "PUT" && path.endsWith("/credential"))
+        return Promise.resolve({ account: { credential_configured: true } }) as never;
+      return Promise.reject(new Error(`unexpected ${method} ${path}`)) as never;
+    });
+    render(withRoute("classify"));
+    fireEvent.change(await screen.findByLabelText("계정을 관리할 대상"), { target: { value: "t1" } });
+    const box = within(await screen.findByRole("region", { name: "시험 계정" }));
+    await waitFor(() =>
+      expect(within(box.getByRole("group", { name: "계정 A" })).getByText("계정 A")).toHaveAttribute(
+        "title",
+        "별칭 tester-z",
+      ),
+    );
+    expect(within(box.getByRole("group", { name: "계정 B" })).getByText("계정 B")).toHaveAttribute(
+      "title",
+      "별칭 tester-a",
+    );
+    // '계정 A'에 넣은 자격은 먼저 등록한 tester-z 로 간다
+    fireEvent.change(box.getByLabelText("계정 A 아이디"), { target: { value: "u-a" } });
+    fireEvent.change(box.getByLabelText("계정 A 비밀번호"), { target: { value: "synthetic-pass-a-1234" } });
+    fireEvent.click(box.getByRole("button", { name: "저장" }));
     await waitFor(() =>
       expect(api).toHaveBeenCalledWith(
-        "/api/product/targets/t1/accounts/tester-b/mark-test",
-        expect.objectContaining({ method: "POST" }),
+        "/api/product/targets/t1/accounts/tester-z/credential",
+        expect.objectContaining({ method: "PUT" }),
       ),
     );
-    expect(box.getByLabelText("계정 B 비밀번호")).toHaveValue("");
+    expect(api).not.toHaveBeenCalledWith("/api/product/targets/t1/accounts/tester-a/credential", expect.anything());
+  });
+
+  it("등록 안 된 줄(B)을 채워 저장하면 등록 뒤 자격을 보낸다", async () => {
+    api.mockImplementation((path: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (path === "/api/product/targets")
+        return Promise.resolve({ targets: [{ id: "t1", origin: "https://a.example", state: "approved" }] }) as never;
+      if (path === "/api/product/targets/t1/accounts" && method === "GET")
+        return Promise.resolve({ accounts: [{ label: "owner" }] }) as never;
+      if (path === "/api/product/targets/t1/login" && method === "GET") return Promise.resolve({}) as never;
+      if (method === "POST") return Promise.resolve({}) as never;
+      if (method === "PUT" && path.endsWith("/credential"))
+        return Promise.resolve({ account: { credential_configured: true } }) as never;
+      return Promise.reject(new Error(`unexpected ${method} ${path}`)) as never;
+    });
+    render(withRoute("classify"));
+    fireEvent.change(await screen.findByLabelText("계정을 관리할 대상"), { target: { value: "t1" } });
+    const box = within(await screen.findByRole("region", { name: "시험 계정" }));
+    await waitFor(() =>
+      expect(within(box.getByRole("group", { name: "계정 B" })).getByText("계정 B")).toHaveAttribute(
+        "title",
+        "별칭 tester-b",
+      ),
+    );
+    expect(within(box.getByRole("group", { name: "계정 B" })).getByText("등록 안 됨")).toBeInTheDocument();
+    fireEvent.change(box.getByLabelText("계정 B 아이디"), { target: { value: "u-b" } });
+    fireEvent.change(box.getByLabelText("계정 B 비밀번호"), { target: { value: "synthetic-pass-b-1234" } });
+    fireEvent.click(box.getByRole("button", { name: "저장" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/api/product/targets/t1/accounts/tester-b/credential",
+        expect.objectContaining({ method: "PUT" }),
+      ),
+    );
+    const calls = api.mock.calls.map(([p, i]) => `${i?.method ?? "GET"} ${p}`);
+    expect(calls.indexOf("POST /api/product/targets/t1/accounts")).toBeLessThan(
+      calls.indexOf("PUT /api/product/targets/t1/accounts/tester-b/credential"),
+    );
   });
 
   // 사용자 11/25: 11/24 B 계정 아이디 끝 공백으로 로그인이 실패했다 — 아이디 칸은 공백을 아예 받지 않는다
@@ -171,54 +263,6 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
     expect(pass.value).toBe("pass word");
   });
 
-  it("시험 표시: 진술 동의 뒤에만 POST mark-test", async () => {
-    serve();
-    render(withRoute("classify"));
-    await pickTarget();
-    const legacy = within(screen.getByLabelText("계정 목록")).getByText("legacy").closest("li") as HTMLElement;
-    fireEvent.click(within(legacy).getByRole("button", { name: "시험 표시" }));
-    // 진술 문장을 보여 주고 동의를 받는다
-    expect(within(legacy).getByText(/소유·승인된 일회용 시험 계정이라는 진술/)).toBeInTheDocument();
-    fireEvent.click(within(legacy).getByRole("button", { name: "동의하고 표시" }));
-    expect(api).toHaveBeenCalledWith(
-      "/api/product/targets/t1/accounts/legacy/mark-test",
-      expect.objectContaining({ method: "POST", body: JSON.stringify({ statement_confirmed: true }) }),
-    );
-  });
-
-  // 서버는 mark-test 때 자기 진술 문장의 해시를 동의 기록으로 남긴다. 화면이 그 문장을 못 받았으면 대체 문구로 동의를
-  // 받지 않는다(fail-closed, #538 윤재상 리뷰).
-  it.each([
-    ["없음", OMIT],
-    ["빈 문자열", ""],
-    ["제어 문자", "진술\u0000문장"],
-    ["문자열 아님", 7],
-  ])("진술이 %s 이면 시험 표시 동의 버튼이 막히고 mark-test 를 보내지 않는다", async (_name, statement) => {
-    serve(statement);
-    render(withRoute("classify"));
-    await pickTarget();
-    const legacy = within(screen.getByLabelText("계정 목록")).getByText("legacy").closest("li") as HTMLElement;
-    fireEvent.click(within(legacy).getByRole("button", { name: "시험 표시" }));
-    expect(within(legacy).getByText(/진술을 받지 못해 시험 표시할 수 없습니다/)).toBeInTheDocument();
-    const agree = within(legacy).getByRole("button", { name: "동의하고 표시" });
-    expect(agree).toBeDisabled();
-    fireEvent.click(agree);
-    expect(api).not.toHaveBeenCalledWith(expect.stringContaining("/mark-test"), expect.anything());
-  });
-
-  it("표시 해제: POST unmark", async () => {
-    serve();
-    render(withRoute("classify"));
-    await pickTarget();
-    // 시험 계정 A · B 의 표시 해제는 위 로그인 상자 줄에 있다(사용자 11/24)
-    const a = within(screen.getByRole("region", { name: "시험 계정" })).getByRole("group", { name: "계정 A" });
-    fireEvent.click(await within(a).findByRole("button", { name: "표시 해제" }));
-    expect(api).toHaveBeenCalledWith(
-      "/api/product/targets/t1/accounts/owner/unmark",
-      expect.objectContaining({ method: "POST", body: "{}" }),
-    );
-  });
-
   it("승인된 대상이 없으면 안내만 보이고 계정 목록은 없다", async () => {
     api.mockImplementation((path: string) =>
       path === "/api/product/targets"
@@ -232,7 +276,7 @@ describe("AccountClassifyLive (실 API 읽기·쓰기)", () => {
 });
 
 // 쓰기 중 대상을 바꾸면, 늦게 온 이전 대상의 쓰기·재조회 응답(성공·실패)이 지금 대상 화면을 덮지 않는다(#538 이동찬 리뷰).
-describe("AccountClassifyLive 지연 응답 귀속", () => {
+describe("TargetAccountsLive 지연 응답 귀속", () => {
   function serveTwo() {
     let settle: { resolve: () => void; reject: () => void } | null = null;
     api.mockImplementation((path: string, init?: RequestInit) => {
@@ -245,29 +289,27 @@ describe("AccountClassifyLive 지연 응답 귀속", () => {
           ],
         }) as never;
       if (path === "/api/product/targets/t1/accounts" && method === "GET")
-        return Promise.resolve({
-          accounts: [{ label: "account-a", classification: "test", classified_by: "op-1" }],
-          account_statement: "진술",
-        }) as never;
+        return Promise.resolve({ accounts: [{ label: "account-a" }] }) as never;
       if (path === "/api/product/targets/t2/accounts" && method === "GET")
-        return Promise.resolve({
-          accounts: [{ label: "account-b", classification: "test", classified_by: "op-1" }],
-          account_statement: "진술",
-        }) as never;
-      if (path === "/api/product/targets/t1/accounts/account-a/unmark" && method === "POST")
+        return Promise.resolve({ accounts: [{ label: "account-b" }] }) as never;
+      if (path.endsWith("/login") && method === "GET") return Promise.resolve({}) as never;
+      if (path === "/api/product/targets/t1/accounts/account-a/credential" && method === "PUT")
         return new Promise((resolve, reject) => {
-          settle = { resolve: () => resolve({}), reject: () => reject(new Error("boom")) };
+          settle = {
+            resolve: () => resolve({ account: { credential_configured: true } }),
+            reject: () => reject(new Error("boom")),
+          };
         }) as never;
       return Promise.reject(new Error(`unexpected ${method} ${path}`)) as never;
     });
     return () => settle as unknown as { resolve: () => void; reject: () => void };
   }
 
-  async function startUnmarkOnAThenSwitchToB() {
+  async function startSaveOnAThenSwitchToB() {
     render(withRoute("classify"));
-    const pick = await screen.findByLabelText("분류할 대상");
+    const pick = await screen.findByLabelText("계정을 관리할 대상");
     fireEvent.change(pick, { target: { value: "t1" } });
-    // 시험 계정 A(account-a)의 표시 해제는 위 로그인 상자 줄에 있다
+    // 시험 계정 A(account-a)의 자격 저장은 위 로그인 상자에서 한다
     const box = () => within(screen.getByRole("region", { name: "시험 계정" }));
     await waitFor(() =>
       expect(within(box().getByRole("group", { name: "계정 A" })).getByText("계정 A")).toHaveAttribute(
@@ -275,7 +317,15 @@ describe("AccountClassifyLive 지연 응답 귀속", () => {
         "별칭 account-a",
       ),
     );
-    fireEvent.click(within(box().getByRole("group", { name: "계정 A" })).getByRole("button", { name: "표시 해제" }));
+    fireEvent.change(box().getByLabelText("계정 A 아이디"), { target: { value: "u-a" } });
+    fireEvent.change(box().getByLabelText("계정 A 비밀번호"), { target: { value: "synthetic-pass-a-1234" } });
+    fireEvent.click(box().getByRole("button", { name: "저장" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/api/product/targets/t1/accounts/account-a/credential",
+        expect.objectContaining({ method: "PUT" }),
+      ),
+    );
     fireEvent.change(pick, { target: { value: "t2" } });
     await waitFor(() =>
       expect(within(box().getByRole("group", { name: "계정 A" })).getByText("계정 A")).toHaveAttribute(
@@ -290,12 +340,12 @@ describe("AccountClassifyLive 지연 응답 귀속", () => {
     "reject",
   ] as const)("이전 대상 쓰기가 늦게 %s 되어도 지금 대상 목록·오류를 바꾸지 않는다", async (how) => {
     const settle = serveTwo();
-    await startUnmarkOnAThenSwitchToB();
+    await startSaveOnAThenSwitchToB();
     await act(async () => {
       settle()[how]();
     });
-    // 선택은 B, 상자도 B 그대로. A 대상의 계정 · 오류 문구가 끼어들지 않는다.
-    await waitFor(() => expect(screen.getByLabelText("분류할 대상")).toHaveValue("t2"));
+    // 선택은 B, 상자도 B 그대로. A 대상의 계정 · 오류 · 저장 안내가 끼어들지 않는다.
+    await waitFor(() => expect(screen.getByLabelText("계정을 관리할 대상")).toHaveValue("t2"));
     const box = screen.getByRole("region", { name: "시험 계정" });
     expect(within(within(box).getByRole("group", { name: "계정 A" })).getByText("계정 A")).toHaveAttribute(
       "title",
@@ -303,11 +353,12 @@ describe("AccountClassifyLive 지연 응답 귀속", () => {
     );
     expect(box).not.toHaveTextContent("account-a");
     expect(screen.queryByText(/작업을 처리하지 못했습니다/)).toBeNull();
+    expect(screen.queryByText("저장함")).toBeNull();
   });
 });
 
 // 대상 로그인 방식(GET·PUT …/login)과 계정 자격(PUT …/credential). 자격 값은 비제어 입력에서 보낼 때 한 번 읽고 바로 비운다.
-describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
+describe("TargetAccountsLive 로그인 방식 · 자격 입력", () => {
   // 합성 값(특정 대상 앱 값이 아님).
   const SAVED_LOGIN = {
     method: "POST",
@@ -338,6 +389,7 @@ describe("AccountClassifyLive 로그인 방식 · 자격 입력", () => {
         return Promise.resolve({
           accounts: [
             { label: "owner", classification: "test", classified_by: "op-1", credential_configured: true },
+            { label: "peer", classification: "test", classified_by: "op-1", credential_configured: true },
             {
               label: "legacy",
               classification: "real",

@@ -3270,7 +3270,7 @@ describe("외부 전송 동의(설치 때 한 번, 2026-11-26)", () => {
       }
       if (p.includes("targets/resolve"))
         return { target: { id: "target-1", origin: "https://target.example", state: "approved" } } as never;
-      if (p.endsWith("/accounts")) return { accounts: [{ label: "tester", classification: "test" }] } as never;
+      if (p.endsWith("/accounts")) return { accounts: [{ label: "tester", credential_configured: true }] } as never;
       return { credential: { configured: true, model: externalModel.model } } as never;
     });
     u.createURLDraft.mockImplementation(async (input) => ({ ...draft, input }));
@@ -3404,7 +3404,7 @@ it("로컬 모델 회차도 대상에 시험 계정이 있으면 '시험 계정 
     const p = String(path);
     if (p.includes("targets/resolve"))
       return { target: { id: "target-1", origin: "https://target.example", state: "approved" } } as never;
-    if (p.endsWith("/accounts")) return { accounts: [{ label: "tester", classification: "test" }] } as never;
+    if (p.endsWith("/accounts")) return { accounts: [{ label: "tester", credential_configured: true }] } as never;
     return { configured: true } as never;
   });
   mount("new");
@@ -3650,8 +3650,7 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
 
   // 사용자 11/24: 수평만이라 시험 계정은 A(소유) · B(교차) 둘 — 이름을 적어 추가하는 상자 대신 두 줄 고정. 이름은 정책 선언의
   // 소유 · 교차 계정 이름. 아래 따로 있던 계정 목록은 뺐고 '이번 회차 로그인' 줄만. 정책 선언 상자는 선언만
-  const STATEMENT = "소유 · 승인된 일회용 시험 계정이라는 진술";
-  function serveQuick(initial: Array<Record<string, unknown>>, statement = STATEMENT) {
+  function serveQuick(initial: Array<Record<string, unknown>>) {
     serve(active(declaration()), noWrites, initial);
     const base = vi.mocked(teamApi.apiFetch).getMockImplementation();
     const calls: string[] = [];
@@ -3664,19 +3663,14 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
         calls.push(`${m} ${p.split(`/${TARGET_ID}`)[1]}`);
         sent.push(String(init?.body ?? ""));
         const label = p.split("/accounts/")[1]?.split("/")[0];
-        if (m === "POST" && p.endsWith("/accounts"))
-          rows.push({ label: JSON.parse(String(init?.body)).label, classification: "real" });
-        if (p.endsWith("/mark-test"))
-          rows = rows.map((r) => (r.label === label ? { ...r, classification: "test" } : r));
-        if (p.endsWith("/unmark")) rows = rows.map((r) => (r.label === label ? { ...r, classification: "real" } : r));
+        if (m === "POST" && p.endsWith("/accounts")) rows.push({ label: JSON.parse(String(init?.body)).label });
         if (p.endsWith("/credential")) {
           rows = rows.map((r) => (r.label === label ? { ...r, credential_configured: true } : r));
           return { account: { label, credential_configured: true } } as never;
         }
         return {} as never;
       }
-      if (p.endsWith(`/${TARGET_ID}/accounts`))
-        return { accounts: rows, ...(statement ? { account_statement: statement } : {}) } as never;
+      if (p.endsWith(`/${TARGET_ID}/accounts`)) return { accounts: rows } as never;
       return (base as NonNullable<typeof base>)(path, init);
     });
     return { calls, sent };
@@ -3686,8 +3680,8 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
   // 직접 골라야 넘어간다
   it("로그인 방식이 없으면 안내하고 '이번에는 익명으로 점검'을 골라야 시작할 수 있다", async () => {
     serveQuick([
-      { label: "tester-a", classification: "test", credential_configured: true, login_method_missing: true },
-      { label: "tester-b", classification: "test", credential_configured: true, login_method_missing: true },
+      { label: "tester-a", credential_configured: true, login_method_missing: true },
+      { label: "tester-b", credential_configured: true, login_method_missing: true },
     ]);
     saveHandle();
     mount("new");
@@ -3711,7 +3705,7 @@ describe("새 점검의 E③ 확정 단계 안내 · 대상 리셋 확인", () =
   });
 
   it("로컬 모델 · 시험 계정 등록됨이면 점검 요약 로그인 칸이 '시험 계정 로그인'", async () => {
-    serve(active(declaration()), noWrites, [{ label: "tester", classification: "test" }]);
+    serve(active(declaration()), noWrites, [{ label: "tester", credential_configured: true }]);
     saveHandle();
     mount("new");
     const summary = await screen.findByRole("complementary", { name: "점검 요약" });
@@ -4035,7 +4029,6 @@ describe("진행 화면 계정 경고(최민준 요청 11/25 — #936 account_au
           accounts: [
             {
               label: "rh_tester_a",
-              classification: "test",
               credential_configured: true,
               ...(loginMissing ? { login_method_missing: true } : {}),
             },
