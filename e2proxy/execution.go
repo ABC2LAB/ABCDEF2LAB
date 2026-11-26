@@ -1494,13 +1494,6 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 			return finish(nil, ErrDenied)
 		}
 	}
-	// 모델 요청에 이 실행의 시험 계정 비밀번호가 들어 있으면 보내지 않는다(사용자 결정 2026-11-23). 로그인은 인증 준비
-	// (프로그램)만 하고, 모델은 세션 값과 refresh_session을 받는다. 사유는 기존 정책 거부(policy_denied)라 감사·평가 어휘가
-	// 바뀌지 않는다.
-	if purpose == "" && e.requestCarriesPassword(req.URL, requestHeaders, body) {
-		r.Decision, r.Reason = "denied", PolicyDenied
-		return finish(nil, ErrDenied)
-	}
 	if boundary != nil {
 		if err := boundary.Before(ctx, view); err != nil {
 			r.Decision, r.Reason = "denied", boundaryDenialReason(err)

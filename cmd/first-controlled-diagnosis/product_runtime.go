@@ -432,7 +432,8 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 		// 로그인 경로 하나만 정확히 가리키는 인증 준비 규칙. 모델 요청은 이 규칙을 쓰지 못한다(E② Purpose).
 		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: accounts.Login.Path, PathScopeRef: "auth-login-path",
 			Methods: []string{accounts.Login.Method}, Purpose: e2proxy.PurposeAuthPrep, ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
-		auth := &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: *accounts.Login, PasswordResponse: accounts.PasswordResponse}
+		// 모델이 직접 로그인한다(사용자 결정 2026-11-26). 확정 단계 다시 로그인만 프로그램이 지금 로그인 방식으로 한다.
+		auth := &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: *accounts.Login, PasswordResponse: accounts.PasswordResponse, ModelLogin: true}
 		for _, a := range accounts.Accounts {
 			auth.Accounts = append(auth.Accounts, server.E2HTTPFileAuthAccount{Label: a.Label, Credential: server.E2HTTPFilePin{File: bindingCredentialName(rec.Target.ID, a.Label, a.CredentialSHA256), SHA256: a.CredentialSHA256}})
 		}

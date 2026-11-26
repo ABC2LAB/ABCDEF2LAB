@@ -499,8 +499,10 @@ type productRunAccounts struct {
 	Accounts         []productRunAccount
 }
 
-// runAccounts는 실행에 결속할 계정을 고른다: 목록과 같은 판정(accountView)으로 test이고 자격 파일이 저널 해시와 같은
-// 계정만, 로그인 방식이 있을 때만이다. 두 번째 값은 결속 디렉터리 이름에 넣는 요약(없으면 빈 값)이다.
+// runAccounts는 실행에 결속할 계정을 고른다: 자격 파일이 저널 해시와 같은 등록 계정만, 로그인 방식이 있을 때만이다.
+// 계정을 시험·실계정으로 따로 분류하지 않는다(사용자 결정 2026-11-26, CLAUDE.md 절대규칙 2: 시험 계정만 등록하라는 공지는
+// 사용자 책임). 로그인 방식은 E③ 확정 단계 다시 로그인이 쓴다(모델 로그인 기록 재사용이 들어오기 전까지, 계약
+// docs/contracts/model-login-attempts.md §7). 두 번째 값은 결속 디렉터리 이름에 넣는 요약(없으면 빈 값)이다.
 func (r *productTargetRegistry) runAccounts(rec productTargetRecord) (productRunAccounts, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -521,10 +523,9 @@ func (r *productTargetRegistry) runAccounts(rec productTargetRecord) (productRun
 	}
 	sort.Strings(labels)
 	out := productRunAccounts{}
-	now := r.now()
 	for _, label := range labels {
 		st := r.accounts[rec.Target.ID][label]
-		if accountView(current, st, now).Classification != "test" || !r.credentialConfigured(rec.Target.ID, st) {
+		if !r.credentialConfigured(rec.Target.ID, st) {
 			continue
 		}
 		out.Accounts = append(out.Accounts, productRunAccount{Label: label, CredentialSHA256: st.credentialSHA256, credentialPath: r.credentialPath(rec.Target.ID, label)})

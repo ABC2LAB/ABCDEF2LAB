@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
@@ -31,6 +32,10 @@ type E2HTTPFileAuth struct {
 	RuleRef          string                    `json:"rule_ref"`
 	Login            diagnosisprep.TargetLogin `json:"login"`
 	Accounts         []E2HTTPFileAuthAccount   `json:"accounts"`
+	// ModelLogin은 모델이 직접 로그인하는 회차다(사용자 결정 2026-11-26, docs/contracts/model-login-attempts.md). 켜면 실행을
+	// 잡을 때 프로그램이 로그인하지 않고 결속 계정의 자격을 Worker 지침으로 준다. 끈 정책(선택 후보 검증 회차·이전 결속)은
+	// 지금처럼 프로그램이 인증 준비로 로그인한다. 확정 단계 다시 로그인은 둘 다 프로그램이 한다.
+	ModelLogin bool `json:"model_login,omitempty"`
 }
 
 type E2HTTPFileAuthAccount struct {
@@ -514,6 +519,41 @@ func e2HTTPAccountUsernames(dir string, auth E2HTTPFileAuth) map[string]bool {
 		clear(raw)
 	}
 	return out
+}
+
+// e2HTTPAccountCredentials는 결속된 등록 계정의 자격을 읽어 모델 지침에 넣을 값으로 돌려준다(사용자 결정 2026-11-26:
+// 모델이 직접 로그인한다, CLAUDE.md 절대규칙 2). 읽은 비밀번호는 이 실행의 보호 값으로 등록해 저장 기록 가림(RedactRecord)을
+// 유지한다. 등록하지 못해도(짧은 값 등) 모델에는 준다. 읽지 못한 계정은 빼고 두 번째 값에 not_sent로 남긴다.
+func e2HTTPAccountCredentials(ctx context.Context, execution *e2proxy.Execution, dir string, auth E2HTTPFileAuth) ([]agent.E2HTTPAccountCredential, map[string]string) {
+	out := []agent.E2HTTPAccountCredential{}
+	unread := map[string]string{}
+	if execution == nil || ctx == nil {
+		return out, unread
+	}
+	for _, account := range auth.Accounts {
+		raw, err := e2HTTPPinnedBytes(dir, account.Credential, maxAuthCredentialBytes)
+		if err != nil {
+			unread[account.Label] = E2HTTPAuthNotSent
+			logAccountAuthNotSent(ctx, account.Label)
+			continue
+		}
+		var cred struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		decodeErr := json.Unmarshal(raw, &cred)
+		clear(raw)
+		if decodeErr != nil || cred.Username == "" || cred.Password == "" {
+			unread[account.Label] = E2HTTPAuthNotSent
+			logAccountAuthNotSent(ctx, account.Label)
+			continue
+		}
+		if execution.AddProtectedPasswords([]byte(cred.Password)) != nil {
+			log.Print("[e2-http] 등록 계정 비밀번호를 기록 가림 값으로 등록하지 못함(짧은 값 등). 모델에는 그대로 준다")
+		}
+		out = append(out, agent.E2HTTPAccountCredential{Label: account.Label, Username: cred.Username, Password: cred.Password})
+	}
+	return out, unread
 }
 
 // e2HTTPAuthPrep는 계정마다 로그인 요청을 E② 인증 준비 규칙으로 한 번씩 보낸다. 재시도는 없다. 세션 값은 출력 가림

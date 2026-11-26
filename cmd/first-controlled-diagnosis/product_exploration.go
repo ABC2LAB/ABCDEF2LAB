@@ -76,6 +76,12 @@ func (b *urlPreparationRuntime) productExplorationOptions(l *urlLoadedProfile, e
 		passwords, _ := l.explorationPasswords()
 		options.OpenHost = host.factory(*l.productTarget, b.product.targets.current, e.Job.SourceDigest, excluded, limits.MaxResponseBytes, l.productConnection, passwords)
 	}
+	// 탐색 에이전트도 등록 계정으로 브라우저에서 직접 로그인한다(사용자 결정 2026-11-26). 자격을 못 읽으면 탐색을 열지 않는다.
+	credentials, err := l.explorationCredentials()
+	if err != nil {
+		return server.ExplorationPipelineOptions{}, false
+	}
+	options.Credentials = credentials
 
 	return options, true
 }
