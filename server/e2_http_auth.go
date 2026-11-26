@@ -523,7 +523,8 @@ func e2HTTPAccountUsernames(dir string, auth E2HTTPFileAuth) map[string]bool {
 
 // e2HTTPAccountCredentials는 결속된 등록 계정의 자격을 읽어 모델 지침에 넣을 값으로 돌려준다(사용자 결정 2026-11-26:
 // 모델이 직접 로그인한다, CLAUDE.md 절대규칙 2). 읽은 비밀번호는 이 실행의 보호 값으로 등록해 저장 기록 가림(RedactRecord)을
-// 유지한다. 등록하지 못해도(짧은 값 등) 모델에는 준다. 읽지 못한 계정은 빼고 두 번째 값에 not_sent로 남긴다.
+// 유지한다. 읽지 못하거나 보호 값으로 등록하지 못한(짧은 값 등) 계정은 모델에 주지 않고 두 번째 값에 not_sent로 남긴다
+// (짧은 값 제외는 저장 기록 가림 때문이라 ⑥ DLP 폐기 때 같이 푼다).
 func e2HTTPAccountCredentials(ctx context.Context, execution *e2proxy.Execution, dir string, auth E2HTTPFileAuth) ([]agent.E2HTTPAccountCredential, map[string]string) {
 	out := []agent.E2HTTPAccountCredential{}
 	unread := map[string]string{}
