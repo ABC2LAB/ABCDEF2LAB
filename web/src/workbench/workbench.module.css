@@ -3019,6 +3019,239 @@ select.inp {
   flex-direction: column;
   gap: 12px;
 }
+/* 취약점 상세 선택 검증(11/26, #950): 단계 줄 · 상태 줄 · 모델 판정 딱지(점선 — 프로그램 확정 딱지와 다르게) · 질문 답 칸 */
+.cv-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+.cv-steps > li {
+  padding: 2px 8px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink-3);
+}
+.cv-steps > li.done {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.cv-steps > li.cur {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--accent-ink);
+}
+.cv-steps > li.skip {
+  border-style: dashed;
+}
+.cv-cur {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cv-state,
+.cv-verdict-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 8px;
+  margin: 0;
+  font-size: 13px;
+}
+.cv-mv {
+  display: inline-block;
+  padding: 1px 8px;
+  border: 1px dashed currentColor;
+  border-radius: 4px;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+.cv-model_supported {
+  color: var(--warn);
+}
+.cv-model_refuted {
+  color: var(--ok);
+}
+.cv-insufficient {
+  color: var(--und);
+}
+.cv-h {
+  margin: 4px 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.cv-list,
+.cv-src {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.cv-list > li > .tag + .cv-mv {
+  margin-left: 6px;
+}
+.cv-qs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+.cv-qs p {
+  margin: 0 0 4px;
+}
+.cv-ans {
+  padding: 6px 8px;
+  border-left: 2px solid var(--rule-2);
+  color: var(--ink-2);
+  white-space: pre-wrap;
+}
+.cv-ansbox {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.cv-ansbox > textarea {
+  width: 100%;
+  resize: vertical;
+}
+.cv-hist > summary {
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.cv-mono {
+  font-family: var(--mono);
+  word-break: break-all;
+}
+/* 보고서 이행점검 탭(11/26): 뒤에 돌린 점검 카드 줄 · 고른 회차의 조치별 결과 목록 · 오른쪽 패널 판정 칸 */
+.fu-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.fu-h {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.fu-runs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.fu-run {
+  display: grid;
+  gap: 2px;
+  min-width: 180px;
+  padding: 8px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.fu-run:hover:not(:disabled) {
+  border-color: var(--rule-2);
+}
+.fu-run[aria-current="true"] {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+.fu-run:disabled {
+  color: var(--ink-3);
+  cursor: default;
+}
+.fu-items {
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  list-style: none;
+}
+.fu-items > li + li {
+  border-top: 1px solid var(--rule);
+}
+.fu-item {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 8px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.fu-item:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.fu-item[aria-current="true"] {
+  background: var(--accent-bg);
+}
+.fu-item > .tag {
+  justify-self: start;
+}
+.fu-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fu-list {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.fu-set {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 0;
+  border: 0;
+}
+.fu-set > legend {
+  margin-bottom: 4px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+.fu-opt {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+.fu-more > summary {
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+.fu-more > .help {
+  margin: 6px 0;
+}
+.fu-mono {
+  font-family: var(--mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 /* 요청 상세 헤더 · 본문 칸의 저장 안 된 이유 글 · 이유 코드(전수조사 11/26) */
 .cb-why {
   display: block;

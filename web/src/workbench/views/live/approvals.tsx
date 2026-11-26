@@ -7,7 +7,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ApiError } from "@/lib/diagnosis/api";
-import { decideRequestApproval, getRequestApproval, type RequestApproval } from "@/lib/diagnosis/request-approvals";
+import {
+  decideRequestApproval,
+  getRequestApproval,
+  type RequestApproval,
+  type RequestApprovalClosedReason,
+} from "@/lib/diagnosis/request-approvals";
 
 import { cx } from "../../lib/cx";
 import { fetchRequestApprovals, type RequestApprovalState } from "../../live/api";
@@ -200,8 +205,14 @@ export function precheck(row: RequestApproval, fresh: RequestApproval): string |
     fresh.request_sha256 !== row.request_sha256
   )
     return NOT_SENT_TEXT.changed;
-  if (fresh.state !== "pending" || !fresh.live || !fresh.can_decide)
-    return `${CLOSED_TEXT[fresh.state]}. 결정을 보내지 않았습니다.`;
+  if (fresh.state !== "pending" || !fresh.live || !fresh.can_decide) {
+    // 만료는 CLOSED_TEXT 가 이미 '승인 기한이 지나'라 겹쳐 적지 않는다
+    const why =
+      fresh.closed_reason && fresh.closed_reason !== "approval_expired"
+        ? ` ${APPROVAL_CLOSED_REASON_TEXT[fresh.closed_reason]}`
+        : "";
+    return `${CLOSED_TEXT[fresh.state]}.${why} 결정을 보내지 않았습니다.`;
+  }
   return null;
 }
 
@@ -243,6 +254,7 @@ export function ApprovalFacts({ row }: { row: RequestApproval }) {
         ["승인 만료", `${clockOf(row.expires_at) || row.expires_at} · 일시정지로 연장하지 않음`],
         ["실제 attempt", row.attempt_id],
         ["상태", `${APPROVAL_STATE_TEXT[row.state]} · ${row.execution_state}`],
+        ...(row.closed_reason ? [["닫힌 까닭", APPROVAL_CLOSED_REASON_TEXT[row.closed_reason]] as const] : []),
       ]}
     />
   );
@@ -310,7 +322,7 @@ function ApprovalRow({
         <span className={cx(s.m, s[r.method])}>{r.method}</span>
         <span className={s.p}>{r.path}</span>
         <span className={s["apq-plan"]}>{planTitle(r.intent_id) ?? "계획 제목 없음"}</span>
-        <span className={cx(s.tag, s[APPROVAL_TONE[r.state]])}>{APPROVAL_STATE_TEXT[r.state]}</span>
+        <span className={cx(s.tag, s[APPROVAL_TONE[r.state]])}>{approvalTagText(r)}</span>
         <span className={s["apq-at"]}>{clockOf(r.created_at)}</span>
       </button>
       {open ? (
@@ -415,18 +427,19 @@ export function ApprovalQueue({
   );
 }
 
-/** 처리된 요청 거르기: 허용 · 거부 · 만료(만료 + 취소, 보내지 않고 닫힘) */
-type DoneFilter = "allowed" | "denied" | "closed";
+/** 처리된 요청 거르기: 허용 · 거부 · 만료 · 취소(사용자 11/26: '만료'를 누르면 만료만 모이게 — 취소는 따로) */
+type DoneFilter = Exclude<RequestApproval["state"], "pending">;
 const DONE_FILTERS: readonly (readonly [DoneFilter, string])[] = [
   ["allowed", "허용"],
   ["denied", "거부"],
-  ["closed", "만료"],
+  ["expired", "만료"],
+  ["cancelled", "취소"],
 ];
-const doneGroup = (r: RequestApproval): DoneFilter =>
-  r.state === "allowed" || r.state === "denied" ? r.state : "closed";
+// done 은 대기(pending)를 뺀 줄만 받는다(doneApprovals)
+const doneGroup = (r: RequestApproval): DoneFilter | null => (r.state === "pending" ? null : r.state);
 
 /**
- * 오른쪽 패널의 처리된 요청 목록(최근 것부터). 위 거르기(허용 · 거부 · 만료, 수와 함께 — 있는 것만)로 나눠 보고, 다시 누르면
+ * 오른쪽 패널의 처리된 요청 목록(최근 것부터). 위 거르기(허용 · 거부 · 만료 · 취소, 수와 함께 — 있는 것만)로 나눠 보고, 다시 누르면
  * 전체. 줄을 누르면 미리보기 · 승인 정보가 펼쳐진다(승인 · 거부 버튼은 없다).
  */
 export function ApprovalHistory({
@@ -485,6 +498,34 @@ function ApprovalHistoryList({
       ))}
     </ul>
   );
+}
+
+/**
+ * 결정 없이 닫힌 까닭(서버 closed_reason, #953). 11/25 승인 모드 회차에서 모델 단계 마감으로 닫힌 승인이 '새 요청이 앞 요청을
+ * 취소한 것'처럼 보였다 — 그래서 다른 요청 때문이 아니라는 것까지 적는다. 서버 고정 코드 그대로이고 추정하지 않는다.
+ */
+export const APPROVAL_CLOSED_REASON_TEXT: Readonly<Record<RequestApprovalClosedReason, string>> = {
+  model_stage_closed:
+    "모델 단계가 끝나(확정 단계로 넘어감 등) 이 요청을 기다리던 호출이 끊겼습니다. 다른 요청이 취소한 것이 아닙니다.",
+  request_timeout: "요청 · 호출 · 회차 기한에 닿아 닫혔습니다.",
+  operator_stopped: "운영자가 점검을 멈춰 닫혔습니다.",
+  run_closed: "실행이 닫히면서 함께 닫혔습니다.",
+  approval_expired: "승인 기한이 지나 닫혔습니다.",
+};
+
+/** 줄 표시에 붙이는 짧은 까닭. 만료는 '만료'만으로 같은 뜻이라 붙이지 않는다. */
+const APPROVAL_CLOSED_REASON_SHORT: Readonly<Record<RequestApprovalClosedReason, string>> = {
+  model_stage_closed: "모델 단계 마감",
+  request_timeout: "기한",
+  operator_stopped: "운영자 종료",
+  run_closed: "실행 닫힘",
+  approval_expired: "",
+};
+
+/** 승인 줄의 상태 글: '취소 · 모델 단계 마감'처럼 까닭이 있으면 붙인다(이전 서버는 상태만). */
+export function approvalTagText(r: RequestApproval): string {
+  const short = r.closed_reason ? APPROVAL_CLOSED_REASON_SHORT[r.closed_reason] : "";
+  return short ? `${APPROVAL_STATE_TEXT[r.state]} · ${short}` : APPROVAL_STATE_TEXT[r.state];
 }
 
 /** 결정 결과 글 (지난 요청 목록). */

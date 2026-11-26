@@ -864,7 +864,18 @@ describe("보고서 승인 기록 탭 (끝난 점검 저장 승인 이력)", () 
       within(screen.getByRole("group", { name: "결과로 거르기" }))
         .getAllByRole("button")
         .map((b) => b.textContent),
-    ).toEqual(["허용 3", "거부 2", "만료 2"]);
+    ).toEqual(["허용 3", "거부 2", "만료 1", "취소 1"]);
+    // '만료'를 누르면 만료만, 취소는 따로(사용자 11/26)
+    const chip = (name: string) =>
+      within(screen.getByRole("group", { name: "결과로 거르기" })).getByRole("button", { name });
+    fireEvent.click(chip("만료 1"));
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toHaveTextContent("만료");
+    fireEvent.click(chip("취소 1"));
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toHaveTextContent("취소");
+    fireEvent.click(chip("취소 1"));
+    expect(rows()).toHaveLength(7);
     const side = screen.getByRole("complementary", { name: "승인 기록 상세" });
     expect(within(side).getByRole("heading", { name: "승인 기록을 고르세요" })).toBeInTheDocument();
     // 줄을 누르면 목록 안에서 펼치지 않고 오른쪽 패널에 그 줄의 상세(사용자 11/26)
@@ -1099,6 +1110,27 @@ describe("탐색 기록 상세 · 전송 결과 (요청 상세, 11/26)", () => {
     const about = within(aside).getByRole("region", { name: "GET /about 요청 · 응답" });
     expect(within(about).getByText(/탐색 단계 요청이에요/)).toBeInTheDocument();
     expect(vi.mocked(e2req.readE2RequestDetail)).toHaveBeenCalledTimes(1);
+  });
+
+  it("경로 상태 칸이 없는 이전 서버 응답이면 경로만 보이고 '경로 표시'는 두지 않는다(계약 §4.1)", async () => {
+    vi.mocked(e2req.readE2RequestDetail).mockResolvedValue({
+      ok: true,
+      detail: { ...detail(A1), path_detail_state: null },
+    });
+    const { log, aside } = mount([
+      {
+        at: "2026-11-11T01:00:01Z",
+        kind: "request",
+        method: "GET",
+        path: "/api/products/1",
+        status: 200,
+        call_ref: "call-1",
+        attempt_id: A1,
+      },
+    ]);
+    fireEvent.click(within(log).getByRole("button", { name: /GET/ }));
+    expect(await within(aside).findByText("/api/products/{id}")).toBeInTheDocument();
+    expect(within(aside).queryByText("경로 표시")).toBeNull();
   });
 
   it("같은 경로를 여러 번 보냈으면 줄마다 그 줄의 시도로 연다 — 나중 403 을 앞 200 줄에 붙이지 않는다(리뷰 #473)", async () => {

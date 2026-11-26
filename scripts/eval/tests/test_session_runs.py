@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -18,8 +19,8 @@ from manifest import load_manifests  # noqa: E402
 from run_record import sign_run_record  # noqa: E402
 from runner import RESULT_FORMAT  # noqa: E402
 from session_runs import (  # noqa: E402
-    FAULT_STALL_LIMIT_PER_SIDE, RESULT_MISSING, SessionError, auxiliary, build_manifest, expected_order, fault_stall_tally, main,
-    read_session, tally,
+    FAULT_STALL_LIMIT_PER_SIDE, LLM_SUMMARY_NAME, RESULT_MISSING, SessionError, auxiliary, build_manifest, expected_order,
+    fault_stall_tally, main, rate_limit_table, read_session, tally,
 )
 
 CONDITION = {"baseline": "원본@35b", "ours": "우리@35b"}
@@ -214,6 +215,91 @@ class TestAuxiliary(SessionCase):
         lines = auxiliary(read_session(self.root, KEY))
         self.assertIn("| ours | 1 | time_budget 1 | 0 (n=1) | 10 (n=1) |", lines)
         self.assertIn("| baseline | 0 | — | — | — |", lines)
+
+
+class TestRateLimitTable(SessionCase):
+    """회차별 모델 호출 429 표(2026-11-26 사용자): 완료 회차는 서명된 근거 해시와 맞는 llm-summary.json만, 무효는 서명 밖 표시."""
+
+    def _summary(self, directory: Path, calls, limited, sign: bool = True) -> None:
+        raw = json.dumps({"forwarded_requests": calls, "rate_limited": limited}).encode()
+        (directory / LLM_SUMMARY_NAME).write_bytes(raw)
+        if sign:
+            result = json.loads((directory / "runner-result.json").read_text(encoding="utf-8"))
+            result.pop("signature")
+            result["evidence"] = {LLM_SUMMARY_NAME: hashlib.sha256(raw).hexdigest()}
+            write(directory / "runner-result.json", result, signed=True)
+
+    def _row(self, lines, run_id):
+        return next(line for line in lines if f"`{run_id}`" in line)
+
+    def test_signed_summaries_give_counts_ratio_and_side_totals(self):
+        b = self.s.complete("baseline", 0, 0)
+        o = self.s.complete("ours", 5, 0)
+        o2 = self.s.complete("ours", 10, 1)
+        self._summary(b, 49, 0)
+        self._summary(o, 184, 10)
+        self._summary(o2, 112, 45)
+        lines = rate_limit_table(read_session(self.root, KEY))
+        self.assertEqual(self._row(lines, b.name), f"| 1 | B | `{b.name}` | 2026-11-10 10:00 | 유효 | 49 | 0 | 0.0% |")
+        self.assertEqual(self._row(lines, o.name), f"| 2 | O | `{o.name}` | 2026-11-10 10:05 | 유효 | 184 | 10 | 5.4% |")
+        self.assertEqual(self._row(lines, o2.name), f"| 3 | O | `{o2.name}` | 2026-11-10 10:10 | 유효 | 112 | 45 | 40.2% |")
+        self.assertIn("| B | 1 | 1 | 49 | 0 | 0.0% | 0.0% |", lines)
+        self.assertIn("| O | 2 | 2 | 296 | 55 | 18.6% | 40.2% |", lines)
+
+    def test_a_summary_that_does_not_match_the_signed_digest_is_not_used(self):
+        o = self.s.complete("ours", 0, 0)
+        self._summary(o, 100, 5)
+        (o / LLM_SUMMARY_NAME).write_text(json.dumps({"forwarded_requests": 100, "rate_limited": 0}), encoding="utf-8")
+        lines = rate_limit_table(read_session(self.root, KEY))
+        self.assertEqual(self._row(lines, o.name), f"| 1 | O | `{o.name}` | 2026-11-10 10:00 | 유효 | — | — | — |")
+        self.assertIn("| O | 1 | 0 | — | — | — | — |", lines)
+
+    def test_a_complete_run_without_a_signed_digest_shows_dashes(self):
+        o = self.s.complete("ours", 0, 0)
+        self._summary(o, 100, 5, sign=False)  # 파일은 있는데 서명된 근거 목록에 없음
+        lines = rate_limit_table(read_session(self.root, KEY))
+        self.assertEqual(self._row(lines, o.name), f"| 1 | O | `{o.name}` | 2026-11-10 10:00 | 유효 | — | — | — |")
+
+    def test_invalid_and_missing_results_are_marked_outside_the_signature_and_left_out_of_totals(self):
+        v = self.s.complete("ours", 0, 0)
+        self._summary(v, 10, 1)
+        bad = self.s.invalid("ours", 5, "provider_fault_stall")
+        self._summary(bad, 30, 12, sign=False)
+        gone = self.s.missing("ours", 10)
+        lines = rate_limit_table(read_session(self.root, KEY))
+        self.assertEqual(self._row(lines, bad.name),
+                         f"| 2 | O | `{bad.name}` | 2026-11-10 10:05 | 무효 `provider_fault_stall` | 30 | 12 | 40.0% (서명 밖) |")
+        self.assertEqual(self._row(lines, gone.name),
+                         f"| 3 | O | `{gone.name}` | 2026-11-10 10:10 | 무효 `{RESULT_MISSING}` | — | — | — |")
+        self.assertIn("| O | 1 | 1 | 10 | 1 | 10.0% | 10.0% |", lines)
+
+    def test_malformed_counts_are_not_read_as_zero(self):
+        cases = [(5, 6), (True, 0), (10, -1), ("10", 1), (None, 0)]
+        dirs = []
+        for minute, (calls, limited) in enumerate(cases):
+            d = self.s.complete("baseline", minute, minute)
+            self._summary(d, calls, limited)
+            dirs.append(d)
+        lines = rate_limit_table(read_session(self.root, KEY))
+        for d in dirs:
+            self.assertTrue(self._row(lines, d.name).endswith("| 유효 | — | — | — |"), d.name)
+        self.assertIn("| B | 5 | 0 | — | — | — | — |", lines)
+
+    def test_zero_calls_has_no_ratio(self):
+        b = self.s.complete("baseline", 0, 0)
+        self._summary(b, 0, 0)
+        lines = rate_limit_table(read_session(self.root, KEY))
+        self.assertEqual(self._row(lines, b.name), f"| 1 | B | `{b.name}` | 2026-11-10 10:00 | 유효 | 0 | 0 | — |")
+        self.assertIn("| B | 1 | 1 | 0 | 0 | — | — |", lines)
+
+    def test_the_command_prints_the_section(self):
+        o = self.s.complete("ours", 0, 0)
+        self._summary(o, 20, 2)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main([str(self.root), "--repeats", "3", "--runner-key-file", str(self.key_file)]), 0)
+        self.assertIn("회차별 모델 호출 429", out.getvalue())
+        self.assertIn(f"| 1 | O | `{o.name}` | 2026-11-10 10:00 | 유효 | 20 | 2 | 10.0% |", out.getvalue())
 
 
 class TestOrder(unittest.TestCase):
