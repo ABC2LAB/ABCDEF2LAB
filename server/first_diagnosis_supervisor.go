@@ -620,6 +620,13 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		if err != nil {
 			log.Printf("[first-diagnosis] task %s 단계 %s 실패", taskID, stage)
 		}
+		// 실패·시간 초과로 끝난 실행은 run_finished와 같은 고정 사유를 오류에 싣는다. 진단 실행 상태(diagnosis
+		// Snapshot.reason_code)가 이 사유를 싣는다(B1). 마감 검사(checkResults)가 원인으로 싣는 runErr도 같은 값이어야 한다:
+		// 게이트웨이는 마감 오류가 Run이 돌려준 오류와 같은 값일 때만 실행 결과로 보고, 다르면 별도 마감 실패(unknown)로
+		// 본다(#979 동찬 리뷰 P1). 감싼 오류는 errors.Is로 원래 오류와 같게 보인다.
+		if status == "failed" || status == "timeout" {
+			err = diagnosis.WithReason(err, reason)
+		}
 		s.mu.Lock()
 		s.running = false
 		s.admissionGranted = false
@@ -629,11 +636,6 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		s.runLogErr = loggedErr
 		s.completed = err == nil
 		s.mu.Unlock()
-		// 실패·시간 초과로 끝난 실행은 run_finished와 같은 고정 사유를 돌려주는 오류에 싣는다. 진단 실행 상태(diagnosis
-		// Snapshot.reason_code)가 이 사유를 싣는다(B1). 감싼 오류는 errors.Is로 원래 오류와 같게 보인다.
-		if status == "failed" || status == "timeout" {
-			err = diagnosis.WithReason(err, reason)
-		}
 		s.operations.Done()
 	}()
 	run, cancel := firstDiagnosisRunContext(ctx)

@@ -930,10 +930,17 @@ func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error)
 	if !drained {
 		return result, errors.Join(resultErr, saveErr)
 	}
-	if resultErr != nil && (!errors.Is(resultErr, server.ErrFirstDiagnosisOutcome) || !onlyRunOutcome(resultErr, r.runErr)) {
-		return result, errors.Join(resultErr, saveErr)
+	return result, runCloseError(resultErr, r.runErr, saveErr)
+}
+
+// runCloseError는 자원을 다 닫은 실행의 마감 오류다. 마감 오류가 Run이 돌려준 실행 실패와 정확히 같은 값이면 실행 결과이지
+// 마감 실패가 아니므로 저장 오류만 남긴다(진단 서비스가 failed·사유로 싣는다). 다른 마감·검증 오류가 있으면 숨기지 않는다
+// (unknown).
+func runCloseError(resultErr, runErr, saveErr error) error {
+	if resultErr != nil && (!errors.Is(resultErr, server.ErrFirstDiagnosisOutcome) || !onlyRunOutcome(resultErr, runErr)) {
+		return errors.Join(resultErr, saveErr)
 	}
-	return result, saveErr
+	return saveErr
 }
 func (b *urlPreparationRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if server.ProductCandidatePath(r) {

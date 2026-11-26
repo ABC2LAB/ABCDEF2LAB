@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/diagnosisprep"
@@ -182,5 +184,69 @@ func TestURLSnapshotUpdateCarriesRunReason(t *testing.T) {
 		if u.State != tc.state || u.ReasonCode != tc.reason || u.Phase != diagnosisprep.Report {
 			t.Fatalf("%s: state=%s reason=%q", name, u.State, u.ReasonCode)
 		}
+	}
+}
+
+// outcomeFailureFixture는 감독자 마감 검사가 돌려주는 실행 결과 실패(server.firstDiagnosisOutcomeFailure)와 같은 모양이다:
+// ErrFirstDiagnosisOutcome으로 보이고 원인으로 Run 오류를 감싼다.
+type outcomeFailureFixture struct{ cause error }
+
+func (outcomeFailureFixture) Error() string        { return server.ErrFirstDiagnosisOutcome.Error() }
+func (e outcomeFailureFixture) Unwrap() error      { return e.cause }
+func (outcomeFailureFixture) Is(target error) bool { return target == server.ErrFirstDiagnosisOutcome }
+
+type closeDecisionRunner struct {
+	runErr   error
+	closeErr error
+}
+
+func (r closeDecisionRunner) Run(context.Context) error { return r.runErr }
+func (r closeDecisionRunner) Close(context.Context) (diagnosis.Closure, error) {
+	return diagnosis.Closure{DrainComplete: true, ResultReady: true}, r.closeErr
+}
+
+// 실행 실패 → 마감 → 상태 조회(#979 동찬 리뷰 P1): 마감 오류가 Run이 돌려준 (사유 붙은) 실행 실패와 같은 값이면 실행 결과라
+// failed·사유가 남는다. 마감 검사가 사유 붙기 전 오류를 원인으로 실으면 다른 값이라 마감 실패(unknown)로 바뀐다. 별도 마감·
+// 저장 오류가 함께 있으면 unknown이 그대로다.
+func TestRunCloseErrorKeepsRunFailureReason(t *testing.T) {
+	original := server.ErrFirstDiagnosisSupervisor
+	runErr := diagnosis.WithReason(original, "planning_exploration_failed")
+	other := errors.New("synthetic closure failure")
+	for _, tc := range []struct {
+		name      string
+		resultErr error
+		saveErr   error
+		state     diagnosis.State
+		reason    string
+	}{
+		{"run failure only", outcomeFailureFixture{cause: runErr}, nil, diagnosis.Failed, "planning_exploration_failed"},
+		{"cause before reason", outcomeFailureFixture{cause: original}, nil, diagnosis.Unknown, diagnosis.ReasonClosureUnconfirmed},
+		{"separate closure error", errors.Join(outcomeFailureFixture{cause: runErr}, other), nil, diagnosis.Unknown, diagnosis.ReasonClosureUnconfirmed},
+		{"storage error", outcomeFailureFixture{cause: runErr}, other, diagnosis.Unknown, diagnosis.ReasonClosureUnconfirmed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := closeDecisionRunner{runErr: runErr, closeErr: runCloseError(tc.resultErr, runErr, tc.saveErr)}
+			s, err := diagnosis.NewPrepared(t.Context(), "23", "operator-prepared", runner, time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := diagnosis.Request{Version: diagnosis.Version, RequestID: "start", Command: diagnosis.Start, TaskID: "23", PreparationRef: "operator-prepared", IdempotencyKey: "start-once"}
+			if _, err := s.Call(t.Context(), start); err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			var snap *diagnosis.Snapshot
+			for time.Now().Before(deadline) {
+				response, err := s.Call(t.Context(), diagnosis.Request{Version: diagnosis.Version, RequestID: "status", Command: diagnosis.Status, TaskID: "23", PreparationRef: "operator-prepared"})
+				if err == nil && response.Snapshot != nil && response.Snapshot.State != diagnosis.Running && response.Snapshot.State != diagnosis.Prepared {
+					snap = response.Snapshot
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if snap == nil || snap.State != tc.state || snap.ReasonCode != tc.reason {
+				t.Fatalf("끝 상태 %+v, 기대 %s/%s", snap, tc.state, tc.reason)
+			}
+		})
 	}
 }
