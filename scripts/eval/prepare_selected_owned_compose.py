@@ -22,6 +22,7 @@ MODES = {
     "S05": "selected-model-structured-nosniff",
     "S06": "selected-model-unsupported-write",
     "S07": "selected-model-nosniff",
+    "S07P": "selected-model-nosniff",
     "S07R": "selected-model-structured-nosniff",
     "S08": "selected-model-overconfident-nosniff",
     "S09": "selected-model-nosniff",

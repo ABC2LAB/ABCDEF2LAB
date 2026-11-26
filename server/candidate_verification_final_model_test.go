@@ -52,6 +52,8 @@ func TestCandidateFinalModelUsesPinnedSyntheticProviderPostgres(t *testing.T) {
 	s, _, _ := trafficEvidenceServer(t)
 	c := syntheticCandidateAssessmentContext(t)
 	var calls atomic.Int64
+	var modelMode atomic.Value
+	modelMode.Store("valid")
 	modelHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
@@ -71,6 +73,15 @@ func TestCandidateFinalModelUsesPinnedSyntheticProviderPostgres(t *testing.T) {
 				{CallRef: "original-call", AttemptRef: "original-attempt", ObservationDigest: strings.Repeat("a", 64)},
 				{CallRef: "followup-call", AttemptRef: "followup-attempt", ObservationDigest: strings.Repeat("b", 64)},
 			}}
+		switch modelMode.Load().(string) {
+		case "unsupported-positive":
+			verdict.Sources[1].CallRef = "unrelated-call"
+		case "unsupported-negative":
+			verdict.Verdict = "negative"
+			verdict.Sources = verdict.Sources[:1]
+		case "copied-source":
+			verdict.Sources[1] = verdict.Sources[0]
+		}
 		content, _ := json.Marshal(verdict)
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": "synthetic-final", "object": "chat.completion", "model": "local:selected-final-test",
 			"choices": []any{map[string]any{"index": 0, "message": map[string]any{"role": "assistant", "content": string(content)}, "finish_reason": "stop"}},
@@ -112,6 +123,49 @@ func TestCandidateFinalModelUsesPinnedSyntheticProviderPostgres(t *testing.T) {
 	got, err := model.Assess(t.Context(), c, func(context.Context) error { return nil })
 	if err != nil || got.Verdict != "confirmed" || calls.Load() != 1 || budget.Snapshot().Requests != 1 {
 		t.Fatalf("synthetic final model: calls=%d verdict=%s err=%v", calls.Load(), got.Verdict, err)
+	}
+	for _, tc := range []struct {
+		name, mode, wantVerdict, wantReason string
+		change                              func(*CandidateAssessmentContext)
+	}{
+		{"unsupported-positive", "unsupported-positive", "", "", nil},
+		{"unsupported-negative", "unsupported-negative", "", "", nil},
+		{"copied-source", "copied-source", "", "", nil},
+		{"account-mismatch", "valid", "insufficient", "context_mismatch", func(c *CandidateAssessmentContext) {
+			c.Original.OriginalObservation.Source.Observation.RequestAuthContext = "authorization"
+		}},
+		{"input-mismatch", "valid", "insufficient", "input_context_mismatch", func(c *CandidateAssessmentContext) {
+			c.Followup[0].Source.Observation.RequestQueryDigest = strings.Repeat("c", 64)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			modelMode.Store(tc.mode)
+			caseContext := syntheticCandidateAssessmentContext(t)
+			if tc.change != nil {
+				tc.change(&caseContext)
+			}
+			caseBudget, err := NewFirstDiagnosisModelBudget(diagnosisprep.Budget{ModelRequests: 1, InputTokens: 65536, OutputTokens: 512, DurationSeconds: 180}, 65536, 512,
+				func(diagnosisprep.ModelUsage) error { return nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			caseModel, err := NewSelectedCandidateModel(t.Context(), s.m.pg.DB, profileID, FirstDiagnosisModelOptions{Mode: "local_only", LocalManifestPath: manifestPath, Budget: caseBudget})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := calls.Load()
+			got, err := caseModel.Assess(t.Context(), caseContext, func(context.Context) error { return nil })
+			if calls.Load() != before+1 || caseBudget.Snapshot().Requests != 1 {
+				t.Fatal("synthetic provider was not called exactly once")
+			}
+			if tc.wantVerdict == "" {
+				if err == nil || got.Verdict == "confirmed" || got.Verdict == "negative" {
+					t.Fatalf("unsupported model recommendation became decisive: %+v %v", got, err)
+				}
+			} else if err != nil || got.Verdict != tc.wantVerdict || got.Reason != tc.wantReason {
+				t.Fatalf("mismatched observation became decisive: %+v %v", got, err)
+			}
+		})
 	}
 }
 

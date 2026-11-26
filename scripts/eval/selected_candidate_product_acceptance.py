@@ -6,6 +6,7 @@ Credentials, target responses and report bodies remain in memory.
 """
 
 import argparse
+import datetime
 import io
 import json
 import re
@@ -79,7 +80,7 @@ def main():
     parser.add_argument("--model-stats-port", type=int, default=49582)
     parser.add_argument("--head", required=True, help="Full source commit used for the product image")
     parser.add_argument("--project", default="pr950-selected93", help="Owned Compose project name")
-    parser.add_argument("--scenario", choices=("S01", "S02", "S03", "S04", "S05", "S06", "S07", "S07R", "S08", "S09", "S09C", "S09R", "S09M"), default="S02")
+    parser.add_argument("--scenario", choices=("S01", "S02", "S03", "S04", "S05", "S06", "S07", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M"), default="S02")
     parser.add_argument("--resume-task", type=int, help="Continue an owned fixture task after a harness failure")
     parser.add_argument("--reuse-target", action="store_true", help="Use the previously approved owned fixture target")
     args = parser.parse_args()
@@ -182,7 +183,7 @@ def main():
     pending_target = request(target_stats, "/stats")["allowed_received"]
     pending_model = request(model_stats, "/stats")["model_calls"]
     decision_status = None
-    if args.scenario in ("S02", "S03", "S04", "S05", "S06", "S07", "S07R", "S08", "S09", "S09C", "S09R", "S09M"):
+    if args.scenario in ("S02", "S03", "S04", "S05", "S06", "S07", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M"):
         analysis = history["verifications"][0]["analysis"]
         plan_route = route + "/" + verification + "/plan"
         if args.scenario == "S06":
@@ -234,6 +235,17 @@ def main():
                     body={"plan_digest": "0" * 64, "decision": "approved"}, expected=409)
             decision_status, _ = request(product, route + "/" + verification + "/decision", token,
                     body={"plan_digest": plan_response["plan_digest"], "decision": "rejected"}, return_status=True)
+        elif args.scenario == "S07P":
+            expires = datetime.datetime.fromisoformat(plan["expires_at"].replace("Z", "+00:00"))
+            if (expires - datetime.datetime.now(datetime.timezone.utc)).total_seconds() > 660:
+                raise RuntimeError("unexpected_plan_expiry")
+            while datetime.datetime.now(datetime.timezone.utc) <= expires:
+                time.sleep(min(5, max(.1, (expires - datetime.datetime.now(datetime.timezone.utc)).total_seconds())))
+            decision_status, denied = request(product, route + "/" + verification + "/decision", token,
+                                              body={"plan_digest": plan_response["plan_digest"], "decision": "approved"},
+                                              expected=409, return_status=True)
+            if denied.get("error") != "verification_plan_expired":
+                raise RuntimeError("expired_plan_was_not_rejected")
         else:
             if args.scenario in ("S07R", "S09C", "S09R"):
                 request(target_stats, "/hold-next-read", body={}, expected=204)
@@ -265,7 +277,7 @@ def main():
                 await_fixture_count(model_stats, "held_final_models", 1, timeout=90)
                 kill_and_restart_owned_preparation(args.project)
     deadline = time.monotonic() + 180
-    while args.scenario not in ("S06", "S07", "S09") and (args.scenario != "S04" or decision_status == 200) and latest["process_state"] != "completed" and time.monotonic() < deadline:
+    while args.scenario not in ("S06", "S07", "S07P", "S09") and (args.scenario != "S04" or decision_status == 200) and latest["process_state"] != "completed" and time.monotonic() < deadline:
         try:
             history = request(product, route, token)
         except (OSError, RuntimeError):
@@ -287,6 +299,11 @@ def main():
         latest = history["verifications"][0]["latest"]
         if latest["process_state"] != "cancelled" or latest.get("reason") != "user_cancelled":
             raise RuntimeError("restart_cancel_not_preserved")
+    elif args.scenario == "S07P":
+        history = request(product, route, token)
+        latest = history["verifications"][0]["latest"]
+        if latest["process_state"] != "expired" or latest.get("reason") != "plan_expired":
+            raise RuntimeError("expired_plan_history_missing")
     elif args.scenario == "S07":
         history = request(product, route, token)
         latest = history["verifications"][0]["latest"]
@@ -316,7 +333,7 @@ def main():
         raise RuntimeError("candidate_missing_from_updated_report")
     if args.scenario in ("S01", "S02", "S03", "S05") and current_candidate.get("outcome") != "model_supported":
         raise RuntimeError("selected_verdict_missing_from_report")
-    if args.scenario in ("S04", "S06", "S07", "S07R", "S08", "S09", "S09C", "S09R", "S09M") and current_candidate.get("outcome") in ("model_supported", "model_refuted"):
+    if args.scenario in ("S04", "S06", "S07", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M") and current_candidate.get("outcome") in ("model_supported", "model_refuted"):
         raise RuntimeError("unverified_candidate_promoted_in_report")
     if args.scenario in ("S07R", "S09C", "S09R", "S09M"):
         time.sleep(16)  # Let the deliberately held fixture response arrive; no late send may follow.
@@ -325,7 +342,7 @@ def main():
     after_authenticated_reads = request(target_stats, "/stats")["authenticated_reads"]
     after_structured_reads = request(target_stats, "/stats")["structured_reads"]
     after_model = request(model_stats, "/stats")["model_calls"]
-    expected_new_sends = 0 if args.scenario in ("S01", "S04", "S06", "S07", "S09") else 2 if args.scenario == "S05" else 1
+    expected_new_sends = 0 if args.scenario in ("S01", "S04", "S06", "S07", "S07P", "S09") else 2 if args.scenario == "S05" else 1
     if pending_target != after_diagnosis_target or after_target != pending_target + expected_new_sends:
         raise RuntimeError("unexpected_target_send_count")
     if args.scenario == "S03" and (after_diagnosis_logins - before_logins != 1 or
