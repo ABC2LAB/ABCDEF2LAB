@@ -30,6 +30,7 @@ import {
   coverageGraphStats,
   coverageNodeLabel,
   coverageNodeTitle,
+  coveragePathDetailLine,
   FOLD_LIMIT,
   FOLD_STEP,
   layoutCoverageGraph,
@@ -594,6 +595,7 @@ function Detail({ graph, node, kg }: { graph: CgGraph; node: CgNode | null; kg?:
   const parentKey = graph.edges.find((e) => e.src === node.key)?.dst;
   const parent = parentKey ? graph.nodes.find((n) => n.key === parentKey) : undefined;
   const children = graph.edges.filter((e) => e.dst === node.key).length;
+  const pathLine = coveragePathDetailLine(node);
   return (
     <section className={s.isec} aria-label="고른 자산" data-testid="coverage-graph-detail">
       <h3>{coverageNodeTitle(node)}</h3>
@@ -602,9 +604,7 @@ function Detail({ graph, node, kg }: { graph: CgGraph; node: CgNode | null; kg?:
         <li>{node.tested ? "검사함 — 탐색 · 점검이 다룬 자산입니다(취약점이 없다는 뜻은 아닙니다)" : "미검사"}</li>
         {node.assetId ? <li>{`자산 #${node.assetId}`}</li> : null}
         {node.origin ? <li>{`origin ${node.origin}`}</li> : null}
-        {node.displayPath ? (
-          <li>{`표시 경로 ${node.displayPath} — 경로 조각을 가린 구조입니다(요청 · 진단 근거 아님)`}</li>
-        ) : null}
+        {pathLine ? <li>{pathLine}</li> : null}
         {node.port ? <li>{`포트 ${node.port}`}</li> : null}
         {node.statusCode ? <li>{`관찰한 상태 코드 ${node.statusCode}`}</li> : null}
         <li>{parent ? `속한 자산: ${coverageNodeTitle(parent)}` : "최상위 자산"}</li>
