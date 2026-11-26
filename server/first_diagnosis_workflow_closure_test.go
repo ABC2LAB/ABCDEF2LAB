@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/Autumn-27/artex/diagnosis"
 )
 
 // 흐름 모드 마감: 계획이 오류 없이 끝났는데 의도가 하나도 없던 실행은 마감할 수 있고(no_intents 정상 마감으로 감),
@@ -66,29 +68,44 @@ func TestPlannerLogFinishRecordsPlanResult(t *testing.T) {
 	}
 }
 
-// 범위 선택을 기다리다 시간 상한 마감으로 계획 준비가 멈춘 작업은 마감 검사에서 계획 실패로 보지 않는다(#964, NodeGoat 회차 2
-// 발견 5). 계획 기록이 없거나 마지막 계획이 실패한 작업은 그대로 실패로 본다.
-func TestE2HTTPRuntimePlanSettledForClosure(t *testing.T) {
+// 범위 선택 전 시간 상한 마감(#964, NodeGoat 회차 2 발견 5): 계획 준비가 시간 상한으로 멈췄고 진단 Worker가 한 번도 돌지
+// 않았으며 끝낸 intent가 없으면 실패가 아니라 실행 상한 마감이다. 계획이 범위 선택 전에 만든 intent는 미완료로 남는다.
+func TestFirstDiagnosisSelectionWaitClosure(t *testing.T) {
+	incomplete := diagnosis.IntentOutcomes{Incomplete: 1}
+	for name, tc := range map[string]struct {
+		stopped, deepReady, noDeepRuns bool
+		outcomes                       diagnosis.IntentOutcomes
+		want                           bool
+	}{
+		"범위 선택 전, intent 0":          {stopped: true, noDeepRuns: true, want: true},
+		"범위 선택 전, 계획이 만든 intent 미완료": {stopped: true, noDeepRuns: true, outcomes: incomplete, want: true},
+		"시간 상한 멈춤 아님":                {noDeepRuns: true, outcomes: incomplete},
+		"진단 단계가 열림":                  {stopped: true, deepReady: true, noDeepRuns: true},
+		"진단 Worker가 돌았음":             {stopped: true, outcomes: incomplete},
+		"끝낸 intent가 있음":              {stopped: true, noDeepRuns: true, outcomes: diagnosis.IntentOutcomes{Done: 1}},
+		"정책 제한 intent가 있음":           {stopped: true, noDeepRuns: true, outcomes: diagnosis.IntentOutcomes{PolicyLimited: 1}},
+	} {
+		if got := firstDiagnosisSelectionWaitClosure(tc.stopped, tc.deepReady, tc.noDeepRuns, tc.outcomes); got != tc.want {
+			t.Errorf("%s: %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+// 시간 상한 멈춤 표시는 작업별이고, 계획 준비가 시간 상한으로 멈출 때만 생긴다.
+func TestE2HTTPRuntimePlanningStoppedByTimeBudget(t *testing.T) {
 	var nilRuntime *E2HTTPRuntime
-	if nilRuntime.planSettledForClosure("1") {
-		t.Fatal("nil 실행기가 마감 가능을 돌려줌")
+	if nilRuntime.planningStoppedByTimeBudget("1") {
+		t.Fatal("nil 실행기가 표시를 돌려줌")
 	}
 	r := &E2HTTPRuntime{}
-	if r.planSettledForClosure("1") {
-		t.Fatal("계획 기록도 시간 상한도 없는데 마감 가능")
-	}
-	r.recordPlanResult("1", false)
-	if r.planSettledForClosure("1") {
-		t.Fatal("마지막 계획이 실패인데 마감 가능")
-	}
 	task := &Task{ID: "1"}
+	if r.planningStoppedByTimeBudget("1") {
+		t.Fatal("멈추지 않았는데 표시가 있음")
+	}
 	if err := r.planningTimeBudget(context.Background(), task); !errors.Is(err, ErrE2HTTPBudgetLimited) || !task.firstDiagnosisBudgetLimited.Load() {
 		t.Fatal("시간 상한 계획 준비가 실행 상한이 아님", err)
 	}
-	if !r.planSettledForClosure("1") || r.planSettledForClosure("2") {
-		t.Fatal("시간 상한으로 멈춘 작업만 마감 가능이어야 함")
-	}
-	if firstDiagnosisWorkflowNotReady(false, true, 0, r.planSettledForClosure("1")) {
-		t.Fatal("범위 선택 전 시간 상한 회차를 흐름 준비 안 됨으로 봄")
+	if !r.planningStoppedByTimeBudget("1") || r.planningStoppedByTimeBudget("2") {
+		t.Fatal("작업별 표시가 아님")
 	}
 }

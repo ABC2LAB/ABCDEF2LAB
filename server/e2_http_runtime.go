@@ -238,7 +238,8 @@ type E2HTTPRuntime struct {
 	// 정상인데 의도 0'과 '계획 호출이 실패해 의도 0'을 가르는 데 쓴다.
 	planResults sync.Map
 	// planTimeBudget은 계획 준비가 시간 상한 마감(agent.AbortTimeBudgetDrain)으로 멈춘 작업이다(작업 ID → true). 범위 선택을
-	// 기다리다 멈춘 흐름 모드 회차는 계획이 실패한 것이 아니므로 마감 검사가 '흐름 준비 안 됨'으로 보지 않는다(#964).
+	// 기다리다 멈춘 흐름 모드 회차를 마감 검사가 실패가 아니라 실행 상한 마감으로 가른다(#964,
+	// firstDiagnosisSelectionWaitClosure).
 	planTimeBudget sync.Map
 }
 
@@ -257,12 +258,6 @@ func (r *E2HTTPRuntime) planningStoppedByTimeBudget(taskID string) bool {
 	}
 	_, ok := r.planTimeBudget.Load(taskID)
 	return ok
-}
-
-// planSettledForClosure는 흐름 모드 마감 검사가 '계획이 실패하지 않았다'고 볼 수 있는지다. 마지막 계획이 오류 없이 끝났거나,
-// 계획 준비가 시간 상한 마감으로 멈춘 경우다(범위 선택을 기다리던 회차, #964). 시간 상한은 실행 상한이지 계획 실패가 아니다.
-func (r *E2HTTPRuntime) planSettledForClosure(taskID string) bool {
-	return r.lastPlanSucceeded(taskID) || r.planningStoppedByTimeBudget(taskID)
 }
 
 func (r *E2HTTPRuntime) lastPlanSucceeded(taskID string) bool {
@@ -662,6 +657,10 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 		}
 	}
 	t.plannerRounds++
+	// 계획 준비가 다시 정상으로 통과했으면 앞의 시간 상한 멈춤 표시는 지금 상태가 아니다. 지우지 않으면 그 뒤 실제 계획 실패도
+	// 마감 검사에서 계획 성공처럼 보인다(#964 윤재상 리뷰). 계획 결과 기록 때 지우지 않는 것은, 시간 상한 마감 때 함께 취소된
+	// 다른 계획이 실패로 기록되며 표시를 지워 원래 결함(범위 대기 회차의 failed)으로 돌아가지 않게 하려는 것이다.
+	r.planTimeBudget.Delete(task.ID)
 	// 실제 intent가 생기기 전 Planner의 Bash/probe는 허용하지 않는다.
 	return agent.WithE2HTTPWebSearch(agent.WithE2HTTPPlannerLimits(agent.WithE2HTTPPlanning(e2HTTPTaskContext(ctx, t.ctx)), r.options.PlannerLimits), r.options.WebSearch), nil
 }

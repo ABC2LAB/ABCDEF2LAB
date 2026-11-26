@@ -909,33 +909,53 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 		return true, result, nil
 	}
 	settled := outcomes.Total()
-	if flow := server.engine.e2HTTP.options.Workflow; flow != nil &&
-		firstDiagnosisWorkflowNotReady(flow.DeepReady(), flow.NoDeepRuns(), settled, server.engine.e2HTTP.planSettledForClosure(task.ID)) {
-		return failOutcome(reasonClosureWorkflowNotReady)
+	// programCallsOnly는 이 실행의 E② 호출이 모두 서버가 연 프로그램 호출(인증 준비 등)이고 하나도 빠짐없이 등록됐는지 본다.
+	// 진단 Worker가 돌지 않은 마감(intent 0, 범위 선택 전 시간 상한)은 대조할 Worker 결과가 없으므로 이것만 확인한다.
+	programCallsOnly := func() (bool, string) {
+		execution, ok := server.engine.e2HTTP.Execution(task.ID)
+		if !ok || execution == nil {
+			return true, ""
+		}
+		program := server.engine.e2HTTP.ProgramCalls(task.ID)
+		calls := execution.Calls()
+		if len(calls) > 0 {
+			if results := server.engine.e2HTTP.Results(task.ID); results == nil || len(results) != 0 {
+				return false, reasonClosureResultsUnavailable
+			}
+		}
+		registered := 0
+		for _, call := range calls {
+			if settled, isProgram := firstDiagnosisProgramCall(call, program, nil); !settled || !isProgram {
+				return false, reasonClosureCallsWithoutIntents
+			}
+			if program[call.CallRef] {
+				registered++
+			}
+		}
+		if len(program) != registered {
+			return false, reasonClosureCallCountMismatch
+		}
+		return true, ""
+	}
+	if flow := server.engine.e2HTTP.options.Workflow; flow != nil {
+		if firstDiagnosisSelectionWaitClosure(server.engine.e2HTTP.planningStoppedByTimeBudget(task.ID), flow.DeepReady(), flow.NoDeepRuns(), outcomes) {
+			// 범위 선택(흐름 진단 단계)을 기다리다 시간 상한 마감으로 계획 준비가 멈췄고, 진단 Worker가 한 번도 돌지 않았다. 계획이
+			// 범위 선택 전에 만든 intent는 실행되지 않아 미완료로 남는다. 실패가 아니라 실행 상한 마감이다(#830 시간 상한, #964,
+			// 2026-11-26 NodeGoat 회차 2 발견 5). 탐색 결과는 흐름에 그대로 남는다.
+			if ok, reason := programCallsOnly(); !ok {
+				return fail(reason)
+			}
+			return true, diagnosis.RunResult{Outcome: outcomes.Outcome(), IntentOutcomes: outcomes, ClosingReason: diagnosis.ClosingBudgetLimited}, nil
+		}
+		if firstDiagnosisWorkflowNotReady(flow.DeepReady(), flow.NoDeepRuns(), settled, server.engine.e2HTTP.lastPlanSucceeded(task.ID)) {
+			return failOutcome(reasonClosureWorkflowNotReady)
+		}
 	}
 	if settled == 0 {
 		// 실행이 상한·목표 달성으로 끝날 때까지 intent가 하나도 없었다. 실패가 아니라 no_intents로 마감한다(C11 결정 2).
 		// 작업이 없으므로 대조할 E② 호출도 없어야 한다.
-		if execution, ok := server.engine.e2HTTP.Execution(task.ID); ok && execution != nil {
-			program := server.engine.e2HTTP.ProgramCalls(task.ID)
-			calls := execution.Calls()
-			if len(calls) > 0 {
-				if results := server.engine.e2HTTP.Results(task.ID); results == nil || len(results) != 0 {
-					return fail(reasonClosureResultsUnavailable)
-				}
-			}
-			registered := 0
-			for _, call := range calls {
-				if settled, isProgram := firstDiagnosisProgramCall(call, program, nil); !settled || !isProgram {
-					return fail(reasonClosureCallsWithoutIntents)
-				}
-				if program[call.CallRef] {
-					registered++
-				}
-			}
-			if len(program) != registered {
-				return fail(reasonClosureCallCountMismatch)
-			}
+		if ok, reason := programCallsOnly(); !ok {
+			return fail(reason)
 		}
 		result := diagnosis.RunResult{Outcome: diagnosis.OutcomeNoIntents}
 		if budgetLimited {
@@ -1367,6 +1387,13 @@ func firstDiagnosisRunContext(ctx context.Context) (context.Context, context.Can
 // 진단 Worker가 한 번도 없었던 실행은 의도가 하나도 없고(settled 0) 마지막 계획이 오류 없이 끝났을 때만 마감해서
 // 아래의 no_intents 정상 마감으로 간다(2026-11-22 사용자 결정). 계획 호출이 실패해 의도가 없는 경우는 지금처럼 실패다:
 // 모델 고장을 '시도한 계획 없음'으로 숨기지 않는다.
+// firstDiagnosisSelectionWaitClosure는 흐름 모드 회차가 범위 선택 전에 시간 상한 마감으로 끝났는지다: 계획 준비가 시간
+// 상한으로 멈췄고(stoppedByTimeBudget), 진단 단계가 열리지 않아 진단 Worker가 한 번도 돌지 않았고, 끝낸·정책 제한 intent가
+// 없다. 이때 남은 intent(계획이 범위 선택 전에 만든 것)는 실행되지 않은 미완료다.
+func firstDiagnosisSelectionWaitClosure(stoppedByTimeBudget, deepReady, noDeepRuns bool, outcomes diagnosis.IntentOutcomes) bool {
+	return stoppedByTimeBudget && !deepReady && noDeepRuns && outcomes.Done+outcomes.PolicyLimited == 0
+}
+
 func firstDiagnosisWorkflowNotReady(deepReady, noDeepRuns bool, settled int64, lastPlanSucceeded bool) bool {
 	if deepReady {
 		return false

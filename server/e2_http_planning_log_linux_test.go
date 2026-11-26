@@ -275,3 +275,22 @@ func pausedWorkflowCancelled(t *testing.T, r *E2HTTPRuntime, task *Task, ctx con
 	time.AfterFunc(50*time.Millisecond, func() { cancel(cause) })
 	return waiting
 }
+
+// 시간 상한 멈춤 표시는 계획 준비가 다시 정상으로 통과하면 지운다. 지난 표시가 그 뒤 마감 검사를 바꾸지 않게 한다
+// (#964 윤재상 리뷰).
+func TestPlanningTimeBudgetMarkClearedByLaterPlanning(t *testing.T) {
+	runtime, task := e2HTTPRuntimeFixture(t, nil)
+	if err := runtime.AdmitTask(t.Context(), task); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { runtime.task.lease = nil; runtime.task.closed = false }()
+	if err := runtime.planningTimeBudget(t.Context(), task); !errors.Is(err, ErrE2HTTPBudgetLimited) || !runtime.planningStoppedByTimeBudget(task.ID) {
+		t.Fatal("시간 상한 표시가 없음", err)
+	}
+	if _, err := runtime.PreparePlanning(t.Context(), task); err != nil {
+		t.Fatal("계획 준비가 통과하지 않음", err)
+	}
+	if runtime.planningStoppedByTimeBudget(task.ID) {
+		t.Fatal("다시 통과한 계획 준비 뒤에도 시간 상한 표시가 남음")
+	}
+}
