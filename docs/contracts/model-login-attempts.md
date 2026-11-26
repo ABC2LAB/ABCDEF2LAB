@@ -195,19 +195,22 @@
 
 **화면 계정 상태(`account_auth`)로 싣는 법**
 
-등록 계정 라벨마다 아래 표로 정한다.
+등록 계정 라벨마다 그 계정의 시도 기록으로 정한다. 아래 표를 **위에서부터 차례로 보고 처음 맞는 행** 하나만 쓴다(우선순위 = 행 순서).
 
-| 계정의 시도들 | `account_auth` 값 |
-|---|---|
-| 아직 보낸 시도 없음 | `not_attempted`(새 값) |
-| 한 번이라도 `succeeded` | `authenticated`(뒤 `failed`가 덮지 않음, E③ 재사용과 같은 규칙) |
-| `succeeded` 없음, 마지막 보낸 시도가 `failed` | `login_failed` |
-| `succeeded` 없음, 마지막 보낸 시도가 `unconfirmed` | `unconfirmed`(새 값) |
-| `succeeded` 없음, 마지막 시도가 `result_unknown` | `result_unknown` |
-| `succeeded` 없음, 시도가 모두 `not_sent` | `not_sent` |
-| 연속 실패 상한에 닿음 | `login_failed`(마지막 보낸 시도가 실패이므로) |
+- **보낸 시도**: 결과(`outcome`)가 `succeeded`·`unconfirmed`·`failed`·`result_unknown`인 시도다. `not_sent`는 대상에 나가지 않았으므로 보낸 시도가 아니다.
+- **마지막 보낸 시도**: 보낸 시도 가운데 시도를 시작한 순서(`attempt_ref`를 매긴 순서)로 가장 늦은 것이다. 뒤 요청으로 결과가 나중에 바뀌어도 순서는 시작 순서로 본다. 그 뒤에 온 `not_sent`는 건너뛴다.
 
-- 마지막 보낸 시도는 `not_sent`를 뺀 마지막 시도다.
+| 순서 | 조건 | `account_auth` 값 |
+|---|---|---|
+| 1 | 그 계정의 시도 기록이 0건 | `not_attempted`(새 값) |
+| 2 | 보낸 시도 가운데 하나라도 `succeeded` | `authenticated`(뒤 `failed`가 덮지 않음, E③ 재사용과 같은 규칙) |
+| 3 | 기록은 있지만 보낸 시도가 없음(모두 `not_sent`) | `not_sent` |
+| 4 | 마지막 보낸 시도가 `failed` | `login_failed`(연속 실패 상한에 닿은 계정도 여기) |
+| 5 | 마지막 보낸 시도가 `unconfirmed` | `unconfirmed`(새 값) |
+| 6 | 마지막 보낸 시도가 `result_unknown` | `result_unknown` |
+
+예: `result_unknown` → `not_sent` 순서면 마지막 보낸 시도가 `result_unknown`이라 6행 `result_unknown`이다. `not_sent` 1건뿐이면 3행 `not_sent`다. `failed` → `succeeded` → `failed`면 2행 `authenticated`다. 4~6행은 보낸 시도가 하나 이상일 때만 닿으므로 빈칸이 없다.
+
 - `session_not_found`는 모델 로그인에서 쓰지 않는다. E③ 재사용 로그인(`actor: program`)이 세션 자리를 못 찾았을 때만 남긴다.
 - 값이 바뀔 때마다 `account_auth_updated_at`도 그 계정 것만 갱신한다(#936 규칙).
 - 새 값(`not_attempted`·`unconfirmed`)을 서버가 싣는 PR은 **웹 파서(닫힌 값 목록)를 같은 PR에서 같이 고친다.** 화면 파서는 모르는 값을 받으면 회차 상태 응답 전체를 거부한다(#929 → #938과 같은 문제).
