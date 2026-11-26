@@ -65,3 +65,30 @@ func TestPlannerLogFinishRecordsPlanResult(t *testing.T) {
 		t.Fatal("성공한 계획을 남기지 않음")
 	}
 }
+
+// 범위 선택을 기다리다 시간 상한 마감으로 계획 준비가 멈춘 작업은 마감 검사에서 계획 실패로 보지 않는다(#964, NodeGoat 회차 2
+// 발견 5). 계획 기록이 없거나 마지막 계획이 실패한 작업은 그대로 실패로 본다.
+func TestE2HTTPRuntimePlanSettledForClosure(t *testing.T) {
+	var nilRuntime *E2HTTPRuntime
+	if nilRuntime.planSettledForClosure("1") {
+		t.Fatal("nil 실행기가 마감 가능을 돌려줌")
+	}
+	r := &E2HTTPRuntime{}
+	if r.planSettledForClosure("1") {
+		t.Fatal("계획 기록도 시간 상한도 없는데 마감 가능")
+	}
+	r.recordPlanResult("1", false)
+	if r.planSettledForClosure("1") {
+		t.Fatal("마지막 계획이 실패인데 마감 가능")
+	}
+	task := &Task{ID: "1"}
+	if err := r.planningTimeBudget(context.Background(), task); !errors.Is(err, ErrE2HTTPBudgetLimited) || !task.firstDiagnosisBudgetLimited.Load() {
+		t.Fatal("시간 상한 계획 준비가 실행 상한이 아님", err)
+	}
+	if !r.planSettledForClosure("1") || r.planSettledForClosure("2") {
+		t.Fatal("시간 상한으로 멈춘 작업만 마감 가능이어야 함")
+	}
+	if firstDiagnosisWorkflowNotReady(false, true, 0, r.planSettledForClosure("1")) {
+		t.Fatal("범위 선택 전 시간 상한 회차를 흐름 준비 안 됨으로 봄")
+	}
+}

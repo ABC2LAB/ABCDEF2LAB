@@ -237,6 +237,9 @@ type E2HTTPRuntime struct {
 	// planResults는 작업별 마지막 계획(Plan) 한 번이 오류 없이 끝났는지다(작업 ID → bool). 흐름 모드 마감이 '계획은
 	// 정상인데 의도 0'과 '계획 호출이 실패해 의도 0'을 가르는 데 쓴다.
 	planResults sync.Map
+	// planTimeBudget은 계획 준비가 시간 상한 마감(agent.AbortTimeBudgetDrain)으로 멈춘 작업이다(작업 ID → true). 범위 선택을
+	// 기다리다 멈춘 흐름 모드 회차는 계획이 실패한 것이 아니므로 마감 검사가 '흐름 준비 안 됨'으로 보지 않는다(#964).
+	planTimeBudget sync.Map
 }
 
 // recordPlanResult는 계획 한 번의 결과를 남긴다(준비 단계의 첫 계획과 실행 단계의 계획 반복 모두).
@@ -247,6 +250,21 @@ func (r *E2HTTPRuntime) recordPlanResult(taskID string, ok bool) {
 }
 
 // lastPlanSucceeded는 그 작업의 마지막 계획이 오류 없이 끝났는지 본다. 계획 기록이 없으면 거짓이다.
+// planningStoppedByTimeBudget은 그 작업의 계획 준비가 시간 상한 마감으로 멈췄는지다.
+func (r *E2HTTPRuntime) planningStoppedByTimeBudget(taskID string) bool {
+	if r == nil {
+		return false
+	}
+	_, ok := r.planTimeBudget.Load(taskID)
+	return ok
+}
+
+// planSettledForClosure는 흐름 모드 마감 검사가 '계획이 실패하지 않았다'고 볼 수 있는지다. 마지막 계획이 오류 없이 끝났거나,
+// 계획 준비가 시간 상한 마감으로 멈춘 경우다(범위 선택을 기다리던 회차, #964). 시간 상한은 실행 상한이지 계획 실패가 아니다.
+func (r *E2HTTPRuntime) planSettledForClosure(taskID string) bool {
+	return r.lastPlanSucceeded(taskID) || r.planningStoppedByTimeBudget(taskID)
+}
+
 func (r *E2HTTPRuntime) lastPlanSucceeded(taskID string) bool {
 	if r == nil {
 		return false
@@ -561,6 +579,7 @@ func timeBudgetDrained(ctx context.Context) bool {
 // 회차 2 발견 5: 범위 선택을 기다리다 시간 상한에 닿아 planning_workflow_blocked → engine_task_failed).
 func (r *E2HTTPRuntime) planningTimeBudget(ctx context.Context, task *Task) error {
 	task.firstDiagnosisBudgetLimited.Store(true)
+	r.planTimeBudget.Store(task.ID, true)
 	r.planningFailure(ctx, "blocked", "planning_time_budget")
 	return ErrE2HTTPBudgetLimited
 }

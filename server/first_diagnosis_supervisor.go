@@ -910,7 +910,7 @@ func (s *FirstDiagnosisSupervisor) generalCompletion(ctx context.Context, server
 	}
 	settled := outcomes.Total()
 	if flow := server.engine.e2HTTP.options.Workflow; flow != nil &&
-		firstDiagnosisWorkflowNotReady(flow.DeepReady(), flow.NoDeepRuns(), settled, server.engine.e2HTTP.lastPlanSucceeded(task.ID)) {
+		firstDiagnosisWorkflowNotReady(flow.DeepReady(), flow.NoDeepRuns(), settled, server.engine.e2HTTP.planSettledForClosure(task.ID)) {
 		return failOutcome(reasonClosureWorkflowNotReady)
 	}
 	if settled == 0 {
