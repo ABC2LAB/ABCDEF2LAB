@@ -73,7 +73,7 @@ func (l *urlLoadedProfile) explorationPasswords() (*explorationPasswords, error)
 
 // explorationCredentials는 이 실행의 결속 계정마다 실행 자료의 자격 사본에서 라벨·아이디·비밀번호를 꺼내 탐색 에이전트 지침에
 // 넣을 값으로 돌려준다(사용자 결정 2026-11-26: 탐색에서도 모델이 브라우저로 직접 로그인한다, CLAUDE.md 절대규칙 1·2). 진단 단계
-// (E②)와 같은 자격 사본을 쓴다. 결속 계정의 자격 사본이 없거나 읽을 수 없으면 오류다(어느 계정을 넣었는지 모르는 채로 열지
+// (E②)와 같은 자격 사본을 쓰고, 기록에서 가릴 수 없는 짧은 비밀번호의 계정은 넣지 않는다. 결속 계정의 자격 사본이 없거나 읽을 수 없으면 오류다(어느 계정을 넣었는지 모르는 채로 열지
 // 않는다). 결속 계정이 없으면 빈 목록이다.
 func (l *urlLoadedProfile) explorationCredentials() ([]agent.E2HTTPAccountCredential, error) {
 	out := []agent.E2HTTPAccountCredential{}
@@ -88,6 +88,11 @@ func (l *urlLoadedProfile) explorationCredentials() ([]agent.E2HTTPAccountCreden
 		}
 		if !ok || json.Unmarshal(raw, &cred) != nil || cred.Username == "" || cred.Password == "" {
 			return nil, errPreparation
+		}
+		// 탐색 기록 가림 목록(explorationPasswords)에 넣지 못하는 비밀번호(6바이트 미만 등)는 모델에 주지 않는다. 모델이 그
+		// 값을 다시 쓰면 탐색 활동 기록에 원문이 남는다(#967 동찬 리뷰 P1). E② 진단 단계도 같은 계정을 주지 않는다.
+		if !e2proxy.ValidProtectedPassword([]byte(cred.Password)) {
+			continue
 		}
 		out = append(out, agent.E2HTTPAccountCredential{Label: account.Label, Username: cred.Username, Password: cred.Password})
 	}

@@ -824,3 +824,47 @@ func TestE2HTTPFactoryGivesCredentialsToModelWithoutLogin(t *testing.T) {
 		t.Fatal("비밀번호가 저장 기록 가림 값으로 등록되지 않음")
 	}
 }
+
+// 저장 기록 가림 값으로 등록할 수 없는 짧은 비밀번호(1~5바이트, 제품 등록은 받음)의 계정은 모델 로그인 회차에서도 Worker에
+// 주지 않고 not_sent로 남긴다. 모델이 그 값을 다시 쓰면 저장 기록에 원문이 남기 때문이다(#967 동찬 리뷰 P1).
+func TestE2HTTPFactoryWithholdsUnmaskablePasswordFromModel(t *testing.T) {
+	login := &authLoginTarget{token: "seeded-factory-session-55ff"}
+	target := httptest.NewServer(login.handler(t))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/read"
+	auth := policy.Rules[0]
+	auth.Ref, auth.PathScopeRef, auth.PathPrefix, auth.Methods, auth.Purpose, auth.Credentials = "auth-login", "auth-login-path", "/login", []string{"POST"}, e2proxy.PurposeAuthPrep, nil
+	policy.Rules = append(policy.Rules, auth)
+	dir := filepath.Dir(cfg.PolicyFile)
+	long := authCredentialPin(t, dir, "account-tester-a.json", "tester@owned.test", "seeded-pass-88ff")
+	short := authCredentialPin(t, dir, "account-tester-b.json", "short@owned.test", "ab12")
+	a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: long}, E2HTTPFileAuthAccount{Label: "tester-b", Credential: short})
+	a.ModelLogin = true
+	policy.Auth, policy.HeaderMode = &a, e2proxy.HeaderTestAccountPassthrough
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+		t.Fatal("policy write")
+	}
+	options, err := LoadE2HTTPRuntimeOptions(t.Context(), E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	acquired, err := options.Acquire(run, E2HTTPRequest{TaskID: "17", TaskIDNumber: 17, ExplorationID: 1, IntentID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer acquired.Release(context.Background())
+	if len(acquired.Credentials) != 1 || acquired.Credentials[0].Label != "tester-a" {
+		t.Fatalf("짧은 비밀번호 계정이 Worker 자격에 감: %d", len(acquired.Credentials))
+	}
+	if acquired.AccountAuth["tester-b"] != E2HTTPAuthNotSent || acquired.AccountAuth["tester-a"] != "" {
+		t.Fatalf("계정 상태: %v", acquired.AccountAuth)
+	}
+	if login.posts.Load() != 0 {
+		t.Fatal("모델 로그인 회차에서 프로그램이 로그인함")
+	}
+}

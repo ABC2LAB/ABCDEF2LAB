@@ -548,8 +548,12 @@ func e2HTTPAccountCredentials(ctx context.Context, execution *e2proxy.Execution,
 			logAccountAuthNotSent(ctx, account.Label)
 			continue
 		}
+		// 저장 기록 가림 값으로 등록하지 못하는 비밀번호(6바이트 미만 등)는 모델에 주지 않는다. 모델이 그 값을 도구 입력·응답에
+		// 다시 쓰면 저장 기록에 원문이 남기 때문이다(#967 동찬 리뷰 P1, 비밀번호 응답 보호 계약). 그 계정은 not_sent다.
 		if execution.AddProtectedPasswords([]byte(cred.Password)) != nil {
-			log.Print("[e2-http] 등록 계정 비밀번호를 기록 가림 값으로 등록하지 못함(짧은 값 등). 모델에는 그대로 준다")
+			unread[account.Label] = E2HTTPAuthNotSent
+			logAccountAuthNotSent(ctx, account.Label)
+			continue
 		}
 		out = append(out, agent.E2HTTPAccountCredential{Label: account.Label, Username: cred.Username, Password: cred.Password})
 	}
