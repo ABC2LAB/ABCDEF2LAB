@@ -54,15 +54,24 @@ type run struct {
 	cancel context.CancelFunc
 }
 
-// maxSealChecks는 한 실행에서 근거로 내줄 수 있는 서로 다른 체크포인트 수의 상한이다. E③ 확정 단계는 실행마다
-// 신원 2 + 종류(최대 16) × 3번만 묻는다. 상한은 봉인 응답이 IPC 한 줄 상한 안에 들도록 둔 것이다.
+// maxSealChecks는 한 실행에서 근거로 내줄 수 있는 서로 다른 체크포인트 수의 상한이다. E③ 확정 단계와
+// 후보별 일반 E② 관찰 모두 이 목록을 사용한다. 상한은 봉인 응답이 IPC 한 줄 상한 안에 들도록 둔 것이다.
 const maxSealChecks = 128
 
-// Verification은 확정 단계 결과 사건과 그 사건을 검증한 현재 head 체크포인트다. 판정은 이 체크포인트를 근거로
+// Verification은 검증한 결과 사건과 그 사건을 검증한 현재 head 체크포인트다. 판정은 이 체크포인트를 근거로
 // 저장하고, 봉인 뒤 그 체크포인트가 봉인 저널 앞부분에 있는지 따로 확인한다(E1, 2026-11-20 결정).
 type Verification struct {
 	Event      e2proxy.Event
 	Checkpoint e2proxy.JournalCheckpoint
+}
+
+// ObservationRef identifies one ordinary E² result. It grants no E③
+// ownership verdict; the Host only attests that this exact completed event
+// exists in the currently authenticated journal prefix.
+type ObservationRef struct {
+	CallRef   string `json:"call_ref"`
+	AttemptID string `json:"attempt_id"`
+	Sequence  uint64 `json:"sequence"`
 }
 
 // SealCheck는 내준 근거 체크포인트 하나의 봉인 포함 결과다. 같은 저널의 체크포인트라 저널 ID·범위는 Head와 같다.
@@ -168,7 +177,7 @@ func (h *Host) Open(ctx context.Context, scope transmit.Scope, policyRevision st
 	h.scanMu.Lock()
 	defer h.scanMu.Unlock()
 	// 검증과 새 실행 등록을 직렬화하여 종료 복구와 새 송신이 경합하지 않게 한다.
-	if h.checkRestoredHeads(ctx, false) != nil {
+	if h.checkRestoredHeads(ctx, false, "", nil) != nil {
 		return nil, ErrUnavailable
 	}
 	h.mu.Lock()
@@ -228,6 +237,47 @@ func (s *Session) VerifiedAt(ctx context.Context, binding e3contract.RunBinding,
 		return Verification{}, err
 	}
 	return Verification{Event: event, Checkpoint: checkpoint}, nil
+}
+
+func (s *Session) ObservedAt(ctx context.Context, ref ObservationRef) (Verification, error) {
+	if s == nil || s.run == nil || ctx == nil || ref.CallRef == "" || ref.AttemptID == "" || ref.Sequence == 0 {
+		return Verification{}, ErrBindingMismatch
+	}
+	r := s.run
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.owner.mu.Lock()
+	fenced := r.fenced
+	r.owner.mu.Unlock()
+	if r.closed || fenced || r.recorder == nil || r.ctx.Err() != nil {
+		return Verification{}, ErrUnavailable
+	}
+	events, head, err := r.verifiedEvents(ctx)
+	if err != nil || head.Phase != e2checkpoint.Open || !allAttemptsFinished(events) ||
+		head.Checkpoint.Version != e2proxy.JournalVersionV3 || head.Checkpoint.Scope != r.scope {
+		return Verification{}, ErrUnavailable
+	}
+	var matched e2proxy.Event
+	for _, event := range events {
+		if event.Stage == "result" && event.CallRef == ref.CallRef && event.AttemptID == ref.AttemptID && event.Sequence == ref.Sequence {
+			if matched.Stage != "" {
+				return Verification{}, ErrBindingMismatch
+			}
+			matched = event
+		}
+	}
+	if matched.Stage == "" {
+		return Verification{}, ErrEventMissing
+	}
+	if matched.Scope != r.scope || matched.PolicyRevision != r.revision || matched.Program != "" || matched.E3Audit != nil ||
+		matched.Decision != "allowed" || !matched.ForwardAttempted || !matched.ResponseComplete || !matched.AuditComplete ||
+		matched.NotSent || matched.ResponseTruncated {
+		return Verification{}, ErrBindingMismatch
+	}
+	if !r.issue(head.Checkpoint) {
+		return Verification{}, ErrUnavailable
+	}
+	return Verification{Event: matched, Checkpoint: head.Checkpoint}, nil
 }
 
 func (s *Session) verified(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e2proxy.Event, e2proxy.JournalCheckpoint, error) {

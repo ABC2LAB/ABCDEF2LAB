@@ -2029,10 +2029,10 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     fireEvent.keyDown(listTab, { key: "ArrowRight" });
     expect(screen.getByRole("tab", { name: "자산 지식 그래프" })).toHaveAttribute("aria-selected", "true");
     expect(listTab).toHaveAttribute("tabindex", "-1");
-    // 자산 지식 그래프 탭은 KG 조회 v1 을 읽는다(그리기·실패는 report-asset-graph.test.tsx). '연결 전' 자리는 없다
+    // 자산 지식 그래프 탭은 자산 관계 그래프에 KG 조회 v1 포함 근거를 붙인다(그리기·실패는 kg-asset-detail.test.tsx). '연결 전' 자리는 없다
     const graphTab = screen.getByRole("tabpanel", { name: "자산 지식 그래프" });
     expect(within(graphTab).queryByText(/^연결 전/)).toBeNull();
-    expect(graphTab).toHaveTextContent(/자산 지식 그래프를 불러오는 중|그래프 조회 실패/);
+    expect(graphTab).toHaveTextContent(/KG 조회 v1\)를 불러오는 중|포함 근거 조회 실패/);
     // 접근통제 지도 탭은 이 점검의 저장 지도를 읽는다(그리기·409·경쟁은 report-access-map.test.tsx). '연결 전' 자리는 없고
     // 지도 화면 바로가기는 있다
     fireEvent.click(screen.getByRole("tab", { name: "접근통제 지도" }));

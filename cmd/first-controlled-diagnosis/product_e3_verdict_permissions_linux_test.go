@@ -106,6 +106,34 @@ func TestProductRuntimeE3VerdictInsertOnly(t *testing.T) {
 				runtimeInsert, runtimeUpdate, runtimeDelete, runtimeTruncate, apiSelect, apiInsert)
 		}
 	}
+	for _, table := range []string{"diagnostic_candidate_verification_requests", "diagnostic_candidate_verification_events"} {
+		var apiSelect, apiInsert, apiUpdate, apiDelete, apiTruncate, runtimeInsert, runtimeUpdate, runtimeDelete bool
+		if err := installer.QueryRowContext(t.Context(), `SELECT has_table_privilege('product_api',$1,'SELECT'),has_table_privilege('product_api',$1,'INSERT'),has_table_privilege('product_api',$1,'UPDATE'),has_table_privilege('product_api',$1,'DELETE'),has_table_privilege('product_api',$1,'TRUNCATE'),has_table_privilege('product_runtime',$1,'INSERT'),has_table_privilege('product_runtime',$1,'UPDATE'),has_table_privilege('product_runtime',$1,'DELETE')`, table).Scan(&apiSelect, &apiInsert, &apiUpdate, &apiDelete, &apiTruncate, &runtimeInsert, &runtimeUpdate, &runtimeDelete); err != nil {
+			t.Fatal(err)
+		}
+		if !apiSelect || !apiInsert || apiUpdate || apiDelete || apiTruncate || runtimeInsert != (table == "diagnostic_candidate_verification_events") || runtimeUpdate || runtimeDelete {
+			t.Fatalf("%s must remain append-only for narrowly assigned API/runtime writers", table)
+		}
+	}
+	{
+		const table = "diagnostic_candidate_observations_v2"
+		var apiSelect, apiInsert, apiUpdate, apiDelete, runtimeSelect, runtimeInsert, runtimeUpdate, runtimeDelete bool
+		if err := installer.QueryRowContext(t.Context(), `SELECT has_table_privilege('product_api',$1,'SELECT'),has_table_privilege('product_api',$1,'INSERT'),has_table_privilege('product_api',$1,'UPDATE'),has_table_privilege('product_api',$1,'DELETE'),has_table_privilege('product_runtime',$1,'SELECT'),has_table_privilege('product_runtime',$1,'INSERT'),has_table_privilege('product_runtime',$1,'UPDATE'),has_table_privilege('product_runtime',$1,'DELETE')`, table).
+			Scan(&apiSelect, &apiInsert, &apiUpdate, &apiDelete, &runtimeSelect, &runtimeInsert, &runtimeUpdate, &runtimeDelete); err != nil {
+			t.Fatal(err)
+		}
+		// The protected selected-verification worker reads the sealed observation
+		// projection through product_runtime. Both roles remain unable to edit it.
+		if !apiSelect || apiInsert || apiUpdate || apiDelete || !runtimeSelect || !runtimeInsert || runtimeUpdate || runtimeDelete {
+			t.Fatalf("%s grants violate writer/read-only split", table)
+		}
+	}
+	for _, col := range []string{"exploration_id", "src_id", "rel", "dst_id"} {
+		var readable bool
+		if err := installer.QueryRowContext(t.Context(), `SELECT has_column_privilege('product_api','exploration_edges',$1,'SELECT')`, col).Scan(&readable); err != nil || !readable {
+			t.Fatalf("product_api candidate edge binding column %s unavailable: %v", col, err)
+		}
+	}
 	// 실제 실행 역할 연결로 저장하고, 같은 연결로 바꾸기·지우기를 시도한다.
 	task, err := installer.CreateTask("synthetic product verdict store", "synthetic only", nil, 0, 0)
 	if err != nil {
@@ -125,6 +153,35 @@ func TestProductRuntimeE3VerdictInsertOnly(t *testing.T) {
 	if err := runtime.QueryRowContext(t.Context(), "SELECT current_user").Scan(&current); err != nil || current != "product_runtime" {
 		t.Fatalf("실행 역할로 접속하지 못함: %q %v", current, err)
 	}
+	// The worker serializes its append-only events on the immutable request.
+	// PostgreSQL requires UPDATE on one column even for a read-only row lock.
+	var lockID, otherUpdate, apiLockID, apiOtherUpdate bool
+	if err := installer.QueryRowContext(t.Context(), `SELECT
+has_column_privilege('product_runtime','diagnostic_candidate_verification_requests','id','UPDATE'),
+has_column_privilege('product_runtime','diagnostic_candidate_verification_requests','requester','UPDATE'),
+has_column_privilege('product_api','diagnostic_candidate_verification_requests','id','UPDATE'),
+has_column_privilege('product_api','diagnostic_candidate_verification_requests','requester','UPDATE')`).Scan(&lockID, &otherUpdate, &apiLockID, &apiOtherUpdate); err != nil || !lockID || otherUpdate || !apiLockID || apiOtherUpdate {
+		t.Fatalf("selected request lock grant invalid: runtime=%v/%v api=%v/%v err=%v", lockID, otherUpdate, apiLockID, apiOtherUpdate, err)
+	}
+	rows, err := runtime.QueryContext(t.Context(), `SELECT id FROM diagnostic_candidate_verification_requests WHERE false FOR UPDATE`)
+	if err != nil {
+		t.Fatal("selected request row lock unavailable", err)
+	}
+	rows.Close()
+	apiURL := *u
+	apiQuery := apiURL.Query()
+	apiQuery.Set("user", "product_api")
+	apiURL.RawQuery, apiURL.User = apiQuery.Encode(), nil
+	apiPool, err := sql.Open("pgx", apiURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer apiPool.Close()
+	apiRows, err := apiPool.QueryContext(t.Context(), `SELECT id FROM diagnostic_candidate_verification_requests WHERE false FOR UPDATE`)
+	if err != nil {
+		t.Fatal("selected request API row lock unavailable", err)
+	}
+	apiRows.Close()
 	taskID := task.ID
 	v := db.ProductVerdict{TaskID: taskID,
 		Binding: db.ProductBinding{JobRef: "job-store", RunRef: "run-store", E2PolicyRef: "e2-policy-store", GenerationRef: "generation-store",

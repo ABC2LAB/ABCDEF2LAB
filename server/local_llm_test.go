@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/norma/llm"
+	"github.com/jackc/pgx/v5"
 )
 
 func localTestResolver(t *testing.T, baseURL string) *llmpolicy.ProfileResolver {
@@ -104,12 +107,41 @@ func TestLocalOnlyStartupRejectsMissingManifest(t *testing.T) {
 }
 
 func TestLocalOnlyStartupUsesPinnedActiveProfile(t *testing.T) {
+	// This server starts background task recovery. A dedicated schema keeps
+	// queued tasks from other tests out of this profile-binding assertion.
+	if dsn := os.Getenv("ARTEX_PG_DSN"); dsn != "" {
+		admin, err := sql.Open("pgx", dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = admin.Close() })
+		schema := fmt.Sprintf("local_startup_%d", time.Now().UnixNano())
+		ident := pgx.Identifier{schema}.Sanitize()
+		if _, err := admin.Exec("CREATE SCHEMA " + ident); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if _, err := admin.Exec("DROP SCHEMA " + ident + " CASCADE"); err != nil {
+				t.Error("dedicated local startup schema cleanup failed")
+			}
+		})
+		if parsed, err := url.Parse(dsn); err == nil && (parsed.Scheme == "postgres" || parsed.Scheme == "postgresql") {
+			query := parsed.Query()
+			query.Set("search_path", schema)
+			parsed.RawQuery = query.Encode()
+			t.Setenv("ARTEX_PG_DSN", parsed.String())
+		} else {
+			t.Setenv("ARTEX_PG_DSN", dsn+" search_path="+schema)
+		}
+	}
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
 		t.Skipf("dedicated PostgreSQL unavailable: %v", err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
-	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("unexpected model request") }))
+	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected model request: method=%s path=%s", r.Method, r.URL.Path)
+	}))
 	defer upstream.Close()
 	baseURL := upstream.URL + "/v1"
 	originalActive, err := m.pg.ActiveProfile()

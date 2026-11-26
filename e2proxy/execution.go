@@ -104,10 +104,12 @@ type Call struct {
 	e                    *Execution
 	ctx                  context.Context
 	cancel               context.CancelFunc
-	ref                  string
-	commandRef           string
-	intentID             int64
-	program              ProgramCallKind
+	// cancelCause는 call 문맥을 원인과 함께 끊는다(모델 단계 마감 ErrModelStageClosed).
+	cancelCause context.CancelCauseFunc
+	ref         string
+	commandRef  string
+	intentID    int64
+	program     ProgramCallKind
 	// e3Share는 확정 단계가 연 다시 로그인 호출이다(BeginE3ReloginCall). E③ 프로그램 요청과 함께 떼어 둔 확정 몫을 쓴다.
 	e3Share       bool
 	expires       time.Time
@@ -147,6 +149,10 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 	}
 	if cfg.SessionRedactCapacity < 0 || cfg.SessionRedactCapacity > MaxSessionRedactValues || cfg.ConfirmationRedactReserve < 0 ||
 		cfg.ConfirmationRedactReserve > sessionRedactCapacity(cfg)/2 {
+		return nil, ErrConfig
+	}
+	if (cfg.SelectedSessionHeaders != nil || cfg.SelectedAccountRef != "") && (cfg.SelectedSessionHeaders == nil || cfg.SelectedAccountRef == "" ||
+		cfg.HeaderMode != HeaderTestAccountPassthrough || cfg.ApprovalMode != ApprovalPreauthorizedScope || cfg.ResolveSentAccount == nil) {
 		return nil, ErrConfig
 	}
 	if !validApprovalConfig(cfg) || parent == nil || cfg.Recorder == nil || cfg.IntentID <= 0 || !validRef(cfg.OwnerRef) || !validRef(cfg.PolicyRevision) ||
@@ -207,7 +213,9 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 		if err != nil || u.RawQuery != "" || u.ForceQuery || (u.Path != "" && u.Path != "/") {
 			return nil, ErrConfig
 		}
-		if !validPath(r.PathPrefix) || r.PathMatch != "" && r.PathMatch != "exact" || r.Purpose != "" && r.PathMatch != "" {
+		if !validPath(r.PathPrefix) || r.PathMatch != "" && r.PathMatch != "exact" || r.Purpose != "" && r.PathMatch != "" ||
+			r.StrictHeaders && (r.PathMatch != "exact" || r.Purpose != "" || len(r.Methods) != 1 || r.Methods[0] != "GET" && r.Methods[0] != "HEAD") ||
+			r.ExactQuery != "" && (r.PathMatch != "exact" || len(r.ExactQuery) > 512 || !validExactQuery(r.ExactQuery)) {
 			return nil, ErrConfig
 		}
 		m := map[string]bool{}
@@ -452,15 +460,15 @@ func (e *Execution) CloseModelStage() {
 	}
 	e.mu.Lock()
 	e.modelClosed = true
-	var cancels []context.CancelFunc
+	var cancels []context.CancelCauseFunc
 	for _, c := range e.calls {
-		if !c.confirmationCall() && c.cancel != nil {
-			cancels = append(cancels, c.cancel)
+		if !c.confirmationCall() && c.cancelCause != nil {
+			cancels = append(cancels, c.cancelCause)
 		}
 	}
 	e.mu.Unlock()
 	for _, cancel := range cancels {
-		cancel()
+		cancel(ErrModelStageClosed)
 	}
 }
 
@@ -509,7 +517,12 @@ func (e *Execution) beginCall(parent context.Context, id int64, program ProgramC
 		expires = e.cfg.ExpiresAt
 	}
 	c.expires = expires
-	c.ctx, c.cancel = context.WithDeadline(e.ctx, expires)
+	// call 문맥은 원인이 실리는 취소 위에 기한을 둔다. 모델 단계 마감은 ErrModelStageClosed를 원인으로 끊어, 승인 대기가
+	// 왜 닫혔는지 승인 이력이 가릴 수 있게 한다(context.Cause). 기한이면 원인은 DeadlineExceeded다.
+	causeCtx, cancelCause := context.WithCancelCause(e.ctx)
+	deadlineCtx, cancelDeadline := context.WithDeadline(causeCtx, expires)
+	c.ctx, c.cancelCause = deadlineCtx, cancelCause
+	c.cancel = func() { cancelDeadline(); cancelCause(context.Canceled) }
 	context.AfterFunc(parent, c.cancel)
 	e.calls[ref] = c
 	e.callOrder = append(e.callOrder, c)
@@ -1200,7 +1213,11 @@ func (e *Execution) matchLocked(req *http.Request) (compiledRule, bool) {
 		if r.Purpose != "" {
 			continue
 		}
-		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && (pathscope.Scope{Path: r.PathPrefix, Mode: pathscope.Mode(r.PathMatch)}).Allows(p, req.URL.RawQuery != "" || req.URL.ForceQuery) {
+		withQuery := req.URL.RawQuery != "" || req.URL.ForceQuery
+		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] &&
+			(r.PathMatch == "exact" && !req.URL.ForceQuery && req.URL.RawQuery == r.ExactQuery &&
+				(pathscope.Scope{Path: r.PathPrefix, Mode: pathscope.Exact}).Allows(p, false) ||
+				r.PathMatch == "" && (pathscope.Scope{Path: r.PathPrefix, Mode: pathscope.Prefix}).Allows(p, withQuery)) {
 			return r, true
 		}
 	}
@@ -1351,13 +1368,14 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		r.E3Audit = &e3.audit
 	}
 	var session http.Header
+	var requestHeaders http.Header
 	finish := func(resp *http.Response, cause error) (*http.Response, http.Header, Receipt, error) {
 		if e3 != nil {
 			e3.finish(&r, ctx)
 		}
 		var boundaryErr error
 		rr, aerr := c.finish(ctx, r, func(rr Receipt) {
-			c.observeHTTP(req, resp, rr)
+			c.observeHTTP(req, requestHeaders, resp, rr)
 			attempt := rr
 			attempt.Reason = r.Reason
 			c.observeAttemptPath(req, attempt)
@@ -1426,6 +1444,22 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		r.Decision, r.Reason = "unsupported", Unsupported
 		return finish(nil, ErrDenied)
 	}
+	if purpose == "" && e.cfg.SelectedSessionHeaders != nil {
+		protected, bound := e.cfg.SelectedSessionHeaders()
+		if !bound || len(protected) == 0 || e.cfg.ResolveSentAccount(protected) != e.cfg.SelectedAccountRef ||
+			headerPresent(requestHeaders, "Authorization") || headerPresent(requestHeaders, "Cookie") ||
+			e.cfg.TargetCredentialHeader != "" && headerPresent(requestHeaders, e.cfg.TargetCredentialHeader) {
+			r.Decision, r.Reason = "denied", PolicyDenied
+			return finish(nil, ErrDenied)
+		}
+		for key, values := range protected {
+			if len(requestHeaders.Values(key)) != 0 || len(values) == 0 {
+				r.Decision, r.Reason = "denied", PolicyDenied
+				return finish(nil, ErrDenied)
+			}
+			requestHeaders[key] = append([]string(nil), values...)
+		}
+	}
 	// 승인 제안·송신이 모두 실제로 보낼 값을 보도록 규칙 제약 검사 뒤, 승인 전에 바꾼다.
 	identityAcceptEncoding(requestHeaders)
 	// Consume the caller's bounded body before admission; it never reaches audit.
@@ -1475,8 +1509,10 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	}
 	needsApproval := e.needsRequestApproval(purpose, method, body, view)
 	if needsApproval {
-		approvalCtx, cancelApproval := context.WithCancel(c.ctx)
-		stopApproval := context.AfterFunc(ctx, cancelApproval)
+		// 승인 대기 문맥은 call 문맥(모델 단계 마감·call 기한)과 요청 문맥(요청 기한·연결 끝남)의 원인을 그대로 싣는다.
+		// 승인 이력이 닫힌 까닭(closed_reason)을 가리는 근거다.
+		approvalCtx, cancelApproval := context.WithCancelCause(c.ctx)
+		stopApproval := context.AfterFunc(ctx, func() { cancelApproval(requestCancelCause(ctx)) })
 		// 승인 미리보기는 운영자 화면·승인 기록에 남는 저장 기록이다. model_visible_v1에서는 모델이 대상이 비춘 비밀번호를
 		// 요청 본문에 넣을 수 있으므로, 모델 단계·확정 단계 모두 비밀번호까지 가린 본문을 남긴다.
 		previewBody := e.RedactRecord(body)
@@ -1514,7 +1550,7 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		clock.restart()
 		canceled := approvalCtx.Err() != nil || ctx.Err() != nil
 		stopApproval()
-		cancelApproval()
+		cancelApproval(nil)
 		if approvalErr != nil && !(canceled && (errors.Is(approvalErr, context.Canceled) || errors.Is(approvalErr, context.DeadlineExceeded))) {
 			r.Decision, r.Reason = "denied", AuditFailed
 			return finish(nil, ErrAudit)
@@ -2368,4 +2404,16 @@ func validResponseLimits(l Limits, secrets [][]byte) bool {
 	// 상한을 넘는 응답을 알아채려면 전달 상한 이상을 읽어야 하고(보호 값이 없어도), 전달 구간 끝에 걸친 보호 값까지
 	// 보려면 그보다 가장 긴 보호 값 길이 − 1만큼 더 읽어야 한다.
 	return l.MaxResponseScanBytes >= body+max(int64(longest)-1, 0)
+}
+
+// requestCancelCause는 요청 문맥이 끝난 원인이다. 프록시 요청 시계(requestClock)는 원인 값을 따로 두지 않으므로 기한이면
+// Err()의 DeadlineExceeded를 먼저 본다.
+func requestCancelCause(ctx context.Context) error {
+	if err := ctx.Err(); errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return ctx.Err()
 }

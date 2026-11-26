@@ -39,6 +39,8 @@ type urlPreparationRuntime struct {
 	reports             map[string]*savedReportService
 	product             *productRuntime
 	hostCapabilities    urlRuntimeHostCapabilities
+	candidateWorkers    map[int64]context.CancelFunc
+	candidateWG         sync.WaitGroup
 }
 
 func newURLPreparationRuntime(ctx context.Context, path string) (*urlPreparationRuntime, error) {

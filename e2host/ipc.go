@@ -30,6 +30,7 @@ type message struct {
 	Event          *e2proxy.Event         `json:"event,omitempty"`
 	Binding        *e3contract.RunBinding `json:"binding,omitempty"`
 	Ref            *e3contract.CallRef    `json:"ref,omitempty"`
+	Observation    *ObservationRef        `json:"observation,omitempty"`
 }
 type reply struct {
 	OK         bool                       `json:"ok"`
@@ -116,28 +117,39 @@ func (h *Host) serveConn(ctx context.Context, conn *net.UnixConn, expectedUID ui
 		var responseSeal *SealResult
 		switch request.Operation {
 		case "open":
-			if session != nil || request.Event != nil || request.Binding != nil || request.Ref != nil || request.PolicyRevision == "" {
+			if session != nil || request.Event != nil || request.Binding != nil || request.Ref != nil || request.Observation != nil || request.PolicyRevision == "" {
 				actionErr = ErrUnavailable
 			} else {
 				session, actionErr = h.Open(ctx, request.Scope, request.PolicyRevision)
 			}
 		case "record":
-			if session == nil || request.Event == nil || request.Binding != nil || request.Ref != nil ||
+			if session == nil || request.Event == nil || request.Binding != nil || request.Ref != nil || request.Observation != nil ||
 				request.Scope != (transmit.Scope{}) || request.PolicyRevision != "" {
 				actionErr = ErrUnavailable
 			} else {
 				actionErr = session.Record(ctx, *request.Event)
 			}
 		case "seal":
-			if session == nil || request.Event != nil || request.Binding != nil || request.Ref != nil ||
+			if session == nil || request.Event != nil || request.Binding != nil || request.Ref != nil || request.Observation != nil ||
 				request.Scope != (transmit.Scope{}) || request.PolicyRevision != "" {
 				actionErr = ErrUnavailable
 			} else {
 				responseSeal, actionErr = session.SealChecked(ctx)
 			}
+		case "observed":
+			if session == nil || request.Event != nil || request.Binding != nil || request.Ref != nil || request.Observation == nil ||
+				request.Scope != (transmit.Scope{}) || request.PolicyRevision != "" {
+				actionErr = ErrUnavailable
+			} else {
+				var observed Verification
+				observed, actionErr = session.ObservedAt(ctx, *request.Observation)
+				if actionErr == nil {
+					responseEvent, responseCheckpoint = &observed.Event, &observed.Checkpoint
+				}
+			}
 		case "verified":
 			if session == nil || request.Event != nil || request.Scope != (transmit.Scope{}) ||
-				request.PolicyRevision != "" || request.Binding == nil || request.Ref == nil {
+				request.PolicyRevision != "" || request.Binding == nil || request.Ref == nil || request.Observation != nil {
 				actionErr = ErrUnavailable
 			} else {
 				var verified Verification
@@ -209,10 +221,10 @@ func (c *Client) exchangeReply(ctx context.Context, request message) (reply, err
 	}
 	var response reply
 	if decodeLine(c.reader, &response) != nil || ctx.Err() != nil ||
-		request.Operation != "verified" && (!response.OK || response.Missing || response.Mismatch || response.Event != nil || response.Checkpoint != nil) ||
+		request.Operation != "verified" && request.Operation != "observed" && (!response.OK || response.Missing || response.Mismatch || response.Event != nil || response.Checkpoint != nil) ||
 		request.Operation != "seal" && response.Seal != nil ||
 		request.Operation == "seal" && response.Seal != nil && !validSealResult(*response.Seal) ||
-		request.Operation == "verified" && (!response.OK && !response.Missing && !response.Mismatch ||
+		(request.Operation == "verified" || request.Operation == "observed") && (!response.OK && !response.Missing && !response.Mismatch ||
 			response.OK && (response.Missing || response.Mismatch || response.Event == nil || response.Checkpoint == nil ||
 				!validCheckpoint(*response.Checkpoint) || response.Checkpoint.Sequence == 0) ||
 			response.Missing && (response.Mismatch || response.Event != nil || response.Checkpoint != nil) ||
@@ -243,6 +255,23 @@ func (c *Client) VerifiedAt(ctx context.Context, binding e3contract.RunBinding, 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	response, err := c.exchangeReply(ctx, message{Operation: "verified", Binding: &binding, Ref: &ref})
+	if err != nil {
+		return Verification{}, err
+	}
+	if response.Event == nil || response.Checkpoint == nil {
+		c.failed = true
+		return Verification{}, ErrUnavailable
+	}
+	return Verification{Event: *response.Event, Checkpoint: *response.Checkpoint}, nil
+}
+
+func (c *Client) ObservedAt(ctx context.Context, ref ObservationRef) (Verification, error) {
+	if c == nil {
+		return Verification{}, ErrUnavailable
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	response, err := c.exchangeReply(ctx, message{Operation: "observed", Observation: &ref})
 	if err != nil {
 		return Verification{}, err
 	}

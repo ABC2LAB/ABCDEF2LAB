@@ -73,12 +73,11 @@ import { Markdown } from "../../ui/Markdown";
 import { InspHead, InspOpenButton, Isec, PaneToggle, useScrollTopOnChange, vulnClassParts } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalHistory, ApprovalQueue, useRequestApprovals } from "./approvals";
-import { CoverageGraphSection } from "./coverageGraphView";
+import { AssetGraphTab } from "./coverageGraphView";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
 import { AccountAuthWarning, LoginMethodMissingWarning } from "./liveAccountWarnings";
 import { PriceCapsNotice } from "./PriceCapsNotice";
 import { ProductVerdictReport, productConfirmationSummary, useProductVerdicts } from "./productVerdictViews";
-import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
 import {
   ReportApprovalDetail,
@@ -2166,12 +2165,9 @@ export function UrlReportLive() {
               <div role="tabpanel" id="rp-graph" aria-label="자산 지식 그래프" hidden={tab !== "graph"}>
                 {/* 제품 소유 · 접근 그래프는 접근통제 지도와 같은 자료(product-access-map)라 여기 두지 않고 접근통제 지도 탭의
                     [격자 | 그래프] 보기로 옮겼다(11/24 — 자산 지식 그래프와 혼동) */}
-                {/* 탐색이 관찰한 자산 · 엔드포인트 관계(coverage-graph)를 먼저, 포함 근거 · 출처(KG 조회 v1)는 그 아래 */}
-                <CoverageGraphSection taskId={taskId} active={visible && tab === "graph"} />
-                <section className={s.isec} aria-label="포함 근거 · 출처">
-                  <h2>포함 근거 · 출처 (KG 조회 v1)</h2>
-                  <ReportAssetGraph taskId={taskId} active={visible && tab === "graph"} />
-                </section>
+                {/* 탐색이 관찰한 자산 · 엔드포인트 관계(coverage-graph)에 포함 근거 · 출처(KG 조회 v1)를 붙인다 — 노드 상세에 그 자산의
+                    근거 · 출처, 그래프 아래에 요약 한 줄(11/26: 따로 늘어놓던 글 목록을 합침) */}
+                <AssetGraphTab taskId={taskId} active={visible && tab === "graph"} />
               </div>
               <div
                 role="tabpanel"

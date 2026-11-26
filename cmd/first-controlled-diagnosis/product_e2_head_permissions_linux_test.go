@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -120,6 +121,15 @@ func TestProductE2HeadWriterRoleIsSeparated(t *testing.T) {
 	hostDSN, err := os.ReadFile(filepath.Join(hostRoot, "host.dsn"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The installed product uses port 5432. This owned test database may be
+	// mapped to another host port; adjust only the in-memory test connection.
+	if port := u.Port(); port != "" && port != "5432" {
+		const productPort = " port=5432 "
+		if !strings.Contains(string(hostDSN), productPort) {
+			t.Fatal("Host DSN의 제품 포트 계약 불일치")
+		}
+		hostDSN = []byte(strings.Replace(string(hostDSN), productPort, " port="+port+" ", 1))
 	}
 	hostDB, err := sql.Open("pgx", string(hostDSN))
 	if err != nil {

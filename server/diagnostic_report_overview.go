@@ -9,32 +9,86 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/artex/report"
 )
 
 // readDiagnosticRun은 저장된 실행 종료 기록의 상태·실행 결과를 보고서와 같은 스냅샷에서 읽는다(실행 결과 상태 값
-// 계약 §5-5). 기록이 없으면 nil이다. 기록 형식이 맞지 않으면 상태 없는 값을 돌려 보고서에 "확인할 수 없음"으로 쓴다
-// (완료·발견 없음으로 바꾸지 않는다).
+// 계약 §5-5). 기록이 없으면 nil이다. v2 정책에 결속된 손상 기록은 오류로 거부한다.
+// 이전 회차의 손상 기록은 기존의 상태 없음 표시를 유지한다.
 func readDiagnosticRun(ctx context.Context, tx *sql.Tx, task int64) (*report.DiagnosticRun, error) {
+	policy, policyErr := readDiagnosisVerificationPolicy(ctx, tx, task)
+	if policyErr != nil {
+		return nil, policyErr
+	}
 	var raw []byte
-	err := tx.QueryRowContext(ctx, `SELECT n.payload FROM tasks t JOIN exploration_nodes n ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND t.deleted_at IS NULL AND n.kind='fact' AND n.state='confirmed' AND n.origin=$2 AND n.payload->>'task_id'=$3 ORDER BY n.id DESC LIMIT 1`, task, diagnosisRunOrigin, strconv.FormatInt(task, 10)).Scan(&raw)
+	var kind, nodeState string
+	// A task owns its exploration. For v2, locate any completion record there
+	// before validating its task/run binding, so damaged payload keys cannot
+	// turn a completed run into a missing (running) record.
+	v2 := policy != nil
+	err := tx.QueryRowContext(ctx, `SELECT n.payload,n.kind,n.state FROM tasks t JOIN exploration_nodes n ON n.exploration_id=t.exploration_id WHERE t.id=$1 AND t.deleted_at IS NULL AND n.origin=$2 AND ($4 OR (n.kind='fact' AND n.state='confirmed' AND n.payload->>'task_id'=$3)) ORDER BY n.id DESC LIMIT 1`, task, diagnosisRunOrigin, strconv.FormatInt(task, 10), v2).Scan(&raw, &kind, &nodeState)
 	if errors.Is(err, sql.ErrNoRows) {
-		return readDiagnosticInterrupted(ctx, tx, task)
+		interrupted, interruptedErr := readDiagnosticInterrupted(ctx, tx, task)
+		if interruptedErr != nil || interrupted != nil {
+			return interrupted, interruptedErr
+		}
+		if policy != nil {
+			return &report.DiagnosticRun{State: report.DiagnosticRunRunning, RunRef: policy.RunRef, VerificationVersion: policy.Version}, nil
+		}
+		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	var record diagnosisRunRecord
-	if json.Unmarshal(raw, &record) != nil || record.Version != 1 || record.TaskID != task || record.SavedAt.IsZero() || !validDiagnosisRun(record.Run) || !validDiagnosisRunResult(record.Run, record.Result) {
+	if kind != "fact" || nodeState != "confirmed" || json.Unmarshal(raw, &record) != nil || record.Version != 1 || record.TaskID != task || record.SavedAt.IsZero() || !validDiagnosisRun(record.Run) || !validDiagnosisRunResult(record.Run, record.Result) {
+		if policy != nil {
+			return nil, ErrFirstDiagnosisOutcome
+		}
 		return &report.DiagnosticRun{}, nil
 	}
 	state := record.Run.Outcome
 	if record.Run.ClosureFailed {
 		state = report.DiagnosticRunClosureFailed
 	}
-	return &report.DiagnosticRun{State: state, Result: record.Result}, nil
+	run := &report.DiagnosticRun{State: state, RunRef: record.Run.RunRef, Result: record.Result}
+	if policy != nil && (policy.RunRef != record.Run.RunRef || record.Verification == nil || record.Verification.Version != policy.Version) {
+		return nil, ErrFirstDiagnosisOutcome
+	}
+	if record.Verification != nil && (record.Verification.Version == "passive/v1" || record.Verification.Version == diagnosisVerificationV2 || record.Verification.Version == diagnosisVerificationSelected) {
+		if record.Verification.Version == diagnosisVerificationSelected &&
+			(record.Verification.NonIDORConfirmed != 0 || record.Verification.NonIDORNegative != 0 ||
+				record.Verification.VerificationPending != len(record.Verification.Candidates)) {
+			return nil, ErrFirstDiagnosisOutcome
+		}
+		if record.Verification.ObservationsStored && (record.Verification.ObservationsCount <= 0 || record.Verification.ObservationsCount > candidateverify.MaxStoredObservationsV2 || !candidateVerificationDigest.MatchString(record.Verification.ObservationsDigest)) ||
+			!record.Verification.ObservationsStored && (record.Verification.ObservationsCount != 0 || record.Verification.ObservationsDigest != "") {
+			return nil, ErrFirstDiagnosisOutcome
+		}
+		run.VerificationVersion = record.Verification.Version
+		run.VerificationSourceUnavailable = record.Verification.SourceUnavailable
+		run.VerificationObservationsStored = record.Verification.ObservationsStored
+		run.VerificationObservationsCount = record.Verification.ObservationsCount
+		run.VerificationObservationsDigest = record.Verification.ObservationsDigest
+		for _, row := range record.Verification.Candidates {
+			if row.StoredReviewUnavailable && !record.Verification.ObservationsStored {
+				return nil, ErrFirstDiagnosisOutcome
+			}
+			if record.Verification.Version == diagnosisVerificationV2 && !candidateverify.ValidSourcesV2(row.Result) {
+				return nil, ErrFirstDiagnosisOutcome
+			}
+			if record.Verification.Version == diagnosisVerificationSelected &&
+				(row.Result.Status != candidateverify.Insufficient || len(row.Result.Sources) != 0 || len(row.Result.Attempts) != 0 ||
+					(row.Result.Reason != "selected_verification_required" && row.Result.Reason != "run_not_completed" && row.Result.Reason != "source_unavailable") || row.StoredReviewUnavailable) {
+				return nil, ErrFirstDiagnosisOutcome
+			}
+			run.CandidateAssessments = append(run.CandidateAssessments, report.CandidateAssessment{StoredReviewUnavailable: row.StoredReviewUnavailable, CandidateID: row.CandidateID, EvidenceDigest: row.EvidenceDigest, Status: row.Result.Status, Reason: row.Result.Reason, AttemptRefs: append([]string(nil), row.Result.Attempts...), Sources: append([]candidateverify.SourceV2(nil), row.Result.Sources...)})
+		}
+	}
+	return run, nil
 }
 
 // readDiagnosticInterrupted는 종료 기록이 없는 작업의 끊김 표지(ReleaseInterruptedFirstDiagnosisTasks)를 읽는다. 표지가

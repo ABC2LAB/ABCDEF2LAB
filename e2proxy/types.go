@@ -51,8 +51,11 @@ var (
 	ErrConfig = errors.New("e2proxy: invalid trusted configuration")
 	ErrDenied = errors.New("e2proxy: request refused")
 	ErrClosed = errors.New("e2proxy: admission closed")
-	ErrAudit  = errors.New("e2proxy: audit unavailable")
-	ErrDrain  = errors.New("e2proxy: drain incomplete")
+	// ErrModelStageClosed는 모델 단계 마감(CloseModelStage)으로 call 문맥이 끝났다는 취소 원인이다(context.Cause). 승인
+	// 대기가 이 까닭으로 닫혔는지를 승인 이력이 가린다(closed_reason model_stage_closed).
+	ErrModelStageClosed = errors.New("e2proxy: model stage closed")
+	ErrAudit            = errors.New("e2proxy: audit unavailable")
+	ErrDrain            = errors.New("e2proxy: drain incomplete")
 	// ErrWithheld는 대상이 답했지만 E2가 응답 표현을 주지 않은 요청이다(사유 withheld).
 	ErrWithheld = errors.New("e2proxy: response withheld")
 	// ErrAuthSession은 인증 준비 응답을 받았지만 설정한 세션 위치에서 세션을 찾지 못했다는 뜻이다(로그인 실패 포함).
@@ -103,11 +106,13 @@ type Rule struct {
 	Ref           string
 	Origin        string
 	ConnectIP     netip.Addr
-	// PathMatch가 비면 기존 경로 조각 접두, exact면 query 없는 경로 하나만 승인한다.
-	PathMatch    string `json:"path_match,omitempty"`
-	PathPrefix   string
-	PathScopeRef string
-	Methods      []string
+	// PathMatch가 비면 기존 경로 조각 접두, exact면 경로 및 선택한 query 하나만 승인한다.
+	PathMatch     string `json:"path_match,omitempty"`
+	ExactQuery    string `json:"exact_query,omitempty"`
+	StrictHeaders bool   `json:"-"`
+	PathPrefix    string
+	PathScopeRef  string
+	Methods       []string
 	// Headers explicitly declares ordinary, noncredential constraints. Values
 	// must already match the caller; they are never injected or overwritten.
 	Headers http.Header `json:"-"`
@@ -179,14 +184,26 @@ type Config struct {
 	// PasswordResponse는 보호된 호스트 정책이다. 빈 값은 기존 전체 보류다.
 	PasswordResponse string
 	HeaderMode       HeaderMode
-	Scope            transmit.Scope
-	IntentID         int64
-	OwnerRef         string
-	PolicyRevision   string
-	AccountRef       string
-	SessionRef       string
-	ExpiresAt        time.Time
-	Rules            []Rule
+	// TargetCredentialHeader is the approved test login's custom session
+	// header name. Values are never copied into an observation.
+	TargetCredentialHeader string `json:"-"`
+	// ResolveSentAccount is supplied by the protected session store. It may
+	// return a non-secret stable account revision only after matching the
+	// credentials in the actual sent request, never a model-provided label.
+	ResolveSentAccount func(http.Header) string `json:"-"`
+	// SelectedSessionHeaders is only for a separately approved candidate
+	// execution. It injects one protected test session after path admission;
+	// the credential never appears in a Bash command or model input.
+	SelectedSessionHeaders func() (http.Header, bool) `json:"-"`
+	SelectedAccountRef     string                     `json:"-"`
+	Scope                  transmit.Scope
+	IntentID               int64
+	OwnerRef               string
+	PolicyRevision         string
+	AccountRef             string
+	SessionRef             string
+	ExpiresAt              time.Time
+	Rules                  []Rule
 	// ExcludedPaths는 운영자가 선언한 제외 경로 패턴이다(진단 워크플로 입력). 모델 요청과 E③ 목적 요청의 풀린 경로가
 	// 하나라도 걸리면 policy_denied로 거부한다. 진단 흐름과 같은 해석·일치 함수(pathscope.Excluded)를 쓴다.
 	// 인증 준비는 대상 등록 때 승인한 로그인 경로를 사용한다.

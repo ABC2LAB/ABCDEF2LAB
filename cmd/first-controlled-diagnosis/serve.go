@@ -131,6 +131,9 @@ func startLaunchWithDatabase(ctx context.Context, c launchConfig, modelBudget *s
 		if !ok {
 			return fail(errPreparation)
 		}
+		// Only the product's original URL diagnosis needs durable per-call
+		// checkpoints for later selected verification from stored observations.
+		host.CaptureSelectedProof = true
 		httpRuntime, startErr := server.StartFirstDiagnosisHTTP(ctx, manager, server.FirstDiagnosisHTTPStartOptions{Host: host, SkillDir: c.SkillDir, DataDir: c.DataDir, KeyDir: c.KeyDir, LocalLLMManifestPath: c.LocalLLMManifestPath, ModelExecutionMode: c.ModelExecutionMode, ModelBudget: modelBudget, Hooks: server.FirstDiagnosisHTTPHooks{HostSocket: c.E2HostSocket, Workflow: flow, CheckAuthority: current, Exploration: urlExplorationStageFrom(ctx)}, OpenRouterManifestPath: c.OpenRouterManifestPath, Supervisor: d.supervisor, Shutdown: d.supervisor.Shutdown(), CleanupTimeout: time.Duration(c.ShutdownTimeoutSeconds) * time.Second})
 		err = startErr
 		if httpRuntime != nil {

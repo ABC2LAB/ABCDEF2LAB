@@ -10,7 +10,6 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/reportcapture"
 	"github.com/Autumn-27/artex/reproduction"
-	"html"
 	"image"
 	"image/png"
 	"net/http"
@@ -238,8 +237,12 @@ func TestFirstDiagnosisStoredReportCompletedTaskOwnedPostgres(t *testing.T) {
 		t.Fatal("completed report copy")
 	}
 	response = request("GET", fmt.Sprintf("/api/report/diagnostic?task=%d&audience=internal&download=1", row.ID), "")
-	if response.Code != 200 || response.Header().Get("Content-Disposition") == "" || !strings.Contains(html.UnescapeString(response.Body.String()), record.Bundle.AIPrompt) {
-		t.Fatal("completed report export")
+	if response.Code != 404 || response.Header().Get("Content-Disposition") != "" || strings.Contains(response.Body.String(), record.Bundle.AIPrompt) {
+		t.Fatal("unconfirmed candidate exported as vulnerability report")
+	}
+	response = request("GET", fmt.Sprintf("/api/report/diagnostic?task=%d&audience=internal&format=docx", row.ID), "")
+	if response.Code != 404 {
+		t.Fatal("unconfirmed candidate exported as Word report")
 	}
 	if w := request("GET", fmt.Sprintf("/api/report/diagnostic?task=%d", foreign.ID), ""); w.Code != 403 {
 		t.Fatal("foreign task GET admitted")

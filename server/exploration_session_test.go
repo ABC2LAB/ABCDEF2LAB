@@ -895,3 +895,36 @@ func TestExplorationSessionPassesRecordRedaction(t *testing.T) {
 		t.Fatal("record redaction not passed to the exploration worker")
 	}
 }
+
+// 탐색 작업자 취소는 이름 붙은 원인을 남긴다. 관찰을 싣지 못해 닫힌 세션과 정상 마감을 가르고, canceled_no_cause로
+// 남지 않는다(2026-11-26 NodeGoat 회차 1).
+func TestExplorationSessionCancelCauseNamesObservationFailureAndClose(t *testing.T) {
+	t.Run("observation", func(t *testing.T) {
+		o, _, _, _, _ := explorationSessionFixture(t, exploration.BrowserToolNames())
+		o.Observe = func(context.Context, exploration.Binding) error { return errors.New("fixture observation unavailable") }
+		s, err := OpenExplorationSession(t.Context(), o)
+		if err != nil {
+			t.Fatal("open failed", err)
+		}
+		_, err = s.Run(t.Context(), o.Worker, agent.ExplorationRunOptions{TargetURL: "https://owned.test/", Reporter: &explorationFixtureReporter{}, MaxTurns: 5, MaxDuration: time.Second}, nil)
+		if !errors.Is(err, ErrExplorationObservation) || s.ClosedReason() != exploration.BoundaryUnavailable {
+			t.Fatal("observation failure did not close as boundary unavailable", err, s.ClosedReason())
+		}
+		if code, _, _, ok := agent.AbortReason(s.Context()); !ok || code != agent.AbortExplorationObservation.Code {
+			t.Fatal("observation failure cause", code, ok)
+		}
+	})
+	t.Run("close", func(t *testing.T) {
+		o, _, _, _, _ := explorationSessionFixture(t, exploration.BrowserToolNames())
+		s, err := OpenExplorationSession(t.Context(), o)
+		if err != nil {
+			t.Fatal("open failed", err)
+		}
+		if err = s.Close(t.Context(), exploration.Cancelled); err != nil {
+			t.Fatal(err)
+		}
+		if code, _, _, ok := agent.AbortReason(s.Context()); !ok || code != agent.AbortExplorationSessionClosed.Code {
+			t.Fatal("close cause", code, ok)
+		}
+	})
+}

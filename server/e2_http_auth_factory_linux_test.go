@@ -91,6 +91,92 @@ func TestE2HTTPFactoryRunsAuthPrepOnAcquire(t *testing.T) {
 	}
 }
 
+func TestSelectedCandidateFactoryReissuesOneProtectedSession(t *testing.T) {
+	var logins, reads atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" && r.Method == "POST" {
+			if r.ParseForm() != nil || r.Form.Get("email") != "tester@owned.test" || r.Form.Get("password") != "seeded-pass-88ff" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: fmt.Sprintf("synthetic-session-%d", logins.Add(1))})
+			_, _ = io.WriteString(w, "signed in")
+			return
+		}
+		if r.URL.Path != "/read" || r.URL.RawQuery != "mode=review" || r.Header.Get("Accept") != "application/json" ||
+			r.Header.Get("Cookie") != fmt.Sprintf("session=synthetic-session-%d", logins.Load()) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		reads.Add(1)
+		_, _ = io.WriteString(w, "synthetic document")
+	}))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin, policy.Rules[0].PathPrefix, policy.Rules[0].PathMatch = target.URL, "/read", "exact"
+	policy.Rules[0].ExactQuery = "mode=review"
+	policy.Rules[0].RequestHeaders = map[string]string{"Accept": "application/json"}
+	policy.Rules[0].StrictHeaders = true
+	policy.Rules = append(policy.Rules, E2HTTPFileRule{Ref: "auth-login", Origin: target.URL, ConnectIP: "127.0.0.1",
+		PathPrefix: "/login", PathScopeRef: "auth-login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep})
+	pin := authCredentialPin(t, cfg.AuthorityRoot, "selected-account.json", "tester@owned.test", "seeded-pass-88ff")
+	auth := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
+	policy.Auth, policy.HeaderMode = &auth, e2proxy.HeaderTestAccountPassthrough
+	policy.SelectedAccountRef = CandidateAccountRevision("tester-a", pin.SHA256)
+	policy.MaxRequests = 4
+	policy.Limits.MaxAttempts, policy.Limits.MaxCalls = 4, 4
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0600) != nil {
+		t.Fatal("synthetic selected policy unavailable")
+	}
+	if _, _, err := ValidateE2HTTPRunPolicyDocument(raw); err != nil {
+		t.Fatal("structured selected policy rejected", err)
+	}
+	options, err := LoadE2HTTPRuntimeOptions(t.Context(), E2HTTPFileOptions{PolicyFile: cfg.PolicyFile,
+		Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := options.Acquire(t.Context(), E2HTTPRequest{TaskID: "11", TaskIDNumber: 11, ExplorationID: 27, IntentID: 31})
+	if err != nil || lease.AccountAuth["tester-a"] != E2HTTPAuthAuthenticated || logins.Load() != 1 {
+		t.Fatalf("selected account preparation unavailable: %v", err)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = lease.Runner.Close(cleanup)
+		_ = lease.Execution.Stop(cleanup)
+		_ = lease.Release(cleanup)
+	}()
+	for i := range 2 {
+		if i == 1 {
+			if _, result := lease.RefreshSession(t.Context(), "tester-a"); result != E2HTTPAuthAuthenticated || logins.Load() != 2 {
+				t.Fatalf("same account session reissue unavailable: %s", result)
+			}
+		}
+		call, err := lease.Execution.BeginCall(t.Context(), fmt.Sprintf("selected-read-%d", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request, _ := http.NewRequest("GET", target.URL+"/read?mode=review", nil)
+		request.Header.Set("Accept", "application/json")
+		response, receipt, err := call.Do(t.Context(), request)
+		if err != nil || response == nil || receipt.StatusCode != 200 || !receipt.AuditComplete {
+			t.Fatalf("selected protected read failed: %+v %v", receipt, err)
+		}
+		response.Body.Close()
+		observed := call.Result().Observations
+		if len(observed) != 1 || observed[0].RequestAccountRef != policy.SelectedAccountRef ||
+			observed[0].RequestAuthContext != "cookie" || len(observed[0].RequestQueryDigest) != 64 || len(observed[0].RequestHeaderDigest) != 64 {
+			t.Fatalf("same account was not bound to actual send: %+v", observed)
+		}
+		_, _ = call.Close(t.Context())
+	}
+	if reads.Load() != 2 {
+		t.Fatalf("selected read count=%d", reads.Load())
+	}
+}
+
 // 실제 factory에서 인증 준비 결과가 E② 헤더 모드를 정한다. 인증된 시험 계정이 하나도 없으면 첫 모델 요청 전에 preserve로
 // 묶여 모델이 쓴 Cookie를 대상에 보내지 않는다. 하나라도 인증되면 시험 계정 모드 그대로 보낸다(C14 결정 5·6, #522 재상 지적 1).
 func TestE2HTTPFactoryTestAccountModeFollowsAuthResult(t *testing.T) {

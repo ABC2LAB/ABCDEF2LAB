@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/diagnosis"
 )
 
@@ -13,6 +14,7 @@ const (
 	DiagnosticRunCancelled     = "cancelled"
 	DiagnosticRunFailed        = "failed"
 	DiagnosticRunClosureFailed = "closure_failed"
+	DiagnosticRunRunning       = "running"
 	// DiagnosticRunInterrupted는 종료 기록이 없고, 준비 서비스가 실행 도중 끝나 다음 점검이 그 작업을 마감 상태로
 	// 돌리며 고정 사유 표지를 남긴 경우다(#927). 결과는 확인하지 못했다.
 	DiagnosticRunInterrupted = "interrupted"
@@ -23,7 +25,25 @@ const (
 // 없다는 뜻이 아니다.
 type DiagnosticRun struct {
 	State  string
+	RunRef string
 	Result *diagnosis.RunResult
+	// VerificationVersion은 수동적 독립 관찰 검증 이전의 저장 보고서에는 없다.
+	VerificationVersion            string
+	VerificationSourceUnavailable  bool
+	VerificationObservationsStored bool
+	VerificationObservationsCount  int
+	VerificationObservationsDigest string
+	CandidateAssessments           []CandidateAssessment
+}
+
+type CandidateAssessment struct {
+	StoredReviewUnavailable bool
+	CandidateID             int64
+	EvidenceDigest          string
+	Status                  string
+	Reason                  string
+	AttemptRefs             []string
+	Sources                 []candidateverify.SourceV2
 }
 
 // DiagnosticRunText는 실행 결과 한 줄이다. 화면(web urlOutcomeText)과 같은 문구를 쓴다. 기록이 없거나 형식이 맞지
@@ -34,6 +54,8 @@ func DiagnosticRunText(run *DiagnosticRun) string {
 	}
 	r := run.Result
 	switch run.State {
+	case DiagnosticRunRunning:
+		return "진행 중(후보 검증 및 실행 종료 기록 없음)"
 	case DiagnosticRunCancelled:
 		if r == nil || !r.StoppedValid() {
 			return "중지됨"
