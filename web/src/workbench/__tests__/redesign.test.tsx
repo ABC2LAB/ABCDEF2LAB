@@ -1,6 +1,7 @@
 // 시안 짜임으로 바꾼 실제 연결 화면: 증거 펼치기 · 레일 현재 표시 · 범위 기본 선택 · 대시보드 승인 카드.
 
 import "@testing-library/jest-dom/vitest";
+import { useState } from "react";
 
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +14,10 @@ vi.mock("../live/e2Requests", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../live/e2Requests")>()),
   readE2RequestDetail: vi.fn(),
   readE2Requests: vi.fn(),
+}));
+vi.mock("../live/savedApprovals", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../live/savedApprovals")>()),
+  readSavedApprovals: vi.fn(),
 }));
 vi.mock("../live/diagnosticCandidates", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../live/diagnosticCandidates")>()),
@@ -27,11 +32,19 @@ import * as cands from "../live/diagnosticCandidates";
 import type { E2RequestDetail, E2RequestRow } from "../live/e2Requests";
 import * as e2req from "../live/e2Requests";
 import { LiveRailTasks } from "../live/rail";
+import type { SavedApproval } from "../live/savedApprovals";
+import * as saved from "../live/savedApprovals";
 import { resetUrl, useUrl } from "../live/urlDiagnosis";
 import { useUrlRuns } from "../live/urlRunList";
 import { FLOW_VERSION, type WorkflowSnapshot } from "../live/workflow";
 import { type Shell, ShellContext, type View } from "../shell";
 import { Phases } from "../ui/parts";
+import {
+  ReportApprovalDetail,
+  ReportApprovals,
+  showApprovalTab,
+  useSavedApprovals,
+} from "../views/live/savedApprovals";
 import { UrlDashboardLive } from "../views/live/UrlDashboardLive";
 import { gaugeSegments, prettyEvidence, UrlLiveLive } from "../views/live/UrlLiveLive";
 import {
@@ -793,6 +806,94 @@ describe("자산 탐색", () => {
     // 위 탐색 줄 한 줄로(사용자 11/19): 막대 아래 '탐색: …' 줄은 따로 없다
     expect(document.getElementById("cNow")?.textContent).toBe(text);
     expect(screen.queryByText(/^탐색:/)).toBeNull();
+  });
+});
+
+// 끝난 점검은 보고서로 가니 거기서 뭘 승인 · 거부했는지 보여야 한다 — 취약점 목록 자리는 그대로, [승인 기록] 탭(사용자 11/26)
+describe("보고서 승인 기록 탭 (끝난 점검 저장 승인 이력)", () => {
+  const A = (n: number) => n.toString(16).padStart(32, "0");
+  const row = (n: number, state: SavedApproval["state"]): SavedApproval => ({
+    id: A(n),
+    attempt_ref: A(n),
+    method: "PUT",
+    state,
+    execution_state: state === "allowed" ? "completed" : "not_sent",
+    created_at: `2026-11-11T01:00:0${n}Z`,
+    expires_at: "2026-11-11T01:10:00Z",
+  });
+  function Tab() {
+    const poll = useSavedApprovals("42", true);
+    const [pick, setPick] = useState<{ row: SavedApproval; sent: E2RequestRow | undefined } | null>(null);
+    if (!showApprovalTab(poll)) return <p>탭 없음</p>;
+    return (
+      <ShellContext.Provider value={shell("report")}>
+        <ReportApprovals
+          poll={poll}
+          task="42"
+          current={pick?.row.id ?? null}
+          onPick={(row, sent) => setPick({ row, sent })}
+        />
+        <aside aria-label="승인 기록 상세">
+          <ReportApprovalDetail pick={pick} task="42" />
+        </aside>
+      </ShellContext.Provider>
+    );
+  }
+
+  it("넓은 한 줄 목록을 다 보이고(자르지 않음) 거르기 · 줄을 누르면 오른쪽 패널에 상세, 결정 버튼은 없다", async () => {
+    vi.mocked(saved.readSavedApprovals).mockResolvedValue({
+      run_ref: "run-1",
+      approvals: [
+        row(1, "allowed"),
+        row(2, "denied"),
+        row(3, "expired"),
+        row(4, "allowed"),
+        row(5, "denied"),
+        row(6, "cancelled"),
+        row(7, "allowed"),
+      ],
+    });
+    vi.mocked(e2req.readE2Requests).mockResolvedValue({ rows: [], total: 0, next_cursor: null });
+    render(<Tab />);
+    const list = await screen.findByRole("list", { name: "승인 기록" });
+    expect(list.className).toMatch(/sap-wide/);
+    const rows = () => within(screen.getByRole("list", { name: "승인 기록" })).getAllByRole("button");
+    expect(rows()).toHaveLength(7);
+    expect(screen.queryByRole("button", { name: /더 보기/ })).toBeNull();
+    expect(
+      within(screen.getByRole("group", { name: "결과로 거르기" }))
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["허용 3", "거부 2", "만료 2"]);
+    const side = screen.getByRole("complementary", { name: "승인 기록 상세" });
+    expect(within(side).getByRole("heading", { name: "승인 기록을 고르세요" })).toBeInTheDocument();
+    // 줄을 누르면 목록 안에서 펼치지 않고 오른쪽 패널에 그 줄의 상세(사용자 11/26)
+    fireEvent.click(rows()[0]);
+    expect(rows()[0]).toHaveAttribute("aria-current", "true");
+    expect(rows()[0]).not.toHaveAttribute("aria-expanded");
+    expect(within(screen.getByRole("list", { name: "승인 기록" })).queryByText("결정 시각")).toBeNull();
+    expect(within(side).getByText("결정 시각")).toBeInTheDocument();
+    // 머리 딱지와 '결과' 칸 둘 다 허용
+    expect(within(side).getAllByText("허용")).toHaveLength(2);
+    fireEvent.click(rows()[1]);
+    expect(rows()[0]).not.toHaveAttribute("aria-current");
+    expect(within(side).getByText(/보내지 않은 요청이라 경로 · 응답 기록이 없어요/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "승인하고 보내기" })).toBeNull();
+  });
+
+  it("승인 요청이 없던 점검(빈 목록 · 404)은 탭을 두지 않고, 그 밖의 읽기 실패는 탭에 까닭을 적는다", async () => {
+    vi.mocked(saved.readSavedApprovals).mockResolvedValue({ run_ref: "run-1", approvals: [] });
+    const first = render(<Tab />);
+    expect(await screen.findByText("탭 없음")).toBeInTheDocument();
+    first.unmount();
+    vi.mocked(saved.readSavedApprovals).mockRejectedValue(new ApiError(404, "HTTP 404"));
+    const second = render(<Tab />);
+    await waitFor(() => expect(vi.mocked(saved.readSavedApprovals)).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("탭 없음")).toBeInTheDocument();
+    second.unmount();
+    vi.mocked(saved.readSavedApprovals).mockRejectedValue(new ApiError(503, "HTTP 503"));
+    render(<Tab />);
+    expect(await screen.findByText(/승인 기록을 읽지 못했어요 \(HTTP 503\)/)).toBeInTheDocument();
   });
 });
 
@@ -1600,6 +1701,89 @@ describe("점검 진행", () => {
     fireEvent.click(within(side).getByRole("button", { name: "진행 요약으로 돌아가기" }));
     expect(screen.getByRole("complementary", { name: "진행 요약" })).toBeInTheDocument();
     expect(doneBtn).toHaveAttribute("aria-pressed", "false");
+  });
+
+  // 점검이 끝나면 뭘 승인 · 거부했는지 못 봤다(사용자 11/26): 끝난 점검은 저장 승인 이력(계약 saved-request-approvals)으로
+  it("끝난 점검: 저장 승인 이력을 읽어 머리에 허용 · 거부 · 만료 수, [승인 기록 n]으로 오른쪽 목록, 보낸 요청엔 경로, 결정 버튼 없음", async () => {
+    const A = (n: number) => String(n).repeat(32);
+    const row = (n: number, state: SavedApproval["state"], exec: SavedApproval["execution_state"], at: string) => ({
+      id: A(n),
+      attempt_ref: A(n),
+      method: "POST" as const,
+      state,
+      execution_state: exec,
+      created_at: at,
+      expires_at: "2026-11-11T01:10:00Z",
+      ...(state === "allowed" || state === "denied" ? { decided_at: at } : {}),
+    });
+    vi.mocked(saved.readSavedApprovals).mockResolvedValue({
+      run_ref: `run-${job.id}`,
+      approvals: [
+        row(1, "allowed", "completed", "2026-11-11T01:00:01Z"),
+        row(2, "denied", "not_sent", "2026-11-11T01:00:02Z"),
+        row(3, "expired", "not_sent", "2026-11-11T01:00:03Z"),
+      ],
+    });
+    // 보낸 요청(승인 ID = 시도 ID)은 요청 전체 기록에서 경로 틀을 잇는다
+    vi.mocked(e2req.readE2Requests).mockResolvedValue({
+      rows: [
+        {
+          at: "2026-11-11T01:00:04Z",
+          kind: "request",
+          method: "POST",
+          path: "/api/items/{id}",
+          status: 201,
+          call_ref: "call-1",
+          attempt_id: A(1),
+          index: 7,
+          path_detail_state: "pattern_only",
+        },
+      ],
+      total: 1,
+      next_cursor: null,
+    });
+    vi.mocked(e2req.readE2RequestDetail).mockResolvedValue({ ok: false, why: "not_found" });
+    const done = {
+      ...job,
+      state: "completed" as const,
+      phase: "report" as const,
+      drain_complete: true,
+      result_ready: true,
+    };
+    useUrl.setState({ handle, job: done, verified: true, flow: { ...flow, stage: "completed" }, flowVerified: true });
+    render(
+      <ShellContext.Provider value={shell("live")}>
+        <UrlLiveLive />
+      </ShellContext.Provider>,
+    );
+    const queue = await screen.findByRole("region", { name: "승인 요청" });
+    expect(within(queue).getByText("허용 1 · 거부 1 · 만료 1")).toBeInTheDocument();
+    expect(within(queue).queryByText(/대기/)).toBeNull();
+    // 끝난 회차는 실시간 승인 API 를 부르지 않는다(계약: 저장 이력 경로만)
+    expect(vi.mocked(api.fetchRequestApprovals)).not.toHaveBeenCalled();
+    expect(vi.mocked(saved.readSavedApprovals).mock.calls[0][0]).toBe("42");
+    fireEvent.click(within(queue).getByRole("button", { name: "승인 기록 3" }));
+    const side = screen.getByRole("complementary", { name: "처리된 승인 요청" });
+    expect(within(side).getByRole("heading", { level: 2, name: "승인 기록 3" })).toBeInTheDocument();
+    const list = within(side).getByRole("list", { name: "승인 기록" });
+    await within(list).findByText("/api/items/{id}");
+    const rows = within(list).getAllByRole("button");
+    // 최근 것부터: 만료 → 거부 → 허용. 보낸 허용 요청만 경로가 있다
+    expect(rows.map((r) => r.querySelector("[class*='tag']")?.textContent)).toEqual(["만료", "거부", "허용"]);
+    expect(rows[2]).toHaveTextContent("/api/items/{id}");
+    expect(rows[2]).toHaveTextContent("보냄 · 결과 기록됨");
+    expect(rows[1]).toHaveTextContent("경로 기록 없음");
+    expect(rows[1]).toHaveTextContent("보내지 않음");
+    // 거르기: 있는 결과만
+    expect(
+      within(within(side).getByRole("group", { name: "결과로 거르기" }))
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["허용 1", "거부 1", "만료 1"]);
+    fireEvent.click(rows[1]);
+    expect(rows[1]).toHaveAttribute("aria-expanded", "true");
+    expect(within(side).getByText(/보내지 않은 요청이라 경로 · 응답 기록이 없어요/)).toBeInTheDocument();
+    expect(within(side).queryByRole("button", { name: "승인하고 보내기" })).toBeNull();
   });
 
   it("가운데는 상태 카드 · 확인 필요 · 발견 후보(활동 기록 없음), 전송 통제와 탐색 현황은 오른쪽 진행 요약에", async () => {

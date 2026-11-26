@@ -46,6 +46,7 @@ import {
   type LiveCandidate,
   type LiveCandidatePage,
 } from "../../live/diagnosticCandidates";
+import type { E2RequestRow } from "../../live/e2Requests";
 import { clearFindingPick, pickFinding, usePickedFinding } from "../../live/findingPick";
 import {
   approvalCounts,
@@ -60,6 +61,7 @@ import {
 import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { runDurationMissingWhy, runDurationSec, runStartMissingWhy, runStartText } from "../../live/runTiming";
+import type { SavedApproval } from "../../live/savedApprovals";
 import { selectUrlRun, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { factText, URL_ENDED_STATES, type UrlState, urlOutcomeText, urlStateText } from "../../live/urlMap";
 import { useUrlRuns } from "../../live/urlRunList";
@@ -78,6 +80,14 @@ import { PriceCapsNotice } from "./PriceCapsNotice";
 import { ProductVerdictReport, productConfirmationSummary, useProductVerdicts } from "./productVerdictViews";
 import { ReportAssetGraph } from "./ReportAssetGraph";
 import { ReportReadError } from "./runRows";
+import {
+  ReportApprovalDetail,
+  ReportApprovals,
+  SavedApprovalHistory,
+  SavedApprovalSummary,
+  showApprovalTab,
+  useSavedApprovals,
+} from "./savedApprovals";
 import { useE2FlowFor } from "./sentRequests";
 import { TaskActivity } from "./TaskActivity";
 import { AccessMapPanel } from "./UrlAccessMapLive";
@@ -677,6 +687,11 @@ export function UrlLiveLive() {
   const host = useUrlHost();
   const stop = useStopConfirm("종료");
   const a = useRequestApprovals(job?.task_id ?? "", visible && g.runReadable);
+  // 끝난 점검은 저장 승인 이력(계약 saved-request-approvals, 읽기 전용)으로 뭘 승인 · 거부했는지 본다(사용자 11/26)
+  const savedAp = useSavedApprovals(
+    job && URL_ENDED_STATES.includes(job.state) && job.task_id ? job.task_id : null,
+    visible,
+  );
   // 자산 커버리지 (시안 v22 진행 상세): 실제 task 가 생긴 뒤 서버 값. 꺼졌거나 못 읽으면 칸을 두지 않는다
   // 제품 점검은 공개 진단 API만 열어 coverage 가 403이다(1차 리허설 F6: 15초마다 403이 쌓였다). 한 번 403을 받으면 그
   // task 에서는 다시 부르지 않고 칸을 두지 않는다(서버 응답으로 판단 — 모드를 화면이 추정하지 않는다)
@@ -994,7 +1009,11 @@ export function UrlLiveLive() {
           {stateNote}
           {/* 승인 요청: 대기 요청만 한 줄씩(사용자 11/24 · 11/25). 줄을 누르면 미리보기 · 승인 정보 · 승인/거부가 펼쳐진다.
               처리된 요청은 머리 버튼으로 오른쪽 패널에 */}
-          <ApprovalQueue a={a} planTitle={planTitle} doneShown={apShown} onShowDone={showDoneApprovals} />
+          {ended ? (
+            <SavedApprovalSummary poll={savedAp} shown={apShown} onShow={showDoneApprovals} />
+          ) : (
+            <ApprovalQueue a={a} planTitle={planTitle} doneShown={apShown} onShowDone={showDoneApprovals} />
+          )}
           {/* 발견: 점검 중엔 발견 후보(실시간), 끝나면 저장된 결과를 보고서 형식으로 */}
           {!ended && job.task_id ? (
             <LiveCandidates
@@ -1037,9 +1056,17 @@ export function UrlLiveLive() {
               </div>
               <InspHead
                 eyebrow={<span className={s.host}>{host}</span>}
-                title={`처리된 요청 ${a.rows.filter((r) => r.state !== "pending").length}`}
+                title={
+                  ended
+                    ? `승인 기록 ${savedAp.data?.approvals.length ?? 0}`
+                    : `처리된 요청 ${a.rows.filter((r) => r.state !== "pending").length}`
+                }
               />
-              <ApprovalHistory a={a} planTitle={planTitle} />
+              {ended && job.task_id ? (
+                <SavedApprovalHistory rows={savedAp.data?.approvals ?? []} task={job.task_id} />
+              ) : (
+                <ApprovalHistory a={a} planTitle={planTitle} />
+              )}
             </>
           ) : null}
           {!(picked && job.task_id) && !apShown ? (
@@ -1771,6 +1798,8 @@ const R_TABS = [
   ["graph", "자산 지식 그래프"],
   ["map", "접근통제 지도"],
   ["doc", "보고서"],
+  // 끝난 점검의 승인 · 거부 기록(사용자 11/26) — 기록이 있을 때만(showApprovalTab)
+  ["approvals", "승인 기록"],
 ] as const;
 type RTab = (typeof R_TABS)[number][0];
 
@@ -1792,6 +1821,9 @@ export function UrlReportLive() {
   // 확정 단계(IDOR) 판정: 요약 '판정 확정' 칸이 일반 후보 판정만 세서 제품 판정 CONFIRMED 가 '확정 0'으로만 보였다(#875
   // 실측 7절 1(나)). 내보내기와 같은 확정 합계를 표시하고, 제품 판정 출처는 아래 줄에 남긴다.
   const verdicts = useProductVerdicts(taskId, visible);
+  // 승인 기록 탭: 끝난 점검의 저장 승인 이력(계약 saved-request-approvals). 기록이 없으면 탭을 두지 않는다
+  const savedAp = useSavedApprovals(taskId, visible);
+  const rTabs = R_TABS.filter(([k]) => k !== "approvals" || showApprovalTab(savedAp));
   const { confirmed: productConfirmed, notice: productConfirmationNotice } = productConfirmationSummary(verdicts);
   // 저장된 실행 기록(diagnosis-run)은 보고서에서 더 쓰지 않는다(사용자 11/19 — 실행 종료 기록 · 요청 수를 뺌)
   // 자산 탐색 숫자 칸 3개(발견한 API · 보낸 요청 · 막은 요청)를 보고서에도(사용자 11/25). 보고서는 끝난 점검이라 전송 기록을
@@ -1808,7 +1840,15 @@ export function UrlReportLive() {
   const tabRefs = useRef<Partial<Record<RTab, HTMLButtonElement | null>>>({});
   const [sel, setSel] = useState<string | null>(null);
   // 다른 취약점을 고르면 오른쪽 패널을 맨 위로(사용자 11/24)
-  const reportInspRef = useScrollTopOnChange<HTMLElement>(sel);
+  // [승인 기록] 탭에서 고른 줄(오른쪽 패널, 사용자 11/26). 다른 점검의 고름은 쓰지 않는다
+  const [apPick, setApPick] = useState<{
+    task: string;
+    row: SavedApproval;
+    sent: E2RequestRow | undefined;
+  } | null>(null);
+  const apSel = apPick && apPick.task === taskId ? apPick : null;
+  const apMode = tab === "approvals";
+  const reportInspRef = useScrollTopOnChange<HTMLElement>(apMode ? `ap:${apSel?.row.id ?? ""}` : sel);
   // 오른쪽 패널 머리 '상세 보기'로 연 발견 (그 발견이 목록에서 사라지면 — 다른 점검 등 — 목록으로 돌아간다).
   // 단독 발견 상세(#finding)도 같은 발견을 보도록 공용 상태(findingPick)에 둔다
   const detail = usePickedFinding(taskId);
@@ -1900,7 +1940,7 @@ export function UrlReportLive() {
     const d = { ArrowRight: 1, ArrowLeft: -1 }[ev.key];
     if (!d) return;
     ev.preventDefault();
-    pickTab(R_TABS[(i + d + R_TABS.length) % R_TABS.length][0], true);
+    pickTab(rTabs[(i + d + rTabs.length) % rTabs.length][0], true);
   };
 
   // 보고서 탭(사용자 11/17): 발견마다 PoC 를 Markdown 문서 한 장으로
@@ -2095,7 +2135,7 @@ export function UrlReportLive() {
             {flow ? <CrawlMeters flow={flow} e2={crawlE2.data} /> : null}
             <section className={s.sec}>
               <div className={s["seg-tabs"]} role="tablist" aria-label="보고서 내용" id="rTabs">
-                {R_TABS.map(([k, label], i) => (
+                {rTabs.map(([k, label], i) => (
                   <button
                     key={k}
                     ref={(el) => {
@@ -2112,6 +2152,9 @@ export function UrlReportLive() {
                   >
                     {label}
                     {k === "list" ? <span className={s.c}>{sorted.length}</span> : null}
+                    {k === "approvals" && savedAp.data ? (
+                      <span className={s.c}>{savedAp.data.approvals.length}</span>
+                    ) : null}
                   </button>
                 ))}
               </div>
@@ -2162,20 +2205,37 @@ export function UrlReportLive() {
                 <Download taskId={taskId} />
                 <WorkflowReport />
               </div>
+              <div role="tabpanel" id="rp-approvals" aria-label="승인 기록" hidden={tab !== "approvals"}>
+                {tab === "approvals" ? (
+                  <ReportApprovals
+                    poll={savedAp}
+                    task={taskId}
+                    current={apSel?.row.id ?? null}
+                    onPick={(row, sent) => {
+                      setApPick({ task: taskId, row, sent });
+                      openInsp();
+                    }}
+                  />
+                ) : null}
+              </div>
             </section>
           </div>
-          <aside className={s.vi} id="rInsp" ref={reportInspRef} aria-label="취약점 상세">
-            <FindingDetail
-              e={chosen}
-              host={host}
-              taskId={taskId}
-              onReload={rem.reload}
-              onOpen={(e) => {
-                setDetail(e.entry_id);
-                // 좁은 화면은 상세가 서랍이라 닫아야 가운데 페이지가 보인다(넓은 화면은 페이지가 패널 자리를 쓴다)
-                if (narrow) closeInsp();
-              }}
-            />
+          <aside className={s.vi} id="rInsp" ref={reportInspRef} aria-label={apMode ? "승인 기록 상세" : "취약점 상세"}>
+            {apMode ? (
+              <ReportApprovalDetail pick={apSel} task={taskId} />
+            ) : (
+              <FindingDetail
+                e={chosen}
+                host={host}
+                taskId={taskId}
+                onReload={rem.reload}
+                onOpen={(e) => {
+                  setDetail(e.entry_id);
+                  // 좁은 화면은 상세가 서랍이라 닫아야 가운데 페이지가 보인다(넓은 화면은 페이지가 패널 자리를 쓴다)
+                  if (narrow) closeInsp();
+                }}
+              />
+            )}
           </aside>
           <PaneToggle />
         </div>

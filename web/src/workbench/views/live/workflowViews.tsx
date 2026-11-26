@@ -771,7 +771,7 @@ const DETAIL_MISS_TEXT: Readonly<Record<Exclude<E2DetailRead, { ok: true }>["why
  * 전송 결과(요청 상세, 계약 workbench-live-data §4.1): 이 줄의 E② 호출 · 시도 하나를 읽어 결정 · 사유 · 보냄 · 응답을 보인다.
  * 서버 판정 그대로이고 화면은 다시 판정하지 않는다. 헤더 · 본문은 서버가 저장하지 않아 '저장 안 함' 칸만 둔다
  */
-function RequestSendResult({ task, callRef, attemptId }: { task: string; callRef: string; attemptId: string }) {
+export function RequestSendResult({ task, callRef, attemptId }: { task: string; callRef: string; attemptId: string }) {
   const read = usePoll((signal) => readE2RequestDetail(task, callRef, attemptId, signal), [task, callRef, attemptId]);
   if (read.error)
     return (
