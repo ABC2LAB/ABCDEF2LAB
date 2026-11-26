@@ -130,6 +130,8 @@ const flow: WorkflowSnapshot = {
 beforeEach(() => {
   vi.resetAllMocks();
   resetUrl({ kind: "v2", catalog });
+  // 이 파일의 대시보드 시험은 점검별(점검 하나) 대시보드를 본다 — 기본 보기는 전체(통합 대시보드, 사용자 11/26)
+  localStorage.setItem("abc2lab-dash-mode", "run");
 });
 afterEach(cleanup);
 
