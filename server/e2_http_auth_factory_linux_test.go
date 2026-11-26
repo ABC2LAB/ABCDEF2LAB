@@ -1008,7 +1008,7 @@ func TestE2HTTPModelLoginAttemptsThroughE2(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("기록 파일: %v %v", info, err)
 	}
-	rows, err := readLoginAttemptRows(path)
+	rows, _, err := readLoginAttemptRows(path)
 	if err != nil || len(rows) == 0 {
 		t.Fatal("기록 행 없음")
 	}
@@ -1082,7 +1082,7 @@ func TestE2HTTPModelLoginNotSentRowLinksReceipt(t *testing.T) {
 	if err == nil || receipt.Reason != e2proxy.AttemptLimit || posts.Load() != 0 {
 		t.Fatalf("시도 상한인데 보냄: %+v %v", receipt, err)
 	}
-	rows, err := readLoginAttemptRows(filepath.Join(policy.StateDir, E2HTTPLoginAttemptsFile))
+	rows, _, err := readLoginAttemptRows(filepath.Join(policy.StateDir, E2HTTPLoginAttemptsFile))
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("미전송 행: %d %v", len(rows), err)
 	}
@@ -1171,7 +1171,7 @@ func TestE2HTTPModelLoginContrastProbe(t *testing.T) {
 	if got := lease.LoginAttempts.AccountAuth()["tester-a"]; got != loginattempt.AuthAuthenticated || anonymous.Load() != 1 {
 		t.Fatalf("대조 요청으로 성공 안 함: %s 세션 없는 GET=%d", got, anonymous.Load())
 	}
-	rows, err := readLoginAttemptRows(filepath.Join(policy.StateDir, E2HTTPLoginAttemptsFile))
+	rows, _, err := readLoginAttemptRows(filepath.Join(policy.StateDir, E2HTTPLoginAttemptsFile))
 	if err != nil || len(rows) == 0 {
 		t.Fatal("기록 없음")
 	}

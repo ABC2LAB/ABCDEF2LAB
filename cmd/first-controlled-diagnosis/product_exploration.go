@@ -142,16 +142,26 @@ func (b *urlPreparationRuntime) recordExplorationLoginAttempts(ctx context.Conte
 	}
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), explorationCloseTimeout)
 	defer cancel()
+	// 넘겨받지 못하면(읽기·쓰기 실패, 상한으로 빠진 행) 표지를 남긴다. 진단 단계는 표지를 보고 로그인 시도를 보내지 않는다
+	// (회차 공통 연속 실패 상한을 지킬 수 없으므로, #969 동찬 리뷰 P2). 표지를 못 쓰면 로그만 남긴다.
+	unavailable := func(why string) {
+		log.Print("[first-diagnosis] 탐색 로그인 시도 기록을 넘겨받지 못함: " + why + "(진단 단계는 로그인 시도를 보내지 않음)")
+		if server.MarkLoginHistoryUnavailable(stateDir) != nil {
+			log.Print("[first-diagnosis] 탐색 로그인 기록 인계 실패 표지를 쓰지 못함")
+		}
+	}
 	rows, omitted, err := host.loginAttempts(readCtx, binding)
 	if err != nil {
-		log.Print("[first-diagnosis] 탐색 로그인 시도 기록을 경계에서 읽지 못함(진단 단계 연속 실패는 0부터)")
+		unavailable("경계 조회 실패")
 		return
 	}
 	if omitted > 0 {
 		log.Printf("[first-diagnosis] 탐색 로그인 시도 행 %d개가 경계 상한으로 빠짐", omitted)
+		unavailable("행 빠짐")
 	}
 	if err := server.AppendLoginAttemptRows(stateDir, rows); err != nil {
-		log.Print("[first-diagnosis] 탐색 로그인 시도 기록을 쓰지 못함")
+		unavailable("기록 쓰기 실패")
+		return
 	}
 	labels := make([]string, 0, len(credentials))
 	for _, c := range credentials {

@@ -62,6 +62,9 @@ const (
 	// RefusalContextInUse는 같은 브라우저 문맥에 다른 등록 계정이 이미 로그인해 있어 막은 로그인이다. 계정을 바꾸려면 새
 	// 문맥을 연다(쿠키가 섞이면 어느 계정 세션을 실었는지 가를 수 없다).
 	RefusalContextInUse = "browser_account_in_use"
+	// RefusalHistoryUnavailable은 앞 단계(탐색)의 로그인 기록을 넘겨받지 못해 회차 공통 연속 실패 수를 알 수 없어 막은
+	// 로그인이다. 상한을 지킬 수 없으면 로그인만 보내지 않고 일반 요청은 계속한다(#969 동찬 리뷰 P2).
+	RefusalHistoryUnavailable = "login_history_unavailable"
 )
 
 // 화면 계정 상태(§4 account_auth). not_attempted·unconfirmed는 모델 로그인에서 새로 생긴 값이다.
@@ -157,6 +160,8 @@ type Config struct {
 	// OnProbe는 보낼 프로그램 대조 요청이 새로 쌓였을 때 부른다(NextProbe로 꺼낸다). 판정기 잠금 안에서 부르므로 막지 않는
 	// 알림만 한다.
 	OnProbe func()
+	// HistoryUnavailable은 앞 단계 기록을 넘겨받지 못했다는 뜻이다. 그러면 모든 로그인 시도를 보내기 전에 막는다.
+	HistoryUnavailable bool
 }
 
 type observation struct {
@@ -274,6 +279,10 @@ func (t *Tracker) Prepare(req Request, writeAllowed bool) Plan {
 		OtherFields: nonNil(cand.OtherFields), FieldsFromResponse: nonNil(cand.FieldsFromResponse),
 		SessionNames: []string{}, SessionSeenAnonymous: []string{}, Followup: FollowupNone}
 	t.attempts = append(t.attempts, a)
+	if t.cfg.HistoryUnavailable {
+		t.refuseLocked(a, RefusalHistoryUnavailable)
+		return Plan{Login: true, Refusal: RefusalHistoryUnavailable}
+	}
 	if t.failures[cand.Identifier] >= t.cfg.MaxConsecutiveFailures {
 		t.refuseLocked(a, RefusalExhausted)
 		return Plan{Login: true, Refusal: RefusalExhausted}
@@ -458,6 +467,9 @@ func (t *Tracker) Complete(p Plan, transportRef string, req Request, resp Respon
 			t.state[a.cand.AccountLabel] = StateLoggedIn
 		}
 	}
+	// 결과가 바뀐 이 행을 다른 시도의 갱신보다 먼저 남긴다. 기록 순서가 실패 수가 바뀐 순서와 같아야 다음 단계가 Seed로 같은
+	// 수를 이어받는다(#969 동찬 리뷰 P2).
+	t.emitLocked(a)
 	t.reevaluateLocked()
 	t.emitLocked(a)
 }
@@ -919,19 +931,28 @@ func accountAuthOf(labels []string, attempts []*attempt) map[string]string {
 }
 
 // Seed는 앞 단계(탐색)의 기록 행으로 연속 실패 수와 계정 상태를 잇는다(§5 회차당). 세션 값은 없으므로 뒤 요청 판정에는
-// 쓰지 않는다. 같은 attempt_ref의 마지막 행이 그 시도의 지금 값이고, 시도 순서는 처음 나온 순서다.
+// 쓰지 않는다. 계정 상태는 시도별 마지막 행(처음 나온 순서)으로 정하고, 실패 수는 기록 순서대로 시도의 결과가 바뀐 행마다
+// 다시 센다. 판정기는 결과가 바뀔 때마다 그 행을 바로 남기므로 기록 순서가 실제 실패 수가 바뀐 순서다(앞 시도의 성공이 뒤
+// 시도의 실패보다 늦게 확정돼도 같은 수가 된다, #969 동찬 리뷰 P2).
 func (t *Tracker) Seed(rows []Row) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for _, a := range attemptsOfRows(rows) {
 		t.n++
 		a.order = t.n
-		switch a.row.Outcome {
-		case OutcomeFailed:
-			t.failures[a.cand.Identifier]++
-		case OutcomeSucceeded:
-			t.failures[a.cand.Identifier] = 0
-		}
 		t.attempts = append(t.attempts, a)
+	}
+	last := map[string]string{}
+	for _, r := range rows {
+		if r.Schema != Schema || r.AttemptRef == "" || last[r.AttemptRef] == r.Outcome {
+			continue
+		}
+		last[r.AttemptRef] = r.Outcome
+		switch r.Outcome {
+		case OutcomeFailed:
+			t.failures[r.Identifier]++
+		case OutcomeSucceeded:
+			t.failures[r.Identifier] = 0
+		}
 	}
 }
