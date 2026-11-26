@@ -63,9 +63,11 @@ type ExplorationSessionOptions struct {
 }
 
 type ExplorationSession struct {
-	options           ExplorationSessionOptions
-	ctx               context.Context
-	cancel            context.CancelFunc
+	options ExplorationSessionOptions
+	ctx     context.Context
+	cancel  context.CancelFunc
+	// cancelCause는 세션 문맥을 이름 붙은 원인으로 닫는다(agent.AbortCause). 탐색 작업자 취소 기록이 원인을 보인다.
+	cancelCause       context.CancelCauseFunc
 	boundary          exploration.Lease
 	browser           ExplorationBrowserLease
 	client            mcpClient
@@ -97,8 +99,13 @@ func OpenExplorationSession(parent context.Context, o ExplorationSessionOptions)
 	if o.APIRecon != nil {
 		return nil, exploration.ErrUnavailable
 	}
-	ctx, cancel := context.WithTimeout(parent, time.Duration(o.Binding.Limits.TimeBudgetSeconds)*time.Second)
-	s := &ExplorationSession{options: o, ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	timed, stopTimer := context.WithTimeoutCause(parent, time.Duration(o.Binding.Limits.TimeBudgetSeconds)*time.Second, agent.AbortExplorationTimeBudget)
+	ctx, cancelCause := context.WithCancelCause(timed)
+	cancel := func() {
+		cancelCause(agent.AbortExplorationSessionClosed)
+		stopTimer()
+	}
+	s := &ExplorationSession{options: o, ctx: ctx, cancel: cancel, cancelCause: cancelCause, done: make(chan struct{})}
 	fail := func() (*ExplorationSession, error) {
 		closeErr := s.Close(context.Background(), exploration.BoundaryUnavailable)
 		if closeErr != nil {
@@ -276,9 +283,10 @@ func (s *ExplorationSession) Run(ctx context.Context, w *agent.Worker, o agent.E
 	}
 	s.ran = true
 	s.mu.Unlock()
-	runCtx, cancel := context.WithCancel(s.ctx)
-	stop := context.AfterFunc(ctx, cancel)
-	defer func() { stop(); cancel() }()
+	runCtx, cancel := context.WithCancelCause(s.ctx)
+	// 호출자(제품 단계)가 끝나면 그 원인을 그대로 넘긴다(운영자 중지·회차 마감 등).
+	stop := context.AfterFunc(ctx, func() { cancel(context.Cause(ctx)) })
+	defer func() { stop(); cancel(nil) }()
 	o.Binding = s.options.Binding
 	o.BrowserTools = append([]actool.CoreTool{}, s.tools...)
 	if s.options.Observe != nil {
@@ -293,7 +301,7 @@ func (s *ExplorationSession) Run(ctx context.Context, w *agent.Worker, o agent.E
 						s.observationFailed = true
 						s.mu.Unlock()
 					}
-					s.cancel()
+					s.cancelCause(agent.AbortExplorationObservation)
 					return exploration.ErrUnavailable
 				}
 				return nil

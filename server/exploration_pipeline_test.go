@@ -335,6 +335,42 @@ func TestExplorationPipelineObservationFailureStopsBeforeNextModelCall(t *testin
 		t.Fatal("observation failure admitted another model call or discarded stored discoveries", err)
 	}
 }
+
+// 흐름 표기로 담지 못하는 경로(셸 글롭이 안 풀린 `*`)의 관찰은 그 한 건만 발견 목록에 올리지 않고 탐색 세션·모델
+// 호출을 계속한다(사용자 결정 2026-11-26 (가), NodeGoat 회차 1에서 이 관찰 하나로 회차가 실패했다).
+func TestExplorationPipelineUnrepresentableObservationKeepsSession(t *testing.T) {
+	server, task, o, b, browser, http, p := pipelineFixture(t)
+	factory := o.OpenHost
+	o.OpenHost = func(ctx context.Context, binding exploration.Binding, w *agent.Worker) (ExplorationPipelineHost, error) {
+		host, err := factory(ctx, binding, w)
+		reader := host.Reader.(*pipelinePrivateReader)
+		sequences := host.Sequences
+		added := false
+		host.Sequences = func(ctx context.Context, b diagnosisflow.ExplorationBinding) ([]uint64, error) {
+			if http.navigate.Load() > 0 && !added {
+				reader.mu.Lock()
+				reader.add("/read/api/*", diagnosisflow.SourceAPIReconRuntime, nil)
+				reader.mu.Unlock()
+				added = true
+			}
+			return sequences(ctx, b)
+		}
+		return host, err
+	}
+	result, err := server.RunExplorationPipeline(t.Context(), task, o)
+	snapshot, _ := o.Workflow.Snapshot()
+	if err != nil || result.Status != "COMPLETED" || result.Reason != "completed" || p.calls.Load() != 3 || snapshot.Counts.ExplorationRequests != 4 || snapshot.Counts.InvalidPaths != 1 || snapshot.Stage != "diagnosing" {
+		t.Fatal("unrepresentable observation closed the exploration session", err, result.Status, result.Reason, p.calls.Load(), snapshot.Counts)
+	}
+	if b.lease.closed() != 1 || browser.closes.Load() != 1 || http.deleted.Load() != 1 {
+		t.Fatal("pipeline left exploration resources alive")
+	}
+	for _, fact := range o.Workflow.DiscoveryInventory() {
+		if strings.Contains(fact.Path, "*") {
+			t.Fatal("unrepresentable path persisted", fact.Path)
+		}
+	}
+}
 func TestExplorationPipelineOpenCleanupFailureCannotUseLegacyFallback(t *testing.T) {
 	server, task, o, b, browser, http, p := pipelineFixture(t)
 	browser.info.PackageVersion = "unexpected"
