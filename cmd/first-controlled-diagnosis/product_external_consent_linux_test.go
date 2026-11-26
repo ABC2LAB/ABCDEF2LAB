@@ -10,9 +10,20 @@ import (
 	"time"
 )
 
+// privateConsentDir는 제품 상태 디렉터리처럼 0700인 시험 디렉터리다. 동의 기록은 보호 파일 읽기(readPrivateFile)라 부모가
+// 정확히 0700이어야 읽힌다 — t.TempDir()의 하위 디렉터리는 umask에 따라 0755일 수 있다(CI에서 그래서 실패, #965).
+func privateConsentDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 // 설치 단위 외부 전송 동의 기록(사용자 결정 2026-11-26): 한 번 남기면 바꾸지 않고, 지금 문장의 동의만 동의로 읽는다.
 func TestProductExternalConsentRecordOnce(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateConsentDir(t)
 	if _, err := readProductExternalConsent(dir); !errors.Is(err, errExternalConsentMissing) {
 		t.Fatalf("empty state read as %v", err)
 	}
@@ -50,7 +61,7 @@ func TestProductExternalConsentRejectsTamperedRecord(t *testing.T) {
 		"zero time":       func(r *productExternalConsentRecord) { r.At = time.Time{} },
 		"old format":      func(r *productExternalConsentRecord) { r.Format = "abc2lab.external-transfer-consent/v0" },
 	} {
-		dir := t.TempDir()
+		dir := privateConsentDir(t)
 		rec := good
 		change(&rec)
 		raw, _ := json.Marshal(rec)
@@ -66,7 +77,7 @@ func TestProductExternalConsentRejectsTamperedRecord(t *testing.T) {
 		}
 	}
 	// 다른 사람도 읽을 수 있는 권한이면 거부한다.
-	dir := t.TempDir()
+	dir := privateConsentDir(t)
 	raw, _ := json.Marshal(good)
 	if err := os.WriteFile(productExternalConsentPath(dir), raw, 0o644); err != nil {
 		t.Fatal(err)
@@ -76,7 +87,7 @@ func TestProductExternalConsentRejectsTamperedRecord(t *testing.T) {
 	}
 	// 알 수 없는 칸이 있으면 거부한다.
 	extra := strings.Replace(string(raw), "{", `{"statement":"x",`, 1)
-	dir = t.TempDir()
+	dir = privateConsentDir(t)
 	if err := os.WriteFile(productExternalConsentPath(dir), []byte(extra), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -138,8 +149,8 @@ func TestExternalTransferStatementPinned(t *testing.T) {
 
 // 동의 기록은 링크를 따라가지 않는다(보호 파일 읽기, #965 리뷰 최민준 P3).
 func TestProductExternalConsentRejectsSymlink(t *testing.T) {
-	dir := t.TempDir()
-	other := filepath.Join(t.TempDir(), "elsewhere.json")
+	dir := privateConsentDir(t)
+	other := filepath.Join(privateConsentDir(t), "elsewhere.json")
 	raw, _ := json.Marshal(productExternalConsentRecord{Format: productExternalConsentFormat, StatementSHA256: productExternalTransferStatementSHA256(), Source: productExternalConsentAdmin, Actor: "ARTEX", At: time.Now().UTC()})
 	if err := os.WriteFile(other, raw, 0o600); err != nil {
 		t.Fatal(err)
