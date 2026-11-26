@@ -109,6 +109,8 @@ export const ACCOUNT_AUTH_LABEL: Record<URLAccountAuthResult, string> = {
   session_not_found: "비인증 진행 · 세션 없음",
   result_unknown: "비인증 진행 · 결과 불명",
   not_sent: "비인증 진행 · 보내지 않음",
+  not_attempted: "비인증 진행 · 로그인 시도 없음",
+  unconfirmed: "비인증 진행 · 로그인 확인 안 됨",
 };
 
 /** 계정별 인증 결과를 라벨 순으로 정렬해 [계정라벨, 결과 문구] 행으로. 자격·세션 값은 애초에 없다(라벨·결과뿐). */

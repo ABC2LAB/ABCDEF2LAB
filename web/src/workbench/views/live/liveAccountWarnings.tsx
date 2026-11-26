@@ -25,6 +25,9 @@ export const ACCOUNT_AUTH_FAIL_TEXT: Record<Exclude<URLAccountAuthResult, "authe
   session_not_found: "세션을 받지 못함",
   result_unknown: "결과 모름",
   not_sent: "로그인 요청을 보내지 않음",
+  not_attempted: "아직 로그인하지 않음",
+  // 경준님 제안 문구(#963 §4).
+  unconfirmed: "로그인 성공을 확인하지 못했습니다. 이 계정은 확정 단계에서 쓰지 않을 수 있습니다. 점검은 멈추지 않습니다.",
 };
 
 /** 계정 표시 이름: 라벨 순서로 A · B · …(점검 정보의 '시험 계정 인증' 칸과 같은 규칙). */

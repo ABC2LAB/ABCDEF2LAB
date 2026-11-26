@@ -155,6 +155,9 @@ export const URL_ACCOUNT_AUTH_RESULTS = [
   "session_not_found",
   "result_unknown",
   "not_sent",
+  // 모델 직접 로그인 회차(docs/contracts/model-login-attempts.md §4): 아직 로그인 시도 없음 · 로그인 성공을 확인하지 못함.
+  "not_attempted",
+  "unconfirmed",
 ] as const;
 export type URLAccountAuthResult = (typeof URL_ACCOUNT_AUTH_RESULTS)[number];
 /** 계정 등록 라벨(소문자·숫자·_·-, 사용자명 원문 아님) → 인증 결과. 1…16개. */

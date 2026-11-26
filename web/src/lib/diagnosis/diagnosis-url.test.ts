@@ -381,6 +381,10 @@ describe("실행 결과 칸(docs/contracts/run-outcome-states.md §3.2)", () => 
     };
     expect(parseURLJob(envelope({ ...completed, state, account_auth }), owner).account_auth).toEqual(account_auth);
   });
+  it("account_auth: 모델 직접 로그인 회차의 새 값(not_attempted·unconfirmed)도 받는다(계약 model-login-attempts §4)", () => {
+    const account_auth = { "acct-a": "not_attempted", "acct-b": "unconfirmed", "acct-c": "authenticated" };
+    expect(parseURLJob(envelope({ ...completed, account_auth }), owner).account_auth).toEqual(account_auth);
+  });
   it("account_auth 없는 실행은 그대로 받는다(계정 미결속)", () => {
     expect(parseURLJob(envelope(completed), owner).account_auth).toBeUndefined();
   });
