@@ -1204,6 +1204,10 @@ func TestE2HTTPModelLoginContrastProbe(t *testing.T) {
 			r, _ := http.NewRequest("POST", target.URL+"/read/login", strings.NewReader("x=1"))
 			return r
 		}(),
+		"empty post": func() *http.Request {
+			r, _ := http.NewRequest("POST", target.URL+"/read/dashboard", nil)
+			return r
+		}(),
 	} {
 		if _, receipt, err := probeCall.Do(run, req); err == nil || receipt.Reason != e2proxy.Unsupported {
 			t.Fatalf("%s: 대조 요청이 막아야 할 요청을 보냄: %+v %v", name, receipt, err)
