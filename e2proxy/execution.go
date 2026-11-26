@@ -1391,9 +1391,12 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	// 학습 로그인 목적은 확정 단계 다시 로그인 호출만 쓴다. Worker의 refresh_session·처음 인증 준비는 지금처럼 인증 준비
 	// 규칙 하나뿐이다.
 	learned := learnedLoginPurpose(purpose)
-	if c.program == "" && purpose != "" ||
-		(c.program == ProgramAuthPrep || c.program == ProgramRefreshSession) && purpose != PurposeAuthPrep &&
-			!(learned && c.program == ProgramRefreshSession && c.e3Share) {
+	if learned {
+		if c.program != ProgramRefreshSession || !c.e3Share {
+			return nil, nil, Receipt{}, ErrConfig
+		}
+	} else if c.program == "" && purpose != "" ||
+		(c.program == ProgramAuthPrep || c.program == ProgramRefreshSession) && purpose != PurposeAuthPrep {
 		return nil, nil, Receipt{}, ErrConfig
 	}
 	method := ""

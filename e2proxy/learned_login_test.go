@@ -185,6 +185,18 @@ func TestLearnedLoginOnlyOnConfirmationRelogin(t *testing.T) {
 	if _, _, err := model.LearnedLogin(t.Context(), req, PurposeLoginPrep, passHeader(http.Header{})); !errors.Is(err, ErrConfig) {
 		t.Fatalf("모델 호출이 학습 로그인을 씀: %v", err)
 	}
+	for _, kind := range []ProgramCallKind{ProgramAuthPrep, ProgramLoginContrast} {
+		call, err := e.BeginProgramCall(t.Context(), kind, "invalid-learned-purpose")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := call.LearnedLogin(t.Context(), nil, PurposeLoginPrep, passHeader(http.Header{})); !errors.Is(err, ErrConfig) {
+			t.Errorf("%s 호출이 학습 로그인 용도 검사에서 차단되지 않음: %v", kind, err)
+		}
+		if _, err := call.Close(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, _, err := learnedCall(t, e, true).LearnedLogin(t.Context(), req, PurposeAuthPrep, passHeader(http.Header{})); !errors.Is(err, ErrConfig) {
 		t.Fatalf("다른 목적을 받음: %v", err)
 	}
