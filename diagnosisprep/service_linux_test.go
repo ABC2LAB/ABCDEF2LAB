@@ -682,6 +682,55 @@ func TestExternalTransferConsentIsRequiredAndDurable(t *testing.T) {
 	}
 }
 
+// 설치 단위 외부 전송 동의(backend 판정)가 있으면 외부 모델 회차는 회차별 확인 없이 시작하고, 시작 기록에는 동의가 적용됐다고
+// 남는다(사용자 결정 2026-11-26). 동의 판정이 바뀌어도 저장 검토와 같은 것으로 본다(동의는 승인 범위가 아님).
+func TestInstallExternalConsentStartsWithoutRunConfirmation(t *testing.T) {
+	s, b, root := newFixture(t)
+	b.inspection.Scope.Model = &ModelInfo{Mode: "openrouter", Model: "qwen/qwen3.6-35b-a3b", Provider: "fixture/endpoint", ExternalTransfer: true, InputPerCall: 262144, OutputPerCall: 100}
+	j := create(t, s, "install-consent-create")
+	b.mu.Lock()
+	b.inspection.ExternalTransferConsented = true
+	b.mu.Unlock()
+	if result := start(t, s, j, "install-consent-start"); result.Error != "" {
+		t.Fatal("install consent did not start", result.Error)
+	}
+	for deadline := time.Now().Add(time.Second); status(t, s, j.ID).State != Completed; {
+		if time.Now().After(deadline) {
+			t.Fatal("synthetic completion timeout")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if s.Shutdown(context.Background()) != nil {
+		t.Fatal("shutdown")
+	}
+	restored, err := New(context.Background(), root, b)
+	if err != nil {
+		t.Fatal("install consent receipt restart", err)
+	}
+	defer restored.Shutdown(context.Background())
+	if status(t, restored, j.ID).State != Completed || b.calls.Load() != 1 {
+		t.Fatal("install consent receipt replayed execution")
+	}
+	if !restored.jobs[j.ID].ExternalTransferConfirmed {
+		t.Fatal("receipt did not record applied consent")
+	}
+}
+
+// 외부 모델이 아닌 회차는 동의 판정과 상관없이 시작하고, 시작 기록에 외부 전송 동의를 지어내지 않는다.
+func TestLocalRunDoesNotRecordExternalConsent(t *testing.T) {
+	s, _, _ := newFixture(t)
+	j := create(t, s, "local-create")
+	if result := start(t, s, j, "local-start"); result.Error != "" {
+		t.Fatal(result.Error)
+	}
+	s.mu.Lock()
+	confirmed := s.jobs[j.ID].ExternalTransferConfirmed
+	s.mu.Unlock()
+	if confirmed {
+		t.Fatal("local run recorded external consent")
+	}
+}
+
 // 결과 없이 completed로 마감하려는 갱신은 거부한다. 실행은 완료로 보이지 않고 결과 불명으로 끝난다(절대 규칙 5).
 func TestPublishRejectsCompletionWithoutRunResult(t *testing.T) {
 	s, b, _ := newFixture(t)

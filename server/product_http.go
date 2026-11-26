@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
@@ -140,6 +141,15 @@ func NewProductDiagnosisHandler(ctx context.Context, pool *sql.DB, keyDir, dataD
 			writeJSON(w, 400, map[string]string{"error": "model_not_installed"})
 			return
 		}
+		if r.URL.Path == productExternalConsentPath {
+			owner, e := authenticate(r)
+			if e != nil || owner != "ARTEX" {
+				writeJSON(w, 401, map[string]string{"error": "authentication_required"})
+				return
+			}
+			productExternalConsentHTTP(w, r, owner, endpoint)
+			return
+		}
 		if strings.HasPrefix(r.URL.Path, candidateVerificationPrefix) && strings.Contains(r.URL.Path, "/verifications") {
 			if strings.HasSuffix(r.URL.Path, "/answers") {
 				candidateVerificationAnswerHTTP(w, r, pool, authenticate, endpoint)
@@ -198,3 +208,51 @@ func NewProductDiagnosisHandler(ctx context.Context, pool *sql.DB, keyDir, dataD
 		http.NotFound(w, r)
 	}), nil
 }
+
+// productExternalConsentPath는 설치 단위 외부 전송 동의 경로다(사용자 결정 2026-11-26: 외부 전송 동의는 설치 때 한 번).
+//
+//	GET  /api/product/external-transfer-consent                              동의 상태(필요 여부 · 문장 · 기록)
+//	POST /api/product/external-transfer-consent {"statement_confirmed":true,"statement_sha256":"…"} 관리자 동의를 한 번 남김
+//	     (이미 있으면 그대로). statement_sha256은 화면이 보인 문장의 해시 — 지금 문장과 다르면 409 statement_changed
+//
+// 관리자(ARTEX)만 부른다. 문장은 서버 상수이고 기록에는 그 해시만 남는다.
+const productExternalConsentPath = "/api/product/external-transfer-consent"
+
+// productExternalConsentBodyBytes는 동의 요청 본문 상한이다(진술 칸 + 64자 해시).
+const productExternalConsentBodyBytes = 256
+
+func productExternalConsentHTTP(w http.ResponseWriter, r *http.Request, owner string, endpoint diagnosisprep.Endpoint) {
+	switch r.Method {
+	case "GET":
+		if len(r.URL.RawQuery) != 0 {
+			writeJSON(w, 400, map[string]string{"error": "invalid_consent_request"})
+			return
+		}
+		callProductControl(w, r, owner, endpoint, &diagnosisprep.ProductRequest{Operation: "external_consent"})
+	case "POST":
+		var body struct {
+			StatementConfirmed bool   `json:"statement_confirmed"`
+			StatementSHA256    string `json:"statement_sha256"`
+		}
+		media, _, e := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		raw, re := io.ReadAll(http.MaxBytesReader(w, r.Body, productExternalConsentBodyBytes))
+		if len(r.URL.RawQuery) != 0 || e != nil || media != "application/json" || re != nil || strictJSON(raw, &body) != nil {
+			writeJSON(w, 400, map[string]string{"error": "invalid_consent_request"})
+			return
+		}
+		if !body.StatementConfirmed {
+			writeJSON(w, 409, map[string]string{"error": "statement_required"})
+			return
+		}
+		if !productStatementDigest.MatchString(body.StatementSHA256) {
+			writeJSON(w, 400, map[string]string{"error": "invalid_consent_request"})
+			return
+		}
+		callProductControl(w, r, owner, endpoint, &diagnosisprep.ProductRequest{Operation: "external_consent_record", ExternalConsent: &diagnosisprep.ExternalConsentRequest{StatementConfirmed: true, StatementSHA256: body.StatementSHA256}})
+	default:
+		writeJSON(w, 405, map[string]string{"error": "method_not_allowed"})
+	}
+}
+
+// productStatementDigest는 동의 문장 해시 형식이다(준비 서비스 digestPattern과 같음).
+var productStatementDigest = regexp.MustCompile(`^[a-f0-9]{64}$`)

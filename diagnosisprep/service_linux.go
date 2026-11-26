@@ -35,7 +35,7 @@ func storeInspection(i Inspection) storedInspection {
 	return storedInspection{i.Scope, i.ReasonCode, i.InstallationDigest, i.DelegationRef, i.MaxRuns, i.AggregateBudget}
 }
 func (i storedInspection) runtime() Inspection {
-	return Inspection{i.Scope, i.ReasonCode, i.InstallationDigest, i.DelegationRef, i.MaxRuns, i.AggregateBudget}
+	return Inspection{Scope: i.Scope, ReasonCode: i.ReasonCode, InstallationDigest: i.InstallationDigest, DelegationRef: i.DelegationRef, MaxRuns: i.MaxRuns, AggregateBudget: i.AggregateBudget}
 }
 
 type receipt struct {
@@ -496,12 +496,18 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		if record.Job.Revision != r.ExpectedRevision {
 			return responseError(r, "revision_conflict"), nil
 		}
-		if record.Job.State != Ready || record.Job.Scope == nil || (record.Job.Scope.Model != nil && record.Job.Scope.Model.ExternalTransfer && !r.ExternalTransferConfirmed) {
+		if record.Job.State != Ready || record.Job.Scope == nil {
 			return responseError(r, "approval_required"), nil
 		}
 		inspect, err := s.backend.Inspect(ctx, r.Principal, record.Job.Input)
 		if err != nil || !inspectionOK(inspect) {
 			return responseError(r, "unavailable"), nil
+		}
+		// 외부 모델 회차는 외부 전송 동의가 있어야 시작한다. 제품 설치는 설치 단위 동의를 backend가 판정하고(없으면 검토
+		// 사유로 막음), 그 밖의 backend(개발·평가 경로)는 지금처럼 회차별 확인을 받는다.
+		externalConsent := r.ExternalTransferConfirmed || inspect.ExternalTransferConsented
+		if record.Job.Scope.Model != nil && record.Job.Scope.Model.ExternalTransfer && !externalConsent {
+			return responseError(r, "approval_required"), nil
 		}
 		if !sameInspection(record.Inspection, storeInspection(inspect)) || sourceDigest(record.Job.Input, inspect.InstallationDigest) != record.Job.SourceDigest {
 			return responseError(r, "approval_changed"), nil
@@ -564,7 +570,7 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		if record.ExecutionBootID != "" {
 			record.ExecutionInitInstance = s.initInstance
 		}
-		record.ExternalTransferConfirmed = r.ExternalTransferConfirmed
+		record.ExternalTransferConfirmed = externalConsent
 		record.Job.Revision++
 		record.Job.PreparationStarted = true
 		record.Job.State = Preparing
