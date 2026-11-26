@@ -1,0 +1,23 @@
+# Owned synthetic candidate verification target; layer after compose.acceptance.yaml.
+# Juice Shop services stay disabled. This fixture serves only the selected
+# read path and never proxies a request to an external target.
+services:
+  fixture-init:
+    command: [-mode, init, -hosts, synthetic.test=172.31.253.20]
+  fixture-dns:
+    command: [-mode, dns, -hosts, synthetic.test=172.31.253.20]
+  juice-shop:
+    profiles: [juice-acceptance]
+  target-front-b:
+    profiles: [juice-acceptance]
+  target-front:
+    command: [-mode, selected-target-nosniff, -hosts, synthetic.test=172.31.253.20]
+    depends_on: !override
+      fixture-init: {condition: service_completed_successfully}
+    networks: !override
+      target:
+        ipv4_address: 172.31.253.20
+        aliases: [synthetic.test]
+      fixture-control: {}
+  synthetic-model:
+    command: [-mode, selected-model-nosniff, -target, 'https://synthetic.test:9443']

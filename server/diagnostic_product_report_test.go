@@ -73,7 +73,7 @@ func TestDiagnosticReportCountsOnlyVerifiedProductConfirmations(t *testing.T) {
 					if !strings.Contains(body, tc.wantText) {
 						t.Fatalf("보고서에 제품 판정 요약 없음 (공유=%t)", shared)
 					}
-					if (tc.unreadable > 0 || tc.noSource > 0) && strings.Contains(body, "확인 실패") {
+					if (tc.unreadable > 0 || tc.noSource > 0) && strings.Contains(body, "확인 실패 1건(확정에 안 셈)") {
 						t.Fatal("읽지 못한 판정이 무결성 확인 실패로 표시됐다")
 					}
 					if tc.confirmed > 0 && shared && (!strings.Contains(body, "자원 종류 [REDACTED]") || strings.Contains(body, "자원 종류 document")) {

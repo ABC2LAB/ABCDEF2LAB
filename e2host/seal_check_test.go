@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -136,6 +137,59 @@ func TestHostVerifiedAtCheckpointIsIncludedAfterSeal(t *testing.T) {
 	// 봉인 결과 파일이 있어도 다음 기동 검사는 그대로 통과한다.
 	if err := host.CheckRestoredHeads(t.Context()); err != nil {
 		t.Fatal("봉인 결과 파일 뒤 기동 검사", err)
+	}
+}
+
+func TestHostObservedAtOrdinaryResultIsIncludedAfterSeal(t *testing.T) {
+	host, _, scope := fixture(t)
+	session, err := host.Open(t.Context(), scope, "revision-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, result := hostSentEvents(scope)
+	if err := session.Record(t.Context(), intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Record(t.Context(), result); err != nil {
+		t.Fatal(err)
+	}
+	ref := ObservationRef{CallRef: result.CallRef, AttemptID: result.AttemptID, Sequence: result.Sequence}
+	verified, err := session.ObservedAt(t.Context(), ref)
+	if err != nil || !reflect.DeepEqual(verified.Event, result) || verified.Checkpoint.Sequence != 2 || verified.Checkpoint.Scope != scope {
+		t.Fatal("ordinary result not attested", err)
+	}
+	wrong := ref
+	wrong.CallRef = "missing"
+	if _, err := session.ObservedAt(t.Context(), wrong); !errors.Is(err, ErrEventMissing) {
+		t.Fatal("missing ordinary result accepted", err)
+	}
+	want := ref
+	want.Sequence++
+	if _, err := session.ObservedAt(t.Context(), want); !errors.Is(err, ErrEventMissing) {
+		t.Fatal("wrong sequence accepted", err)
+	}
+	seal, err := session.SealChecked(t.Context())
+	if err != nil || seal == nil || len(seal.Checks) != 1 || seal.Checks[0] != (SealCheck{Sequence: verified.Checkpoint.Sequence, MAC: verified.Checkpoint.MAC, Included: true}) {
+		t.Fatal("ordinary checkpoint not sealed", err, seal)
+	}
+}
+
+func TestHostObservedAtRejectsE3Result(t *testing.T) {
+	host, _, scope := fixture(t)
+	session, err := host.Open(t.Context(), scope, "revision-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, intent, result := hostE3Events(scope)
+	if err := session.Record(t.Context(), intent); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Record(t.Context(), result); err != nil {
+		t.Fatal(err)
+	}
+	_, err = session.ObservedAt(t.Context(), ObservationRef{CallRef: result.CallRef, AttemptID: result.AttemptID, Sequence: result.Sequence})
+	if !errors.Is(err, ErrBindingMismatch) {
+		t.Fatal("E3 result used as ordinary evidence", err)
 	}
 }
 

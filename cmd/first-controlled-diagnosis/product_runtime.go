@@ -586,6 +586,7 @@ func (p *productRuntime) credential(ctx context.Context, id string) (*diagnosisp
 type productPreparationEndpoint struct {
 	base    diagnosisprep.Endpoint
 	product *productRuntime
+	backend *urlPreparationRuntime
 }
 
 func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Request) (diagnosisprep.Response, error) {
@@ -624,6 +625,48 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			_, control.Targets, err = p.targets.view(r.Principal, "")
 		case "target":
 			control.Target, _, err = p.targets.view(r.Principal, r.Product.TargetID)
+		case "candidate_execute":
+			if e.backend == nil {
+				err = errPreparation
+			} else {
+				control.Reason, err = e.backend.scheduleCandidateVerification(ctx, r.Product.JobID, r.Product.CommandKey)
+			}
+		case "candidate_llm_execute":
+			if e.backend == nil {
+				err = errPreparation
+			} else {
+				control.Reason, err = e.backend.scheduleCandidateLLMExecution(ctx, r.Product.JobID, r.Product.CommandKey)
+			}
+		case "candidate_llm_cancel":
+			if e.backend == nil {
+				err = errPreparation
+			} else {
+				control.Reason, err = e.backend.cancelCandidateLLMExecution(ctx, r.Product.JobID, r.Product.CommandKey)
+			}
+		case "candidate_analyze":
+			if e.backend == nil {
+				err = errPreparation
+			} else {
+				control.Reason, err = e.backend.scheduleCandidateAnalysis(ctx, r.Product.JobID, r.Product.CommandKey)
+			}
+		case "candidate_analysis_cancel":
+			if e.backend == nil {
+				err = errPreparation
+			} else {
+				control.Reason, err = e.backend.cancelCandidateAnalysis(ctx, r.Product.JobID, r.Product.CommandKey)
+			}
+		case "candidate_stored_cancel":
+			if e.backend == nil {
+				err = errPreparation
+			} else {
+				control.Reason, err = e.backend.cancelCandidateStoredAssessment(ctx, r.Product.JobID, r.Product.CommandKey)
+			}
+		case "candidate_cancel":
+			if e.backend == nil {
+				err = errPreparation
+			} else {
+				control.Reason, err = e.backend.cancelCandidateVerification(ctx, r.Product.JobID, r.Product.CommandKey)
+			}
 		case "register":
 			var t diagnosisprep.ProductTarget
 			t, err = p.targets.register(r.Principal, *r.Product.Registration)

@@ -61,8 +61,9 @@ func (E2HTTPAcquired) String() string   { return "server.E2HTTPAcquired[protecte
 func (E2HTTPAcquired) GoString() string { return "server.E2HTTPAcquired[protected]" }
 
 type E2HTTPFileOptions struct {
-	HostSocket string
-	Workflow   *diagnosisflow.Controller
+	HostSocket           string
+	CaptureSelectedProof bool
+	Workflow             *diagnosisflow.Controller
 	// 새 URL 준비의 상위 설치 위임을 재확인한다. 기존 호출자는 nil을 유지한다.
 	CheckAuthority   func() error
 	RequestApprovals *RequestApprovalService
@@ -137,6 +138,9 @@ type E2HTTPFileRule struct {
 	Origin          string                 `json:"origin"`
 	ConnectIP       string                 `json:"connect_ip"`
 	PathMatch       string                 `json:"path_match,omitempty"`
+	ExactQuery      string                 `json:"exact_query,omitempty"`
+	RequestHeaders  map[string]string      `json:"request_headers,omitempty"`
+	StrictHeaders   bool                   `json:"strict_headers,omitempty"`
 	PathPrefix      string                 `json:"path_prefix"`
 	PathScopeRef    string                 `json:"path_scope_ref"`
 	Methods         []string               `json:"methods"`
@@ -228,31 +232,32 @@ func (p E2HTTPFilePolicy) excludedPaths() []string {
 }
 
 type E2HTTPFilePolicy struct {
-	Workflow       *E2HTTPWorkflowPolicy            `json:"workflow,omitempty"`
-	ApprovalMode   e2proxy.ApprovalMode             `json:"approval_mode"`
-	Format         string                           `json:"format"`
-	RunRef         string                           `json:"run_ref"`
-	ResetRef       string                           `json:"reset_ref"`
-	PolicyRef      string                           `json:"policy_ref"`
-	CaseRef        string                           `json:"case_ref"`
-	PolicyRevision string                           `json:"policy_revision"`
-	BudgetRef      string                           `json:"budget_ref"`
-	OwnerRef       string                           `json:"owner_ref"`
-	AccountRef     string                           `json:"account_ref"`
-	SessionRef     string                           `json:"session_ref"`
-	ValidFrom      time.Time                        `json:"valid_from"`
-	ValidUntil     time.Time                        `json:"valid_until"`
-	MaxRequests    uint64                           `json:"max_requests"`
-	HeaderMode     e2proxy.HeaderMode               `json:"header_mode"`
-	Evaluation     *e2proxy.EvaluationCallerContext `json:"evaluation"`
-	StateDir       string                           `json:"state_dir"`
-	Helper         string                           `json:"helper"`
-	HelperSHA256   string                           `json:"helper_sha256"`
-	CACert         E2HTTPFilePin                    `json:"ca_cert"`
-	CAKey          E2HTTPFilePin                    `json:"ca_key"`
-	AuditKey       E2HTTPFilePin                    `json:"audit_key"`
-	UpstreamCA     *E2HTTPFilePin                   `json:"upstream_ca,omitempty"`
-	Rules          []E2HTTPFileRule                 `json:"rules"`
+	Workflow           *E2HTTPWorkflowPolicy            `json:"workflow,omitempty"`
+	ApprovalMode       e2proxy.ApprovalMode             `json:"approval_mode"`
+	Format             string                           `json:"format"`
+	RunRef             string                           `json:"run_ref"`
+	ResetRef           string                           `json:"reset_ref"`
+	PolicyRef          string                           `json:"policy_ref"`
+	CaseRef            string                           `json:"case_ref"`
+	PolicyRevision     string                           `json:"policy_revision"`
+	BudgetRef          string                           `json:"budget_ref"`
+	OwnerRef           string                           `json:"owner_ref"`
+	AccountRef         string                           `json:"account_ref"`
+	SessionRef         string                           `json:"session_ref"`
+	ValidFrom          time.Time                        `json:"valid_from"`
+	ValidUntil         time.Time                        `json:"valid_until"`
+	MaxRequests        uint64                           `json:"max_requests"`
+	HeaderMode         e2proxy.HeaderMode               `json:"header_mode"`
+	SelectedAccountRef string                           `json:"selected_account_ref,omitempty"`
+	Evaluation         *e2proxy.EvaluationCallerContext `json:"evaluation"`
+	StateDir           string                           `json:"state_dir"`
+	Helper             string                           `json:"helper"`
+	HelperSHA256       string                           `json:"helper_sha256"`
+	CACert             E2HTTPFilePin                    `json:"ca_cert"`
+	CAKey              E2HTTPFilePin                    `json:"ca_key"`
+	AuditKey           E2HTTPFilePin                    `json:"audit_key"`
+	UpstreamCA         *E2HTTPFilePin                   `json:"upstream_ca,omitempty"`
+	Rules              []E2HTTPFileRule                 `json:"rules"`
 	// Auth는 인증 준비 칸이다(C14). 없으면 로그인하지 않는다.
 	Auth *E2HTTPFileAuth `json:"auth,omitempty"`
 	// 제품 실행의 동결된 쓰기 승인과 리셋 가능 대상 판이다. 확정 요청에만 적용한다.
@@ -437,7 +442,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			}
 			credentials = secret.Headers
 		}
-		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Purpose: rule.Purpose, Origin: rule.Origin, ConnectIP: ip, TLSSPKISHA256: rule.TLSSPKISHA256, PathPrefix: rule.PathPrefix, PathMatch: rule.PathMatch, PathScopeRef: rule.PathScopeRef, Methods: append([]string(nil), rule.Methods...), CredentialHeaders: credentials})
+		rules = append(rules, e2proxy.Rule{Ref: rule.Ref, Purpose: rule.Purpose, Origin: rule.Origin, ConnectIP: ip, TLSSPKISHA256: rule.TLSSPKISHA256, PathPrefix: rule.PathPrefix, PathMatch: rule.PathMatch, ExactQuery: rule.ExactQuery, StrictHeaders: rule.StrictHeaders, Headers: selectedActionHeaders(rule.RequestHeaders), PathScopeRef: rule.PathScopeRef, Methods: append([]string(nil), rule.Methods...), CredentialHeaders: credentials})
 	}
 	requestTimeout, ok1 := e2HTTPMilliseconds(policy.Limits.RequestTimeoutMS, time.Minute)
 	callTimeout, ok2 := e2HTTPMilliseconds(policy.Limits.CallTimeoutMS, time.Hour)
@@ -622,6 +627,40 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		// 승인 틀의 이름 조각도 실행 자격값이나 시험 계정명과 같으면 가린다.
 		var patternExecution atomic.Pointer[e2proxy.Execution]
 		var patternUsernames atomic.Pointer[map[string]bool]
+		var accountSessionStore atomic.Pointer[e2HTTPSessionStore]
+		var resolveSentAccount func(http.Header) string
+		var selectedSessionHeaders func() (http.Header, bool)
+		credentialHeader := ""
+		if policy.Auth != nil {
+			credentialHeader = policy.Auth.Login.Header
+			accountRefs := make(map[string]string, len(policy.Auth.Accounts))
+			for _, account := range policy.Auth.Accounts {
+				accountRefs[account.Label] = CandidateAccountRevision(account.Label, account.Credential.SHA256)
+			}
+			resolveSentAccount = func(sent http.Header) string {
+				store := accountSessionStore.Load()
+				if store == nil {
+					return ""
+				}
+				label, ok := store.matchSentAccount(sent, credentialHeader)
+				if !ok {
+					return ""
+				}
+				return accountRefs[label]
+			}
+			if policy.SelectedAccountRef != "" && len(policy.Auth.Accounts) == 1 &&
+				accountRefs[policy.Auth.Accounts[0].Label] == policy.SelectedAccountRef {
+				label := policy.Auth.Accounts[0].Label
+				selectedSessionHeaders = func() (http.Header, bool) {
+					store := accountSessionStore.Load()
+					if store == nil {
+						return nil, false
+					}
+					header := store.snapshot()[label]
+					return header, len(header) > 0
+				}
+			}
+		}
 		observer := input.AttemptPathObserver
 		if productPatterns {
 			templates := make(map[string]string, len(policy.Rules))
@@ -654,7 +693,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		// 시험 계정 세션 가림 칸과 확정 단계 다시 로그인 몫(계정·로그인 방식·승인 구간·확정 몫으로 계산, e2HTTPSessionRedactLimits).
 		redactCapacity, redactReserve := e2HTTPSessionRedactLimits(policy.Auth, policy.ValidUntil.Sub(policy.ValidFrom), e3Requests)
 		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{AuditVersion: auditVersion, E3Verifier: e3Verifier, E3ConfirmationRequests: e3Requests,
-			SessionRedactCapacity: redactCapacity, ConfirmationRedactReserve: redactReserve, E3WriteConsent: policy.E3WriteConsent, E3Resettable: policy.E3Resettable, RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: scope, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
+			SessionRedactCapacity: redactCapacity, ConfirmationRedactReserve: redactReserve, E3WriteConsent: policy.E3WriteConsent, E3Resettable: policy.E3Resettable, RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, TargetCredentialHeader: credentialHeader, ResolveSentAccount: resolveSentAccount, SelectedSessionHeaders: selectedSessionHeaders, SelectedAccountRef: policy.SelectedAccountRef, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: scope, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
 		if createErr != nil {
 			return failed(nil, nil)
 		}
@@ -725,6 +764,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		}
 		var refresh func(context.Context, string) (http.Header, string)
 		sessionStore := newE2HTTPSessionStore(auth.Sessions, execution.Snapshot().Scope.RunRef, nil)
+		accountSessionStore.Store(sessionStore)
 		programCalls := newE2HTTPProgramCalls(auth.CallRefs...)
 		if policy.Auth != nil && policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && len(auth.Sessions) > 0 {
 			authPolicy, origin := *policy.Auth, ""
@@ -747,7 +787,11 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				})
 			}
 		}
-		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, AccountAuth: auth.AccountAuth, Sessions: auth.Sessions, RefreshSession: refresh, sessionStore: sessionStore, programCalls: programCalls}, nil
+		var verifySelected func(context.Context, e2host.ObservationRef) (e2host.Verification, error)
+		if hostRecorder != nil {
+			verifySelected = hostRecorder.ObservedAt
+		}
+		return E2HTTPRunOptions{Runner: newLocalE2HTTPRun(runner), Execution: execution, Release: release, ObserveResult: input.ObserveResult, VerifySelected: verifySelected, AccountAuth: auth.AccountAuth, Sessions: auth.Sessions, RefreshSession: refresh, sessionStore: sessionStore, programCalls: programCalls}, nil
 	}
 	// 진단 Worker의 insert_assets는 검사를 거친 일반 규칙과 인증 준비 규칙의 origin을 쓴다(C24).
 	approvedOrigins := make([]string, 0, len(policy.Rules))
@@ -756,7 +800,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			approvedOrigins = append(approvedOrigins, rule.Origin)
 		}
 	}
-	options := E2HTTPRuntimeOptions{Workflow: input.Workflow, RequestApprovals: input.RequestApprovals, PolicyFingerprintSHA256: fingerprint, PolicyConfigSHA256: policyConfigSHA, HeaderMode: policy.HeaderMode, Evaluation: e2HTTPCloneEvaluation(policy.Evaluation), AuthorityContext: authorityCtx, CheckAuthority: current, AuthorizeIntent: authorize, Expected: expected, Acquire: acquire, RunRequests: policy.MaxRequests, MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout, PlannerLimits: input.PlannerLimits, WebSearch: input.WebSearch, ApprovedOrigins: approvedOrigins}
+	options := E2HTTPRuntimeOptions{Workflow: input.Workflow, CaptureSelectedProof: input.CaptureSelectedProof, RequestApprovals: input.RequestApprovals, PolicyFingerprintSHA256: fingerprint, PolicyConfigSHA256: policyConfigSHA, HeaderMode: policy.HeaderMode, Evaluation: e2HTTPCloneEvaluation(policy.Evaluation), AuthorityContext: authorityCtx, CheckAuthority: current, AuthorizeIntent: authorize, Expected: expected, Acquire: acquire, RunRequests: policy.MaxRequests, MaxWorkerTurns: policy.Runtime.MaxWorkerTurns, MaxToolCalls: policy.Runtime.MaxToolCalls, WorkerTimeout: workerTimeout, MaxPlannerRounds: policy.Runtime.MaxPlannerRounds, MaxIntentRuns: policy.Runtime.MaxIntentRuns, DrainTimeout: drainTimeout, PlannerLimits: input.PlannerLimits, WebSearch: input.WebSearch, ApprovedOrigins: approvedOrigins}
 	if current(ctx) != nil {
 		clear(auditKey)
 		return empty, ErrE2HTTPHost

@@ -151,6 +151,10 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 		cfg.ConfirmationRedactReserve > sessionRedactCapacity(cfg)/2 {
 		return nil, ErrConfig
 	}
+	if (cfg.SelectedSessionHeaders != nil || cfg.SelectedAccountRef != "") && (cfg.SelectedSessionHeaders == nil || cfg.SelectedAccountRef == "" ||
+		cfg.HeaderMode != HeaderTestAccountPassthrough || cfg.ApprovalMode != ApprovalPreauthorizedScope || cfg.ResolveSentAccount == nil) {
+		return nil, ErrConfig
+	}
 	if !validApprovalConfig(cfg) || parent == nil || cfg.Recorder == nil || cfg.IntentID <= 0 || !validRef(cfg.OwnerRef) || !validRef(cfg.PolicyRevision) ||
 		!validRef(cfg.AccountRef) || !validRef(cfg.SessionRef) || cfg.ExpiresAt.IsZero() || !time.Now().Before(cfg.ExpiresAt) {
 		return nil, ErrConfig
@@ -209,7 +213,9 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 		if err != nil || u.RawQuery != "" || u.ForceQuery || (u.Path != "" && u.Path != "/") {
 			return nil, ErrConfig
 		}
-		if !validPath(r.PathPrefix) || r.PathMatch != "" && r.PathMatch != "exact" || r.Purpose != "" && r.PathMatch != "" {
+		if !validPath(r.PathPrefix) || r.PathMatch != "" && r.PathMatch != "exact" || r.Purpose != "" && r.PathMatch != "" ||
+			r.StrictHeaders && (r.PathMatch != "exact" || r.Purpose != "" || len(r.Methods) != 1 || r.Methods[0] != "GET" && r.Methods[0] != "HEAD") ||
+			r.ExactQuery != "" && (r.PathMatch != "exact" || len(r.ExactQuery) > 512 || !validExactQuery(r.ExactQuery)) {
 			return nil, ErrConfig
 		}
 		m := map[string]bool{}
@@ -1207,7 +1213,11 @@ func (e *Execution) matchLocked(req *http.Request) (compiledRule, bool) {
 		if r.Purpose != "" {
 			continue
 		}
-		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] && (pathscope.Scope{Path: r.PathPrefix, Mode: pathscope.Mode(r.PathMatch)}).Allows(p, req.URL.RawQuery != "" || req.URL.ForceQuery) {
+		withQuery := req.URL.RawQuery != "" || req.URL.ForceQuery
+		if req.URL.Scheme == r.origin.Scheme && a == r.authority && r.methods[req.Method] &&
+			(r.PathMatch == "exact" && !req.URL.ForceQuery && req.URL.RawQuery == r.ExactQuery &&
+				(pathscope.Scope{Path: r.PathPrefix, Mode: pathscope.Exact}).Allows(p, false) ||
+				r.PathMatch == "" && (pathscope.Scope{Path: r.PathPrefix, Mode: pathscope.Prefix}).Allows(p, withQuery)) {
 			return r, true
 		}
 	}
@@ -1358,13 +1368,14 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		r.E3Audit = &e3.audit
 	}
 	var session http.Header
+	var requestHeaders http.Header
 	finish := func(resp *http.Response, cause error) (*http.Response, http.Header, Receipt, error) {
 		if e3 != nil {
 			e3.finish(&r, ctx)
 		}
 		var boundaryErr error
 		rr, aerr := c.finish(ctx, r, func(rr Receipt) {
-			c.observeHTTP(req, resp, rr)
+			c.observeHTTP(req, requestHeaders, resp, rr)
 			attempt := rr
 			attempt.Reason = r.Reason
 			c.observeAttemptPath(req, attempt)
@@ -1432,6 +1443,22 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	if !headersOK {
 		r.Decision, r.Reason = "unsupported", Unsupported
 		return finish(nil, ErrDenied)
+	}
+	if purpose == "" && e.cfg.SelectedSessionHeaders != nil {
+		protected, bound := e.cfg.SelectedSessionHeaders()
+		if !bound || len(protected) == 0 || e.cfg.ResolveSentAccount(protected) != e.cfg.SelectedAccountRef ||
+			headerPresent(requestHeaders, "Authorization") || headerPresent(requestHeaders, "Cookie") ||
+			e.cfg.TargetCredentialHeader != "" && headerPresent(requestHeaders, e.cfg.TargetCredentialHeader) {
+			r.Decision, r.Reason = "denied", PolicyDenied
+			return finish(nil, ErrDenied)
+		}
+		for key, values := range protected {
+			if len(requestHeaders.Values(key)) != 0 || len(values) == 0 {
+				r.Decision, r.Reason = "denied", PolicyDenied
+				return finish(nil, ErrDenied)
+			}
+			requestHeaders[key] = append([]string(nil), values...)
+		}
 	}
 	// 승인 제안·송신이 모두 실제로 보낼 값을 보도록 규칙 제약 검사 뒤, 승인 전에 바꾼다.
 	identityAcceptEncoding(requestHeaders)

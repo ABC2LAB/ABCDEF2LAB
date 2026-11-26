@@ -23,7 +23,10 @@ var baseSchemaSQL string
 //go:embed remediation_followup.sql
 var followupSchemaSQL string
 
-var schemaSQL = baseSchemaSQL + "\n" + followupSchemaSQL
+//go:embed diagnostic_candidate_verification.sql
+var candidateVerificationSchemaSQL string
+
+var schemaSQL = baseSchemaSQL + "\n" + followupSchemaSQL + "\n" + candidateVerificationSchemaSQL
 
 const schemaMigrationLockKey int64 = 7337741001
 
