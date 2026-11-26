@@ -7,7 +7,6 @@ import { urlPhaseLabels, urlReasonLabels } from "@/lib/diagnosis/diagnosis-url";
 
 import { cx } from "../../lib/cx";
 import { fmtDur } from "../../live/map";
-import { maskSecrets } from "../../live/mask";
 import { useRunInput } from "../../live/runInput";
 import { runDurationSec, runStartText } from "../../live/runTiming";
 import { selectUrlRun, useUrl } from "../../live/urlDiagnosis";
@@ -82,7 +81,7 @@ export function RunRow({ row, onPick }: { row: URLRunSummary; onPick?: () => voi
               {`${row.task_id}.`}
             </span>
           ) : null}
-          <span className={s["r-name"]}>{maskSecrets(row.display_name?.trim() || row.id)}</span>
+          <span className={s["r-name"]}>{row.display_name?.trim() || row.id}</span>
         </span>
         {/* 같은 이름 · 같은 대상 점검을 구분하는 줄(사용자 11/24): 주소 · 진단 모드 · 시작 시각 · 소요. 주소 · 모드는 그 점검
             상태를 한 번 읽어 채우고, 시각은 서버가 확인한 값만(없으면 뺀다) */}

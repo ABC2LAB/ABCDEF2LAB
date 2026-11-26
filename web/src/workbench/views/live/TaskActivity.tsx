@@ -5,7 +5,6 @@ import type { ReactNode } from "react";
 import { cx } from "../../lib/cx";
 import type { LiveActivity } from "../../live/api";
 import { clockOf } from "../../live/map";
-import { maskSecrets } from "../../live/mask";
 import { LoadingRow } from "../../live/parts";
 import { useActivityTail } from "../../live/useActivityTail";
 import s from "../../workbench.module.css";
@@ -28,7 +27,7 @@ function ActivityRow({ row }: { row: LiveActivity }) {
       {who ? ` · ${who}` : ""}
       {row.intent_id ? ` · 의도 #${row.intent_id}` : ""}
       {" · "}
-      <span>{maskSecrets(row.summary) || "진단 활동 기록"}</span>
+      <span>{row.summary || "진단 활동 기록"}</span>
       {row.is_error ? <b>{" · 오류"}</b> : null}
     </li>
   );

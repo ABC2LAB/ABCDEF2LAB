@@ -2360,7 +2360,7 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     ).toHaveTextContent("다른 계정 책 조회 3");
   });
 
-  it("보고서 탭: 참조형 이미지 `![글][이름]` 의 대체 글에 엔티티로 숨긴 비밀도 가린다 (#677 리뷰)", async () => {
+  it("보고서 탭: 참조형 이미지 `![글][이름]` 는 불러오지 않고 대체 글만 — 화면은 그대로, 복사는 엔티티로 숨긴 값도 가린다 (#677 · #975)", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     saveHandle();
@@ -2373,13 +2373,34 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     mount("report");
     fireEvent.click(await screen.findByRole("tab", { name: "보고서" }));
     const doc = screen.getByRole("region", { name: "취약점 점검 보고서" });
-    expect(doc).not.toHaveTextContent("synthetic-reference-mask");
+    // 대체 글은 파서가 푼 그대로 보인다(제품 화면은 내부 담당자만 본다, CLAUDE.md 절대규칙 2)
+    expect(doc).toHaveTextContent("password=synthetic-reference-mask");
     // 이미지는 불러오지 않는다
     expect(doc.querySelector("img")).toBeNull();
     expect(doc).not.toHaveTextContent("synthetic.png");
     fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
     await within(doc).findByText("보고서 글을 복사했습니다.");
     expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-reference-mask|&#/);
+  });
+
+  // #975 이동찬 리뷰: 보고서 탭 복사도 상세 보고와 같은 복사 처리 — 표 칸 · 줄 경계로 갈린 값이 화면엔 보이고 클립보드엔 없다
+  it.each([
+    ["엔티티 줄바꿈으로 키 · 값 가름", "password:&#10;synthetic-report-newline-27", "synthetic-report-newline-27"],
+    ["표 칸", "| 이름 | 값 |\n| --- | --- |\n| a | api_key=synthetic-report-table |", "synthetic-report-table"],
+  ])("보고서 탭: %s — 화면에는 보이고 복사에는 없다", async (_, summary, secret) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+    saveHandle();
+    u.readURLStatus.mockResolvedValue(completed);
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [{ ...candidate(1), summary }] });
+    mount("report");
+    fireEvent.click(await screen.findByRole("tab", { name: "보고서" }));
+    const doc = screen.getByRole("region", { name: "취약점 점검 보고서" });
+    expect(doc).toHaveTextContent(secret);
+    fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
+    await within(doc).findByText("보고서 글을 복사했습니다.");
+    expect(writeText.mock.calls[0][0]).not.toContain(secret);
+    expect(writeText.mock.calls[0][0]).toContain("[REDACTED]");
   });
 
   it("보고서 탭: 발견마다 위험도 · 판정 · 요약 · 재현 절차(PoC) · 요청·응답을 Markdown 문서 한 장으로, 정상 대조는 뺀다", async () => {
@@ -2461,9 +2482,9 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(doc).toHaveTextContent("구조화된 실제 재현 단계 미확보");
     expect(doc).toHaveTextContent("요청 1 · 계정 B로 계정 A 주문 조회 — GET /api/orders/2");
     expect(doc).toHaveTextContent("사전 조건: 시험 계정 A · B");
-    // 요청·응답은 코드 상자, 비밀은 가린다(엔티티로 숨긴 값도 풀리지 않는다)
+    // 요청·응답은 코드 상자. 화면은 가리지 않고(DLP 폐기), 복사는 가린다(#975 이동찬 P2 — 엔티티로 숨긴 값도)
     expect(doc.querySelector("pre code")).not.toBeNull();
-    expect(doc).not.toHaveTextContent(/synthetic-poc-token|synthetic-poc-entity/);
+    expect(doc).toHaveTextContent("synthetic-poc-token");
     fireEvent.click(within(doc).getByRole("button", { name: "복사" }));
     await within(doc).findByText("보고서 글을 복사했습니다.");
     expect(writeText.mock.calls[0][0]).not.toMatch(/synthetic-poc-token|synthetic-poc-entity|&#/);

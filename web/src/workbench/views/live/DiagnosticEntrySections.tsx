@@ -11,7 +11,7 @@ import { entrySeverityLabel } from "@/lib/diagnosis/severity";
 
 import { cx } from "../../lib/cx";
 import { type BusinessRuleReview, fetchBusinessRuleReviews, reviewUnsupported } from "../../live/businessRuleReview";
-import { maskForCopy, maskSecrets } from "../../live/mask";
+import { maskForCopy, renderedCopyText } from "../../live/copyMask";
 import { Markdown } from "../../ui/Markdown";
 import { Isec } from "../../ui/parts";
 import s from "../../workbench.module.css";
@@ -116,19 +116,19 @@ const DEFAULT_STEP_TITLE = /^저장된 실행 관찰 \d+$/;
  * '요청 n · 제목'. 화면 칸 · PoC 복사가 같이 쓴다.
  */
 export function stepHeading(step: Pick<ReproductionStep, "number" | "title">): string {
-  const title = maskSecrets(step.title);
+  const title = step.title;
   return !title || DEFAULT_STEP_TITLE.test(title) ? `요청 ${step.number}` : `요청 ${step.number} · ${title}`;
 }
 
 /**
  * 상세 보기 '증거 / PoC' 칸의 복사 글 (사용자 11/18 'PoC 복사'): 화면 그 칸에 보이는 것과 같은 내용 — 제목 · 위험도 · 판정 ·
- * ID, 실행 단계(메서드 · 경로 · 사전 조건 · 관찰), 저장된 요청 · 응답 증거와 잘림 안내. 칸마다 화면처럼 가린 글만 쓰고
- * (maskSecrets), 스크린샷 버튼 · 안내 글은 넣지 않는다. 실행하지 않은 단계는 만들지 않는다(절대규칙 5).
+ * ID, 실행 단계(메서드 · 경로 · 사전 조건 · 관찰), 저장된 요청 · 응답 증거와 잘림 안내. 화면처럼 가리지 않은 글이고(DLP
+ * 폐기), 스크린샷 버튼 · 안내 글은 넣지 않는다. 실행하지 않은 단계는 만들지 않는다(절대규칙 5).
  */
 export function pocCopyText(entry: RemediationEntry): string {
   const outcome = diagnosticOutcome(entry);
   const out = [
-    `${outcome === "confirmed" ? "PoC" : "저장된 근거"} — ${maskSecrets(entry.title) || entry.entry_id}`,
+    `${outcome === "confirmed" ? "PoC" : "저장된 근거"} — ${entry.title || entry.entry_id}`,
     `[${entrySeverityLabel(entry)} · ${diagnosticOutcomeLabels[outcome]}] ID ${entry.entry_id}`,
     "",
   ];
@@ -137,18 +137,18 @@ export function pocCopyText(entry: RemediationEntry): string {
     out.push("근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.", "");
   else if (entry.steps?.length) {
     for (const st of entry.steps) {
-      out.push(stepHeading(st), `${st.method} ${maskSecrets(st.path) || "비민감 경로 미기록"}`);
-      if (st.prerequisites) out.push(`사전 조건: ${maskSecrets(st.prerequisites)}`);
-      if (st.observation) out.push(`관찰: ${maskSecrets(st.observation)}`);
+      out.push(stepHeading(st), `${st.method} ${st.path || "비민감 경로 미기록"}`);
+      if (st.prerequisites) out.push(`사전 조건: ${st.prerequisites}`);
+      if (st.observation) out.push(`관찰: ${st.observation}`);
       if (st.truncated) out.push("이 단계의 관측이 잘렸습니다.");
       out.push("");
     }
     if (entry.steps_truncated) out.push("실행 관측이 잘렸습니다. 전체 재현 절차로 해석하지 마세요.", "");
   } else out.push("구조화된 실제 재현 단계 미확보. 실행하지 않은 절차를 생성하지 않습니다.", "");
-  out.push("요청 시도 · 응답 관찰:", maskSecrets(entry.evidence) || "저장된 증거 본문 없음");
+  out.push("요청 시도 · 응답 관찰:", entry.evidence || "저장된 증거 본문 없음");
   if (entry.truncated) out.push("", "실제 도구 출력이 잘렸습니다. 완전한 재현 증거가 아닙니다.");
   // 이어 붙인 뒤 한 번 더 가린다(칸 경계에 걸친 값). 클립보드용이라 엔티티 · 역슬래시로 숨긴 키까지 풀어 본다(#709 리뷰)
-  return maskForCopy(out.join("\n"));
+  return out.join("\n");
 }
 
 /**
@@ -194,11 +194,11 @@ function BusinessRuleReviewBox({ task, entryId }: { task: string; entryId: strin
         <dl className={s.kv}>
           <div>
             <dt>관찰</dt>
-            <dd>{maskSecrets(got.review.observation)}</dd>
+            <dd>{got.review.observation}</dd>
           </div>
           <div>
             <dt>확인할 질문(선택)</dt>
-            <dd>{maskSecrets(got.review.question)}</dd>
+            <dd>{got.review.question}</dd>
           </div>
         </dl>
       </section>
@@ -226,13 +226,14 @@ export function DiagnosticEntrySections({
   const [reportMsg, setReportMsg] = useState(""),
     [pocMsg, setPocMsg] = useState("");
   const reportBox = useRef<HTMLDivElement>(null);
-  // 상세 보고 복사: 원문 Markdown 이 아니라 화면에 그려진(파싱 뒤 가린) 글을 복사한다 — 원문을 복사하면 붙여 넣은 곳의
-  // Markdown 이 엔티티(&#112;…)를 다시 풀어 비밀이 되살아날 수 있다(#677 리뷰). 한 번 더 가린다
+  // 상세 보고 복사: 원문 Markdown 이 아니라 화면에 그려진 글을 가려서 복사한다. 화면은 가리지 않지만 클립보드는 화면 밖(팀 채팅 ·
+  // 이슈)으로 나가므로 가린다(#975 이동찬 P2, 사용자 결정 2026-11-26). 원문을 복사하면 붙여 넣은 곳의 Markdown 이 엔티티(&#112;…)를
+  // 다시 풀어 값이 되살아날 수 있어 그려진 글을 블록 · 표 줄 단위로 모아 가린다(renderedCopyText, #677 · #709 리뷰)
   async function copyReport() {
     const box = reportBox.current;
-    const shown = box ? box.innerText || box.textContent || "" : "";
     try {
-      await navigator.clipboard.writeText(maskForCopy(shown));
+      // 블록 · 표 줄 단위로 모아 가린다 — 줄바꿈 · 칸 경계로 갈린 값도 잡는다(#975 윤재상 · 이동찬 리뷰)
+      await navigator.clipboard.writeText(box ? renderedCopyText(box) : "");
       setReportMsg("상세 보고를 복사했습니다.");
     } catch (error) {
       console.warn("상세 보고 복사 실패", error);
@@ -241,7 +242,8 @@ export function DiagnosticEntrySections({
   }
   async function copyPoc() {
     try {
-      await navigator.clipboard.writeText(pocCopyText(entry));
+      // PoC 복사도 클립보드로 나가는 글이라 가린다(#975 이동찬 P2). 화면의 증거 칸은 그대로 보인다
+      await navigator.clipboard.writeText(maskForCopy(pocCopyText(entry)));
       setPocMsg("PoC 를 복사했습니다.");
     } catch (error) {
       console.warn("PoC 복사 실패", error);
@@ -268,10 +270,10 @@ export function DiagnosticEntrySections({
           <section key={step.id}>
             <h4>{stepHeading(step)}</h4>
             <p>
-              {step.method} {maskSecrets(step.path) || "비민감 경로 미기록"}
+              {step.method} {step.path || "비민감 경로 미기록"}
             </p>
-            {step.prerequisites ? <p>사전 조건: {maskSecrets(step.prerequisites)}</p> : null}
-            <p>{maskSecrets(step.observation)}</p>
+            {step.prerequisites ? <p>사전 조건: {step.prerequisites}</p> : null}
+            <p>{step.observation}</p>
             {step.truncated ? <p>이 단계의 관측이 잘렸습니다.</p> : null}
             <StoredScreenshot
               key={`${task}:${entry.entry_id}:${step.id}:${step.capture.digest ?? step.capture.status}`}
@@ -286,7 +288,7 @@ export function DiagnosticEntrySections({
       )}
     </>
   );
-  const evidenceText = maskSecrets(entry.evidence) || "저장된 증거 본문 없음";
+  const evidenceText = entry.evidence || "저장된 증거 본문 없음";
   const reportCopy = (
     <button className={cx(s.btn, s.sm)} type="button" onClick={() => void copyReport()}>
       복사
@@ -299,7 +301,7 @@ export function DiagnosticEntrySections({
       <>
         <Isec>
           <h3>요약</h3>
-          <p>{maskSecrets(entry.summary)}</p>
+          <p>{entry.summary}</p>
           {truncNote}
           {e3Help}
         </Isec>
@@ -327,7 +329,7 @@ export function DiagnosticEntrySections({
             </div>
             {entry.report ? (
               <div ref={reportBox}>
-                <Markdown text={maskSecrets(entry.report)} />
+                <Markdown text={entry.report} />
               </div>
             ) : (
               <p className={s.help}>저장된 상세 보고가 없습니다.</p>
@@ -348,7 +350,7 @@ export function DiagnosticEntrySections({
       <Isec>
         {/* AI(엔진)가 쓴 요약 · 상세 보고라 '판정'으로 읽히지 않게 이름을 AI 분석으로(사용자 11/19) — 판정은 상태 칸 딱지 */}
         <h3>① AI 분석</h3>
-        <p>{maskSecrets(entry.summary)}</p>
+        <p>{entry.summary}</p>
         {entry.report ? (
           <section className={s.dcard} aria-label="상세 보고">
             <div className={s["dcard-h"]}>
@@ -356,7 +358,7 @@ export function DiagnosticEntrySections({
               {reportCopy}
             </div>
             <div className={s.dbox} ref={reportBox}>
-              <Markdown text={maskSecrets(entry.report)} />
+              <Markdown text={entry.report} />
             </div>
             {reportMsg ? <p role="status">{reportMsg}</p> : null}
           </section>
