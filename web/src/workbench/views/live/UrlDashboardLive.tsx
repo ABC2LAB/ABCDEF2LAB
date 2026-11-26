@@ -21,7 +21,6 @@ import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
 import { useHiddenRunIDs } from "../../live/hiddenRuns";
 import { fmtTokens, sevKey } from "../../live/map";
-import { maskSecrets } from "../../live/mask";
 import { LoadingRow, NotYet } from "../../live/parts";
 import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { URL_ENDED_STATES, urlHost, urlStateText } from "../../live/urlMap";
@@ -429,11 +428,11 @@ export function UrlDashboardLive() {
             >
               <Sev e={e} />
               <span className={s.fm}>
-                <span className={s.ft}>{maskSecrets(e.title) || e.entry_id}</span>
+                <span className={s.ft}>{e.title || e.entry_id}</span>
                 <span className={s.fe}>
                   <span className={s.host}>{host}</span>
                   <EntryEp e={e} />
-                  {e.vuln_class ? <span>{maskSecrets(e.vuln_class)}</span> : null}
+                  {e.vuln_class ? <span>{e.vuln_class}</span> : null}
                 </span>
               </span>
               <span className={s.fs}>

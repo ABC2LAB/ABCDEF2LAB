@@ -58,7 +58,6 @@ import {
   planState,
   sevKey,
 } from "../../live/map";
-import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { runDurationMissingWhy, runDurationSec, runStartMissingWhy, runStartText } from "../../live/runTiming";
 import type { SavedApproval } from "../../live/savedApprovals";
@@ -749,7 +748,7 @@ export function UrlLiveLive() {
     if (titleBook.current.task !== task) titleBook.current = { task, names: new Map() };
     for (const e of pickedRem.data?.entries ?? []) {
       if (!e.entry_id.startsWith("candidate-")) continue;
-      const title = maskSecrets(e.title).trim();
+      const title = e.title.trim();
       if (title) titleBook.current.names.set(e.entry_id.slice("candidate-".length), title);
     }
     return new Map(titleBook.current.names);
@@ -1166,7 +1165,7 @@ export function Sev({ e }: { e: RemediationEntry }) {
   return (
     <span
       className={cx(s.sev, k ? s[k] : s["sev-none"])}
-      title={e.severity_source === "worker_estimate" ? maskSecrets(e.severity_rationale ?? "") : undefined}
+      title={e.severity_source === "worker_estimate" ? (e.severity_rationale ?? "") : undefined}
     >
       {entrySeverityLabel(e)}
     </span>
@@ -1212,7 +1211,7 @@ export function entryEp(e: RemediationEntry): { m: string | null; p: string; mor
       );
       m = ms.size === 1 ? [...ms][0] : null;
     }
-    return { m: m && HTTP_METHOD.test(m) ? m : null, p: maskSecrets(ep.p), more: 0 };
+    return { m: m && HTTP_METHOD.test(m) ? m : null, p: ep.p, more: 0 };
   }
   const seen = new Map<string, { m: string | null; p: string }>();
   for (const o of obs) {
@@ -1221,7 +1220,7 @@ export function entryEp(e: RemediationEntry): { m: string | null; p: string; mor
     if (ep && !seen.has(`${ep.m ?? ""} ${ep.p}`)) seen.set(`${ep.m ?? ""} ${ep.p}`, ep);
   }
   const [first, ...rest] = [...seen.values()];
-  return first ? { m: first.m, p: maskSecrets(first.p), more: rest.length } : null;
+  return first ? { m: first.m, p: first.p, more: rest.length } : null;
 }
 
 /** 대표 경로와 E② 요청 시도의 관찰 경로를 구분한다. 둘 다 취약점 확정 근거가 아니다. */
@@ -1273,7 +1272,7 @@ export function prettyEvidence(raw: string): string {
     return v;
   };
   const value = unwrap(raw);
-  return maskSecrets(typeof value === "string" ? value : JSON.stringify(value, null, 2));
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
 type Audience = "shared" | "internal";
@@ -1368,11 +1367,11 @@ export function FindingDetail({
       <InspHead
         eyebrow={
           <>
-            {`${e.vuln_class ? maskSecrets(e.vuln_class) : diagnosticOutcomeLabels[o]} · `}
+            {`${e.vuln_class ? e.vuln_class : diagnosticOutcomeLabels[o]} · `}
             <span className={s.host}>{host}</span>
           </>
         }
-        title={maskSecrets(e.title) || e.entry_id}
+        title={e.title || e.entry_id}
         chips={
           <>
             <Sev e={e} />
@@ -1393,14 +1392,14 @@ export function FindingDetail({
         <StatusCard e={e} />
         {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
           <Isec t="심각도 근거 · 모델 제안">
-            <p>{maskSecrets(e.severity_rationale ?? "")}</p>
+            <p>{e.severity_rationale ?? ""}</p>
             <p className={s.help}>이 등급은 검토 우선순위 제안이며 취약점 확정이나 CVSS 점수가 아닙니다.</p>
           </Isec>
         ) : null}
         {!e.available ? (
           <div className={cx(s.note, s.warn)} role="note">
             <Icon name="alert" />
-            <span>{maskSecrets(e.unavailable_reason)}</span>
+            <span>{e.unavailable_reason}</span>
           </div>
         ) : null}
         <DiagnosticEntrySections
@@ -1447,7 +1446,7 @@ function StatusCard({ e, host }: { e: RemediationEntry; host?: string | null }) 
           <dd>
             {e.vuln_class ? (
               <span className={s["chip-list"]}>
-                {vulnClassParts(maskSecrets(e.vuln_class)).map((part) => (
+                {vulnClassParts(e.vuln_class).map((part) => (
                   <span key={part} className={s.chip}>
                     {part}
                   </span>
@@ -1509,7 +1508,7 @@ export function FindingPage({
       <div className={s["fpage-h"]}>
         <BackButton to="취약점 목록" onClick={onBack} />
         <h2 ref={head} tabIndex={-1}>
-          {maskSecrets(e.title) || e.entry_id}
+          {e.title || e.entry_id}
         </h2>
         <Sev e={e} />
         <Outcome o={o} />
@@ -1519,7 +1518,7 @@ export function FindingPage({
           {!e.available ? (
             <div className={cx(s.note, s.warn)} role="note">
               <Icon name="alert" />
-              <span>{maskSecrets(e.unavailable_reason)}</span>
+              <span>{e.unavailable_reason}</span>
             </div>
           ) : null}
           <DiagnosticEntrySections
@@ -1536,7 +1535,7 @@ export function FindingPage({
           <VerdictDetailCard taskId={taskId} entryId={e.entry_id} />
           {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
             <Isec t="심각도 근거 · 모델 제안">
-              <p>{maskSecrets(e.severity_rationale ?? "")}</p>
+              <p>{e.severity_rationale ?? ""}</p>
               <p className={s.help}>이 등급은 검토 우선순위 제안이며 취약점 확정이나 CVSS 점수가 아닙니다.</p>
             </Isec>
           ) : null}
@@ -1593,14 +1592,8 @@ const SEV_FILTERS: ReadonlyArray<readonly [SevFilter, string]> = [
   ["info", "정보성"],
 ];
 
-/**
- * 보고서 글에 넣을 서버 글: 원문에 먼저 가린다. 엔티티 · 역슬래시 · HTML 주석을 일부러 막지 않는다 — Markdown 이 그것들을 풀어
- * 이어 붙인 글에 Markdown 부품이 다시 가림을 걸어야(remarkMaskSecrets) 숨긴 비밀까지 잡는다(#677 리뷰). 막아 두면 키는 그대로
- * 숨고 값만 평문으로 남는다.
- */
-const mdText = (v: string) => maskSecrets(v);
-/** 목록 줄 안에 넣는 글: 줄바꿈을 띄어쓰기로(목록이 깨지지 않게). */
-const mdInline = (v: string) => mdText(v).replace(/\s*\n+\s*/g, " ");
+/** 목록 줄 안에 넣는 글: 줄바꿈을 띄어쓰기로(목록이 깨지지 않게). 서버 글은 가리지 않는다(DLP 폐기). */
+const mdInline = (v: string) => v.replace(/\s*\n+\s*/g, " ");
 /** 코드 상자: 본문 안의 ` 줄보다 긴 울타리로 감싼다(본문이 상자를 닫지 못하게). */
 function mdFence(body: string): string {
   const longest = Math.max(2, ...[...body.matchAll(/`+/g)].map((m) => m[0].length));
@@ -1664,7 +1657,7 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
       at ? `발견 시각 ${at}` : "",
     ].filter(Boolean);
     if (facts.length) out.push(facts.join(" · "), "");
-    if (e.summary) out.push(mdText(e.summary), "");
+    if (e.summary) out.push(e.summary, "");
     out.push("**요청 시도 · 응답 관찰:**", "");
     if (e.source_load_failed)
       out.push("근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.", "");
@@ -1693,7 +1686,7 @@ function PocReport({ entries, info }: { entries: readonly RemediationEntry[]; in
     const el = box.current;
     const shown = el ? el.innerText || el.textContent || "" : "";
     try {
-      await navigator.clipboard.writeText(maskSecrets(shown));
+      await navigator.clipboard.writeText(shown);
       setMsg("보고서 글을 복사했습니다.");
     } catch (error) {
       console.warn("보고서 글 복사 실패", error);
@@ -1752,15 +1745,15 @@ export function FindingRows({
           feBody = (
             <span className={s.fe}>
               <EntryEp e={e} />
-              {e.vuln_class ? <span>{maskSecrets(e.vuln_class)}</span> : null}
+              {e.vuln_class ? <span>{e.vuln_class}</span> : null}
             </span>
           );
-        else if (e.summary) feBody = <span className={s.fe}>{maskSecrets(e.summary)}</span>;
+        else if (e.summary) feBody = <span className={s.fe}>{e.summary}</span>;
         const cells = (
           <>
             <Sev e={e} />
             <span className={s.fm}>
-              <span className={s.ft}>{maskSecrets(e.title) || e.entry_id}</span>
+              <span className={s.ft}>{e.title || e.entry_id}</span>
               {feBody}
             </span>
             <span className={s.fs}>
