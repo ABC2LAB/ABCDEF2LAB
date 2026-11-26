@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -156,7 +157,9 @@ type productLearnedLogin struct {
 	rows        []learnedlogin.Row
 	rowsErr     error
 	failures    map[string]int
-	nextAttempt int
+	// failureGuard는 기록 집계가 바뀌어도 줄여서는 안 되는 재로그인 차단용 수다.
+	failureGuard map[string]int
+	nextAttempt  int
 	// identityPath는 동결 선언의 신원 경로다. 세션 없는 대조 요청을 이 경로로 한 번 보낸다.
 	identityPath string
 
@@ -198,7 +201,7 @@ func newProductLearnedLogin(registry *productTargetRegistry, runsDir, jobID stri
 	} else {
 		ll.selections = learnedlogin.Select(ll.rows, runRef, labels)
 	}
-	ll.failures = learnedlogin.FailureCounts(ll.rows, runRef)
+	ll.failures, ll.failureGuard = learnedlogin.ReplayFailureCounts(ll.rows, runRef, productLearnedLoginMaxFailures)
 	ll.nextAttempt = learnedlogin.NextAttemptNumber(ll.rows)
 	return ll
 }
@@ -255,7 +258,7 @@ func (ll *productLearnedLogin) relogin(ctx context.Context, label string, learne
 			probes++
 		}
 	}
-	res := learned.LearnedRelogin(ctx, server.E2HTTPLearnedLoginRequest{Label: label, Method: plan.Method, PriorFailures: ll.failuresCopy(),
+	res := learned.LearnedRelogin(ctx, server.E2HTTPLearnedLoginRequest{Label: label, Method: plan.Method, PriorFailures: ll.failureGuardCopy(),
 		MaxFailures: productLearnedLoginMaxFailures})
 	requests += res.Requests
 	log.Printf("[e3-confirmation] 회차 %s 확정 전 다시 로그인(배운 방법·%s): %s %s 요청 %d", ll.jobID, source, res.Result, res.Reason, res.Requests)
@@ -265,20 +268,17 @@ func (ll *productLearnedLogin) relogin(ctx context.Context, label string, learne
 	ll.attempts[label] = attempt
 	if attempt.row.Outcome == learnedlogin.OutcomeFailed && res.Identifier != "" {
 		ll.failures[res.Identifier]++
+		ll.failureGuard[res.Identifier]++
 	}
 	ll.mu.Unlock()
 	ll.appendRow(attempt.row)
 	return requests
 }
 
-func (ll *productLearnedLogin) failuresCopy() map[string]int {
+func (ll *productLearnedLogin) failureGuardCopy() map[string]int {
 	ll.mu.Lock()
 	defer ll.mu.Unlock()
-	out := make(map[string]int, len(ll.failures))
-	for k, v := range ll.failures {
-		out[k] = v
-	}
-	return out
+	return maps.Clone(ll.failureGuard)
 }
 
 // programRow는 확정 단계 프로그램 로그인 한 행이다(§3, actor program·stage confirmation). 로그인 응답만 본 결과이고,

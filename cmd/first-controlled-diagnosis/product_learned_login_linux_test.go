@@ -432,6 +432,38 @@ func TestLearnedLoginPassesPriorFailures(t *testing.T) {
 	}
 }
 
+func TestLearnedLoginPreservesPriorBlockAfterDelayedSuccess(t *testing.T) {
+	r, _, rec := learnedAccountTarget(t)
+	const label = "tester-a"
+	creds := map[string]string{label: credentialOf(r, rec.Target.ID, label)}
+	succeeded := modelSucceededRow("diagnosis-1", label, "/login")
+	pending := succeeded
+	pending.Outcome, pending.Followup = learnedlogin.OutcomeUnconfirmed, learnedlogin.FollowupNone
+	rows := []learnedlogin.Row{pending}
+	for _, ref := range []string{"diagnosis-2", "diagnosis-3", "diagnosis-4"} {
+		failed := modelSucceededRow(ref, label, "/login")
+		failed.Outcome, failed.Followup = learnedlogin.OutcomeFailed, learnedlogin.FollowupNone
+		rows = append(rows, failed)
+	}
+	rows = append(rows, succeeded)
+	runs, job := learnedRunDir(t, rows)
+	ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "")
+	fake := &fakeLearnedAccounts{result: server.E2HTTPLearnedLoginResult{
+		Identifier: succeeded.Identifier, Result: server.E2HTTPAuthNotSent, Reason: learnedlogin.ReasonAttemptsExhausted,
+		Transport: learnedlogin.TransportNotSent,
+	}}
+	if sent := ll.relogin(t.Context(), label, fake, nil); sent != 0 || len(fake.requests) != 1 {
+		t.Fatalf("전송 %d건, 차단 확인 요청 %d건", sent, len(fake.requests))
+	}
+	if got := fake.requests[0].PriorFailures[succeeded.Identifier]; got < productLearnedLoginMaxFailures {
+		t.Fatalf("이미 적용된 차단을 잃음: %d", got)
+	}
+	stored := readLearnedRows(t, runs)
+	if last := stored[len(stored)-1]; last.ConsecutiveFailures != 0 || last.Refusal != string(learnedlogin.ReasonAttemptsExhausted) {
+		t.Fatalf("기록 집계 %d, 차단 사유 %s", last.ConsecutiveFailures, last.Refusal)
+	}
+}
+
 // verified는 세션 없는 대조가 막힘이고, 그 세션으로 연 신원 응답이 열림이며, 두 계정 신원이 다르고, 다시 로그인 뒤 세션이
 // 바뀌지 않았을 때만이다. 하나라도 아니면 learned로 남는다(성공 근거 부족). 200·쿠키·모델 성공 기록만으로는 verified가 아니다.
 func TestLearnedLoginVerifiedRequiresContrast(t *testing.T) {
