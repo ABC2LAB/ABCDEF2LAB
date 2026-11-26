@@ -621,6 +621,10 @@ func TestExceptionNotForRequestsCarryingConfirmedSession(t *testing.T) {
 	if tr.ExceptionState("tester-b") != StateLoggedOut {
 		t.Fatal("세션 실은 요청이 상태를 바꿈")
 	}
+	// 다른 계정의 확인된 세션을 실은 요청은 그 계정(user1) 로그인의 예외를 막지 않는다(그 계정 것만 본다).
+	if q := tr.Prepare(formLogin("user1@owned.test", "alpha-pass-1", "Cookie", "sid=user-session-b1"), false); !q.Exception {
+		t.Fatalf("다른 계정 세션을 실었다고 예외를 막음: %+v", q)
+	}
 	if q := tr.Prepare(inBrowser(formLogin("user2", "bravo-pass-2")), false); !q.Exception {
 		t.Fatal("세션 없는 새 문맥 로그인에 예외를 안 줌")
 	}
