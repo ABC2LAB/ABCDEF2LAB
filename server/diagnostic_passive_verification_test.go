@@ -32,7 +32,7 @@ func storePassiveCandidateForCall(t *testing.T, s *Server, taskID int64, claim, 
 		t.Fatal(err)
 	}
 	obs := func(ref, state string) e2proxy.HTTPObservation {
-		out := e2proxy.HTTPObservation{Sequence: 1, AttemptRef: ref, Method: "GET", Endpoint: "/documents", ExactFunction: true, RuleRef: "approved-rule", Decision: "allowed", StatusCode: 200, ResponseComplete: true, ForwardAttempted: true, AuditComplete: true, ObservedAt: time.Now().UTC()}
+		out := e2proxy.HTTPObservation{Sequence: 1, AttemptRef: ref, Method: "GET", Endpoint: "/documents", ExactFunction: true, RequestAuthContext: "none", RuleRef: "approved-rule", Decision: "allowed", StatusCode: 200, ResponseComplete: true, ForwardAttempted: true, AuditComplete: true, ObservedAt: time.Now().UTC()}
 		if claim == "server_version_banner" {
 			out.Technologies = []e2proxy.HTTPTechnology{{Name: "Example", Version: state, Header: "Server"}}
 		} else {

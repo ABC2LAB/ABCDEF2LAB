@@ -22,6 +22,7 @@ import (
 )
 
 var calls, goals, planner, worker, allowed, denied, authLogins, authenticatedReads, structuredReads, exploreTurns, exploreBash atomic.Int64
+var holdNextTargetRead, heldTargetReads, holdNextFinalModel, heldFinalModels atomic.Int64
 
 // exploreBashSeen은 탐색 직접 Bash 결과에서 모델이 본 상태 코드 줄이다(예: "approved=200 outside=403"). 값은 소유 fixture의 상태 코드뿐이다.
 var exploreBashSeen atomic.Value
@@ -70,11 +71,15 @@ func main() {
 				c.Close()
 			}
 		}
-		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "explore_bash_seen": exploreBashSeen.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load(), "auth_logins": authLogins.Load(), "authenticated_reads": authenticatedReads.Load(), "structured_reads": structuredReads.Load()})
+		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "explore_bash_seen": exploreBashSeen.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load(), "auth_logins": authLogins.Load(), "authenticated_reads": authenticatedReads.Load(), "structured_reads": structuredReads.Load(), "held_target_reads": heldTargetReads.Load(), "held_final_models": heldFinalModels.Load()})
 	})
-	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" || *mode == "selected-model-stored-nosniff" || *mode == "selected-model-auth-nosniff" || *mode == "selected-model-structured-nosniff" || *mode == "selected-model-overconfident-nosniff" {
+	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" || *mode == "selected-model-stored-nosniff" || *mode == "selected-model-auth-nosniff" || *mode == "selected-model-structured-nosniff" || *mode == "selected-model-overconfident-nosniff" || *mode == "selected-model-unsupported-write" {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
+		mux.HandleFunc("POST /hold-next-final", func(w http.ResponseWriter, r *http.Request) {
+			holdNextFinalModel.Store(1)
+			w.WriteHeader(http.StatusNoContent)
+		})
 		handler := model(*target)
 		if *mode == "workflow-model" {
 			handler = workflowModel()
@@ -83,13 +88,15 @@ func main() {
 		} else if *mode == "selected-model-nosniff" {
 			handler = selectedNosniffModel(*target)
 		} else if *mode == "selected-model-stored-nosniff" {
-			handler = modelWithSelectionMode(*target, true, true, true, false, false, false)
+			handler = modelWithSelectionMode(*target, true, true, true, false, false, false, false)
 		} else if *mode == "selected-model-auth-nosniff" {
-			handler = modelWithSelectionMode(*target, true, true, false, true, false, false)
+			handler = modelWithSelectionMode(*target, true, true, false, true, false, false, false)
 		} else if *mode == "selected-model-structured-nosniff" {
-			handler = modelWithSelectionMode(*target, true, true, false, false, true, false)
+			handler = modelWithSelectionMode(*target, true, true, false, false, true, false, false)
 		} else if *mode == "selected-model-overconfident-nosniff" {
-			handler = modelWithSelectionMode(*target, true, true, false, false, false, true)
+			handler = modelWithSelectionMode(*target, true, true, false, false, false, true, false)
+		} else if *mode == "selected-model-unsupported-write" {
+			handler = modelWithSelectionMode(*target, true, true, false, false, false, false, true)
 		}
 		mux.Handle("POST /v1/chat/completions", handler)
 		must(http.ListenAndServe(":8080", mux))
@@ -104,6 +111,10 @@ func main() {
 	go func() {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
+		mux.HandleFunc("POST /hold-next-read", func(w http.ResponseWriter, r *http.Request) {
+			holdNextTargetRead.Store(1)
+			w.WriteHeader(http.StatusNoContent)
+		})
 		if *mode == "workflow-target" {
 			mux.Handle("GET /workflow-stats", workflowStats())
 		}
@@ -128,6 +139,10 @@ func main() {
 		}
 		if r.Method == "GET" && r.URL.Path == "/rest/products/search" {
 			allowed.Add(1)
+			if holdNextTargetRead.CompareAndSwap(1, 0) {
+				heldTargetReads.Add(1)
+				time.Sleep(15 * time.Second)
+			}
 			if r.URL.RawQuery == "view=summary" && r.Header.Get("Accept-Language") == "en-US" {
 				structuredReads.Add(1)
 			}
@@ -262,18 +277,18 @@ func model(target string) http.Handler {
 // selectedModel is a disposable, no-cost fixture for the candidate API E2E.
 // Its initial diagnosis has one goal and one observed fact in a fresh DB.
 func selectedModel(target string) http.Handler {
-	return modelWithSelectionMode(target, true, false, false, false, false, false)
+	return modelWithSelectionMode(target, true, false, false, false, false, false, false)
 }
 
 func selectedNosniffModel(target string) http.Handler {
-	return modelWithSelectionMode(target, true, true, false, false, false, false)
+	return modelWithSelectionMode(target, true, true, false, false, false, false, false)
 }
 
 func modelWithSelection(target string, selected bool) http.Handler {
-	return modelWithSelectionMode(target, selected, false, false, false, false, false)
+	return modelWithSelectionMode(target, selected, false, false, false, false, false, false)
 }
 
-func modelWithSelectionMode(target string, selected, nosniff, stored, authenticated, structured, overconfident bool) http.Handler {
+func modelWithSelectionMode(target string, selected, nosniff, stored, authenticated, structured, overconfident, unsupportedWrite bool) http.Handler {
 	var mu sync.Mutex
 	turns := map[string]*fixtureTurns{}
 	originPattern := regexp.MustCompile(`https://(?:juice-a|juice-b|juice|synthetic)\.test:9443`)
@@ -344,6 +359,10 @@ func modelWithSelectionMode(target string, selected, nosniff, stored, authentica
 			}
 			var result any
 			all := string(req.Messages[0].Content)
+			if strings.Contains(all, "selected/final-v1") && holdNextFinalModel.CompareAndSwap(1, 0) {
+				heldFinalModels.Add(1)
+				time.Sleep(15 * time.Second)
+			}
 			if strings.Contains(all, "selected/analysis-v1") {
 				result = map[string]any{"version": "selected/analysis-v1", "candidate_id": candidateID,
 					"claim":              "A product listing may reveal information outside its intended audience.",
@@ -365,6 +384,9 @@ func modelWithSelectionMode(target string, selected, nosniff, stored, authentica
 								"path_hint": "/rest/products/search", "query": map[string]string{"view": "summary"},
 								"headers": map[string]string{"Accept-Language": "en-US"}},
 						}
+					}
+					if unsupportedWrite {
+						result.(map[string]any)["actions"] = []any{map[string]any{"purpose": "Attempt an unsupported state-changing verification", "method": "POST", "path_hint": "/rest/products/search"}}
 					}
 				}
 			} else if strings.Contains(all, "selected/final-v1") {

@@ -47,6 +47,35 @@ func TestCandidateActivePlanRequiresCurrentExactApprovedScopePostgres(t *testing
 	if err != nil || plan.MaxRequests != 2 || plan.Method != "GET" || plan.ExactPath != "/documents" || plan.TargetRevision != 3 || plan.ModelCostMicros != 0 || len(digest) != 64 {
 		t.Fatalf("bounded plan: %+v %q %v", plan, digest, err)
 	}
+	for _, authContext := range []string{"authorization", "unknown", ""} {
+		t.Run("original-auth-"+authContext, func(t *testing.T) {
+			changed := candidate
+			var envelope map[string]any
+			if err := json.Unmarshal([]byte(changed.Evidence), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			observation := envelope["trusted"].(map[string]any)["call"].(map[string]any)["observations"].([]any)[0].(map[string]any)
+			observation["request_auth_context"] = authContext
+			if authContext == "authorization" {
+				observation["request_account_ref"] = strings.Repeat("a", 64)
+			}
+			raw, err := json.Marshal(envelope)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed.Evidence, changed.EvidenceDigest = string(raw), db.DiagnosticEvidenceDigest(string(raw))
+			if changed.Validate() != nil {
+				t.Fatal("synthetic evidence invalid")
+			}
+			changedAutomatic := automatic
+			changedAutomatic.EvidenceDigest = changed.EvidenceDigest
+			changedPlan := plan
+			changedPlan.EvidenceDigest = changed.EvidenceDigest
+			if _, _, err := makeCandidateActivePlan(now, changed, changedAutomatic, input, scope, target); err == nil || candidatePlanMatchesEvidence(changedPlan, changed) {
+				t.Fatal("active/v1 accepted an original response without proven anonymous context")
+			}
+		})
+	}
 	for _, tc := range []struct {
 		name string
 		edit func(*diagnosisprep.Input, *diagnosisprep.Scope, *diagnosisprep.ProductTarget)

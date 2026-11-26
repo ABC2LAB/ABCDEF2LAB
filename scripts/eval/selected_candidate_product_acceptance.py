@@ -52,6 +52,23 @@ def request(base, path, token="", body=None, key="", control="", expected=200, b
     return (status, result) if return_status else result
 
 
+def await_fixture_count(base, field, minimum, timeout=30):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if request(base, "/stats")[field] >= minimum:
+            return
+        time.sleep(.1)
+    raise RuntimeError("fixture_event_not_observed:" + field)
+
+
+def kill_and_restart_owned_preparation(project):
+    name = f"{project}-preparation-1"
+    for command in (["docker", "kill", "--signal=KILL", name], ["docker", "start", name]):
+        done = subprocess.run(command, capture_output=True, text=True, check=False, timeout=40)
+        if done.returncode != 0:
+            raise RuntimeError("owned_preparation_restart_failed")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("install", type=Path)
@@ -62,7 +79,7 @@ def main():
     parser.add_argument("--model-stats-port", type=int, default=49582)
     parser.add_argument("--head", required=True, help="Full source commit used for the product image")
     parser.add_argument("--project", default="pr950-selected93", help="Owned Compose project name")
-    parser.add_argument("--scenario", choices=("S01", "S02", "S03", "S04", "S05", "S07", "S08", "S09"), default="S02")
+    parser.add_argument("--scenario", choices=("S01", "S02", "S03", "S04", "S05", "S06", "S07", "S07R", "S08", "S09", "S09C", "S09R", "S09M"), default="S02")
     parser.add_argument("--resume-task", type=int, help="Continue an owned fixture task after a harness failure")
     parser.add_argument("--reuse-target", action="store_true", help="Use the previously approved owned fixture target")
     args = parser.parse_args()
@@ -133,6 +150,7 @@ def main():
         raise RuntimeError("diagnosis_audit_incomplete")
     after_diagnosis_target = request(target_stats, "/stats")["allowed_received"]
     after_diagnosis_logins = request(target_stats, "/stats")["auth_logins"]
+    after_diagnosis_model = request(model_stats, "/stats")["model_calls"]
     remediation = request(product, "/api/report/diagnostic/remediation?task=" + task + "&audience=internal", token)
     entries = remediation["entries"]
     candidates = [row for row in entries if str(row.get("entry_id", "")).startswith("candidate-")]
@@ -162,21 +180,32 @@ def main():
     elif latest["process_state"] != "analysis_ready":
         raise RuntimeError("analysis_not_ready:" + latest["process_state"])
     pending_target = request(target_stats, "/stats")["allowed_received"]
+    pending_model = request(model_stats, "/stats")["model_calls"]
     decision_status = None
-    if args.scenario in ("S02", "S03", "S04", "S05", "S07", "S08", "S09"):
+    if args.scenario in ("S02", "S03", "S04", "S05", "S06", "S07", "S07R", "S08", "S09", "S09C", "S09R", "S09M"):
         analysis = history["verifications"][0]["analysis"]
         plan_route = route + "/" + verification + "/plan"
-        plan_response = request(product, plan_route, token, body={"analysis_digest": analysis["digest"]})
-        plan = plan_response["plan"]
-        expected_actions = 2 if args.scenario == "S05" else 1
-        expected_requests = 2 if args.scenario in ("S03", "S04", "S05") else 1
-        if plan["max_requests"] != expected_requests or len(plan["actions"]) != expected_actions:
+        if args.scenario == "S06":
+            request(product, plan_route, token, body={"analysis_digest": analysis["digest"], "body": "synthetic-write"}, expected=400)
+            decision_status, denied = request(product, plan_route, token, body={"analysis_digest": analysis["digest"]},
+                                              expected=409, return_status=True)
+            if denied.get("error") != "candidate_action_method_unsupported":
+                raise RuntimeError("unsupported_write_not_rejected_at_plan")
+        else:
+            plan_response = request(product, plan_route, token, body={"analysis_digest": analysis["digest"]})
+        if args.scenario != "S06":
+            plan = plan_response["plan"]
+        expected_actions = 0 if args.scenario == "S06" else 2 if args.scenario in ("S05", "S07R", "S09C", "S09R") else 1
+        expected_requests = 2 if args.scenario in ("S03", "S04", "S05", "S07R", "S09C", "S09R") else 1
+        if args.scenario != "S06" and (plan["max_requests"] != expected_requests or len(plan["actions"]) != expected_actions):
             raise RuntimeError("unreviewable_plan")
-        if args.scenario == "S05" and (plan["actions"][1].get("kind") != "normal_control" or
+        if args.scenario in ("S05", "S07R", "S09C", "S09R") and (plan["actions"][1].get("kind") != "normal_control" or
                                          plan["actions"][1].get("query") != {"view": "summary"} or
                                          plan["actions"][1].get("headers") != {"Accept-Language": "en-US"}):
             raise RuntimeError("structured_plan_not_bound")
-        if args.scenario == "S09":
+        if args.scenario == "S06":
+            pass
+        elif args.scenario == "S09":
             restarted = subprocess.run(["docker", "restart", f"{args.project}-api-1"],
                                       capture_output=True, text=True, check=False, timeout=40)
             if restarted.returncode != 0:
@@ -206,6 +235,10 @@ def main():
             decision_status, _ = request(product, route + "/" + verification + "/decision", token,
                     body={"plan_digest": plan_response["plan_digest"], "decision": "rejected"}, return_status=True)
         else:
+            if args.scenario in ("S07R", "S09C", "S09R"):
+                request(target_stats, "/hold-next-read", body={}, expected=204)
+            if args.scenario == "S09M":
+                request(model_stats, "/hold-next-final", body={}, expected=204)
             if args.scenario == "S04":
                 account_base = "/api/product/targets/" + target["id"]
                 request(product, account_base + "/accounts", token, body={"label": "owned-b"})
@@ -217,14 +250,39 @@ def main():
             decision_status, _ = request(product, route + "/" + verification + "/decision", token,
                     body={"plan_digest": plan_response["plan_digest"], "decision": "approved"},
                     expected=(200, 409) if args.scenario == "S04" else 200, return_status=True)
+            if args.scenario in ("S07R", "S09C", "S09R"):
+                await_fixture_count(target_stats, "held_target_reads", 1)
+            if args.scenario == "S07R":
+                request(product, "/api/product/targets/" + target["id"] + "/revoke", token, body={})
+            elif args.scenario == "S09C":
+                cancelled = request(product, route + "/" + verification + "/cancel", token,
+                                    body={"plan_digest": plan_response["plan_digest"]})
+                if cancelled.get("process_state") != "cancelled":
+                    raise RuntimeError("active_cancel_not_recorded")
+            elif args.scenario == "S09R":
+                kill_and_restart_owned_preparation(args.project)
+            elif args.scenario == "S09M":
+                await_fixture_count(model_stats, "held_final_models", 1, timeout=90)
+                kill_and_restart_owned_preparation(args.project)
     deadline = time.monotonic() + 180
-    while args.scenario not in ("S07", "S09") and (args.scenario != "S04" or decision_status == 200) and latest["process_state"] != "completed" and time.monotonic() < deadline:
-        history = request(product, route, token)
+    while args.scenario not in ("S06", "S07", "S09") and (args.scenario != "S04" or decision_status == 200) and latest["process_state"] != "completed" and time.monotonic() < deadline:
+        try:
+            history = request(product, route, token)
+        except (OSError, RuntimeError):
+            if args.scenario not in ("S09R", "S09M"):
+                raise
+            time.sleep(.5)
+            continue
         latest = history["verifications"][0]["latest"]
         if latest["process_state"] in ("failed", "cancelled", "expired"):
             break
         time.sleep(.5)
-    if args.scenario == "S09":
+    if args.scenario == "S06":
+        history = request(product, route, token)
+        latest = history["verifications"][0]["latest"]
+        if latest["process_state"] != "analysis_ready" or request(model_stats, "/stats")["model_calls"] != pending_model:
+            raise RuntimeError("unsupported_write_advanced_or_called_model")
+    elif args.scenario == "S09":
         history = request(product, route, token)
         latest = history["verifications"][0]["latest"]
         if latest["process_state"] != "cancelled" or latest.get("reason") != "user_cancelled":
@@ -237,6 +295,8 @@ def main():
     elif args.scenario == "S04" and decision_status == 409:
         history = request(product, route, token)
         latest = history["verifications"][0]["latest"]
+    elif args.scenario in ("S07R", "S09C", "S09R", "S09M") and latest["process_state"] in ("failed", "cancelled", "expired"):
+        pass
     elif args.scenario == "S04" and latest["process_state"] in ("failed", "cancelled", "expired"):
         pass
     elif args.scenario == "S08" and latest["process_state"] == "failed" and latest.get("reason") == "final_model_unavailable":
@@ -256,14 +316,16 @@ def main():
         raise RuntimeError("candidate_missing_from_updated_report")
     if args.scenario in ("S01", "S02", "S03", "S05") and current_candidate.get("outcome") != "model_supported":
         raise RuntimeError("selected_verdict_missing_from_report")
-    if args.scenario in ("S04", "S07", "S08", "S09") and current_candidate.get("outcome") in ("model_supported", "model_refuted"):
+    if args.scenario in ("S04", "S06", "S07", "S07R", "S08", "S09", "S09C", "S09R", "S09M") and current_candidate.get("outcome") in ("model_supported", "model_refuted"):
         raise RuntimeError("unverified_candidate_promoted_in_report")
+    if args.scenario in ("S07R", "S09C", "S09R", "S09M"):
+        time.sleep(16)  # Let the deliberately held fixture response arrive; no late send may follow.
     after_target = request(target_stats, "/stats")["allowed_received"]
     after_logins = request(target_stats, "/stats")["auth_logins"]
     after_authenticated_reads = request(target_stats, "/stats")["authenticated_reads"]
     after_structured_reads = request(target_stats, "/stats")["structured_reads"]
     after_model = request(model_stats, "/stats")["model_calls"]
-    expected_new_sends = 0 if args.scenario in ("S01", "S04", "S07", "S09") else 2 if args.scenario == "S05" else 1
+    expected_new_sends = 0 if args.scenario in ("S01", "S04", "S06", "S07", "S09") else 2 if args.scenario == "S05" else 1
     if pending_target != after_diagnosis_target or after_target != pending_target + expected_new_sends:
         raise RuntimeError("unexpected_target_send_count")
     if args.scenario == "S03" and (after_diagnosis_logins - before_logins != 1 or
@@ -276,6 +338,12 @@ def main():
         raise RuntimeError("changed_account_gained_decisive_verdict")
     if args.scenario == "S08" and latest.get("verdict") in ("model_supported", "model_refuted"):
         raise RuntimeError("unrelated_model_source_gained_decisive_verdict")
+    if args.scenario == "S06" and (pending_model - after_diagnosis_model != 1 or after_model != pending_model):
+        raise RuntimeError("unsupported_write_triggered_extra_model_call")
+    if args.scenario in ("S07R", "S09C", "S09R") and after_model != pending_model:
+        raise RuntimeError("interrupted_target_work_triggered_final_model")
+    if args.scenario == "S09M" and after_model != pending_model + 1:
+        raise RuntimeError("unknown_final_model_was_replayed")
     print(json.dumps({"scenario": args.scenario, "head": args.head, "status": "PASS", "initial_candidates": len(candidates),
         "before_approval_target_sends": pending_target - after_diagnosis_target, "initial_target_sends": None if args.resume_task else after_diagnosis_target - before_target,
         "approved_followup_sends": after_target - pending_target, "out_of_scope_sends": request(target_stats, "/stats")["outside_received"],

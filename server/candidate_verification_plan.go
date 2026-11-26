@@ -114,7 +114,15 @@ func candidatePlanMatchesEvidence(p candidateActivePlan, candidate db.Diagnostic
 		return false
 	}
 	obs := evidence.Trusted.Call.Observations[0]
-	return obs.ExactFunction && obs.Method == "GET" && obs.Endpoint == p.ExactPath && !strings.Contains(obs.Endpoint, "{")
+	return candidateActiveUnauthenticatedObservation(obs) && obs.ExactFunction && obs.Method == "GET" && obs.Endpoint == p.ExactPath && !strings.Contains(obs.Endpoint, "{")
+}
+
+// active/v1 has no account-bound login or credential revision. An authenticated
+// original response cannot safely be compared with its anonymous follow-up.
+// Older records without an explicit auth classification remain readable, but
+// cannot authorize a new active execution.
+func candidateActiveUnauthenticatedObservation(obs e2proxy.HTTPObservation) bool {
+	return obs.RequestAuthContext == "none" && obs.RequestAccountRef == ""
 }
 
 func makeCandidateActivePlan(now time.Time, candidate db.DiagnosticCandidate, automatic report.CandidateAssessment, original diagnosisprep.Input, scope diagnosisprep.Scope, target diagnosisprep.ProductTarget) (candidateActivePlan, string, error) {
@@ -140,7 +148,7 @@ func makeCandidateActivePlan(now time.Time, candidate db.DiagnosticCandidate, au
 	}
 	obs := evidence.Trusted.Call.Observations[0]
 	path := obs.Endpoint
-	if !obs.ExactFunction || obs.Method != "GET" || !strings.HasPrefix(path, "/") || strings.Contains(path, "{") ||
+	if !candidateActiveUnauthenticatedObservation(obs) || !obs.ExactFunction || obs.Method != "GET" || !strings.HasPrefix(path, "/") || strings.Contains(path, "{") ||
 		!pathscope.Allows(path, false, "="+path) || !candidateFixedGETURL.MatchString(target.Origin+path) ||
 		original.ExcludedPaths != "" && pathscope.ExcludedAny(path, strings.Split(original.ExcludedPaths, "\n")) {
 		return candidateActivePlan{}, "", errCandidateActivePlan
