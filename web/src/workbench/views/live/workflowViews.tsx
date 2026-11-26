@@ -276,6 +276,7 @@ const EVENT_TEXT: Readonly<Record<string, readonly [string, "in" | "ex" | "out" 
   exploration_page: ["관찰함", "in"],
   exploration_observed: ["관찰함", "in"],
   exploration_request_failed: ["요청 실패", "ex"],
+  exploration_observed_skipped: ["형식 밖 경로라 목록에 안 올림", ""],
   exploration_partial: ["탐색 일부만 끝남", ""],
   exploration_finished: ["탐색 실행기 끝", ""],
   exploration_static_finished: ["정적 분석 끝", ""],

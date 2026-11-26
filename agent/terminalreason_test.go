@@ -210,6 +210,7 @@ func TestAbortCausesAreWellFormed(t *testing.T) {
 		AbortWorkCancelledByUser, AbortWorkFinished, AbortPausedRaceGuard,
 		AbortChatStoppedByUser, AbortChatPausedWithTask, AbortChatTurnFinished,
 		AbortShutdown, AbortRunHardTimeout,
+		AbortExplorationSessionClosed, AbortExplorationObservation, AbortExplorationTimeBudget,
 	}
 	seen := map[string]bool{}
 	for _, abort := range all {

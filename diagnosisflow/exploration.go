@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"mime"
+	"net/url"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -16,6 +19,9 @@ const (
 	SourceBrowserXHR        = "browser_xhr"
 	SourceBrowserForm       = "browser_form"
 	SourceAPIReconRuntime   = "api_recon_runtime"
+	// EventExplorationObservedSkipped는 보낸 탐색 요청의 경로를 흐름 표기로 담지 못해 발견 목록에 올리지 않은 기록이다
+	// (고정 사유: 형식 밖 경로, 건수는 Counts.InvalidPaths).
+	EventExplorationObservedSkipped = "exploration_observed_skipped"
 	// 승인·요청 상한과 다른 저장 상한이다. 공개 선택 목록이 차도 발견 근거를 따로 보존한다.
 	maxDiscoveryInventory      = 256
 	maxDiscoveryInventoryBytes = 64 << 10
@@ -254,8 +260,26 @@ func (c *Controller) reportObservedRecord(ctx context.Context, b ExplorationBind
 		}
 		return 0, ErrConflict
 	}
+	if !has(c.binding.Methods, o.Method) {
+		return 0, ErrExplorationObservation
+	}
 	path, ok := c.resolve(o.Path, "/")
-	if !ok || path != o.Path || strings.ContainsAny(o.Path, "?#") || !c.allowedPath(o.Method, path) || !has(c.binding.Methods, o.Method) {
+	if !ok || path != o.Path || strings.ContainsAny(o.Path, "?#") {
+		if !c.unrepresentableObservedPath(o.Path) || !c.allowedPath(o.Method, o.Path) {
+			return 0, ErrExplorationObservation
+		}
+		// 경계는 보낸 요청의 경로를 경계 표기로 남긴다. 흐름 표기(canonicalPath)로 담지 못하는 경로(Go가 다시 인코딩하는
+		// `*`·괄호·작은따옴표 등, 흐름 경로 길이 상한을 넘는 경로. 셸 글롭이 안 풀린 모델 명령이 흔한 출처)는 그 한 건만
+		// 발견 목록에 올리지 않는다. 흐름 범위·메서드 검사는 그대로 해서, 어긋나면 지금처럼 관찰 오류다. 요청은
+		// 이미 나갔고 경계 기록에 남아 있으므로 탐색 세션·회차는 계속한다. 흐름 경로 규칙은 넓히지 않는다(승인 경로와 보낸
+		// 경로가 어긋날 틈이 생김). 사용자 결정 2026-11-26 (가), NodeGoat 회차 1에서 이 관찰 하나로 회차가 실패했다.
+		// 크롤도 같은 경로를 형식 밖 경로(invalid_paths)로 센다.
+		state.LastSequence, state.LastDigest = seq, digest
+		c.record.Snapshot.Counts.ExplorationRequests++
+		c.record.Snapshot.Counts.InvalidPaths++
+		return 0, c.saveLocked(ctx, false, EventExplorationObservedSkipped, o.Method, "", o.Status)
+	}
+	if !c.allowedPath(o.Method, path) {
 		return 0, ErrExplorationObservation
 	}
 	state.LastSequence, state.LastDigest = seq, digest
@@ -286,6 +310,32 @@ func (c *Controller) reportObservedRecord(ctx context.Context, b ExplorationBind
 	}
 	c.record.Snapshot.Counts.ExplorationRequests++
 	return accepted, c.saveLocked(ctx, false, "exploration_observed", o.Method, path, o.Status)
+}
+
+// unrepresentableObservedPath는 경계가 보낸 경로가 흐름 표기(canonicalPath)로 담기지 않는 까닭이 표기 차이(Go 표준 경로
+// 인코딩이 다시 인코딩하는 문자, RawPath)나 흐름 경로 길이 상한(maxPathBytes)뿐인지 본다. 경계는 퍼센트 인코딩·빈 조각·
+// 점 조각·제어 문자가 든 경로를 보내기 전에 막으므로, 관찰에 그런 경로가 있으면 경계와 흐름의 판정이 어긋난 것이라 지금처럼
+// 관찰 오류다. 이 origin의 경로가 경계 표기 그대로 되돌아와야 해서 질의·조각·공백·역슬래시처럼 Go가 다시 인코딩하거나
+// 경로 밖으로 떼는 것도 여기서 걸린다.
+func (c *Controller) unrepresentableObservedPath(raw string) bool {
+	if !strings.HasPrefix(raw, "/") || strings.Contains(raw, "//") || strings.Contains(raw, "%") || !utf8.ValidString(raw) {
+		return false
+	}
+	for _, r := range raw {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	for _, segment := range strings.Split(raw, "/") {
+		if segment == "." || segment == ".." {
+			return false
+		}
+	}
+	u, err := url.Parse(c.origin + raw)
+	if err != nil || u.EscapedPath() != raw {
+		return false
+	}
+	return u.RawPath == raw || len(raw) > maxPathBytes
 }
 func (c *Controller) inventoryLocked(fact DiscoveryEvidence) {
 	fact.QueryKeys = mergeDiscoveryKeys(nil, fact.QueryKeys)
