@@ -249,7 +249,8 @@ type e2FlowView struct {
 }
 
 // e2FlowEvents는 결속 디렉터리의 감사 기록을 실행 감사 키로 끝까지 검증하고 사건을 돌려준다. 키가 pin과 다르거나
-// 기록이 틀리면 ok가 거짓이다(사건 없음). 기록이 아직 없으면(실행 전) errRunNotBound다.
+// 기록이 틀리면 ok가 거짓이다(사건 없음). 실행이 E②를 잡은 적이 없어 저널이 아직 없으면 errRunNotBound다. E②를 잡은 기록은
+// 있는데 저널이 없으면 ok가 거짓이다(무효).
 func e2FlowEvents(r *http.Request, b *runBinding) ([]e2proxy.Event, bool, error) {
 	p := b.policy
 	if filepath.Clean(p.StateDir) != filepath.Join(b.dir, "state") || filepath.Base(p.AuditKey.File) != p.AuditKey.File {
@@ -257,7 +258,17 @@ func e2FlowEvents(r *http.Request, b *runBinding) ([]e2proxy.Event, bool, error)
 	}
 	journal, err := b.root.Open("state/events.jsonl")
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false, errRunNotBound
+		// 저널이 없다. 실행이 E②를 잡은 적이 없을 때만(취득 기록 없음) '아직 없음'이다. 취득 기록은 저널보다 먼저 남기므로,
+		// 기록은 있는데 저널이 없으면 지워졌거나 만들지 못한 것이다 — 사건 없이 무효로 답한다(#983 리뷰 P1). 기록을 확인하지
+		// 못하면 읽기 실패다.
+		_, recordErr := b.root.Lstat("state/" + server.E2AcquireRecordFile)
+		switch {
+		case errors.Is(recordErr, fs.ErrNotExist):
+			return nil, false, errRunNotBound
+		case recordErr != nil:
+			return nil, false, errPreparation
+		}
+		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, errPreparation

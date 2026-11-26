@@ -568,7 +568,21 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if hostRecorder != nil {
 			createLocal = e2proxy.CreateScreenJournal
 		}
-		journal, createErr := createLocal(policy.StateDir, "events.jsonl", auditKey)
+		// E②를 잡았다는 기록을 화면용 저널보다 먼저 남긴다(E2AcquireRecordFile, 계약 workbench-live-data §4). 작업대 e2-flow가
+		// '처음부터 E②를 잡지 않은 실행'과 '저널이 없어진 실행'을 이 기록으로 가른다. 남기지 못하면 저널을 만들지 않고 E②를
+		// 잡지 않는다(아래 실패 길과 같다).
+		var journal *e2proxy.Journal
+		acquireRecord, createErr := json.Marshal(struct {
+			Version        string         `json:"version"`
+			Scope          transmit.Scope `json:"scope"`
+			PolicyRevision string         `json:"policy_revision"`
+		}{e2AcquireRecordVersion, scope, policy.PolicyRevision})
+		if createErr == nil {
+			createErr = e2HTTPRecordAcquire(policy.StateDir, append(acquireRecord, '\n'))
+		}
+		if createErr == nil {
+			journal, createErr = createLocal(policy.StateDir, "events.jsonl", auditKey)
+		}
 		if createErr != nil {
 			if hostRecorder != nil {
 				// 아직 실행이나 송신자가 없다. 취소된 준비 문맥과 분리하여
