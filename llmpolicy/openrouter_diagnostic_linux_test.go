@@ -9,7 +9,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
@@ -323,5 +325,96 @@ func TestOpenRouterRetryAfterParse(t *testing.T) {
 	}
 	if openRouterBearer("Bearer abc ") != "abc" || openRouterBearer("abc") != "" || openRouterBearer("") != "" {
 		t.Fatal("Bearer 토큰 읽기")
+	}
+}
+
+// 기한이 지났는데 아직 끝났다고 알리지 않은 문맥이다(호출 시간 상한 타이머가 문맥보다 먼저 요청을 끊은 순간).
+type openRouterPassedDeadline struct {
+	context.Context
+	at time.Time
+}
+
+func (c openRouterPassedDeadline) Deadline() (time.Time, bool) { return c.at, true }
+
+// 전송 오류 분류: 표준 타입이 아닌 오류라도 문맥 기한이 지났으면 시한이다. 기한이 없거나 남았으면 전송 실패 그대로다.
+func TestOpenRouterTransportReasonDeadlinePassed(t *testing.T) {
+	cut := errors.New("net/http: request canceled")
+	base := context.Background()
+	future, stop := context.WithTimeout(base, time.Hour)
+	defer stop()
+	for name, tc := range map[string]struct {
+		ctx  context.Context
+		err  error
+		want string
+	}{
+		"deadline passed":     {openRouterPassedDeadline{base, time.Now().Add(-time.Millisecond)}, cut, "timeout"},
+		"deadline ahead":      {future, cut, "transport_failure"},
+		"no deadline":         {base, cut, "transport_failure"},
+		"no context":          {nil, cut, "transport_failure"},
+		"cancelled wins":      {openRouterPassedDeadline{base, time.Now().Add(-time.Millisecond)}, context.Canceled, "cancelled"},
+		"deadline error":      {base, context.DeadlineExceeded, "timeout"},
+		"passed, read failed": {openRouterPassedDeadline{base, time.Now().Add(-time.Millisecond)}, io.ErrUnexpectedEOF, "timeout"},
+	} {
+		if got := openRouterDiagnosticTransportReason(tc.err, tc.ctx); got != tc.want {
+			t.Fatalf("%s: %s, 기대 %s", name, got, tc.want)
+		}
+	}
+}
+
+// 호출 시간 상한(timeout_seconds)에 끊긴 요청은 응답 머리를 기다리다 끊겼든 본문을 받다 끊겼든 진단 기록에 시한으로
+// 남는다(2026-11-27 NodeGoat 회차: 목표 분해 호출 하나가 상한에 끊겼는데 전송 실패로만 남아 원인을 알 수 없었다). 본문을
+// 받다 끊겼으면 받은 상태 코드가 같이 남는다. 실제 http.Client·http.Transport로 본다(상한 타이머는 표준 라이브러리 것이다).
+func TestOpenRouterCallTimeLimitRecordedAsTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		header bool
+	}{{"awaiting headers", false}, {"reading body", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			release := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.header {
+					w.WriteHeader(http.StatusOK)
+					_, _ = io.WriteString(w, "  \n")
+					w.(http.Flusher).Flush()
+				}
+				select {
+				case <-release:
+				case <-r.Context().Done():
+				}
+			}))
+			defer srv.Close()
+			defer close(release)
+			ctx, log := routerDiagnosticFixture(t)
+			ctx = diagnosticlog.WithRole(ctx, "goals")
+			p := openRouterFixture(t)
+			p.manifest.TimeoutSeconds = 1
+			limit := time.Duration(p.manifest.TimeoutSeconds) * time.Second
+			// 제품 전송과 같은 설정(응답 머리 상한 = 호출 시간 상한)에 대상만 시험 서버로 바꾼다.
+			base := &http.Transport{Proxy: nil, DisableKeepAlives: true, ResponseHeaderTimeout: limit,
+				DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, "tcp", srv.Listener.Addr().String())
+				}}
+			req := openRouterRequest().WithContext(ctx)
+			req.Header.Set("Authorization", "Bearer synthetic")
+			resp, err := openRouterClient(p, base).Do(req)
+			if resp != nil {
+				_ = resp.Body.Close()
+			}
+			if err == nil {
+				t.Fatal("상한에 끊긴 요청이 성공으로 보임")
+			}
+			events := routerDiagnosticEvents(t, log)
+			end := events[len(events)-1]
+			if end.Event != "model_request_finished" || end.Status != "failed" || end.ReasonCode != "timeout" || end.Role != "goals" {
+				t.Fatalf("기록: event=%s status=%s reason=%s role=%s", end.Event, end.Status, end.ReasonCode, end.Role)
+			}
+			if end.DurationMS < limit.Milliseconds() || tc.header != (end.HTTPStatus == http.StatusOK) {
+				t.Fatalf("기록: duration_ms=%d http_status=%d", end.DurationMS, end.HTTPStatus)
+			}
+			// 받은 것이 없으므로 제공자 이름·원문 오류 칸은 비어 있다.
+			if end.ProviderName != "" || end.ProviderError != "" || end.RetryAfterMS != 0 {
+				t.Fatalf("시한 기록에 제공자 칸이 남음: %q %q %d", end.ProviderName, end.ProviderError, end.RetryAfterMS)
+			}
+		})
 	}
 }

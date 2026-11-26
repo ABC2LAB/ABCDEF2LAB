@@ -72,7 +72,7 @@ task로 여러 준비/실행/조회 파일을 묶고, run/call/attempt 해시와
 | `database_unavailable`, `database_role_invalid` | 연결 또는 최소 역할 검사. DSN은 별도 보호 설정에서 확인 |
 | `model_profile_invalid` | 승인 프로필/manifest 결속 실패 |
 | `http_unauthorized`, `http_rate_limited`, `http_server_error`, `http_client_error` | 모델 endpoint HTTP 상태 범주. 외부 오류 본문은 없음(`http_rate_limited`만 위 `retry_after_ms`·`provider_name`·`provider_error`) |
-| `timeout`, `transport_failure`, `response_invalid` | 시한, DNS/TLS/연결 등 전송 실패, 응답 형식 실패. 세부 raw 오류는 없음 |
+| `timeout`, `transport_failure`, `response_invalid` | 시한, DNS/TLS/연결 등 전송 실패, 응답 형식 실패. 세부 raw 오류는 없음. 모델 호출 시간 상한(`timeout_seconds`)에 끊긴 요청도 `timeout`이다(2026-11-27 전에는 `transport_failure`로 남기도 했다). 응답 머리를 받은 뒤 본문을 기다리다 끊겼으면 `http_status`가 같이 남고, 받은 본문이 없어 `provider_name`·`provider_error`는 없다 |
 | `token_limit`, `cost_limit`, `request_limit`, `expired`, `approval_consumed` | 기존 모델 예산/승인 정책의 사전 차단. 추가 요청이나 자동 재시도 없음 |
 | `no_intents`, `planner_failed`, `max_turns` | 계획 부재 또는 Planner 종료. 생성 intent 수와 모델 이벤트 대조 |
 | `unregistered_tool`, `schema_invalid` | 미등록 도구 또는 모델 입력 schema 불일치. SDK가 붙이는 Planner `TodoWrite`는 등록 도구로 보고, SDK가 직접 실행하므로 `tool_selected`·`tool_schema_checked`만 남고 `tool_started`·`tool_finished`는 없음 |

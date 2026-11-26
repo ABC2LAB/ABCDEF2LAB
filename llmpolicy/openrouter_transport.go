@@ -593,6 +593,14 @@ func openRouterDiagnosticTransportReason(err error, ctx context.Context) string 
 	if errors.As(err, &timeout) && timeout.Timeout() {
 		return "timeout"
 	}
+	// 호출 시간 상한(http.Client.Timeout)은 요청 문맥의 기한과 따로 도는 타이머로도 요청을 끊는다. 그 타이머가 먼저 끊으면
+	// 오류는 표준 타입이 아니고 문맥도 아직 끝나지 않았을 수 있어, 시한이 전송 실패로 남았다(2026-11-27 NodeGoat 회차: 목표
+	// 분해 호출이 상한에 끊겼는데 원인 기록이 없음). 문맥 기한이 지났으면 시한이다.
+	if ctx != nil {
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			return "timeout"
+		}
+	}
 	return "transport_failure"
 }
 
