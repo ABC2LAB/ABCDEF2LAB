@@ -256,6 +256,8 @@ export type EngineCoverageNode = {
   port?: number;
   /** 엔드포인트만: 경로 구조를 가린 표시값(`/`, `/{id}/{id}` …, docs/contracts/coverage-graph-display-path.md). 없으면 생략 */
   display_path?: string;
+  /** 엔드포인트만: 표시 경로의 상세 수준(`exact`·`pattern_only`·`unavailable`, 같은 계약). 이전 서버는 생략 */
+  path_detail_state?: string;
 };
 /** child → parent 포함 관계 (endpoint→service→subdomain/ip→root_domain→company) */
 export type EngineCoverageEdge = { src: string; dst: string };
