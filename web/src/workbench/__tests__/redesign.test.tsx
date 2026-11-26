@@ -864,7 +864,18 @@ describe("보고서 승인 기록 탭 (끝난 점검 저장 승인 이력)", () 
       within(screen.getByRole("group", { name: "결과로 거르기" }))
         .getAllByRole("button")
         .map((b) => b.textContent),
-    ).toEqual(["허용 3", "거부 2", "만료 2"]);
+    ).toEqual(["허용 3", "거부 2", "만료 1", "취소 1"]);
+    // '만료'를 누르면 만료만, 취소는 따로(사용자 11/26)
+    const chip = (name: string) =>
+      within(screen.getByRole("group", { name: "결과로 거르기" })).getByRole("button", { name });
+    fireEvent.click(chip("만료 1"));
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toHaveTextContent("만료");
+    fireEvent.click(chip("취소 1"));
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toHaveTextContent("취소");
+    fireEvent.click(chip("취소 1"));
+    expect(rows()).toHaveLength(7);
     const side = screen.getByRole("complementary", { name: "승인 기록 상세" });
     expect(within(side).getByRole("heading", { name: "승인 기록을 고르세요" })).toBeInTheDocument();
     // 줄을 누르면 목록 안에서 펼치지 않고 오른쪽 패널에 그 줄의 상세(사용자 11/26)
