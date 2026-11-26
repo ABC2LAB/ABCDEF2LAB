@@ -468,6 +468,12 @@ func (c *productE3Confirmation) input(taskID string) (e3contract.Input, time.Dur
 	in.Owner, in.Cross = productE3Roles(decl, c.accounts)
 	// 이 회차 인증 결과가 없어도 배운 방법(이 회차 성공·저장된 방법)이 있는 계정은 확정 단계에 쓴다(모델 로그인 계약 §6-1).
 	if ll := c.learnedLoginState(); ll != nil {
+		// 이 회차 성공 행의 출처는 그 실행의 E② 감사 근거와 대조한다. 실행을 받지 못하면(끝남·연결 없음) 진단 행은 쓰지 않는다.
+		if c.handle != nil {
+			if execution, _, reason := c.handle(taskID); reason == "" && execution != nil {
+				ll.setAudit(e2AuditLookup(execution))
+			}
+		}
 		in.Owner, in.Cross = usableLearnedAccounts(in.Owner, in.Cross, ll.usable)
 	}
 	return in, share

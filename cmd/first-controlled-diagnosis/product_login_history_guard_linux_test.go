@@ -23,6 +23,10 @@ func TestProductReloginHistoryGuard(t *testing.T) {
 	success := modelSucceededRow("diagnosis-2", label, "/login")
 	unsupported := success
 	unsupported.QueryKeys = []string{"input"}
+	missingTransport := success
+	missingTransport.TransportRef = ""
+	damaged := failed
+	damaged.Outcome = ""
 	foreign := failed
 	foreign.RunRef = "run-other"
 	for _, tc := range []struct {
@@ -38,12 +42,14 @@ func TestProductReloginHistoryGuard(t *testing.T) {
 		{name: "다른 회차 실패 이력", rows: []learnedlogin.Row{foreign}, reason: learnedlogin.ReasonNone, allowLegacy: true},
 		{name: "0바이트 이력은 정상 인계로 보지 않음", file: learnedlogin.AttemptsFile, reason: learnedlogin.ReasonRecordInvalid},
 		{name: "이력 손상", file: learnedlogin.AttemptsFile, body: "{", reason: learnedlogin.ReasonRecordInvalid},
+		{name: "시도 결과 칸 손상", rows: []learnedlogin.Row{damaged}, reason: learnedlogin.ReasonRecordInvalid},
 		{name: "이력 파일 유실 및 실패 표지", file: learnedlogin.AttemptsUnavailableFile, body: "unavailable", reason: learnedlogin.ReasonRecordInvalid},
 		{name: "읽을 수 있는 이력 및 실패 표지", rows: []learnedlogin.Row{success}, file: learnedlogin.AttemptsUnavailableFile, reason: learnedlogin.ReasonRecordInvalid},
 		{name: "실패 상한의 기존 설정 우회", rows: []learnedlogin.Row{failed}, reason: learnedlogin.ReasonNone},
 		{name: "결과 불명 뒤 기존 설정 전송 금지", rows: []learnedlogin.Row{unknown}, reason: learnedlogin.ReasonNone},
 		{name: "결과 불명 뒤 학습 로그인 전송 금지", rows: []learnedlogin.Row{unknown, success}},
 		{name: "입력 재구성 불가", rows: []learnedlogin.Row{unsupported}, reason: learnedlogin.ReasonInputUnavailable},
+		{name: "성공 행의 송신 참조 없음", rows: []learnedlogin.Row{missingTransport}, reason: learnedlogin.ReasonTransportUnverified},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runs, job := learnedRunDir(t, tc.rows)
@@ -52,7 +58,7 @@ func TestProductReloginHistoryGuard(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			ll := newProductLearnedLogin(r, runs, job, rec, runRef, creds, "/identity")
+			ll := auditedLearnedLogin(r, runs, job, rec, runRef, creds, "/identity")
 			fake := &fakeLearnedAccounts{result: server.E2HTTPLearnedLoginResult{Result: server.E2HTTPAuthAuthenticated}}
 			_, _, planReason := ll.plan(label)
 			if planReason != tc.reason {

@@ -363,7 +363,7 @@ func TestLearnedLoginReloginPriority(t *testing.T) {
 	id := rec.Target.ID
 	creds := map[string]string{"tester-a": credentialOf(r, id, "tester-a"), "tester-b": credentialOf(r, id, "tester-b")}
 	runs, job := learnedRunDir(t, []learnedlogin.Row{modelSucceededRow("diagnosis-1", "tester-a", "/current")})
-	ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
+	ll := auditedLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
 	if ll.stored != nil {
 		t.Fatal("learned 저장(⑤-B)이 없는데 저장 방법 읽기가 연결됨")
 	}
@@ -388,7 +388,7 @@ func TestLearnedLoginReloginPriority(t *testing.T) {
 	r2, _, rec2 := learnedAccountTarget(t)
 	creds2 := map[string]string{"tester-a": credentialOf(r2, rec2.Target.ID, "tester-a")}
 	runs2, job2 := learnedRunDir(t, nil)
-	ll2 := newProductLearnedLogin(r2, runs2, job2, rec2, "run-job1", creds2, "/api/me")
+	ll2 := auditedLearnedLogin(r2, runs2, job2, rec2, "run-job1", creds2, "/api/me")
 	fake2 := &fakeLearnedAccounts{result: authenticatedResult()}
 	if n := ll2.relogin(t.Context(), "tester-a", fake2, fake2); n != 1 || len(fake2.legacy) != 1 || len(fake2.requests) != 0 {
 		t.Fatalf("배운 방법 없음: n=%d legacy=%v learned=%v", n, fake2.legacy, fake2.requests)
@@ -396,7 +396,7 @@ func TestLearnedLoginReloginPriority(t *testing.T) {
 
 	// 배운 방법이 실패해도 로그인 설정으로 대신하지 않는다.
 	runs3, job3 := learnedRunDir(t, []learnedlogin.Row{modelSucceededRow("diagnosis-1", "tester-a", "/current")})
-	ll3 := newProductLearnedLogin(r2, runs3, job3, rec2, "run-job1", creds2, "/api/me")
+	ll3 := auditedLearnedLogin(r2, runs3, job3, rec2, "run-job1", creds2, "/api/me")
 	fake3 := &fakeLearnedAccounts{result: server.E2HTTPLearnedLoginResult{Result: server.E2HTTPAuthLoginFailed, Reason: learnedlogin.ReasonRejected,
 		Requests: 1, Transport: learnedlogin.TransportSent, TransportRef: "call_a/attempt_b", Status: 401}}
 	if n := ll3.relogin(t.Context(), "tester-a", fake3, fake3); n != 1 || len(fake3.legacy) != 0 {
@@ -420,7 +420,7 @@ func TestLearnedLoginPassesPriorFailures(t *testing.T) {
 		return row
 	}
 	runs, job := learnedRunDir(t, []learnedlogin.Row{modelSucceededRow("diagnosis-1", "tester-a", "/login"), failed("diagnosis-2"), failed("diagnosis-3")})
-	ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "")
+	ll := auditedLearnedLogin(r, runs, job, rec, "run-job1", creds, "")
 	fake := &fakeLearnedAccounts{result: server.E2HTTPLearnedLoginResult{Result: server.E2HTTPAuthNotSent, Reason: learnedlogin.ReasonAttemptsExhausted, Transport: learnedlogin.TransportNotSent}}
 	ll.relogin(t.Context(), "tester-a", fake, nil)
 	if got := fake.requests[0].PriorFailures["learned-user-tester-a"]; got != 2 {
@@ -447,7 +447,7 @@ func TestLearnedLoginPreservesPriorBlockAfterDelayedSuccess(t *testing.T) {
 	}
 	rows = append(rows, succeeded)
 	runs, job := learnedRunDir(t, rows)
-	ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "")
+	ll := auditedLearnedLogin(r, runs, job, rec, "run-job1", creds, "")
 	fake := &fakeLearnedAccounts{result: server.E2HTTPLearnedLoginResult{
 		Identifier: succeeded.Identifier, Result: server.E2HTTPAuthNotSent, Reason: learnedlogin.ReasonAttemptsExhausted,
 		Transport: learnedlogin.TransportNotSent,
@@ -507,7 +507,7 @@ func TestLearnedLoginVerifiedRequiresContrast(t *testing.T) {
 			id := rec.Target.ID
 			creds := map[string]string{"tester-a": credentialOf(r, id, "tester-a"), "tester-b": credentialOf(r, id, "tester-b")}
 			runs, job := learnedRunDir(t, []learnedlogin.Row{modelSucceededRow("diagnosis-1", "tester-a", "/login")})
-			ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
+			ll := auditedLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
 			fake := &fakeLearnedAccounts{result: authenticatedResult(), contrast: tc.contrast, refs: map[string]string{"tester-a": "acct-1"}}
 			ll.relogin(t.Context(), "tester-a", fake, fake)
 			for label, obs := range tc.identity {
@@ -553,7 +553,7 @@ func TestLearnedLoginFinishSkipsStaleBinding(t *testing.T) {
 	id := rec.Target.ID
 	creds := map[string]string{"tester-a": credentialOf(r, id, "tester-a"), "tester-b": credentialOf(r, id, "tester-b")}
 	runs, job := learnedRunDir(t, []learnedlogin.Row{modelSucceededRow("diagnosis-1", "tester-a", "/login")})
-	ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
+	ll := auditedLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
 	fake := &fakeLearnedAccounts{result: authenticatedResult(), contrast: server.E2HTTPLoginContrastResult{Sent: true, Status: 401}, refs: map[string]string{"tester-a": "acct-1"}}
 	ll.relogin(t.Context(), "tester-a", fake, fake)
 	obs := map[string]e3contract.Observation{"tester-a": identityObs("tester-a", strings.Repeat("a", 64)), "tester-b": identityObs("tester-b", strings.Repeat("b", 64))}
@@ -578,7 +578,7 @@ func TestLearnedLoginUnreadableRecord(t *testing.T) {
 	if err := os.Chmod(filepath.Join(runs, job, "state", learnedlogin.AttemptsFile), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "")
+	ll := auditedLearnedLogin(r, runs, job, rec, "run-job1", creds, "")
 	if _, _, reason := ll.plan("tester-a"); reason != learnedlogin.ReasonRecordInvalid {
 		t.Fatalf("기록 오류가 사유에 남지 않음: %v", reason)
 	}
@@ -606,7 +606,7 @@ func TestUsableLearnedAccounts(t *testing.T) {
 	r, _, rec := learnedAccountTarget(t)
 	creds := map[string]string{"tester-a": credentialOf(r, rec.Target.ID, "tester-a"), "tester-b": credentialOf(r, rec.Target.ID, "tester-b")}
 	runs, job := learnedRunDir(t, nil)
-	ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
+	ll := auditedLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
 	if ll.usable("tester-a") {
 		t.Fatal("배운 방법이 없는데 쓸 수 있다고 봄")
 	}

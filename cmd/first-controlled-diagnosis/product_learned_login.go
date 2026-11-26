@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/learnedlogin"
 	"github.com/Autumn-27/artex/oracle"
@@ -28,6 +29,62 @@ import (
 //     실패하면 로그인 설정으로 대신하지 않는다.
 //   - 검증: 프로그램 로그인 세션으로 연 확정 단계 신원 응답이 열림이고 같은 경로의 세션 없는 대조 응답이 막힘이며, 두 계정의
 //     신원이 다르고, 그 사이 세션이 바뀌지 않았고, 확정 단계가 끝까지 돌았을 때만 succeeded이고 verified 줄을 남긴다.
+
+// verifySelection은 고른 이 회차 성공 행의 transport_ref를 감사 근거와 대조하고 출처 확인 수준을 남긴다. 감사 조회가
+// 연결되지 않았으면 진단 행은 대조할 수 없다.
+func (ll *productLearnedLogin) verifySelection(label string, sel learnedlogin.Selection) learnedlogin.Reason {
+	ll.mu.Lock()
+	audit := ll.audit
+	ll.mu.Unlock()
+	provenance, reason := learnedlogin.VerifyTransport(sel.Row, ll.runRef, audit)
+	ll.mu.Lock()
+	defer ll.mu.Unlock()
+	if ll.provenance == nil {
+		ll.provenance = map[string]learnedlogin.Provenance{}
+	}
+	if reason != "" {
+		delete(ll.provenance, label)
+		return reason
+	}
+	if ll.provenance[label] != provenance {
+		log.Printf("[e3-confirmation] 회차 %s 배운 방법 출처: %s", ll.jobID, provenance)
+	}
+	ll.provenance[label] = provenance
+	return ""
+}
+
+// setAudit은 이 실행의 E② 감사 결과 조회를 붙인다(확정 단계가 실행을 받은 뒤).
+func (ll *productLearnedLogin) setAudit(lookup func(callRef, attemptID string) (learnedlogin.AuditedSend, bool)) {
+	ll.mu.Lock()
+	defer ll.mu.Unlock()
+	ll.audit = lookup
+}
+
+// e2AuditLookup은 실행의 감사 완료 사건(기록기에 쓴 뒤에만 메모리 목록에 들어감)에서 시도 하나의 결과 사건을 찾는다.
+func e2AuditLookup(execution *e2proxy.Execution) func(callRef, attemptID string) (learnedlogin.AuditedSend, bool) {
+	return func(callRef, attemptID string) (learnedlogin.AuditedSend, bool) {
+		if execution == nil {
+			return learnedlogin.AuditedSend{}, false
+		}
+		var after uint64
+		for {
+			page := execution.Events(after, 0)
+			if len(page) == 0 {
+				return learnedlogin.AuditedSend{}, false
+			}
+			for _, ev := range page {
+				after = ev.Index
+				if ev.Stage != "result" || ev.CallRef != callRef || ev.AttemptID != attemptID {
+					continue
+				}
+				return learnedlogin.AuditedSend{CallRef: ev.CallRef, AttemptID: ev.AttemptID, RunRef: ev.Scope.RunRef,
+					ModelCall: ev.Program == "" && ev.E3Audit == nil && ev.IntentID > 0, Method: ev.Method, Allowed: ev.Decision == "allowed",
+					RequestWritten: ev.RequestWritten, ResponseReceived: ev.ResponseReceived, ResponseComplete: ev.ResponseComplete,
+					StatusCode: ev.StatusCode, AuditComplete: ev.AuditComplete}, true
+			}
+		}
+	}
+}
 
 // productLearnedLoginMaxFailures는 같은 아이디의 회차당 연속 실패 상한이다(계약 §5 기본 3, 사용자 결정 2026-11-26).
 const productLearnedLoginMaxFailures = 3
@@ -163,10 +220,13 @@ type productLearnedLogin struct {
 	// identityPath는 동결 선언의 신원 경로다. 세션 없는 대조 요청을 이 경로로 한 번 보낸다.
 	identityPath string
 
-	mu       sync.Mutex
-	contrast *server.E2HTTPLoginContrastResult
-	attempts map[string]*productProgramLogin
-	identity map[string]e3contract.Observation
+	mu sync.Mutex
+	// audit은 이 실행의 E② 감사 결과 조회다(transport_ref 대조). provenance는 계정별 출처 확인 수준이다.
+	audit      func(callRef, attemptID string) (learnedlogin.AuditedSend, bool)
+	provenance map[string]learnedlogin.Provenance
+	contrast   *server.E2HTTPLoginContrastResult
+	attempts   map[string]*productProgramLogin
+	identity   map[string]e3contract.Observation
 }
 
 // productProgramLogin은 확정 단계에서 계정 하나를 배운 방법으로 다시 로그인한 결과다.
@@ -213,6 +273,11 @@ func (ll *productLearnedLogin) plan(label string) (learnedlogin.Learned, string,
 	}
 	if sel, ok := ll.selections[label]; ok {
 		if sel.Reason == "" {
+			// 이 회차 성공 행이 실제로 나간 요청인지 감사 근거와 대조한다(§6-2 출처 결속). 대조하지 못하면 그 방법을 쓰지 않고
+			// 저장 방법·로그인 설정으로 넘어가지도 않는다(신뢰할 수 없는 기록).
+			if reason := ll.verifySelection(label, sel); reason != "" {
+				return learnedlogin.Learned{}, "", reason
+			}
 			return sel.Learned, "current_run", ""
 		}
 		if sel.Reason != learnedlogin.ReasonNone {
