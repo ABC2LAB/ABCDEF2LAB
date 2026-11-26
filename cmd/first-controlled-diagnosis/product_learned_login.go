@@ -178,8 +178,8 @@ type productProgramLogin struct {
 	contrastProbes int
 }
 
-// newProductLearnedLogin은 회차 기록과 실행 정책에서 학습 로그인 재사용 입력을 모은다. 기록을 읽지 못하면 이 회차 방법은
-// 없다고 보고(사유 record_invalid) 저장된 방법만 쓴다.
+// newProductLearnedLogin은 회차 기록과 실행 정책에서 다시 로그인할 때 필요한 제한을 모은다.
+// 이력 오류나 인계 실패가 있으면 저장된 방법과 기존 로그인 설정을 모두 거부한다.
 func newProductLearnedLogin(registry *productTargetRegistry, runsDir, jobID string, target productTargetRecord, runRef string, credentials map[string]string, identityPath string) *productLearnedLogin {
 	ll := &productLearnedLogin{registry: registry, runsDir: runsDir, jobID: jobID, targetID: target.Target.ID, revision: target.Target.Revision,
 		runRef: runRef, credentials: credentials, identityPath: identityPath, attempts: map[string]*productProgramLogin{}, identity: map[string]e3contract.Observation{}}
@@ -191,13 +191,9 @@ func newProductLearnedLogin(registry *productTargetRegistry, runsDir, jobID stri
 		labels = append(labels, label)
 	}
 	var skipped int
-	ll.rows, skipped, ll.rowsErr = learnedlogin.ReadRows(filepath.Join(runsDir, jobID, "state"))
+	ll.rows, skipped, ll.rowsErr = learnedlogin.ReadConfirmationHistory(filepath.Join(runsDir, jobID, "state"))
 	if ll.rowsErr != nil {
 		log.Printf("[e3-confirmation] 회차 %s 로그인 시도 기록을 읽지 못함 (%s, 형식 오류 %d건)", jobID, learnedlogin.ReasonRecordInvalid, skipped)
-		ll.selections = map[string]learnedlogin.Selection{}
-		for _, label := range labels {
-			ll.selections[label] = learnedlogin.Selection{Reason: learnedlogin.ReasonRecordInvalid}
-		}
 	} else {
 		ll.selections = learnedlogin.Select(ll.rows, runRef, labels)
 	}
@@ -208,11 +204,22 @@ func newProductLearnedLogin(registry *productTargetRegistry, runsDir, jobID stri
 
 // plan은 계정의 확정 단계 로그인 방법이다: 이 회차 적격 성공 → 저장된 방법 → 없음(사유).
 func (ll *productLearnedLogin) plan(label string) (learnedlogin.Learned, string, learnedlogin.Reason) {
-	if sel, ok := ll.selections[label]; ok && sel.Reason == "" {
-		return sel.Learned, "current_run", ""
+	if ll.rowsErr != nil {
+		return learnedlogin.Learned{}, "", learnedlogin.ReasonRecordInvalid
 	}
 	credential, bound := ll.credentials[label]
-	if !bound || ll.stored == nil {
+	if !bound {
+		return learnedlogin.Learned{}, "", learnedlogin.ReasonCredentialUnavailable
+	}
+	if sel, ok := ll.selections[label]; ok {
+		if sel.Reason == "" {
+			return sel.Learned, "current_run", ""
+		}
+		if sel.Reason != learnedlogin.ReasonNone {
+			return learnedlogin.Learned{}, "", sel.Reason
+		}
+	}
+	if ll.stored == nil {
 		return learnedlogin.Learned{}, "", learnedlogin.ReasonNone
 	}
 	stored, reason := ll.stored.learnedLoginMethod(ll.targetID, label, ll.revision, credential)
@@ -228,13 +235,17 @@ func (ll *productLearnedLogin) usable(label string) bool {
 	return reason == ""
 }
 
-// relogin은 확정 단계 직전 다시 로그인이다. 배운 방법이 있으면 그것으로만 로그인하고(실패해도 로그인 설정으로 대신하지
-// 않음), 없으면 legacy(로그인 설정 9칸 다시 로그인)를 부른다. 대상에 보낸 요청 수를 돌려준다.
+// relogin은 확정 단계 직전 다시 로그인이다. 이력이 불명확하면 차단하고 배운 방법이 없는 경우에만 기존 설정을 검토한다.
+// 대상에 보낸 요청 수를 돌려준다.
 func (ll *productLearnedLogin) relogin(ctx context.Context, label string, learned server.E2HTTPLearnedRelogin, legacy server.E2HTTPAccountRelogin) int {
 	plan, source, reason := ll.plan(label)
 	if reason != "" {
 		log.Printf("[e3-confirmation] 회차 %s 배운 로그인 방법 없음: %s", ll.jobID, reason)
-		if legacy == nil {
+		if reason != learnedlogin.ReasonNone || legacy == nil {
+			return 0
+		}
+		if refusal := ll.reloginRefusal(label, true); refusal != "" {
+			log.Printf("[e3-confirmation] 회차 %s 기존 설정으로 다시 로그인 차단: %s", ll.jobID, refusal)
 			return 0
 		}
 		result := legacy.Relogin(ctx, label)
@@ -242,6 +253,13 @@ func (ll *productLearnedLogin) relogin(ctx context.Context, label string, learne
 		if server.E2HTTPAuthSent(result) {
 			return 1
 		}
+		return 0
+	}
+	if learned == nil {
+		return 0
+	}
+	if refusal := ll.reloginRefusal(label, false); refusal != "" {
+		log.Printf("[e3-confirmation] 회차 %s 배운 방법으로 다시 로그인 차단: %s", ll.jobID, refusal)
 		return 0
 	}
 	requests, probes := 0, 0
@@ -273,6 +291,30 @@ func (ll *productLearnedLogin) relogin(ctx context.Context, label string, learne
 	ll.mu.Unlock()
 	ll.appendRow(attempt.row)
 	return requests
+}
+
+// reloginRefusal은 결과 불명 시도를 다시 보내지 않는다. 기존 설정 경로에는 아이디별 상한 전달 경계가
+// 없으므로 다른 아이디라고 확인할 수 없는 회차 차단도 풀지 않는다.
+func (ll *productLearnedLogin) reloginRefusal(label string, legacy bool) learnedlogin.Reason {
+	ll.mu.Lock()
+	defer ll.mu.Unlock()
+	if legacy {
+		for _, count := range ll.failureGuard {
+			if count >= productLearnedLoginMaxFailures {
+				return learnedlogin.ReasonAttemptsExhausted
+			}
+		}
+	}
+	for _, row := range ll.rows {
+		if row.RunRef == ll.runRef && (row.Outcome == learnedlogin.OutcomeUnknown || row.Transport == learnedlogin.TransportUnknown) &&
+			(legacy || row.AccountLabel == "" || row.AccountLabel == label) {
+			return learnedlogin.ReasonResultUnknown
+		}
+	}
+	if prior := ll.attempts[label]; prior != nil && prior.row.Outcome == learnedlogin.OutcomeUnknown {
+		return learnedlogin.ReasonResultUnknown
+	}
+	return ""
 }
 
 func (ll *productLearnedLogin) failureGuardCopy() map[string]int {

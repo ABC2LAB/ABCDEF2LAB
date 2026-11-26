@@ -579,11 +579,11 @@ func TestLearnedLoginUnreadableRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "")
-	if _, _, reason := ll.plan("tester-a"); reason != learnedlogin.ReasonNone {
-		t.Fatalf("저장 방법 없음 사유 %v", reason)
+	if _, _, reason := ll.plan("tester-a"); reason != learnedlogin.ReasonRecordInvalid {
+		t.Fatalf("기록 오류가 사유에 남지 않음: %v", reason)
 	}
-	if ll.selections["tester-a"].Reason != learnedlogin.ReasonRecordInvalid {
-		t.Fatalf("보호 파일이 아닌 기록을 읽음: %+v", ll.selections)
+	if len(ll.rows) != 0 {
+		t.Fatal("보호 파일이 아닌 기록을 읽음")
 	}
 	// 보호 파일이 아닌 기록에는 프로그램 행도 덧붙이지 않는다.
 	if err := appendLoginAttemptRow(runs, job, learnedlogin.Row{Schema: learnedlogin.RowSchema, AttemptRef: "confirmation-1"}); err == nil {

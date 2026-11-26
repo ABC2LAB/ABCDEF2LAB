@@ -290,24 +290,13 @@ func (c *productE3Confirmation) wiredDeps(taskID string) (e3contract.Deps, func(
 	deps.Transport, deps.Journal = adapter, adapter
 	legacy, hasLegacy := accounts.(server.E2HTTPAccountRelogin)
 	learned, hasLearned := accounts.(server.E2HTTPLearnedRelogin)
-	if ll := c.learnedLoginState(); hasLearned && ll != nil {
-		// 배운 로그인 방법이 있으면 그것으로만, 없으면 로그인 설정으로 다시 로그인한다(모델 로그인 계약 §6-2). 신원 관찰은
-		// 프로그램 로그인 성공 판정에 같이 쓴다(요청·관찰은 바꾸지 않음).
-		c.learnedBindings = accounts
-		if !hasLegacy {
-			legacy = nil
-		}
+	// 결속된 실행 정책을 읽을 수 없거나 계정이 없으면 기존 설정 경로도 연결하지 않는다.
+	if ll := c.learnedLoginState(); ll != nil && (hasLearned || hasLegacy) {
+		// 기존 설정만 제공하는 계정 저장소도 같은 이력 차단을 거쳐야 한다.
 		deps.Relogin = func(ctx context.Context, label string) int { return ll.relogin(ctx, label, learned, legacy) }
-		deps.Transport = productIdentityTap{Transport: adapter, observe: ll.observeIdentity}
-	} else if hasLegacy {
-		deps.Relogin = func(ctx context.Context, label string) int {
-			result := legacy.Relogin(ctx, label)
-			// 라벨·세션 값 없이 고정 결과 코드만 남긴다.
-			log.Printf("[e3-confirmation] task %s 확정 전 다시 로그인: %s", taskID, result)
-			if server.E2HTTPAuthSent(result) {
-				return 1
-			}
-			return 0
+		if hasLearned {
+			c.learnedBindings = accounts
+			deps.Transport = productIdentityTap{Transport: adapter, observe: ll.observeIdentity}
 		}
 	}
 	checkpoint := func(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e3v3.Checkpoint, error) {
