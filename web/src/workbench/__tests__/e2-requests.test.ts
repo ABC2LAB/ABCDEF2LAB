@@ -156,3 +156,16 @@ it("경로 표시: 값을 가린 틀 · 정확한 경로 · 틀 없음(기록 �
   expect(pathDetailText("unavailable", "/{too_long}")).toBe("경로가 너무 길어 틀로 남기지 않았어요");
   expect(pathDetailText("unavailable")).toBe("이 시도의 경로 틀이 기록되지 않았어요");
 });
+
+// 계약 §4.1: "화면은 상태 필드가 없는 이전 서버 응답도 받는다"(1bb6f386 이전 서버)
+it("경로 상태 칸이 없는 이전 서버 응답도 받고, 모양은 지어내지 않는다(null)", () => {
+  const { path_detail_state: _drop, ...oldRow } = row(3);
+  const p = parseE2Requests(page({ rows: [oldRow] }));
+  expect(p.rows[0].path_detail_state).toBeNull();
+  expect(p.rows[0].path).toBe("/api/users/{id}");
+  const { path_detail_state: _d2, ...oldDetail } = detail();
+  const d = parseE2RequestDetail(oldDetail, "call-3", A1);
+  expect(d.path_detail_state).toBeNull();
+  expect(d.path_pattern).toBe("/api/users/{id}");
+  expect(pathDetailText(null, "/api/users/{id}")).toBeNull();
+});

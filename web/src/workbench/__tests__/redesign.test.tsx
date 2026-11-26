@@ -1101,6 +1101,27 @@ describe("탐색 기록 상세 · 전송 결과 (요청 상세, 11/26)", () => {
     expect(vi.mocked(e2req.readE2RequestDetail)).toHaveBeenCalledTimes(1);
   });
 
+  it("경로 상태 칸이 없는 이전 서버 응답이면 경로만 보이고 '경로 표시'는 두지 않는다(계약 §4.1)", async () => {
+    vi.mocked(e2req.readE2RequestDetail).mockResolvedValue({
+      ok: true,
+      detail: { ...detail(A1), path_detail_state: null },
+    });
+    const { log, aside } = mount([
+      {
+        at: "2026-11-11T01:00:01Z",
+        kind: "request",
+        method: "GET",
+        path: "/api/products/1",
+        status: 200,
+        call_ref: "call-1",
+        attempt_id: A1,
+      },
+    ]);
+    fireEvent.click(within(log).getByRole("button", { name: /GET/ }));
+    expect(await within(aside).findByText("/api/products/{id}")).toBeInTheDocument();
+    expect(within(aside).queryByText("경로 표시")).toBeNull();
+  });
+
   it("같은 경로를 여러 번 보냈으면 줄마다 그 줄의 시도로 연다 — 나중 403 을 앞 200 줄에 붙이지 않는다(리뷰 #473)", async () => {
     vi.mocked(e2req.readE2RequestDetail).mockImplementation(async (_t, _c, attempt) => ({
       ok: true,
