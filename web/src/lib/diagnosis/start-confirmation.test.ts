@@ -22,7 +22,7 @@ const both = { exclusionsReviewed: true, backupConfirmed: true };
 
 it("시작 확인은 체크한 진술만 true 로 싣고, 체크하지 않은 진술은 칸을 만들지 않는다", async () => {
   const plain = urlDiagnosisInput("https://target.example/", "profile-1", "");
-  const confirmed = urlDiagnosisInput("https://target.example/", "profile-1", "", undefined, "", false, both);
+  const confirmed = urlDiagnosisInput("https://target.example/", "profile-1", "", undefined, "", both);
   expect(plain).not.toHaveProperty("exclusions_reviewed");
   expect(plain).not.toHaveProperty("backup_confirmed");
   expect(confirmed).toEqual({
@@ -31,7 +31,7 @@ it("시작 확인은 체크한 진술만 true 로 싣고, 체크하지 않은 �
     exclusions_reviewed: true,
     backup_confirmed: true,
   });
-  const onlyReviewed = urlDiagnosisInput("https://target.example/", "profile-1", "", undefined, "", false, {
+  const onlyReviewed = urlDiagnosisInput("https://target.example/", "profile-1", "", undefined, "", {
     exclusionsReviewed: true,
     backupConfirmed: false,
   });
@@ -45,8 +45,8 @@ it("시작 확인은 체크한 진술만 true 로 싣고, 체크하지 않은 �
 
 it("시작 확인 진술이 다르면 다른 입력이다 (다른 초안의 응답을 이 초안으로 받지 않는다)", () => {
   const plain = urlDiagnosisInput("https://target.example/", "profile-1", "");
-  const confirmed = urlDiagnosisInput("https://target.example/", "profile-1", "", undefined, "", false, both);
-  const onlyBackup = urlDiagnosisInput("https://target.example/", "profile-1", "", undefined, "", false, {
+  const confirmed = urlDiagnosisInput("https://target.example/", "profile-1", "", undefined, "", both);
+  const onlyBackup = urlDiagnosisInput("https://target.example/", "profile-1", "", undefined, "", {
     backupConfirmed: true,
   });
   expect(sameURLInput(confirmed, confirmed)).toBe(true);

@@ -70,9 +70,9 @@ type Input struct {
 	TargetURL     string `json:"target_url"`
 	ProfileID     string `json:"profile_id"`
 	DisplayName   string `json:"display_name,omitempty"`
-	// ExternalTestAccounts는 외부 API 모델 실행에 시험 계정 세션을 모델 입력으로 보내는 것에 대해 사전 공지·승인을 받았다는
-	// 운영자 진술이다(CLAUDE.md 규칙 2, C14 결정 4). 참이면 외부 API 실행도 시험 계정을 결속·로그인한다. 로컬 모델 실행은
-	// 이 값과 상관없이 시험 계정을 쓴다. 결속을 바꾸므로 초안 입력(원본 요약)에 들어간다.
+	// ExternalTestAccounts는 외부 API 모델 실행에 시험 계정 세션을 보내는 것에 대한 회차별 운영자 진술이었다(C14 결정 4).
+	// 제품 설치는 2026-11-26부터 설치 단위 동의(외부 전송 동의 기록)로 결속을 정하고 이 값을 쓰지 않는다. 이미 저장된
+	// 초안·회차 입력(원본 요약 포함)과 옛 클라이언트를 그대로 읽으려고 칸은 남긴다.
 	ExternalTestAccounts bool `json:"external_test_accounts,omitempty"`
 	// ExclusionsReviewed·BackupConfirmed는 운영자가 시작 확인 화면에서 한 진술이다. 초안 입력과 함께 준비 저널에 남겨
 	// 누가 무엇을 확인하고 시작했는지 나중에 볼 수 있게 한다(감사 기록). 서버는 이 진술의 사실 여부를 확인하지 않고,
@@ -235,6 +235,10 @@ type Inspection struct {
 	DelegationRef      string
 	MaxRuns            int64
 	AggregateBudget    Budget
+	// ExternalTransferConsented는 설치 조직이 외부 모델 전송에 설치 단위로 한 번 동의했다는 backend 판정이다(사용자 결정
+	// 2026-11-26: 외부 전송 동의는 설치 때 한 번). 참이면 외부 모델 회차의 시작에 회차별 확인(ExternalTransferConfirmed)을
+	// 요구하지 않는다. 저장 검토(storedInspection)에는 넣지 않는다 — 동의는 승인 범위가 아니라 시작 조건이다.
+	ExternalTransferConsented bool
 }
 
 // Execution은 영속 start receipt와 위임 총량 예약을 끝낸 한 회차다.

@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import hashlib  # noqa: E402
 import re  # noqa: E402
+import shutil  # noqa: E402
 import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -19,6 +20,7 @@ from runner_split import (  # noqa: E402
     PRODUCT_MODEL_API, SCRIPTED_MODEL_BASE_URL, SCRIPTED_MODEL_IP, synthetic_local_model,
     BOUNDARY_EVIDENCE_DIR, EXPLORATION_BLOCK, METER_EXPLORE_IP, REGISTRATION_BASIS, WIDE_METHODS, WORKFLOW_DEFAULTS,
     SplitInputError, boundary_config, install_input, split_conditions, read_boundary_template, read_workflow_defaults, target_registration,
+    read_external_transfer_statement,
     to_eval_address, product_run_seconds,
 )
 
@@ -117,6 +119,12 @@ class TestInstallInput(unittest.TestCase):
         self.assertIs(self.defaults["allow_reversible_writes"], False)  # 입력 사전을 바꾸지 않는다
         self.assertEqual(policy["exploration"], EXPLORATION_BLOCK)
         self.assertEqual(value["openrouter_manifest"], MANIFEST)
+        # 실제 모델 설치는 외부 전송 동의 문장을 제품 소스 상수 그대로 넣는다(#965, 지금 문장 해시 고정 — 제품
+        # TestExternalTransferStatementPinned와 같은 값).
+        statement = value["external_transfer_consent"]["statement"]
+        self.assertEqual(set(value["external_transfer_consent"]), {"statement"})
+        self.assertEqual(hashlib.sha256(statement.encode("utf-8")).hexdigest(),
+                         "196eacb25b3086e967dd66f2b00e5e9b308ba1ede48d489dbc20d06ce144f16e")
 
     def test_install_inputs_are_checked(self):
         for change in ({"admin_password": "short"}, {"manifest": dict(MANIFEST, version=2)}, {"manifest": []},
@@ -143,6 +151,32 @@ class TestInstallInput(unittest.TestCase):
         self.assertEqual(dict(re.findall(r'"(\w+)": "([^"]+)"', block)), EXPLORATION_BLOCK)
 
 
+class TestExternalTransferStatement(unittest.TestCase):
+    """제품 소스의 외부 전송 동의 문장을 읽는다. 상수가 하나가 아니거나 읽을 수 없으면 설치 입력을 만들지 않는다."""
+
+    def write(self, text: str) -> Path:
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory)
+        path = directory / "product_external_consent.go"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_reads_the_go_constant(self):
+        self.assertEqual(read_external_transfer_statement(self.write('package main\n\nconst productExternalTransferStatement = "문장 \\"인용\\""\n')),
+                         '문장 "인용"')
+        self.assertTrue(read_external_transfer_statement())  # 저장소의 실제 소스
+
+    def test_missing_or_ambiguous_statement_is_refused(self):
+        line = 'const productExternalTransferStatement = "문장"\n'
+        for text in ("package main\n", line + line, 'const productExternalTransferStatement = ""\n',
+                     'const productExternalTransferStatement = `문장`\n'):
+            with self.subTest(text=text), self.assertRaises(SplitInputError) as caught:
+                read_external_transfer_statement(self.write(text))
+            self.assertEqual(str(caught.exception), "split_consent_statement_unavailable")
+        with self.assertRaises(SplitInputError):
+            read_external_transfer_statement(Path(tempfile.gettempdir()) / "no-such-consent-source.go")
+
+
 class TestSyntheticInstall(unittest.TestCase):
     """합성 모델 모드 설치 입력(2026-11-18 사용자 결정 (a)): local_model 주소 핀은 스크립트 모델 주소·포트 하나만이다."""
 
@@ -158,6 +192,7 @@ class TestSyntheticInstall(unittest.TestCase):
     def test_local_model_pins_one_address_and_port(self):
         value = self.build()
         self.assertNotIn("openrouter_manifest", value)
+        self.assertNotIn("external_transfer_consent", value)  # 합성 설치는 외부 전송이 없다(설치기도 거부)
         self.assertEqual(value["local_model"], {"model": "scripted/m:v1", "base_url": SCRIPTED_MODEL_BASE_URL,
                                                 "addresses": [SCRIPTED_MODEL_IP], "context_window_k": 32, "max_tokens": 1024})
         self.assertEqual(value["target_policy"]["allowed_ports"], [8080])  # 대상 정책은 실제 모델 회차와 같다

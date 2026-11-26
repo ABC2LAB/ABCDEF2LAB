@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
@@ -38,8 +39,10 @@ type productRuntime struct {
 	// exploration은 설치 정책의 탐색 블록으로 만든 host다. 없으면 탐색은 NOT_RUN이다.
 	exploration *productExplorationHost
 	bindMu      sync.Mutex
-	activeMu    sync.Mutex
-	active      map[string]map[string]context.CancelFunc
+	// consentMu는 외부 전송 동의 기록 쓰기를 한 번에 하나로 묶는다(파일 link가 먼저 남긴 동의를 지키지만 오류를 줄인다).
+	consentMu sync.Mutex
+	activeMu  sync.Mutex
+	active    map[string]map[string]context.CancelFunc
 }
 
 func productModels(c urlPreparationInstallation) []urlPreparationProfile {
@@ -329,9 +332,14 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 	// 찾을 때는 그 결속의 정책에서 계정을 다시 만든다.
 	var accounts productRunAccounts
 	accountDigest := ""
-	// 외부 API 모델 실행은 시험 계정 세션을 모델에 주지 않는다: 사전 공지·승인 회차에서만 켤 수 있는데(CLAUDE.md 규칙 2,
-	// 결정 4) 그 동의를 담는 승인 칸이 아직 없다. 그때까지 외부 API 실행에는 계정을 결속하지 않는다(로그인도 안 함).
-	if !reportOnly && runBindsAccounts(cfg.ModelExecutionMode, input) {
+	// 외부 모델 실행은 설치 단위 외부 전송 동의가 있어야 한다(사용자 결정 2026-11-26). 없으면 검토 사유로 막는다 — 회차마다
+	// 묻지 않는다. 저장 보고서 읽기(reportOnly)는 이미 끝난 회차라 동의와 상관없이 읽는다. 동의가 있으면 로컬 모델과 같이
+	// 시험 계정을 결속한다(대상 응답 · 계정 자격 · 세션이 제공자로 가는 것을 그 동의 문장이 다룬다).
+	external := cfg.ModelExecutionMode == "openrouter"
+	if !reportOnly && external && !p.externalTransferConsented() {
+		return nil, urlPreparationError("external_transfer_consent_required")
+	}
+	if !reportOnly {
 		if accounts, accountDigest, e = p.targets.runAccounts(rec); e != nil {
 			return nil, e
 		}
@@ -549,8 +557,10 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 	loaded.productTarget = &rec
 	loaded.productRegistry = p.targets
 	loaded.productAccounts = accounts.Accounts
-	// 외부 API 실행에 시험 계정을 결속했으면 서버가 그 실행의 인증 준비 정책을 받도록 동의를 launch로 넘긴다.
-	loaded.externalTestAccounts = externalTestAccountsConsent(cfg.ModelExecutionMode, input, len(accounts.Accounts))
+	// 외부 모델 실행에 시험 계정을 결속했으면 서버가 그 실행의 인증 준비 정책을 받도록 동의를 launch로 넘긴다.
+	loaded.externalTestAccounts = external && len(accounts.Accounts) > 0
+	// 준비 서비스는 이 판정으로 외부 모델 회차의 회차별 확인을 요구하지 않는다(위에서 동의 기록을 확인했다).
+	loaded.inspection.ExternalTransferConsented = external && !reportOnly
 	if !reportOnly && p.targets.current(rec) != nil {
 		loaded.clearMaterials()
 		return nil, urlPreparationError("target_approval_changed")
@@ -693,8 +703,11 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			control.Accounts, err = p.targets.listAccounts(r.Principal, r.Product.TargetID)
 			if err == nil {
 				control.AccountStatement = productAccountStatement
-				control.ExternalConsentStatement = productExternalConsentStatement
 			}
+		case "external_consent":
+			control.ExternalConsent, err = p.externalConsent()
+		case "external_consent_record":
+			control.ExternalConsent, control.Reason, err = p.recordExternalConsent(r.Principal, r.Product.ExternalConsent.StatementConfirmed, r.Product.ExternalConsent.StatementSHA256, time.Now())
 		case "declaration":
 			var d diagnosisprep.ProductDeclaration
 			if d, err = p.targets.declaration(r.Principal, r.Product.TargetID); err == nil {
@@ -909,18 +922,4 @@ func removeRunCredentials(runsDir, jobID string, auth *server.E2HTTPFileAuth) {
 			log.Printf("[preparation] 실행 디렉터리 자격 사본 삭제 실패: 작업=%s", jobID)
 		}
 	}
-}
-
-// accountsAllowedFor는 운영자 동의 없이도 그 모델 실행 방식에서 시험 계정을 결속할 수 있는지다. 외부 API 실행은 초안 입력의
-// external_test_accounts(사전 공지·승인 진술)가 있을 때만 결속한다(CLAUDE.md 규칙 2, C14 결정 4).
-func accountsAllowedFor(modelExecutionMode string) bool { return modelExecutionMode != "openrouter" }
-
-// runBindsAccounts는 그 실행에 시험 계정을 결속하는지다: 로컬 모델이거나, 외부 API면 운영자의 사전 공지·승인 진술이 있을 때.
-func runBindsAccounts(modelExecutionMode string, input diagnosisprep.Input) bool {
-	return accountsAllowedFor(modelExecutionMode) || input.ExternalTestAccounts
-}
-
-// externalTestAccountsConsent는 외부 API 실행에 시험 계정을 실제로 결속해 서버에 그 실행의 동의를 넘겨야 하는지다.
-func externalTestAccountsConsent(modelExecutionMode string, input diagnosisprep.Input, bound int) bool {
-	return !accountsAllowedFor(modelExecutionMode) && input.ExternalTestAccounts && bound > 0
 }
