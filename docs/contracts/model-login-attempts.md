@@ -95,7 +95,7 @@
 - 실패가 분명하면 `로그인 안 됨`으로 돌리고 §5 연속 실패에 센다. 분명한 실패는 다음 셋이다.
   - 401·403
   - 로그인 화면으로 돌아감(§4 `login_form_returned`)
-  - 새 세션이 생기지 않음(`session_source: none`)
+  - 세션이 없음(`session_source: none`): 응답이 새 세션을 주지 않았고, 로그인 요청에 실려 간 세션 쿠키(이어진 세션)도 없다. 로그인 전부터 받은 세션 쿠키를 로그인 뒤에도 그대로 쓰는 앱(세션 고정)은 `continued`라 여기에 들지 않고, 성공 여부는 대조(§4)로 가린다(#963 재상 봇 리뷰).
 - §4 성공 기준(`authenticated_contrast`)이 서면 `로그인됨`이 된다.
 - 실패가 분명하지 않은데 대조도 세우지 못하면(`unconfirmed`) 예외용 상태는 안전하게 `로그인됨`으로 쳐서 예외를 끈다. 화면 계정 상태(§4 표)는 그대로 `unconfirmed`다.
 - **세션 만료**: 성공 판정에 쓴 URL(이 세션으로 열렸던 URL)이 지금 세션으로 다시 막히거나 로그인 화면으로 가면 `로그인 안 됨`으로 돌려 다시 로그인을 허용한다(§4 `session_ended`). 다른 보호 경로 하나가 막힌 것만으로는 만료로 보지 않는다.
@@ -136,8 +136,8 @@
 | `refusal` | `not_sent`일 때 고정 사유(예: `login_attempts_exhausted`). 그 밖에는 빈 값 |
 | `redirect_path` | 같은 origin으로 리다이렉트하면 그 경로, 아니면 빈 값 |
 | `login_form_returned` | 로그인 응답이 로그인 화면을 다시 준 신호(§4) |
-| `session_source` | 이 응답이 새로 준 세션 자리. `set_cookie`(쿠키 이름 목록), `json_field`(점 경로), `header`(헤더 이름), `none` |
-| `session_names` | 위 자리의 이름들(쿠키 이름·점 경로·헤더 이름) |
+| `session_source` | 이 시도의 세션 자리. `set_cookie`(응답이 새로 준 쿠키 이름 목록), `json_field`(점 경로), `header`(헤더 이름), `continued`(응답은 새 세션을 주지 않았지만 로그인 요청에 실려 간 세션 쿠키가 있음 — 세션 고정 앱), `none`(둘 다 없음) |
+| `session_names` | 위 자리의 이름들(쿠키 이름·점 경로·헤더 이름. `continued`면 로그인 요청에 실려 간 쿠키 이름) |
 | `session_seen_anonymous` | `set_cookie`인 쿠키 이름 가운데, 같은 회차에서 로그인 전 요청에도 대상이 준 이름. NodeGoat `connect.sid`처럼 익명에게도 주는 쿠키는 이것만으로 성공 근거가 안 된다 |
 | `session_sent_as` | 뒤 요청이 이 세션을 실어 보낸 방식. `cookie`이거나 헤더 이름과 접두(예: `Authorization`, `Bearer `). 아직 없으면 빈 값 |
 | `followup` | 이 세션을 실은 뒤 요청의 결과 신호(§4). `authenticated_contrast`·`no_login_form`·`login_form`·`none` |
@@ -186,7 +186,7 @@
   - 비밀번호가 틀리면 로그인 응답이 200에 비밀번호 칸이 있는 화면이라 바로 `failed`다.
 
 **결과** (`outcome`)
-- `succeeded`: 로그인 응답에 실패 신호가 없고, 새 세션이 있고(`session_source`가 `none`이 아님), `followup`이 `authenticated_contrast`다.
+- `succeeded`: 로그인 응답에 실패 신호가 없고, 세션이 있고(`session_source`가 `none`이 아님 — 새 세션이든 이어진 세션 `continued`든), `followup`이 `authenticated_contrast`다. 이어진 세션은 로그인 전 세션 없는 응답과 같은 쿠키일 수 있으므로, 대조의 '세션 없는 응답'은 그 쿠키를 싣지 않은 응답만 센다.
 - `failed`: 로그인 응답에 실패 신호가 있거나 `followup`이 `login_form`이다.
 - `unconfirmed`: 위 둘 다 아니다. 세션을 받았지만 대조할 경로가 아직 없는 경우 등이다.
 - `not_sent`·`result_unknown`: 전송 결과를 그대로 남긴다. 결과 불명 로그인은 자동으로 다시 보내지 않는다.
