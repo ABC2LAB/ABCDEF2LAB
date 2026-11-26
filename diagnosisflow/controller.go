@@ -91,6 +91,11 @@ var (
 	destructiveWords = []string{"delete", "remove", "reset", "logout", "signout", "logoff", "destroy", "truncate", "shutdown"}
 	// transactionWords는 쓰기 메서드에서만 막는다. 결제·주문 내역을 읽는 GET·HEAD는 진단 범위다.
 	transactionWords = []string{"checkout", "payment", "payments", "purchase", "purchases", "transfer", "transfers"}
+	// accountClosureWords도 쓰기 메서드에서만 막는다. 계정을 닫거나 지우는 쓰기(탈퇴·해지)다. 모델이 등록 계정으로 직접
+	// 로그인하게 되면서(2026-11-26) 아이디·비밀번호를 다시 넣어 확인하는 탈퇴 요청이 로그인과 모양이 같아진 것을 진단 쓰기
+	// 정책에서 보조로 막는다(팀 합의, docs/contracts/model-login-attempts.md §2-2 남는 위험). 탐색 경계의 위험 단어
+	// (DestructiveWords, 부분 문자열 맞춤)에는 넣지 않는다: /closet·/disclose 같은 탐색 GET을 막게 된다.
+	accountClosureWords = []string{"close", "deactivate", "withdraw", "unregister", "terminate", "erase"}
 )
 
 // riskTokens는 경로 조각·query 이름·값을 영문자·숫자 단어로 나눈다. camelCase 경계와 글자·숫자 경계(reset2fa)도 나눈다.
@@ -195,7 +200,7 @@ func writeMethod(method string) bool {
 // 쓰기 메서드의 경로에서 막는다. query는 이름과 값 모두 본다(?action=delete).
 func riskyRequest(method, path string, query url.Values) bool {
 	for _, segment := range strings.Split(path, "/") {
-		if anyToken(segment, destructiveWords) || writeMethod(method) && anyToken(segment, transactionWords) {
+		if anyToken(segment, destructiveWords) || writeMethod(method) && (anyToken(segment, transactionWords) || anyToken(segment, accountClosureWords)) {
 			return true
 		}
 	}
