@@ -1170,6 +1170,11 @@ a.ph:hover {
   background: var(--ok-bg);
   color: var(--ok);
 }
+/* 실패(진단 실패 · 실행 실패)는 빨강(사용자 11/26: 범위 확인 '실행 실패'가 초록이라 헷갈림) */
+.pill.fail {
+  background: var(--hi-bg);
+  color: var(--hi);
+}
 .pill.run::before {
   content: "";
   width: 7px;

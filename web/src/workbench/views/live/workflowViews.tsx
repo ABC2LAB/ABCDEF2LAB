@@ -107,6 +107,7 @@ function crawlTone(flow: WorkflowSnapshot, verified: boolean): string | undefine
   if (flow.paused) return undefined;
   if (flow.stage === "crawling" || flow.stage === "diagnosing") return s.run;
   if (flow.stage === "awaiting_selection") return s.wait;
+  if (flow.stage === "failed") return s.fail;
   return flow.stage === "completed" ? s.ok : undefined;
 }
 function crawlPill(flow: WorkflowSnapshot, verified: boolean): string {
@@ -238,6 +239,12 @@ function crawlEndText(explore: ReturnType<typeof exploreState>): string {
       ? EXPLORE_REASON_TEXT[explore.reason]
       : undefined;
   return why && base !== CRAWL_END_UNKNOWN ? `${base} (${why})` : base;
+}
+
+/** 범위 확인 화면 상태 알약 색: 확인 대기 · 미확인은 노랑, 실행 실패는 빨강(사용자 11/26), 나머지는 초록. */
+function scopeTone(flow: WorkflowSnapshot, verified: boolean): string | undefined {
+  if (!verified || flow.stage === "awaiting_selection") return s.wait;
+  return flow.stage === "failed" ? s.fail : s.ok;
 }
 
 /** 범위 확인 화면 상태 알약 글. */
@@ -1479,9 +1486,7 @@ export function WorkflowScopeLive() {
     host = useUrlHost();
   const stop = useStopConfirm("점검 취소");
   const pill = flow ? (
-    <span className={cx(s.pill, !verified || flow.stage === "awaiting_selection" ? s.wait : s.ok)}>
-      {scopePill(flow, verified)}
-    </span>
+    <span className={cx(s.pill, scopeTone(flow, verified))}>{scopePill(flow, verified)}</span>
   ) : undefined;
   const head = (start: ReactNode) => (
     <>
