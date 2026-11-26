@@ -9,6 +9,7 @@ import { e2Flow } from "@/lib/diagnosis/e2flow-fixtures";
 
 import type { WorkflowSnapshot } from "../live/workflow";
 import { SentRequestsValue } from "../views/live/sentRequests";
+import { dashSentFlow } from "../views/live/UrlDashboardLive";
 import { CrawlMeters } from "../views/live/workflowViews";
 
 afterEach(cleanup);
@@ -108,5 +109,26 @@ describe("CrawlMeters", () => {
       "보낸 요청158건 (모델 110 · 로그인 10 · 탐색 38)심화 점검 포함",
       "막은 요청13범위 밖 · 안전 규칙",
     ]);
+  });
+});
+
+// 대시보드 → 점검 정보 '보낸 요청' 칸(#976 이동찬 P2): 첫 조회가 된 뒤 재조회가 실패해도 그 값을 넘기고 '읽기 실패'로 바꾸지 않는다
+describe("dashSentFlow", () => {
+  const flow = parseE2Flow(e2Flow());
+  it("첫 조회 성공 뒤 재조회 실패: 마지막 값을 그대로, 실패 아님", () => {
+    expect(dashSentFlow("42", { data: flow, error: new Error("fixed-refetch-failure") })).toEqual({
+      e2Flow: flow,
+      e2FlowFailed: false,
+    });
+  });
+  it("받은 값 없이 실패: 값 없음 · 실패", () => {
+    expect(dashSentFlow("42", { data: null, error: new Error("fixed-first-failure") })).toEqual({
+      e2Flow: null,
+      e2FlowFailed: true,
+    });
+  });
+  it("읽는 중(값 · 오류 없음)과 시작 전 점검(task 없음)은 실패가 아니다", () => {
+    expect(dashSentFlow("42", { data: null, error: null })).toEqual({ e2Flow: null, e2FlowFailed: false });
+    expect(dashSentFlow(null, { data: flow, error: new Error("x") })).toEqual({ e2Flow: null, e2FlowFailed: false });
   });
 });
