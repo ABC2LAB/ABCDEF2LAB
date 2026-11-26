@@ -218,7 +218,7 @@
 - 아이디별로 연속 실패를 센다. 탐색·진단·확정 단계를 합쳐 회차당이다.
   - `failed`가 되면 1을 더한다. 로그인 응답의 실패 신호로 정해졌든, 뒤 요청 `login_form`으로 나중에 정해졌든 같다(결과와 차단 기준을 맞춘다, #963 동찬 리뷰 P2). `succeeded`가 되면 0으로 되돌린다.
   - `unconfirmed`·`not_sent`·`result_unknown`은 세지도 되돌리지도 않는다.
-  - 이미 `succeeded`인 시도의 세션이 나중에 로그인 화면으로 돌려보내지는 것은 `session_ended`이고 실패가 아니다(§4).
+  - 이미 `succeeded`인 시도의 대조 URL이 그 세션으로 다시 '막힘'이 되는 것은 `session_ended`이고 실패가 아니다(§2-2·§4). 다른 URL의 막힘은 세지도 기록하지도 않는다.
 - 연속 실패가 3에 닿은 아이디로 새 로그인 시도를 하면, 탐색 경계와 E②가 보내기 전에 거부한다. 고정 사유는 `login_attempts_exhausted`다.
   - 그 요청만 실패하고 회차는 계속한다.
   - 거부한 시도도 한 행으로 남긴다(`transport: not_sent`, `refusal: login_attempts_exhausted`). 연속 실패 수에는 세지 않는다.
