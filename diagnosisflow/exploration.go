@@ -313,11 +313,12 @@ func (c *Controller) reportObservedRecord(ctx context.Context, b ExplorationBind
 }
 
 // unrepresentableObservedPath는 경계가 보낸 경로가 흐름 표기(canonicalPath)로 담기지 않는 까닭이 표기 차이(Go 표준 경로
-// 인코딩이 다시 인코딩하는 문자, RawPath)나 흐름 경로 길이 상한(maxPathBytes)뿐인지 본다. 같은 origin의 경로이고 경계
-// 표기 그대로 되돌아와야 하며 질의·조각·퍼센트 인코딩·역슬래시·제어 문자·빈 조각·점 조각이 없어야 한다. 이것들은 경계가
-// 이미 보내기 전에 막는 형태라, 관찰에 나타나면 경계와 흐름의 판정이 어긋난 것이므로 지금처럼 관찰 오류다.
+// 인코딩이 다시 인코딩하는 문자, RawPath)나 흐름 경로 길이 상한(maxPathBytes)뿐인지 본다. 경계는 퍼센트 인코딩·빈 조각·
+// 점 조각·제어 문자가 든 경로를 보내기 전에 막으므로, 관찰에 그런 경로가 있으면 경계와 흐름의 판정이 어긋난 것이라 지금처럼
+// 관찰 오류다. 이 origin의 경로가 경계 표기 그대로 되돌아와야 해서 질의·조각·공백·역슬래시처럼 Go가 다시 인코딩하거나
+// 경로 밖으로 떼는 것도 여기서 걸린다.
 func (c *Controller) unrepresentableObservedPath(raw string) bool {
-	if !strings.HasPrefix(raw, "/") || strings.Contains(raw, "//") || strings.ContainsAny(raw, "?#%\\") || !utf8.ValidString(raw) {
+	if !strings.HasPrefix(raw, "/") || strings.Contains(raw, "//") || strings.Contains(raw, "%") || !utf8.ValidString(raw) {
 		return false
 	}
 	for _, r := range raw {
@@ -331,7 +332,7 @@ func (c *Controller) unrepresentableObservedPath(raw string) bool {
 		}
 	}
 	u, err := url.Parse(c.origin + raw)
-	if err != nil || u.User != nil || u.Scheme+"://"+u.Host != c.origin || u.EscapedPath() != raw {
+	if err != nil || u.EscapedPath() != raw {
 		return false
 	}
 	return u.RawPath == raw || len(raw) > maxPathBytes

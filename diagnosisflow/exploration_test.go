@@ -602,6 +602,8 @@ func TestObservedUnrepresentablePathStillChecksScope(t *testing.T) {
 		"double slash":    func(o *ExplorationObservation) { o.Path = "/read//*" },
 		"dot segment":     func(o *ExplorationObservation) { o.Path = "/read/../read/*" },
 		"space":           func(o *ExplorationObservation) { o.Path = "/read/a b*" },
+		"long percent":    func(o *ExplorationObservation) { o.Path = "/read/%2A" + strings.Repeat("a", maxPathBytes) },
+		"backslash":       func(o *ExplorationObservation) { o.Path = "/read/a\\b*" },
 		"control":         func(o *ExplorationObservation) { o.Path = "/read/a\tb*" },
 		"method":          func(o *ExplorationObservation) { o.Path, o.Method = "/read/*", "DELETE" },
 	} {
