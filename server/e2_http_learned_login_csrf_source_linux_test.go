@@ -48,8 +48,9 @@ func (a *separateCSRFApp) serve(w http.ResponseWriter, r *http.Request) {
 		form, _ := url.ParseQuery(string(body))
 		pre, _ := r.Cookie("pre")
 		a.mu.Lock()
+		password := form.Get("password")
 		ok := pre != nil && a.issued[pre.Value] != "" && form.Get("_csrf") == a.issued[pre.Value] &&
-			form.Get("userName") == "tester@owned.test" && form.Get("password") == "seeded-pass-88ff"
+			form.Get("userName") == "tester@owned.test" && (password == "seeded-pass-88ff" || password == "wrong-pass-value")
 		if pre != nil {
 			delete(a.issued, pre.Value)
 		}
@@ -58,7 +59,11 @@ func (a *separateCSRFApp) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "sid", Value: "new-session-value-12345678", Path: "/"})
+		sid := "new-session-value-12345678"
+		if password == "wrong-pass-value" {
+			sid = "cross-session-value-12345678"
+		}
+		http.SetCookie(w, &http.Cookie{Name: "sid", Value: sid, Path: "/"})
 		w.Header().Set("Location", "/allowed/home")
 		w.WriteHeader(http.StatusFound)
 	default:
@@ -111,6 +116,18 @@ func TestE2HTTPFactorySeparatePathCSRF(t *testing.T) {
 			app.mu.Unlock()
 			if second.Result != E2HTTPAuthAuthenticated || second.Requests != 2 || issued != 2 || pending != 0 {
 				t.Fatalf("새 토큰 재발급·일회성 소비 실패: result=%s requests=%d issued=%d pending=%d", second.Result, second.Requests, issued, pending)
+			}
+			clock.Advance(minSessionRefreshInterval)
+			cross := learned.LearnedRelogin(ctx, E2HTTPLearnedLoginRequest{Label: "tester-b", Method: separateCSRFMethod(html), MaxFailures: 3})
+			app.mu.Lock()
+			issued, pending = app.n, len(app.issued)
+			app.mu.Unlock()
+			crossSession, crossErr := lease.AccountBindings().BoundSession(lease.Execution.Snapshot().Scope.RunRef, "tester-b", cross.BindingRef)
+			if cross.Result != E2HTTPAuthAuthenticated || cross.Requests != 2 || issued != 3 || pending != 0 || crossErr != nil ||
+				!strings.Contains(crossSession.Get("Cookie"), "sid=cross-session-value-12345678") ||
+				strings.Contains(crossSession.Get("Cookie"), "new-session-value-12345678") {
+				t.Fatalf("다른 계정의 토큰·쿠키 혼입: result=%s requests=%d issued=%d pending=%d session=%v err=%v",
+					cross.Result, cross.Requests, issued, pending, crossSession, crossErr)
 			}
 		})
 	}
