@@ -29,19 +29,19 @@
 | `GET /api/product/targets/{id}/accounts` | 목록 `{"accounts": ProductAccount[], "account_statement": "..."}`(계정이 없으면 `accounts` 칸 없음). `account_statement`는 시험 계정 표시 때 화면이 그대로 띄워 동의받는 진술 문장이다. 외부 전송 동의 문장은 2026-11-26부터 이 목록에 싣지 않는다(설치 단위 동의, 아래 `external-transfer-consent`). 문장이 없으면 동의 칸을 보이지 않는다 |
 | `GET /api/product/external-transfer-consent` | 설치 단위 외부 전송 동의 상태(관리자) `{"external_consent": {"required", "statement"?, "consented", "source"?, "consented_by"?, "consented_at"?}}`. `required`가 거짓이면(외부 모델 없음) 나머지 칸 없음. 동의했으면 `source`는 `install`(설치 입력)·`admin`(관리자 화면). 화면 파서 `lib/diagnosis/external-transfer-consent.ts`는 서버 `validProductExternalConsent`와 같은 규칙으로 닫는다. 외부 모델 점검은 동의가 있어야 시작한다(없으면 검토 사유 `external_transfer_consent_required`) |
 | `POST /api/product/external-transfer-consent` `{"statement_confirmed": true, "statement_sha256": "…"}` | 관리자 동의를 한 번 남긴다(이미 있으면 먼저 남긴 동의 그대로). `statement_sha256`은 화면이 보인 문장의 SHA-256(소문자 16진수) — 지금 문장과 다르면 409 `statement_changed`(화면은 새 문장을 다시 읽음). 거짓·빈 본문은 409 `statement_required`, 해시 형식 밖은 400, 외부 모델이 없는 설치는 409 `external_transfer_not_installed`. 설치 프로필을 읽지 못하면 조회 · 동의 모두 오류(외부 모델 없음으로 보이지 않음) |
-| `POST /api/product/targets/{id}/accounts` `{"label": "..."}` | 등록(분류 `real`). 라벨은 소문자·숫자·`_`·`-`만(사용자명·이메일 원문 금지) |
-| `POST …/accounts/{label}/mark-test` `{"statement_confirmed": true}` | 시험 계정 표시(본인 진술 동의 필수, 없으면 409 `statement_required`) |
-| `POST …/accounts/{label}/unmark` `{}` | 표시 해제 |
+| `POST /api/product/targets/{id}/accounts` `{"label": "..."}` | 등록. 라벨은 소문자·숫자·`_`·`-`만(사용자명·이메일 원문 금지) |
+| `POST …/accounts/{label}/mark-test` `{"statement_confirmed": true}` | 시험 계정 표시. **화면은 부르지 않는다**(계정 분류 폐지, 아래). 서버에서 걷기 전까지 남아 있다 |
+| `POST …/accounts/{label}/unmark` `{}` | 표시 해제. **화면은 부르지 않는다**. 지금 서버는 해제할 때 자격도 지운다 |
 | `GET`·`PUT /api/product/targets/{id}/login` | 대상 로그인 방식(경로·형식·필드 이름·세션 위치). 자격 값 없음 |
 | `PUT …/accounts/{label}/credential` `{"username","password"}` | 자격 등록(서버 보호 파일, 응답·목록에 값·해시 없음). 사용자명 앞뒤에 공백이 있으면 `invalid_account_credential`(400). 화면도 등록 전에 같은 규칙을 확인한다. |
 
-화면(`AccountClassifyLive`, 2026-11-21): 대상을 고르면 로그인 방식을 읽어 칸에 채우고 저장한다(형식 검사는 서버 `ValidTargetLogin`과 같은 규칙, 승인 경로 안인지는 서버만 본다). 계정마다 자격을 입력한다. 자격 칸은 React 상태에 두지 않는 비제어 입력이고 보낼 때 한 번 읽고 바로 비운다(실패·형식 밖도). URL·브라우저 저장소·로그에 넣지 않는다. 브라우저 비밀번호 관리자에 들어가지 않게 form 제출을 쓰지 않고 `autoComplete="off"`·관리자 무시 표시를 단다(모든 브라우저가 저장 제안을 안 한다고 보장하지는 않는다). 비밀번호가 E② 보호 값 하한(6바이트)보다 짧으면 서버는 저장하지만 실행 때 그 계정으로 로그인하지 않으므로, 등록 뒤 라벨과 함께 따로 알린다(값 없음). 등록 여부는 목록의 `credential_configured`가 참일 때만 '자격 등록됨'이다. 쓰기 실패는 서버 사유 코드를 한국어 문구로 보인다.
+화면(`TargetAccountsLive` '시험 계정', 2026-11-21 · 11-26 분류 폐지): 대상을 고르면 로그인 방식을 읽어 칸에 채우고 저장한다(형식 검사는 서버 `ValidTargetLogin`과 같은 규칙, 승인 경로 안인지는 서버만 본다). 계정마다 자격을 입력한다. 자격 칸은 React 상태에 두지 않는 비제어 입력이고 보낼 때 한 번 읽고 바로 비운다(실패·형식 밖도). URL·브라우저 저장소·로그에 넣지 않는다. 브라우저 비밀번호 관리자에 들어가지 않게 form 제출을 쓰지 않고 `autoComplete="off"`·관리자 무시 표시를 단다(모든 브라우저가 저장 제안을 안 한다고 보장하지는 않는다). 비밀번호가 E② 보호 값 하한(6바이트)보다 짧으면 서버는 저장하지만 실행 때 그 계정으로 로그인하지 않으므로, 등록 뒤 라벨과 함께 따로 알린다(값 없음). 등록 여부는 목록의 `credential_configured`가 참일 때만 '자격 등록됨'이다. 쓰기 실패는 서버 사유 코드를 한국어 문구로 보인다.
 
 `ProductAccount`: `label`, `classification`(`test`|`real`), `reason`(`target_reapproved`|`target_expired`|`manual_unmark`, 없을 수 있음), `registered_by`, `registered_at`, `classified_by`, `classified_at`, `marked_revision`, `credential_configured`(bool, 값 없음).
 
 계정 목록과 계정 변경 응답에서 자격이 저장됐지만 대상 로그인 방식이 없으면 `login_method_missing: true`를 함께 준다. 이때 점검은 익명으로 진행한다. 로그인 방식을 등록하면 다음 조회부터 이 필드를 생략한다. 실제 로그인 결과는 회차의 `account_auth`에서 확인한다.
 
-화면 분류 대응: `test` → `test_approved`, `real` → `unmarked`. 서버에는 "승인 대기" 상태가 없다(표시하는 사람이 곧 승인자). 화면의 `test_pending`은 서버 값으로는 나오지 않는다. `approvedBy`·`approvedAt`은 `classified_by`·`classified_at`이다. 실행에서 계정별 로그인 결과는 실행 결과 `account_auth` 칸이다([실행 결과 계약](run-outcome-states.md) 3.4).
+계정 분류 폐지(사용자 결정 2026-11-26, [모델 로그인 시도 기록 계약](model-login-attempts.md) §0): 프로그램은 계정을 시험 · 실계정으로 나누지 않고, 서버는 자격이 저장된 등록 계정을 회차에 결속한다(#967). 화면은 `label`·`credential_configured`·`login_method_missing`만 읽고 `classification`·`reason`·`classified_by`·`classified_at`·`marked_revision`·`account_statement`는 읽지 않는다. 새 점검 · 진행 화면의 '시험 계정 있음'(`lib/diagnosis/target-account-presence.ts`)도 `credential_configured`가 참인 계정 수로 센다. 표시 · 해제 API와 이 칸들을 서버에서 걷는 것은 따로 한다. 실행에서 계정별 로그인 결과는 실행 결과 `account_auth` 칸이다([실행 결과 계약](run-outcome-states.md) 3.4).
 
 ## 2. 접근통제 지도 — 지금 연결 가능
 

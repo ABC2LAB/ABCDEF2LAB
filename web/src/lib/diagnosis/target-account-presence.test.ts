@@ -10,7 +10,7 @@ import {
   urlDiagnosisInput,
 } from "./diagnosis-url";
 import { draft, envelope, handle, owner } from "./diagnosis-url-fixtures";
-import { readExternalTestAccountPresence } from "./external-account-consent";
+import { readTargetAccountPresence } from "./target-account-presence";
 
 vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), apiFetch: vi.fn() }));
 beforeEach(() => {
@@ -65,39 +65,42 @@ it("시작을 보낸 동의 회차는 새로고침 뒤에도 이어 보도록 �
   expect(readURLHandle(owner)).toBeNull();
   expect(sessionStorage.length).toBe(0);
 });
-it("정확한 승인 대상의 실제 시험 계정 등록만 조회한다", async () => {
+it("정확한 승인 대상의 자격이 저장된 등록 계정만 센다", async () => {
   vi.mocked(apiFetch)
     .mockResolvedValueOnce({ target: { id: "target-1", origin: "https://target.example", state: "approved" } })
-    .mockResolvedValueOnce({ accounts: [{ label: "tester", classification: "test" }] });
-  expect(await readExternalTestAccountPresence("https://target.example/app")).toEqual({
+    .mockResolvedValueOnce({ accounts: [{ label: "tester", credential_configured: true }] });
+  expect(await readTargetAccountPresence("https://target.example/app")).toEqual({
     hasTestAccounts: true,
     loginMethodMissing: false,
     targetId: "target-1",
   });
   expect(vi.mocked(apiFetch).mock.calls[1][0]).toBe("/api/product/targets/target-1/accounts");
 });
-// #914: 자격은 저장됐는데 대상 로그인 방식이 없으면 서버가 login_method_missing: true 를 준다. 시험 계정 · 자격 있음일 때만 본다
+// #914: 자격은 저장됐는데 대상 로그인 방식이 없으면 서버가 login_method_missing: true 를 준다. 자격 있음일 때만 본다.
+// 계정 분류 폐지(2026-11-26) 뒤라 서버가 아직 싣는 classification 은 보지 않는다(real 이어도 결속되므로 같이 센다)
 it.each([
-  [{ label: "tester", classification: "test", credential_configured: true, login_method_missing: true }, true],
-  [{ label: "tester", classification: "test", credential_configured: false, login_method_missing: true }, false],
-  [{ label: "tester", classification: "test", credential_configured: true }, false],
-  [{ label: "customer", classification: "real", credential_configured: true, login_method_missing: true }, false],
-  [{ label: "tester", classification: "test", credential_configured: true, login_method_missing: "true" }, false],
-] as const)("로그인 방식 없음은 시험 계정 · 자격 있음 · 참일 때만(%#)", async (account, missing) => {
+  [{ label: "tester", credential_configured: true, login_method_missing: true }, true],
+  [{ label: "tester", credential_configured: false, login_method_missing: true }, false],
+  [{ label: "tester", credential_configured: true }, false],
+  [{ label: "customer", classification: "real", credential_configured: true, login_method_missing: true }, true],
+  [{ label: "tester", credential_configured: true, login_method_missing: "true" }, false],
+] as const)("로그인 방식 없음은 자격 있음 · 참일 때만(%#)", async (account, missing) => {
   vi.mocked(apiFetch)
     .mockResolvedValueOnce({ target: { id: "target-1", origin: "https://target.example", state: "approved" } })
     .mockResolvedValueOnce({ accounts: [account] });
-  expect((await readExternalTestAccountPresence("https://target.example/")).loginMethodMissing).toBe(missing);
+  expect((await readTargetAccountPresence("https://target.example/")).loginMethodMissing).toBe(missing);
 });
 it.each([
   {},
   { accounts: [] },
-  { accounts: [{ label: "customer", classification: "real" }] },
-])("미등록·실계정에서 시험 계정을 추정하지 않는다", async (result) => {
+  { accounts: [{ label: "tester" }] },
+  { accounts: [{ label: "tester", classification: "test", credential_configured: false }] },
+  { accounts: [{ label: "tester", credential_configured: "true" }] },
+])("자격이 없는 계정에서 시험 계정을 추정하지 않는다(%#)", async (result) => {
   vi.mocked(apiFetch)
     .mockResolvedValueOnce({ target: { id: "target-1", origin: "https://target.example", state: "approved" } })
     .mockResolvedValueOnce(result);
-  expect(await readExternalTestAccountPresence("https://target.example/")).toEqual({
+  expect(await readTargetAccountPresence("https://target.example/")).toEqual({
     hasTestAccounts: false,
     loginMethodMissing: false,
     targetId: "target-1",
@@ -107,11 +110,11 @@ it("계정 조회 실패·다른 origin은 계정 없음으로 바꾸지 않는�
   vi.mocked(apiFetch)
     .mockResolvedValueOnce({ target: { id: "target-1", origin: "https://target.example", state: "approved" } })
     .mockRejectedValueOnce(new Error("fixed-error"));
-  await expect(readExternalTestAccountPresence("https://target.example/")).rejects.toThrow();
+  await expect(readTargetAccountPresence("https://target.example/")).rejects.toThrow();
   vi.mocked(apiFetch).mockResolvedValueOnce({
     target: { id: "target-2", origin: "https://other.example", state: "approved" },
   });
-  await expect(readExternalTestAccountPresence("https://target.example/")).rejects.toThrow();
+  await expect(readTargetAccountPresence("https://target.example/")).rejects.toThrow();
 });
 it.each([
   { target: { id: "target-1", origin: "https://other.example", state: "approved" } },
@@ -120,13 +123,23 @@ it.each([
 ])("정상 계정 응답이 뒤에 있어도 다른 origin/미승인 대상은 거절한다", async (resolved) => {
   vi.mocked(apiFetch)
     .mockResolvedValueOnce(resolved)
-    .mockResolvedValueOnce({ accounts: [{ label: "tester", classification: "test" }] });
-  await expect(readExternalTestAccountPresence("https://target.example/")).rejects.toThrow();
+    .mockResolvedValueOnce({ accounts: [{ label: "tester", credential_configured: true }] });
+  await expect(readTargetAccountPresence("https://target.example/")).rejects.toThrow();
   expect(apiFetch).toHaveBeenCalledTimes(1);
 });
-it("모르는 계정 분류는 시험 계정으로 읽지 않는다", async () => {
+it("계정 분류 칸은 보지 않는다 — 어떤 값이든 · 없어도 자격 등록 여부로만 센다", async () => {
+  for (const classification of ["real", "future", undefined]) {
+    vi.mocked(apiFetch)
+      .mockResolvedValueOnce({ target: { id: "target-1", origin: "https://target.example", state: "approved" } })
+      .mockResolvedValueOnce({ accounts: [{ label: "tester", classification, credential_configured: true }] });
+    expect((await readTargetAccountPresence("https://target.example/")).hasTestAccounts, String(classification)).toBe(
+      true,
+    );
+  }
+});
+it("라벨 형식 밖 계정이 있으면 응답 전체를 믿지 않는다", async () => {
   vi.mocked(apiFetch)
     .mockResolvedValueOnce({ target: { id: "target-1", origin: "https://target.example", state: "approved" } })
-    .mockResolvedValueOnce({ accounts: [{ label: "tester", classification: "future" }] });
-  await expect(readExternalTestAccountPresence("https://target.example/")).rejects.toThrow();
+    .mockResolvedValueOnce({ accounts: [{ label: "Tester@x", credential_configured: true }] });
+  await expect(readTargetAccountPresence("https://target.example/")).rejects.toThrow();
 });
