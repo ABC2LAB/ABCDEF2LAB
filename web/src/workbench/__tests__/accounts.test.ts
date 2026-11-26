@@ -50,10 +50,16 @@ describe("getAccounts (실 GET · 매핑)", () => {
   it("라벨 · 자격 등록 여부만 읽고 origin 은 대상 것, 형식 밖 라벨은 버린다", async () => {
     api.mockResolvedValueOnce({
       accounts: [
-        { label: "owner", classification: "test", classified_by: "op-1", classified_at: "2026-11-10T00:00:00Z" },
+        {
+          label: "owner",
+          classification: "test",
+          classified_by: "op-1",
+          classified_at: "2026-11-10T00:00:00Z",
+          registered_at: "2026-11-09T01:02:03.5Z",
+        },
         { label: "peer", classification: "real", reason: "target_reapproved" },
         { label: "guest", classification: "real", credential_configured: true },
-        { label: "odd", credential_configured: "true" }, // 참(boolean)이 아니면 미등록
+        { label: "odd", credential_configured: "true", registered_at: "어제" }, // 참(boolean)이 아니면 미등록, 시각 형식 밖은 null
         { label: "User@x", credential_configured: true }, // 라벨 형식 밖 → 버림
         { credential_configured: true }, // 라벨 없음 → 버림
       ],
@@ -66,11 +72,16 @@ describe("getAccounts (실 GET · 매핑)", () => {
     );
     expect(r).toEqual({
       accounts: [
-        { ref: "owner", origin: "https://a.example", credentialConfigured: false },
-        { ref: "peer", origin: "https://a.example", credentialConfigured: false },
+        {
+          ref: "owner",
+          origin: "https://a.example",
+          credentialConfigured: false,
+          registeredAt: Date.parse("2026-11-09T01:02:03.5Z"),
+        },
+        { ref: "peer", origin: "https://a.example", credentialConfigured: false, registeredAt: null },
         // 자격 등록 여부는 credential_configured 칸으로만 나른다(값 없음). 분류가 real 이어도 같다
-        { ref: "guest", origin: "https://a.example", credentialConfigured: true },
-        { ref: "odd", origin: "https://a.example", credentialConfigured: false },
+        { ref: "guest", origin: "https://a.example", credentialConfigured: true, registeredAt: null },
+        { ref: "odd", origin: "https://a.example", credentialConfigured: false, registeredAt: null },
       ],
     });
   });

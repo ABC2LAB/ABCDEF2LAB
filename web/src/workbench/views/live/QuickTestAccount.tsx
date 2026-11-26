@@ -28,9 +28,19 @@ import {
 import s from "../../workbench.module.css";
 import { TargetLoginForm } from "./TargetLoginForm";
 
-/** 두 줄의 계정 이름: 선언의 소유 · 교차 → 이미 있는 등록 계정 → 기본 이름. 두 이름이 같아지지 않게 한다. */
+/**
+ * 두 줄의 계정 이름: 선언의 소유 · 교차 → 이미 있는 등록 계정(등록 순서) → 기본 이름. 두 이름이 같아지지 않게 한다.
+ * 서버 계정 목록은 라벨순이라 그대로 쓰면 뒤에 등록한 계정(예: tester-z 뒤 tester-a)이 A 자리를 빼앗아, '계정 A'에 넣은 자격이
+ * 다른 계정에 저장된다(#972 이동찬 P2). 그래서 등록 시각(registered_at) 순으로 정하고, 같거나 모르면 서버 순서를 그대로 둔다.
+ */
 export function pairLabels(rows: TargetAccount[] | null, owner?: string, cross?: string): [string, string] {
-  const known = (rows ?? []).map((a) => a.ref);
+  const at = (a: TargetAccount) => a.registeredAt ?? Number.POSITIVE_INFINITY;
+  const byRegistered = (x: TargetAccount, y: TargetAccount) => {
+    if (at(x) === at(y)) return 0;
+    return at(x) < at(y) ? -1 : 1;
+  };
+  // 정렬은 안정 정렬이라 같은 시각 · 모르는 시각끼리는 서버 순서가 남는다
+  const known = [...(rows ?? [])].sort(byRegistered).map((a) => a.ref);
   const a = owner ?? known[0] ?? "tester-a";
   const b = cross ?? known.find((r) => r !== a) ?? (a === "tester-b" ? "tester-a" : "tester-b");
   return [a, b];

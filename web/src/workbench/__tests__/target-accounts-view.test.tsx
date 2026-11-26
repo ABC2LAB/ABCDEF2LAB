@@ -165,6 +165,52 @@ describe("TargetAccountsLive (실 API 읽기·쓰기)", () => {
     expect(await box.findByText("저장함")).toBeInTheDocument();
   });
 
+  // #972 이동찬 P2: 서버 목록은 라벨순이다. 선언이 없으면 A · B 는 등록 순서라, 뒤에 등록한 라벨 앞 계정이 A 를 빼앗지 않는다
+  it("선언이 없으면 A · B 는 등록 시각 순 — 라벨순 서버 목록에서 뒤에 등록한 tester-a 가 A 를 빼앗지 않는다", async () => {
+    api.mockImplementation((path: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (path === "/api/product/targets")
+        return Promise.resolve({ targets: [{ id: "t1", origin: "https://a.example", state: "approved" }] }) as never;
+      if (path === "/api/product/targets/t1/accounts" && method === "GET")
+        return Promise.resolve({
+          // 서버 listAccounts 처럼 라벨 오름차순. tester-z 를 먼저 등록했다
+          accounts: [
+            { label: "tester-a", registered_at: "2026-11-26T10:05:00Z" },
+            { label: "tester-m", registered_at: "2026-11-26T10:10:00Z" },
+            { label: "tester-z", registered_at: "2026-11-26T10:00:00Z" },
+          ],
+        }) as never;
+      if (path === "/api/product/targets/t1/login" && method === "GET") return Promise.resolve({}) as never;
+      if (method === "PUT" && path.endsWith("/credential"))
+        return Promise.resolve({ account: { credential_configured: true } }) as never;
+      return Promise.reject(new Error(`unexpected ${method} ${path}`)) as never;
+    });
+    render(withRoute("classify"));
+    fireEvent.change(await screen.findByLabelText("계정을 관리할 대상"), { target: { value: "t1" } });
+    const box = within(await screen.findByRole("region", { name: "시험 계정" }));
+    await waitFor(() =>
+      expect(within(box.getByRole("group", { name: "계정 A" })).getByText("계정 A")).toHaveAttribute(
+        "title",
+        "별칭 tester-z",
+      ),
+    );
+    expect(within(box.getByRole("group", { name: "계정 B" })).getByText("계정 B")).toHaveAttribute(
+      "title",
+      "별칭 tester-a",
+    );
+    // '계정 A'에 넣은 자격은 먼저 등록한 tester-z 로 간다
+    fireEvent.change(box.getByLabelText("계정 A 아이디"), { target: { value: "u-a" } });
+    fireEvent.change(box.getByLabelText("계정 A 비밀번호"), { target: { value: "synthetic-pass-a-1234" } });
+    fireEvent.click(box.getByRole("button", { name: "저장" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/api/product/targets/t1/accounts/tester-z/credential",
+        expect.objectContaining({ method: "PUT" }),
+      ),
+    );
+    expect(api).not.toHaveBeenCalledWith("/api/product/targets/t1/accounts/tester-a/credential", expect.anything());
+  });
+
   it("등록 안 된 줄(B)을 채워 저장하면 등록 뒤 자격을 보낸다", async () => {
     api.mockImplementation((path: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";

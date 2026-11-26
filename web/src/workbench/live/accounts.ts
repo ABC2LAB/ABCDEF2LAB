@@ -19,6 +19,8 @@ export type TargetAccount = {
   origin: string;
   /** 서버가 이 계정의 자격 보호 파일을 확인했는가(credential_configured). 값·해시는 오지 않는다. */
   credentialConfigured: boolean;
+  /** 등록 시각(서버 registered_at, ms). 서버 목록은 라벨순이라 등록 순서는 이 값으로만 안다. 형식 밖이면 null */
+  registeredAt: number | null;
 };
 
 /** 한 대상의 계정 목록. */
@@ -68,7 +70,13 @@ export async function getAccounts(target: ProductTargetRef | null): Promise<Targ
   for (const a of rows) {
     if (!isObj(a) || typeof a.label !== "string" || !ACCOUNT_LABEL.test(a.label)) continue;
     // 자격 등록 여부는 서버의 credential_configured 참일 때만 '등록됨'이다(형식 밖·없음은 미등록).
-    accounts.push({ ref: a.label, origin: target.origin, credentialConfigured: a.credential_configured === true });
+    const registeredAt = typeof a.registered_at === "string" ? Date.parse(a.registered_at) : Number.NaN;
+    accounts.push({
+      ref: a.label,
+      origin: target.origin,
+      credentialConfigured: a.credential_configured === true,
+      registeredAt: Number.isFinite(registeredAt) ? registeredAt : null,
+    });
   }
   return { accounts };
 }
