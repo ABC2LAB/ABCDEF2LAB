@@ -149,6 +149,46 @@ func TestExplorationEvidenceControlsE3Reuse(t *testing.T) {
 	}
 }
 
+func TestLearnedLoginCSRFSourceAuditBeforeReplay(t *testing.T) {
+	r, _, rec := learnedAccountTarget(t)
+	creds := map[string]string{"tester-a": credentialOf(r, rec.Target.ID, "tester-a")}
+	row := modelSucceededRow("diagnosis-1", "tester-a", "/login")
+	row.FieldSources = []learnedlogin.RowFieldSource{{Destination: "_csrf", SourceMethod: "GET", SourcePath: "/api/csrf",
+		SourceType: learnedlogin.SourceJSONField, SourceField: "csrfToken", SourceRef: "call_p/attempt_2", SourceStatus: 200}}
+	for name, valid := range map[string]bool{"audited source": true, "missing source": false} {
+		t.Run(name, func(t *testing.T) {
+			runs, job := learnedRunDir(t, []learnedlogin.Row{row})
+			ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
+			ll.setAudit(func(call, attempt string) (learnedlogin.AuditedSend, bool) {
+				if call == "call_p" && !valid {
+					return learnedlogin.AuditedSend{}, false
+				}
+				method, status := "POST", 302
+				if call == "call_p" {
+					method, status = "GET", 200
+				}
+				return learnedlogin.AuditedSend{CallRef: call, AttemptID: attempt, RunRef: "run-job1", ModelCall: true, Method: method,
+					Allowed: true, RequestWritten: true, ResponseReceived: true, ResponseComplete: true, StatusCode: status, AuditComplete: true}, true
+			})
+			fake := &fakeLearnedAccounts{result: authenticatedResult(), contrast: server.E2HTTPLoginContrastResult{Sent: true, Status: 401}}
+			ll.relogin(t.Context(), "tester-a", fake, fake)
+			want := learnedlogin.Reason("")
+			if !valid {
+				want = learnedlogin.ReasonTransportUnverified
+			}
+			if _, _, reason := ll.plan("tester-a"); reason != want {
+				t.Fatalf("발급 GET 감사 %q, want %q", reason, want)
+			}
+			if valid && (len(fake.requests) != 1 || fake.requests[0].Method.PrepPath() != "/api/csrf") {
+				t.Fatalf("출처 결속 뒤 E③ 재현 %v", fake.requests)
+			}
+			if !valid && (len(fake.requests) != 0 || len(fake.legacy) != 0) {
+				t.Fatal("감사 없는 CSRF 출처로 송신")
+			}
+		})
+	}
+}
+
 // e2AuditLookup은 실제 E② 실행이 감사 기록기에 쓴 결과 사건에서 시도를 찾는다: 보낸 모델 요청은 메서드·상태·송신·감사
 // 완료와 함께, 거부된 요청은 보내지 않음으로, 없는 참조는 찾지 못함으로 돌려준다.
 func TestE2AuditLookupReadsAuditedResults(t *testing.T) {

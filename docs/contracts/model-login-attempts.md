@@ -139,6 +139,8 @@
 | `identifier_field`·`password_field` | 아이디·비밀번호 칸 이름. JSON은 점 경로(`user.email`)로 남긴다 |
 | `other_fields` | 나머지 본문 칸 이름(32개·64바이트까지, 값 없음) |
 | `fields_from_response` | 비밀번호 칸 말고 값이 같은 회차에서 앞서 받은 대상 응답에 그대로 있던 칸 이름. CSRF 토큰처럼 로그인 화면에서 먼저 받아야 하는 칸을 배우는 데 쓴다 |
+| `field_sources` (선택) | 별도 GET 경로에서 실제 추출 위치까지 찾은 동적 칸. 항목은 `destination`, `source_method: GET`, `source_path`, `source_type: json_field\|html_hidden`, `source_field`, `source_ref`(원래 경계 순번 또는 E② 호출/시도), `source_status`. 토큰 값은 없다 |
+| `source_unresolved` (선택) | 값은 다른 경로의 응답에 있었지만 출처·계정 문맥·추출 위치를 하나로 결속하지 못한 경우 `true`. 이 행은 E③ 재현하지 않는다 |
 | `status` | 응답 상태. 응답이 없으면 0 |
 | `transport` | `sent`(응답 받음)·`not_sent`(보내기 전 거부)·`result_unknown`(보냈는지·응답을 모름) |
 | `refusal` | `not_sent`일 때 고정 사유(예: `login_attempts_exhausted`). 그 밖에는 빈 값 |
@@ -305,6 +307,8 @@
 | `session_names` | `["connect.sid"]`, `["auth_token"]` |
 | `session_sent_as` | `cookie`, `Authorization:Bearer ` |
 
+기존 v1 방법 객체의 JSON과 `method_sha256`은 그대로다. 별도 경로 발급이 정확히 학습된 경우에만 방법 객체 뒤에 `schema: jindo.learned-login-method/v2`와 `field_sources`를 더한다. 방법의 `field_sources`에는 발급 GET 경로·추출 형식·위치를 넣고, 회차별 `source_ref`와 `source_status`는 넣지 않는다. 출처 경로나 추출 위치가 달라지면 해시가 바뀌어 이전 `verified`가 새 방법에 적용되지 않는다. v2 방법은 나머지 칸 모두가 **한 번의 동일 GET 응답**에서 추출 가능할 때만 유효하다. 기존 저장 방법과 화면 API의 v2 읽기 지원은 ⑤-B 후속 저장 브랜치 통합 때 확인한다.
+
 #### 6-1-3. 계정 목록 API (`ProductAccount.login_method`)
 
 계정 목록·계정 변경 응답의 계정마다 `login_method` 객체를 **늘** 싣는다(배운 것이 없으면 `{"state":"none"}`).
@@ -345,6 +349,7 @@
   - 마지막 성공 행에서 참조가 빠졌거나 형식이 잘못됐으면 `learned_login_transport_unverified`로 막는다. 앞선 성공이나 로그인 설정으로 넘어가지 않는다.
   - 진단 단계 행: `transport_ref`는 `call_ref/attempt_id`다. 그 회차 E② 실행이 감사 기록기에 남긴 결과 사건(`Execution.Events`, `stage: result`)에서 같은 호출·시도를 찾아, 같은 회차(`run_ref`, 행과 사건 둘 다), 모델 호출(프로그램 목적·E③ 요청이 아님), 같은 메서드, 허용(`allowed`), 요청을 실제로 씀·응답을 끝까지 받음, 같은 상태 코드, 감사 완료가 모두 맞아야 한다. 하나라도 다르거나 사건이 없거나 감사 조회를 열 수 없으면 `learned_login_transport_unverified`이고, 그 계정은 로그인 설정으로도 넘어가지 않는다(§6-3). E② 결과 사건에는 경로·계정이 없으므로 경로·아이디 결속은 같은 회차 기록 행의 고정 칸 대조(위)로만 본다.
   - 탐색 단계 행: `transport_ref`는 탐색 경계 기록 순번(양의 십진수, 앞자리 0 없음)이어야 한다. 새 제품 회차는 별도 인계한 경계 기록·사적 관찰과 대조해 `exploration_observed`로 남긴다. E② 감사 완료·계정 결속·응답 본문 완료와 같은 보증 수준으로 표시하지 않는다. 인계 근거가 손상되거나 일치하지 않으면 막는다. 근거 파일이 없는 기존 회차는 `exploration_unaudited`를 유지한다(`exploration-login-evidence.md`).
+  - `field_sources`가 있으면 발급 GET의 `source_ref`도 별도로 확인한다. 탐색은 같은 경계 기록·사적 관찰의 승인 대상 GET·정확한 경로·상태·응답 수신을, 진단은 E②의 감사 완료된 모델 GET·상태·응답 완료를 확인한다. 진단 E② 결과 사건은 경로·계정을 기록하지 않아 그 부분은 보호된 판정기 행에 의존한다. 불일치하면 로그인 POST를 보내기 전에 `learned_login_transport_unverified`다.
 - 기록 파일은 회차 상태 디렉터리의 보호 파일(0600·실행 uid·링크 아님·읽는 동안 안 바뀜)만 읽는다. 파일이 없으면 배운 것이 없고, 보호 파일이 아니거나 읽지 못하는 줄(JSON 오류·뒤에 붙은 값·같은 키 중복·대소문자 별칭·잘못된 UTF-8·상한 초과)이 하나라도 있으면 기록 전체를 쓰지 않는다(`learned_login_record_invalid`). 손상된 갱신 행을 건너뛰면 그 시도의 이전 행이 최신 값으로 골라질 수 있기 때문이다. 이 파일은 서명 저널이 아니므로 기록의 `succeeded`만으로 실행 권한을 주지 않는다: 재현 요청은 아래 E② 허용을 따로 지나고, `verified`는 프로그램이 직접 대조를 세웠을 때만이다.
 
 **확정 단계 재사용 순서와 로그인 설정(9칸)**
@@ -367,9 +372,9 @@
 - 나머지 칸 값은 지어내지 않는다. `fields_from_response` 칸은 로그인 화면 응답의 HTML 입력 칸 값(같은 이름 값이 여럿이면 모두 같아야 함) 또는 JSON 응답의 같은 점 경로 문자열이다. 그 밖의 나머지 칸은 HTML 로그인 화면의 숨은 칸·제출 단추에 적힌 값만 쓴다(사람이 입력하는 칸·체크 칸 값은 모름). 값이 없거나 모호하면 보내지 않는다.
 - 다시 만들 수 없는 것: 질의가 있던 로그인(`query_keys` 있음, 값 미기록), 나머지 칸이 32개(판정기가 잘랐을 수 있음), JSON 칸 경로가 겹침(`a`와 `a.b`), 비밀번호 칸 없음, 메서드가 POST가 아님. 모두 보내지 않는다.
 
-**로그인 화면(CSRF·로그인 전 쿠키) 재수집**
-- 로그인 화면은 로그인 경로의 GET이다(§6 "로그인 화면을 먼저 받아"). 나머지 칸이 있거나 `session_source: continued`이면 받는다. 응답이 2xx HTML이면 비밀번호 칸이 있어야(로그인 화면) 칸 값을 꺼낸다. 2xx JSON이면 `fields_from_response`만 꺼낸다.
-- §3 기록에는 값이 나온 응답의 경로가 없다. 그래서 로그인 경로와 다른 경로가 발급하는 CSRF(예: `GET /api/csrf`), 헤더로 보내는 CSRF, 메타 태그만 있는 CSRF는 재현하지 않는다(`learned_login_prep_unavailable`·`learned_login_prep_field_missing`). 지원하려면 §3에 값 출처 경로 칸이 필요하다(§7).
+**로그인 준비(CSRF·로그인 전 쿠키) 재수집**
+- v1 방법은 로그인 경로의 GET을 유지한다. 나머지 칸이 있거나 `session_source: continued`이면 받는다. 응답이 2xx HTML이면 비밀번호 칸이 있어야(로그인 화면) 칸 값을 꺼낸다. 2xx JSON이면 `fields_from_response`만 꺼낸다.
+- v2 방법은 모델이 앞서 받은 **같은 origin의 승인 대상 GET 한 건**에서 JSON 문자열 필드 또는 HTML hidden input의 값을 정확히 하나로 찾고, 원래 GET 참조가 탐색 경계 또는 E②의 독립 송신 근거와 맞을 때만 쓴다. 현재 승인 범위에서 그 경로로 준비 GET을 한 번 더 보내 새 값을 추출하고, 등록 자격과 계정 전용 쿠키로 로그인 POST를 구성한다. GET·POST 모두 E②를 통과한다. 원래 GET의 질의 값, 추가 인증, 헤더 기반·meta 기반 토큰, 여러 준비 요청, 외부 origin은 지원하지 않는다. 출처를 못 정하면 로그인 경로를 추측해 재현하지 않는다(`source_unresolved`).
 - 로그인 화면의 Set-Cookie는 그 계정·그 다시 로그인 한 번만의 쿠키 문맥에 담아 로그인 요청에 싣는다. 브라우저가 싣지 않을 쿠키(경로가 로그인 경로를 덮지 않음, Domain이 대상 호스트를 덮지 않음, https가 아닌 origin의 Secure)와 만료·삭제 쿠키는 빼고, 한 응답이 같은 이름을 다른 값으로 둘 이상 주면 그 이름은 쓰지 않는다. 같은 키가 둘인 JSON 응답(로그인 화면·로그인 응답)은 값을 꺼내지 않는다. 다른 계정·예전 시도의 쿠키·CSRF 값은 쓰지 않는다.
 
 **로그인 응답 판정과 세션**
@@ -440,6 +445,6 @@
 - 탐색 단계 로그인은 모델이 브라우저(MCP)에서 직접 한다(절대규칙 1). 브라우저가 폼을 채워 보낸 요청도 경계가 같은 모양으로 보므로 같은 규칙을 쓴다. 브라우저가 받은 세션 쿠키를 뒤 요청과 대조하는 것도 같다.
 - 로그인 설정 9칸을 서버가 그만 받는 시점은 따로 정한다. 모델 로그인 PR(최민준)과 E③ 재사용 PR(이동찬)이 둘 다 들어간 뒤 한 PR에서 그만 받는다. E③ 재사용 PR 뒤에는 확정 단계가 배운 방법을 먼저 쓰고, 배운 방법이 없는 계정만 지금 로그인 설정으로 다시 로그인한다(§6-2).
 - 제품 탐색 단계의 모델 로그인 성공은 별도 경계 근거가 있으면 `exploration_observed`, 파일이 없는 기존 회차이면 `exploration_unaudited`로 남긴다(§6-2, `exploration-login-evidence.md`). 기존 회차의 필수 대조 전환과 계정·응답 완료 근거 확장은 팀 결정 대기다.
-- §3에 `fields_from_response` 값이 나온 응답 경로 칸이 없어, 로그인 경로와 다른 경로가 발급하는 CSRF는 재현하지 않는다. 지원하려면 판정기가 그 경로(질의 값 없음)를 남기는 칸을 계약에 더해야 한다(§6-2).
+- 별도 CSRF 경로는 v2 `field_sources`가 있는 경우에만 재현한다. 헤더·meta·여러 준비 요청·추가 인증 및 모호한 출처는 여전히 지원하지 않는다. ⑤-B 저장 브랜치의 v2 방법 보존·상태 표시 호환성은 병합 전 별도 확인한다.
 - 9칸 폐지 PR은 결속 조건("대상에 로그인 방식이 있어야 계정 결속", §0)과 확정 단계 다시 로그인 연결 조건(지금은 처음 인증 준비로 인증된 계정이 있을 때만 다시 로그인 경로가 열림)을 같이 바꾼다.
   - 화면 정리(새 점검 '로그인' 칸, `TargetLoginForm`, 진행 화면 `login_method_missing` 경고)는 그 PR 순서에 맞춘다(경준님).

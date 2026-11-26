@@ -99,40 +99,54 @@ var ErrConfig = errors.New("loginattempt: invalid config")
 
 // Row는 시도 한 행이다(§3). 비밀번호·세션 값·응답 본문은 넣지 않는다.
 type Row struct {
-	Schema               string   `json:"schema"`
-	AttemptRef           string   `json:"attempt_ref"`
-	RunRef               string   `json:"run_ref"`
-	Stage                string   `json:"stage"`
-	Actor                string   `json:"actor"`
-	TransportRef         string   `json:"transport_ref"`
-	At                   string   `json:"at"`
-	AccountLabel         string   `json:"account_label"`
-	Identifier           string   `json:"identifier"`
-	PasswordRegistered   bool     `json:"password_registered"`
-	Method               string   `json:"method"`
-	Path                 string   `json:"path"`
-	QueryKeys            []string `json:"query_keys"`
-	Format               string   `json:"format"`
-	WriteException       bool     `json:"write_exception"`
-	IdentifierField      string   `json:"identifier_field"`
-	PasswordField        string   `json:"password_field"`
-	OtherFields          []string `json:"other_fields"`
-	FieldsFromResponse   []string `json:"fields_from_response"`
-	Status               int      `json:"status"`
-	Transport            string   `json:"transport"`
-	Refusal              string   `json:"refusal"`
-	RedirectPath         string   `json:"redirect_path"`
-	LoginFormReturned    bool     `json:"login_form_returned"`
-	SessionSource        string   `json:"session_source"`
-	SessionNames         []string `json:"session_names"`
-	SessionSeenAnonymous []string `json:"session_seen_anonymous"`
-	SessionSentAs        string   `json:"session_sent_as"`
-	Followup             string   `json:"followup"`
-	ContrastSource       string   `json:"contrast_source"`
-	ContrastProbes       int      `json:"contrast_probes"`
-	SessionEnded         bool     `json:"session_ended"`
-	Outcome              string   `json:"outcome"`
-	ConsecutiveFailures  int      `json:"consecutive_failures"`
+	Schema               string           `json:"schema"`
+	AttemptRef           string           `json:"attempt_ref"`
+	RunRef               string           `json:"run_ref"`
+	Stage                string           `json:"stage"`
+	Actor                string           `json:"actor"`
+	TransportRef         string           `json:"transport_ref"`
+	At                   string           `json:"at"`
+	AccountLabel         string           `json:"account_label"`
+	Identifier           string           `json:"identifier"`
+	PasswordRegistered   bool             `json:"password_registered"`
+	Method               string           `json:"method"`
+	Path                 string           `json:"path"`
+	QueryKeys            []string         `json:"query_keys"`
+	Format               string           `json:"format"`
+	WriteException       bool             `json:"write_exception"`
+	IdentifierField      string           `json:"identifier_field"`
+	PasswordField        string           `json:"password_field"`
+	OtherFields          []string         `json:"other_fields"`
+	FieldsFromResponse   []string         `json:"fields_from_response"`
+	FieldSources         []RowFieldSource `json:"field_sources,omitempty"`
+	SourceUnresolved     bool             `json:"source_unresolved,omitempty"`
+	Status               int              `json:"status"`
+	Transport            string           `json:"transport"`
+	Refusal              string           `json:"refusal"`
+	RedirectPath         string           `json:"redirect_path"`
+	LoginFormReturned    bool             `json:"login_form_returned"`
+	SessionSource        string           `json:"session_source"`
+	SessionNames         []string         `json:"session_names"`
+	SessionSeenAnonymous []string         `json:"session_seen_anonymous"`
+	SessionSentAs        string           `json:"session_sent_as"`
+	Followup             string           `json:"followup"`
+	ContrastSource       string           `json:"contrast_source"`
+	ContrastProbes       int              `json:"contrast_probes"`
+	SessionEnded         bool             `json:"session_ended"`
+	Outcome              string           `json:"outcome"`
+	ConsecutiveFailures  int              `json:"consecutive_failures"`
+}
+
+// RowFieldSource records where a dynamic login field was observed, never its
+// value. SourceRef identifies a separate GET observation in this run.
+type RowFieldSource struct {
+	Destination  string `json:"destination"`
+	SourceMethod string `json:"source_method"`
+	SourcePath   string `json:"source_path"`
+	SourceType   string `json:"source_type"`
+	SourceField  string `json:"source_field"`
+	SourceRef    string `json:"source_ref"`
+	SourceStatus int    `json:"source_status"`
 }
 
 // Config는 회차·단계 하나의 판정기 설정이다.
@@ -221,7 +235,8 @@ type Tracker struct {
 	anon           map[string][]observation
 	anonCookies    map[string]bool
 	sessionHeaders map[string]bool
-	recent         [][]byte
+	recent         []recentBody
+	recentSources  []sourceResponse
 	pending        []Probe
 	obsSeq         int
 	n              int
@@ -278,6 +293,13 @@ func (t *Tracker) Prepare(req Request, writeAllowed bool) Plan {
 		Format: cand.Format, IdentifierField: cand.IdentifierField, PasswordField: cand.PasswordField,
 		OtherFields: nonNil(cand.OtherFields), FieldsFromResponse: nonNil(cand.FieldsFromResponse),
 		SessionNames: []string{}, SessionSeenAnonymous: []string{}, Followup: FollowupNone}
+	for _, name := range cand.FieldsFromResponse {
+		if source, ok := t.fieldSourceLocked(req, name, cand.otherValues[name]); ok {
+			a.row.FieldSources = append(a.row.FieldSources, source)
+		} else if t.responseFromOtherPathLocked(cand.otherValues[name], cleanPath(req.Path)) {
+			a.row.SourceUnresolved = true
+		}
+	}
 	t.attempts = append(t.attempts, a)
 	if t.cfg.HistoryUnavailable {
 		t.refuseLocked(a, RefusalHistoryUnavailable)
@@ -336,6 +358,13 @@ func (t *Tracker) ResetContext(context string) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	kept := t.recentSources[:0]
+	for _, source := range t.recentSources {
+		if source.context != context {
+			kept = append(kept, source)
+		}
+	}
+	t.recentSources = kept
 	for _, a := range t.attempts {
 		if a.context != context || a.detached || a.seeded {
 			continue
@@ -456,7 +485,7 @@ func (t *Tracker) Complete(p Plan, transportRef string, req Request, resp Respon
 		}
 	}
 	a.tokens = tokens
-	t.rememberLocked(resp.Body)
+	t.rememberLocked(req.Path, resp.Body)
 	failed := resp.Status >= 400 || a.row.SessionSource == SourceNone || a.row.LoginFormReturned
 	if failed {
 		t.setOutcomeLocked(a, OutcomeFailed)
@@ -596,14 +625,19 @@ func carriesSession(a *attempt, h http.Header) bool {
 	return false
 }
 
-func (t *Tracker) rememberLocked(body []byte) {
+type recentBody struct {
+	path string
+	body []byte
+}
+
+func (t *Tracker) rememberLocked(requestPath string, body []byte) {
 	if len(body) == 0 {
 		return
 	}
 	if len(body) > maxRecentBodyBytes {
 		body = body[:maxRecentBodyBytes]
 	}
-	t.recent = append(t.recent, bytes.Clone(body))
+	t.recent = append(t.recent, recentBody{path: cleanPath(requestPath), body: bytes.Clone(body)})
 	if len(t.recent) > maxRecentBodies {
 		t.recent = t.recent[len(t.recent)-maxRecentBodies:]
 	}
@@ -611,7 +645,16 @@ func (t *Tracker) rememberLocked(body []byte) {
 
 func (t *Tracker) fromResponseLocked(value string) bool {
 	for _, b := range t.recent {
-		if bytes.Contains(b, []byte(value)) {
+		if bytes.Contains(b.body, []byte(value)) {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *Tracker) responseFromOtherPathLocked(value, loginPath string) bool {
+	for _, b := range t.recent {
+		if b.path != loginPath && bytes.Contains(b.body, []byte(value)) {
 			return true
 		}
 	}
@@ -670,7 +713,10 @@ func (t *Tracker) Observe(req Request, resp Response) {
 }
 
 func (t *Tracker) observeLocked(req Request, resp Response, probe bool) {
-	t.rememberLocked(resp.Body)
+	if !probe {
+		t.rememberSourceLocked(req, resp)
+	}
+	t.rememberLocked(req.Path, resp.Body)
 	t.obsSeq++
 	p := cleanPath(req.Path)
 	o := observation{key: urlKey(p, req.RawQuery), path: p, status: resp.Status, loc: redirectPath(t.cfg.Origin, p, resp), seq: t.obsSeq, probe: probe}

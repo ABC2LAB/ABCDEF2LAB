@@ -64,6 +64,7 @@ type Candidate struct {
 	FieldsFromResponse []string
 	AccountLabel       string
 	PasswordRegistered bool
+	otherValues        map[string]string
 	// Pair는 아이디 칸과 비밀번호 칸 값이 같은 등록 계정 하나의 아이디·비밀번호와 정확히 같다는 뜻이다(§2-2 예외 조건).
 	Pair     bool
 	password string
@@ -121,6 +122,10 @@ func Classify(method, contentType string, body []byte, accounts []Account, fromR
 		if i == password || i == identifier {
 			continue
 		}
+		if c.otherValues == nil {
+			c.otherValues = map[string]string{}
+		}
+		c.otherValues[f.name] = f.value
 		c.OtherFields = appendName(c.OtherFields, f.name)
 		if responded[i] {
 			c.FieldsFromResponse = appendName(c.FieldsFromResponse, f.name)

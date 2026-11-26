@@ -49,6 +49,11 @@ func (ll *productLearnedLogin) verifySelection(label string, sel learnedlogin.Se
 		// exploration_unaudited status until the team decides migration policy.
 		provenance, reason = learnedlogin.VerifyTransport(sel.Row, ll.runRef, audit)
 	}
+	if reason == "" {
+		if sourceReason := learnedlogin.VerifyFieldSources(sel.Row, ll.runRef, evidence, audit); sourceReason != "" {
+			reason = sourceReason
+		}
+	}
 	ll.mu.Lock()
 	defer ll.mu.Unlock()
 	if ll.provenance == nil {

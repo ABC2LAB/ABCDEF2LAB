@@ -38,10 +38,21 @@ func (Jar) GoString() string { return "learnedlogin.Jar[protected]" }
 // 경로를 덮지 않거나, Domain이 대상 호스트를 덮지 않거나, https가 아닌 origin의 Secure 쿠키. 만료·삭제 쿠키는 지운다. 한
 // 응답이 같은 이름을 다른 값으로 둘 이상 주면 어느 것을 쓸지 모르므로 그 이름은 담지 않는다(Codex 2차 리뷰).
 func (j Jar) Absorb(resp Response, loginPath string, origin *url.URL, now time.Time) {
+	j.AbsorbForLogin(resp, loginPath, loginPath, origin, now)
+}
+
+// AbsorbForLogin keeps only cookies the issuance response would send to the
+// distinct login path. A cookie without Path uses the issuance request's
+// default path, not the login path's default path.
+func (j Jar) AbsorbForLogin(resp Response, responsePath, loginPath string, origin *url.URL, now time.Time) {
 	seen := map[string]string{}
 	conflict := map[string]bool{}
 	for _, c := range (&http.Response{Header: resp.Header}).Cookies() {
-		if !validCookieName(c.Name) || c.Path != "" && !cookiePathMatch(loginPath, c.Path) || !cookieDomainMatch(origin, c.Domain) ||
+		cookiePath := c.Path
+		if cookiePath == "" || cookiePath[0] != '/' {
+			cookiePath = defaultCookiePath(responsePath)
+		}
+		if !validCookieName(c.Name) || !cookiePathMatch(loginPath, cookiePath) || !cookieDomainMatch(origin, c.Domain) ||
 			c.Secure && (origin == nil || origin.Scheme != "https") {
 			continue
 		}
@@ -191,6 +202,16 @@ func (s Screen) Values(m Method) (map[string]string, Reason) {
 	if len(m.OtherFields) == 0 {
 		return out, ""
 	}
+	if len(m.FieldSources) > 0 {
+		for _, source := range m.FieldSources {
+			value, reason := s.SourceValue(source)
+			if reason != "" {
+				return nil, reason
+			}
+			out[source.Destination] = value
+		}
+		return out, ""
+	}
 	if s.html && !s.LoginForm {
 		return nil, ReasonPrepUnavailable
 	}
@@ -214,6 +235,68 @@ func (s Screen) Values(m Method) (map[string]string, Reason) {
 		out[name] = value
 	}
 	return out, ""
+}
+
+// SourceValue extracts a V2 field from its recorded location, without
+// requiring a password form on a separate issuance endpoint.
+func (s Screen) SourceValue(source FieldSource) (string, Reason) {
+	switch source.SourceType {
+	case SourceJSONField:
+		if s.json == nil {
+			return "", ReasonPrepFieldMissing
+		}
+		return jsonValue(s.json, source.SourceField)
+	case SourceHTMLHidden:
+		if !s.html {
+			return "", ReasonPrepFieldMissing
+		}
+		inputs := s.inputs[source.SourceField]
+		if len(inputs) != 1 || inputs[0].kind != "hidden" || !inputs[0].hasValue || !prepValueOK(inputs[0].value) || inputs[0].value == "" {
+			return "", ReasonPrepFieldMissing
+		}
+		return inputs[0].value, ""
+	}
+	return "", ReasonPrepFieldMissing
+}
+
+// FindValueSource identifies one exact HTML hidden input or JSON string leaf.
+// It rejects identical values in multiple locations; a body substring alone
+// cannot establish an issuance endpoint or extraction method.
+func (s Screen) FindValueSource(value string) (sourceType, field string, ok bool) {
+	if !prepValueOK(value) || value == "" {
+		return "", "", false
+	}
+	var count int
+	if s.html {
+		for name, inputs := range s.inputs {
+			for _, input := range inputs {
+				if input.kind == "hidden" && input.hasValue && input.value == value {
+					count++
+					sourceType, field = SourceHTMLHidden, name
+				}
+			}
+		}
+	} else if s.json != nil {
+		var visit func(any, string)
+		visit = func(node any, path string) {
+			if object, yes := node.(map[string]any); yes {
+				for key, child := range object {
+					next := key
+					if path != "" {
+						next = path + "." + key
+					}
+					visit(child, next)
+				}
+				return
+			}
+			if text, yes := node.(string); yes && text == value && validJSONPath(path) {
+				count++
+				sourceType, field = SourceJSONField, path
+			}
+		}
+		visit(s.json, "")
+	}
+	return sourceType, field, count == 1
 }
 
 func (s Screen) htmlValue(name string, response bool) (string, Reason) {

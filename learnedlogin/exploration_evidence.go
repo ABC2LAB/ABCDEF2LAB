@@ -57,7 +57,7 @@ func (e ExplorationEvidence) valid() bool {
 	}
 	seen := map[uint64]bool{}
 	for _, send := range e.Sends {
-		if send.Seq == 0 || seen[send.Seq] || send.Method != "POST" || !validPath(send.Path) || send.Status < 100 || send.Status > 599 {
+		if send.Seq == 0 || seen[send.Seq] || (send.Method != "POST" && send.Method != "GET") || !validPath(send.Path) || send.Status < 100 || send.Status > 599 {
 			return false
 		}
 		seen[send.Seq] = true

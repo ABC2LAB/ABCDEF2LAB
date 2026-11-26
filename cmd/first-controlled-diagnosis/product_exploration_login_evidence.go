@@ -50,7 +50,33 @@ func buildExplorationLoginEvidence(b exploration.Binding, digest string, rows []
 		}
 		bySeq[rec.Seq] = rec
 	}
-	seen := map[uint64]loginattempt.Row{}
+	seen := map[uint64]learnedlogin.ExplorationSend{}
+	add := func(ref, method, path string, status int) error {
+		seq, err := strconv.ParseUint(ref, 10, 64)
+		if err != nil || seq == 0 || strconv.FormatUint(seq, 10) != ref {
+			return errExplorationLoginEvidence
+		}
+		if previous, duplicated := seen[seq]; duplicated {
+			if previous.Method != method || previous.Path != path || previous.Status != status {
+				return errExplorationLoginEvidence
+			}
+			return nil
+		}
+		rec, ok := bySeq[seq]
+		if !ok || rec.Decision != "forwarded" || rec.Dest != exploreboundary.DestApproved || rec.Method != method || rec.Status != status {
+			return errExplorationLoginEvidence
+		}
+		obs, err := read(seq)
+		if err != nil || obs.Binding != flow || obs.Seq != seq || obs.Method != method || obs.Path != path || obs.Status != status ||
+			!obs.Forwarded || !obs.ResponseReceived || obs.Transport != "http" {
+			return errExplorationLoginEvidence
+		}
+		send := learnedlogin.ExplorationSend{Seq: seq, Method: obs.Method, Path: obs.Path, Status: obs.Status,
+			BoundaryForwarded: true, ApprovedTarget: true, ObservationForwarded: true, ResponseReceived: true}
+		seen[seq] = send
+		e.Sends = append(e.Sends, send)
+		return nil
+	}
 	for _, row := range rows {
 		if row.Stage != loginattempt.StageExploration || row.RunRef != b.RunRef {
 			return learnedlogin.ExplorationEvidence{}, errExplorationLoginEvidence
@@ -58,28 +84,15 @@ func buildExplorationLoginEvidence(b exploration.Binding, digest string, rows []
 		if row.Transport != loginattempt.TransportSent {
 			continue
 		}
-		seq, err := strconv.ParseUint(row.TransportRef, 10, 64)
-		if err != nil || seq == 0 || strconv.FormatUint(seq, 10) != row.TransportRef {
+		if add(row.TransportRef, row.Method, row.Path, row.Status) != nil {
 			return learnedlogin.ExplorationEvidence{}, errExplorationLoginEvidence
 		}
-		if previous, duplicated := seen[seq]; duplicated {
-			if previous.Method != row.Method || previous.Path != row.Path || previous.Status != row.Status || previous.RunRef != row.RunRef {
+		for _, source := range row.FieldSources {
+			if source.SourceMethod != "GET" || source.SourceStatus < 200 || source.SourceStatus > 299 ||
+				add(source.SourceRef, source.SourceMethod, source.SourcePath, source.SourceStatus) != nil {
 				return learnedlogin.ExplorationEvidence{}, errExplorationLoginEvidence
 			}
-			continue
 		}
-		seen[seq] = row
-		rec, ok := bySeq[seq]
-		if !ok || rec.Decision != "forwarded" || rec.Dest != exploreboundary.DestApproved || rec.Method != row.Method || rec.Status != row.Status {
-			return learnedlogin.ExplorationEvidence{}, errExplorationLoginEvidence
-		}
-		obs, err := read(seq)
-		if err != nil || obs.Binding != flow || obs.Seq != seq || obs.Method != row.Method || obs.Path != row.Path || obs.Status != row.Status ||
-			!obs.Forwarded || !obs.ResponseReceived || obs.Transport != "http" {
-			return learnedlogin.ExplorationEvidence{}, errExplorationLoginEvidence
-		}
-		e.Sends = append(e.Sends, learnedlogin.ExplorationSend{Seq: seq, Method: obs.Method, Path: obs.Path, Status: obs.Status,
-			BoundaryForwarded: true, ApprovedTarget: true, ObservationForwarded: true, ResponseReceived: true})
 	}
 	return e, nil
 }

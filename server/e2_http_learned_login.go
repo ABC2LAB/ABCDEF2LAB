@@ -139,7 +139,7 @@ func e2HTTPLearnedLogin(ctx context.Context, execution *e2proxy.Execution, dir, 
 		return out, nil
 	}
 	// 모델 단계 진단 쓰기 정책과 같은 위험 단어로 거른다(탈퇴·해지·삭제 같은 쓰기를 로그인으로 다시 보내지 않음).
-	if learnedRiskyPath(http.MethodPost, m.Path) || m.NeedsPrep() && learnedRiskyPath(http.MethodGet, m.Path) {
+	if learnedRiskyPath(http.MethodPost, m.Path) || m.NeedsPrep() && learnedRiskyPath(http.MethodGet, m.PrepPath()) {
 		out.Reason = learnedlogin.ReasonScopeDenied
 		return out, nil
 	}
@@ -193,11 +193,12 @@ func e2HTTPLearnedLogin(ctx context.Context, execution *e2proxy.Execution, dir, 
 	jar := learnedlogin.Jar{}
 	values := map[string]string{}
 	if m.NeedsPrep() {
-		// 로그인 화면은 로그인 경로의 GET이다(§6: 로그인 화면을 먼저 받아 같은 이름의 값을 쓴다). 기록에 값의 출처 경로가 없어
-		// 다른 경로에서 발급하는 CSRF는 재현하지 않는다(ReasonPrepUnavailable).
+		// V1은 로그인 화면 GET, V2는 출처가 결속된 별도 GET 한 건이다.
+		// 둘 다 현재 E② 승인 범위와 위험 경로 검사를 통과해야 한다.
 		var screen learnedlogin.Screen
 		reason := learnedlogin.Reason("")
-		prep, buildErr := http.NewRequestWithContext(ctx, http.MethodGet, origin+m.Path, nil)
+		prepPath := m.PrepPath()
+		prep, buildErr := http.NewRequestWithContext(ctx, http.MethodGet, origin+prepPath, nil)
 		if buildErr != nil {
 			out.Reason = learnedlogin.ReasonPrepUnavailable
 			return out, nil
@@ -211,10 +212,10 @@ func e2HTTPLearnedLogin(ctx context.Context, execution *e2proxy.Execution, dir, 
 			if values, reason = screen.Values(m); reason != "" {
 				return nil, errors.New("login screen values unavailable")
 			}
-			jar.Absorb(copied, m.Path, originURL, time.Now())
+			jar.AbsorbForLogin(copied, prepPath, m.Path, originURL, time.Now())
 			if m.SessionSource == learnedlogin.SourceContinued {
 				// 로그인 전부터 이어질 세션 쿠키도 모든 경로에 실리는 쿠키여야 한다(확정 단계 다른 경로 요청에 싣는다).
-				if !learnedlogin.SessionCookieScopeOK(copied, m.Path, m.SessionNames) {
+				if !learnedlogin.SessionCookieScopeOK(copied, prepPath, m.SessionNames) {
 					reason = learnedlogin.ReasonFormatUnsupported
 					return nil, errors.New("pre-login session cookie path too narrow")
 				}
@@ -245,7 +246,7 @@ func e2HTTPLearnedLogin(ctx context.Context, execution *e2proxy.Execution, dir, 
 			out.Reason = e2HTTPLearnedReason(receipt.Reason)
 			return out, nil
 		}
-		out.LoginPaths = learnedlogin.LoginPaths(m, m.Path, screen)
+		out.LoginPaths = learnedlogin.LoginPaths(m, prepPath, screen)
 	}
 	built, reason := learnedlogin.Build(m, cred, values)
 	if reason != "" {
