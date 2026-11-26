@@ -34,7 +34,8 @@ func (a *separateCSRFApp) serve(w http.ResponseWriter, r *http.Request) {
 		pre, token := fmt.Sprintf("pre-%04d", a.n), fmt.Sprintf("token-%08d", a.n)
 		a.issued[pre] = token
 		a.mu.Unlock()
-		http.SetCookie(w, &http.Cookie{Name: "pre", Value: pre, Path: "/"})
+		// No Path: the browser default for /allowed/csrf is /allowed.
+		http.SetCookie(w, &http.Cookie{Name: "pre", Value: pre})
 		if a.html {
 			w.Header().Set("Content-Type", "text/html")
 			fmt.Fprintf(w, `<form><input type="hidden" name="csrfKey" value="%s"></form>`, token)
@@ -102,6 +103,14 @@ func TestE2HTTPFactorySeparatePathCSRF(t *testing.T) {
 			if session, err := lease.AccountBindings().BoundSession(lease.Execution.Snapshot().Scope.RunRef, "tester-a", result.BindingRef); err != nil ||
 				!strings.Contains(session.Get("Cookie"), "sid=new-session-value-12345678") {
 				t.Fatalf("새 세션 %v %v", session, err)
+			}
+			clock.Advance(minSessionRefreshInterval)
+			second := learned.LearnedRelogin(ctx, E2HTTPLearnedLoginRequest{Label: "tester-a", Method: separateCSRFMethod(html), MaxFailures: 3})
+			app.mu.Lock()
+			issued, pending := app.n, len(app.issued)
+			app.mu.Unlock()
+			if second.Result != E2HTTPAuthAuthenticated || second.Requests != 2 || issued != 2 || pending != 0 {
+				t.Fatalf("새 토큰 재발급·일회성 소비 실패: result=%s requests=%d issued=%d pending=%d", second.Result, second.Requests, issued, pending)
 			}
 		})
 	}
