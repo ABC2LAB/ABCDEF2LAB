@@ -149,6 +149,11 @@ func isPasswordCandidate(f field, accounts []Account) bool {
 			}
 		}
 	}
+	// 이름 규칙 후보는 값이 든 문자열 칸만이다. 로그인 폼의 rememberPassword=on·showPassword=false 같은 켜고 끄는 칸까지
+	// 후보로 세면 후보가 둘이 돼 로그인으로 못 가린다(#963 재상 봇 P3).
+	if !f.isText || switchValue(f.value) {
+		return false
+	}
 	if has(passwordNames, strings.ToLower(f.name)) {
 		return true
 	}
@@ -161,6 +166,11 @@ func isPasswordCandidate(f field, accounts []Account) bool {
 	}
 	return false
 }
+
+// switchValues는 켜고 끄는 칸의 값이다. 비밀번호 값으로 보지 않는다.
+var switchValues = []string{"", "on", "off", "true", "false", "yes", "no", "1", "0"}
+
+func switchValue(v string) bool { return has(switchValues, strings.ToLower(strings.TrimSpace(v))) }
 
 // pickIdentifier는 §2-1의 세 규칙을 차례로 보고 처음 맞는 칸을 고른다. 규칙이 먼저고, 같은 규칙 안에서는 칸 순서다.
 func pickIdentifier(fields []field, password int, responded map[int]bool, accounts []Account) int {

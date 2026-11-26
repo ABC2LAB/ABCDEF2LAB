@@ -33,6 +33,9 @@ func TestClassifyBodyLoginShapes(t *testing.T) {
 		"bad escape":            {"application/x-www-form-urlencoded", "user=%zz&password=x", false, "", "", "", false, ""},
 		"id full name":          {"application/json", `{"id":"user2","pwd":"bravo-pass-2"}`, true, "id", "pwd", "tester-b", true, FormatJSON},
 		"id end piece ignored":  {"application/json", `{"csrf_id":"zzz","pass":"x"}`, true, "", "pass", "", false, FormatJSON},
+		"remember switch":       {"application/x-www-form-urlencoded", "email=user1%40owned.test&password=alpha-pass-1&rememberPassword=on", true, "email", "password", "tester-a", true, FormatForm},
+		"json show switch":      {"application/json", `{"username":"user2","password":"bravo-pass-2","showPassword":false}`, true, "username", "password", "tester-b", true, FormatJSON},
+		"empty password":        {"application/x-www-form-urlencoded", "username=user2&password=", false, "", "", "", false, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			c, ok := Classify("POST", tc.ct, []byte(tc.body), testAccounts, nil)
