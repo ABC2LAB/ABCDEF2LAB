@@ -221,6 +221,17 @@ describe("renderedCopyText — 그려진 상자 복사", () => {
     const out = renderedCopyText(box("<pre><code>GET / HTTP/1.1\nCookie: s=synthetic-copy-cookie\nX: y</code></pre>"));
     expect(out.split("\n")).toEqual(["GET / HTTP/1.1", `Cookie: s=${REDACTED}`, "X: y"]);
   });
+  // #975 이동찬 P2: 하위 목록이 있는 목록 칸 — 하위 목록 앞의 인라인 글(서식으로 나뉜 키와 값)을 한 덩어리로 가린다
+  it("하위 목록이 있는 목록 칸도 그 앞 글을 한 덩어리로 가리고, 하위 목록은 따로 본다", () => {
+    const out = renderedCopyText(
+      box(
+        "<ul><li><strong>pass</strong>word=synthetic-nested-secret<ul><li>token=synthetic-child-secret</li><li>하위 항목</li></ul></li></ul>",
+      ),
+    );
+    expect(out).not.toContain("synthetic-nested-secret");
+    expect(out).not.toContain("synthetic-child-secret");
+    expect(out.split("\n")).toEqual([`password=${REDACTED}`, `token=${REDACTED}`, "하위 항목"]);
+  });
   it("목록 칸 안의 문단은 문단 단위로, 숨길 것 없는 글은 그대로", () => {
     const out = renderedCopyText(
       box("<h2>재현 요약</h2><ul><li><p>계정 B로 주문 조회</p></li><li>token=synthetic-copy-li</li></ul>"),

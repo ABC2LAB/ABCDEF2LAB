@@ -181,6 +181,22 @@ it.each(
   expect(writeText.mock.calls[0][0]).not.toContain("&#");
 });
 
+// #975 이동찬 P2: 실제 Markdown 부품이 그린 중첩 목록에서도 복사 가림이 빠지지 않는다
+it("상세 보고 복사: 하위 목록이 있는 항목의 서식으로 나뉜 키 · 값도 가린다(화면엔 보임)", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+  const report = "- **pass**word=synthetic-nested-report\n  - 하위 항목 token=synthetic-nested-child\n- 다음 항목";
+  render(<DiagnosticEntrySections task="42" entry={{ ...fixture(), report }} onReload={vi.fn()} />);
+  const card = screen.getByRole("region", { name: "상세 보고" });
+  expect(card).toHaveTextContent("synthetic-nested-report");
+  expect(card).toHaveTextContent("synthetic-nested-child");
+  fireEvent.click(within(card).getByRole("button", { name: "복사" }));
+  await within(card).findByText("상세 보고를 복사했습니다.");
+  const text = writeText.mock.calls[0][0] as string;
+  expect(text).not.toMatch(/synthetic-nested-report|synthetic-nested-child/);
+  expect(text).toContain("다음 항목");
+});
+
 it.each(
   MARKUP_HIDDEN_SECRETS,
 )("'PoC 복사'는 응답 증거의 같은 모양도 클립보드에 남기지 않는다 — %s (#709 리뷰, #975)", async (_, evidence, secret) => {

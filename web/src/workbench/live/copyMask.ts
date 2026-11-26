@@ -240,45 +240,73 @@ function maskAcrossBreaks(text: string): string | null {
 }
 
 /**
- * 줄을 이어 붙여 한 덩어리로 보이는 블록(Markdown 이 그리는 문단 · 제목 · 목록 칸 · 표 칸). 이 안에서 서식 · 엔티티 줄바꿈으로
- * 갈린 키와 값도 한 덩어리로 보고 가린다(예전 화면 가림 remarkMaskSecrets 의 블록 규칙과 같다, #677 · #709 리뷰).
+ * 블록(문단 · 제목 · 목록 칸 · 표 칸 · 목록 · 표 · 코드 상자 …). 블록 안에서 다음 블록을 만나기 전까지의 인라인 글(텍스트 · 서식 ·
+ * 대체 글)은 한 덩어리로 모아 가린다 — 서식 · 엔티티 줄바꿈으로 갈린 키와 값도 같은 덩어리로 본다(예전 화면 가림 remarkMaskSecrets 의
+ * 블록 규칙과 같다, #677 · #709 리뷰). 하위 목록이 있는 목록 칸도 그 앞 글을 모은 뒤 하위 목록을 따로 본다(#975 이동찬 P2).
  */
-const JOIN_BLOCKS = new Set(["P", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "DT", "DD", "TD", "TH"]);
-/** 안에 이런 블록이 있으면 그 블록 단위로 내려간다(목록 칸 안의 문단 등). */
-const BLOCK_TAGS = new Set([...JOIN_BLOCKS, "PRE", "TABLE", "UL", "OL", "DL", "BLOCKQUOTE", "DIV", "SECTION"]);
+const BLOCK_TAGS = new Set([
+  "P",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "LI",
+  "DT",
+  "DD",
+  "UL",
+  "OL",
+  "DL",
+  "BLOCKQUOTE",
+  "DIV",
+  "SECTION",
+  "TABLE",
+  "THEAD",
+  "TBODY",
+  "TFOOT",
+  "TR",
+  "PRE",
+  "HR",
+]);
 const TEXT_NODE = 3;
 
-/** 블록 하나: 줄바꿈을 이어 붙여 가릴 게 있으면 이어 붙인 채 가린 글, 없으면 줄 단위 가림(maskForCopy). */
+/** 인라인 글 한 덩어리: 줄바꿈을 이어 붙여 가릴 게 있으면 이어 붙인 채 가린 글, 없으면 줄 단위 가림(maskForCopy). */
 function blockCopy(text: string): string {
   return maskForCopy(maskAcrossBreaks(text) ?? text);
 }
 
 function collectCopy(el: Element, out: string[]): void {
+  let inline = "";
+  const flush = () => {
+    if (inline.trim()) out.push(blockCopy(inline));
+    inline = "";
+  };
   for (const node of Array.from(el.childNodes)) {
     if (node.nodeType === TEXT_NODE) {
-      const t = node.textContent ?? "";
-      if (t.trim()) out.push(maskForCopy(t));
+      inline += node.textContent ?? "";
       continue;
     }
     if (!(node instanceof Element)) continue;
     const tag = node.tagName;
+    if (!BLOCK_TAGS.has(tag)) {
+      // 인라인 요소(강조 · 코드 · 링크 글 · 이미지 대체 글): 같은 덩어리에 이어 붙인다
+      inline += node.textContent ?? "";
+      continue;
+    }
+    flush();
     if (tag === "TR") {
       // 표 한 줄: 칸을 탭으로 갈라 한 줄로(칸 글이 서로 붙어 키를 못 알아보지 않게). 칸마다 이어 붙여 가린 뒤 다시 본다
       const cells = Array.from(node.children).map((c) => maskAcrossBreaks(c.textContent ?? "") ?? c.textContent ?? "");
       out.push(maskForCopy(cells.join("\t")));
-      continue;
-    }
-    if (tag === "PRE") {
+    } else if (tag === "PRE") {
       // 코드 상자는 줄 모양을 지킨다(줄 단위 가림)
       out.push(maskForCopy(node.textContent ?? ""));
-      continue;
+    } else {
+      collectCopy(node, out);
     }
-    if (JOIN_BLOCKS.has(tag) && !Array.from(node.children).some((c) => BLOCK_TAGS.has(c.tagName))) {
-      out.push(blockCopy(node.textContent ?? ""));
-      continue;
-    }
-    collectCopy(node, out);
   }
+  flush();
 }
 
 /**
