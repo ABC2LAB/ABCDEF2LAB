@@ -179,6 +179,12 @@ func (h *Host) RecoverUnfinished(ctx context.Context, request RecoveryRequest, d
 	if err != nil {
 		return RecoveryStatus{}, ErrUnavailable
 	}
+	// Recheck immediately before the irreversible link. A started container or
+	// changed inventory invalidates the original termination observation.
+	currentProof, err := VerifyDockerTermination(ctx, dockerSocket, project, selfID)
+	if err != nil || currentProof != proof {
+		return RecoveryStatus{}, ErrUnavailable
+	}
 	digest := sha256.Sum256([]byte(request.RunRef))
 	dir := filepath.Join(h.root, hex.EncodeToString(digest[:]))
 	if writeNewPrivateFile(dir, "operator-recovery.json", data) != nil {

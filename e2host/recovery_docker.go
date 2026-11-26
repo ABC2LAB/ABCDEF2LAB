@@ -110,9 +110,13 @@ func VerifyDockerTermination(ctx context.Context, socket, project, selfID string
 			continue
 		}
 		sameProject := c.Labels["com.docker.compose.project"] == project
-		if sameProject && c.Labels["com.docker.compose.service"] == "preparation" {
+		service := c.Labels["com.docker.compose.service"]
+		if sameProject && service == "preparation" {
 			foundPrep = true
 		}
+		executionService := sameProject && (service == "preparation" || service == "api" ||
+			service == "workbench" || service == "e2-host" || service == "explore-boundary" ||
+			service == "explore-browser" || service == "explore-mcp")
 		sharesState := false
 		for _, mount := range c.Mounts {
 			if mount.Type == "volume" && (mount.Name == project+"_e2-host-state" ||
@@ -120,7 +124,7 @@ func VerifyDockerTermination(ctx context.Context, socket, project, selfID string
 				sharesState = true
 			}
 		}
-		if (sameProject && c.Labels["com.docker.compose.service"] != "postgres" || sharesState) &&
+		if (executionService || sharesState) &&
 			c.State != "exited" && c.State != "created" {
 			return "", ErrUnavailable
 		}
