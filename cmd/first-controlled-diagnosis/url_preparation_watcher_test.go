@@ -62,6 +62,10 @@ func TestURLPreparationWatcherInstallationFailureCancelsImmediately(t *testing.T
 	if hard.Err() == nil || errors.Is(context.Cause(target), server.ErrFirstDiagnosisTargetEnded) {
 		t.Fatal("installation failure treated as normal target drain")
 	}
+	// 상태 값은 그대로 중지지만 사유로 운영자 중지와 구분한다(B1). 운영자 중지로 세지 않는다.
+	if urlStopReason(target) != "authority_recheck_failed" || urlOperatorStop(context.Background(), target) {
+		t.Fatalf("설치·위임 재확인 실패 중지 사유 %q", urlStopReason(target))
+	}
 }
 
 func TestURLStatusFailurePreservesTargetDrainButStopsLiveExecution(t *testing.T) {
@@ -204,7 +208,37 @@ func TestURLPreparationWatcherAccountBindingChangeDrains(t *testing.T) {
 	}
 	revoked, stop := context.WithCancelCause(context.Background())
 	stop(server.ErrFirstDiagnosisTargetEnded)
-	if urlStopReason(revoked) != "" || urlStopReason(hard) != "" {
-		t.Fatal("other stops gained the account reason")
+	// 대상 승인 철회·만료는 target_ended로 남는다(B1). 원인 없는 취소는 사유가 없다.
+	if urlStopReason(revoked) != "target_ended" || urlStopReason(hard) != "" {
+		t.Fatal("target stop lost its reason or a plain stop gained one")
+	}
+}
+
+// 진행 저장 실패와 회차 실행 시간 한도(hard 문맥 기한)로 멈춘 실행도 상태는 중지 그대로 사유로 운영자 중지와 구분한다(B1).
+// 실행 시간 한도는 시간 상한 마감(completed·budget_limited)이 남긴 여유 안에 끝나지 못해 hard 문맥이 끊은 경우다.
+func TestURLStopReasonsForProgressAndTimeLimit(t *testing.T) {
+	hard, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	run, stopTarget := context.WithCancelCause(hard)
+	defer stopTarget(context.Canceled)
+	stopRunForProgress(stopTarget, cancel)
+	if hard.Err() == nil || urlStopReason(run) != "progress_save_failed" || urlOperatorStop(context.Background(), run) {
+		t.Fatalf("진행 저장 실패 중지: hard=%v 사유 %q", hard.Err(), urlStopReason(run))
+	}
+	expired, expire := context.WithTimeout(t.Context(), time.Millisecond)
+	defer expire()
+	timed, stopTimed := context.WithCancelCause(expired)
+	defer stopTimed(context.Canceled)
+	<-timed.Done()
+	if urlStopReason(timed) != "run_time_limit_reached" || urlOperatorStop(context.Background(), timed) {
+		t.Fatalf("실행 시간 한도 중지 사유 %q", urlStopReason(timed))
+	}
+	// 운영자 중지(상위 문맥 취소)는 실행 쪽 사유가 없다. stop_requested는 진단 준비 서비스가 남긴다.
+	parent, stopParent := context.WithCancel(t.Context())
+	operator, stopOperator := context.WithCancelCause(parent)
+	defer stopOperator(context.Canceled)
+	stopParent()
+	if urlStopReason(operator) != "" || !urlOperatorStop(parent, operator) {
+		t.Fatalf("운영자 중지에 실행 쪽 사유 %q", urlStopReason(operator))
 	}
 }
