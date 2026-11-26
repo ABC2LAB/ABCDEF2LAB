@@ -14,12 +14,15 @@ import (
 
 // Request는 경계가 대상에 보내려는 요청이다. Path·RawQuery는 승인 origin 기준이다.
 type Request struct {
-	Method      string
-	Path        string
-	RawQuery    string
-	ContentType string
-	Body        []byte
-	Header      http.Header
+	// TransportRef는 이 요청의 경계·E② 기록 참조다(계약 §3 transport_ref). 보내기 전에 알면 채운다. 보내지 않은 시도도
+	// 이 값으로 경계·E② 기록과 잇는다.
+	TransportRef string
+	Method       string
+	Path         string
+	RawQuery     string
+	ContentType  string
+	Body         []byte
+	Header       http.Header
 }
 
 // Response는 대상 응답이다. Body는 경계가 정한 상한까지의 앞부분이고, 없어도 된다(그때 HTML·JSON 신호는 없음으로 본다).

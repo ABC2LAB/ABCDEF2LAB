@@ -1510,7 +1510,8 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	if purpose == "" && e3 == nil {
 		if tracker := e.loginAttempts.Load(); tracker != nil {
 			loginTracker = tracker
-			loginReq = loginattempt.Request{Method: method, Path: req.URL.EscapedPath(), RawQuery: req.URL.RawQuery, ContentType: requestHeaders.Get("Content-Type"), Body: body, Header: requestHeaders.Clone()}
+			// 상한 거부도 이 영수증(call_ref·attempt_id)으로 E② 기록과 잇는다(#969 동찬 리뷰 P2).
+			loginReq = loginattempt.Request{TransportRef: loginAttemptRef(r), Method: method, Path: req.URL.EscapedPath(), RawQuery: req.URL.RawQuery, ContentType: requestHeaders.Get("Content-Type"), Body: body, Header: requestHeaders.Clone()}
 			loginPlan = tracker.Prepare(loginReq, true)
 			if loginPlan.Refusal != "" {
 				diagnosticReceipt(e.ctx, r, "login_attempt_refused", "denied", loginPlan.Refusal)

@@ -999,8 +999,9 @@ func TestE2HTTPModelLoginAttemptsThroughE2(t *testing.T) {
 		send("POST", "/read/login", wrong, "")
 	}
 	before := posts.Load()
-	if _, receipt, err := send("POST", "/read/login", right, ""); err == nil || receipt.Reason != e2proxy.PolicyDenied || posts.Load() != before {
-		t.Fatalf("연속 실패 상한 뒤에도 보냄: %+v %v posts=%d→%d", receipt, err, before, posts.Load())
+	_, refusedReceipt, err := send("POST", "/read/login", right, "")
+	if err == nil || refusedReceipt.Reason != e2proxy.PolicyDenied || posts.Load() != before {
+		t.Fatalf("연속 실패 상한 뒤에도 보냄: %+v %v posts=%d→%d", refusedReceipt, err, before, posts.Load())
 	}
 	path := filepath.Join(policy.StateDir, E2HTTPLoginAttemptsFile)
 	info, err := os.Stat(path)
@@ -1012,13 +1013,80 @@ func TestE2HTTPModelLoginAttemptsThroughE2(t *testing.T) {
 		t.Fatal("기록 행 없음")
 	}
 	last := rows[len(rows)-1]
-	if last.Refusal != loginattempt.RefusalExhausted || last.Transport != loginattempt.TransportNotSent || last.Stage != loginattempt.StageDiagnosis {
-		t.Fatalf("마지막 행: %+v", last)
+	if last.Refusal != loginattempt.RefusalExhausted || last.Transport != loginattempt.TransportNotSent || last.Stage != loginattempt.StageDiagnosis ||
+		last.TransportRef != refusedReceipt.CallRef+"/"+refusedReceipt.AttemptID || refusedReceipt.AttemptID == "" {
+		t.Fatalf("마지막 행(상한 거부는 E② 거부 영수증과 이어져야 함): %+v", last)
 	}
 	content, _ := os.ReadFile(path)
 	for _, v := range []string{"seeded-pass-88ff", "wrong-pass-1", token} {
 		if strings.Contains(string(content), v) {
 			t.Fatalf("기록 파일에 값이 남음: %s", v)
 		}
+	}
+}
+
+// 판정기가 로그인으로 본 뒤 다른 E② 규칙(송신 시도 상한)으로 보내지 못한 로그인도 미전송 행으로 남고, 그 거부 영수증의
+// call_ref·attempt_id로 E② 기록과 이어진다(#969 동찬 리뷰 P2).
+func TestE2HTTPModelLoginNotSentRowLinksReceipt(t *testing.T) {
+	var posts atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			posts.Add(1)
+		}
+		io.WriteString(w, "ok")
+	}))
+	defer target.Close()
+	cfg, _, policy := e2HostPolicyFixture(t)
+	policy.Rules[0].Origin = target.URL
+	policy.Rules[0].PathPrefix = "/read"
+	policy.Rules[0].Methods = []string{"GET", "POST"}
+	policy.MaxRequests = 64
+	policy.Limits.MaxDenials, policy.Limits.MaxAttempts = 16, 1
+	auth := policy.Rules[0]
+	auth.Ref, auth.PathScopeRef, auth.PathPrefix, auth.Methods, auth.Purpose, auth.Credentials = "auth-login", "auth-login-path", "/login", []string{"POST"}, e2proxy.PurposeAuthPrep, nil
+	policy.Rules = append(policy.Rules, auth)
+	pin := authCredentialPin(t, filepath.Dir(cfg.PolicyFile), "account-tester-a.json", "tester@owned.test", "seeded-pass-88ff")
+	a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
+	a.ModelLogin = true
+	a.LoginAttempts = &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
+	policy.Auth, policy.HeaderMode = &a, e2proxy.HeaderTestAccountPassthrough
+	raw, err := json.Marshal(policy)
+	if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+		t.Fatal("policy write")
+	}
+	options, err := LoadE2HTTPRuntimeOptions(t.Context(), E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	lease, err := options.Acquire(run, E2HTTPRequest{TaskID: "17", TaskIDNumber: 17, ExplorationID: 1, IntentID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lease.Release(context.Background())
+	call, err := lease.Execution.BeginCall(run, "model-login-budget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer call.Close(context.Background())
+	first, _ := http.NewRequest("GET", target.URL+"/read/home", nil)
+	if resp, _, err := call.Do(run, first); err != nil {
+		t.Fatal(err)
+	} else {
+		resp.Body.Close()
+	}
+	login, _ := http.NewRequest("POST", target.URL+"/read/login", strings.NewReader("email=tester%40owned.test&password=seeded-pass-88ff"))
+	login.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	_, receipt, err := call.Do(run, login)
+	if err == nil || receipt.Reason != e2proxy.AttemptLimit || posts.Load() != 0 {
+		t.Fatalf("시도 상한인데 보냄: %+v %v", receipt, err)
+	}
+	rows, err := readLoginAttemptRows(filepath.Join(policy.StateDir, E2HTTPLoginAttemptsFile))
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("미전송 행: %d %v", len(rows), err)
+	}
+	if r := rows[0]; r.Transport != loginattempt.TransportNotSent || r.Refusal != string(e2proxy.AttemptLimit) || r.TransportRef != receipt.CallRef+"/"+receipt.AttemptID || receipt.AttemptID == "" {
+		t.Fatalf("미전송 행이 E② 거부 영수증과 이어지지 않음: %+v / %s/%s", r, receipt.CallRef, receipt.AttemptID)
 	}
 }

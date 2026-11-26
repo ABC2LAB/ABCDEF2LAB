@@ -258,7 +258,7 @@ func (t *Tracker) Prepare(req Request, writeAllowed bool) Plan {
 	}
 	t.n++
 	a := &attempt{order: t.n, cand: cand, probed: map[string]bool{}}
-	a.row = Row{Schema: Schema, AttemptRef: t.cfg.Stage + "-" + itoa(t.n), RunRef: t.cfg.RunRef, Stage: t.cfg.Stage, Actor: t.cfg.Actor,
+	a.row = Row{Schema: Schema, AttemptRef: t.cfg.Stage + "-" + itoa(t.n), RunRef: t.cfg.RunRef, Stage: t.cfg.Stage, Actor: t.cfg.Actor, TransportRef: req.TransportRef,
 		At: t.cfg.Now().UTC().Format(time.RFC3339Nano), AccountLabel: cand.AccountLabel, Identifier: cand.Identifier,
 		PasswordRegistered: cand.PasswordRegistered, Method: req.Method, Path: cleanPath(req.Path), QueryKeys: queryKeys(req.RawQuery),
 		Format: cand.Format, IdentifierField: cand.IdentifierField, PasswordField: cand.PasswordField,
@@ -311,14 +311,18 @@ func (t *Tracker) refuseLocked(a *attempt, reason string) {
 	t.emitLocked(a)
 }
 
-// NotSent는 로그인 시도가 다른 경계 규칙(범위·메서드·예산 등)으로 보내지지 않았을 때 부른다. 예외로 바꾼 상태는 되돌린다.
-func (t *Tracker) NotSent(p Plan, reason string) {
+// NotSent는 로그인 시도가 다른 경계 규칙(범위·메서드·예산 등)으로 보내지지 않았을 때 부른다. transportRef는 그 거부를 남긴
+// 경계·E② 기록 참조다(비면 Prepare 때 값을 둔다). 예외로 바꾼 상태는 되돌린다.
+func (t *Tracker) NotSent(p Plan, transportRef, reason string) {
 	if p.attempt == nil {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	a := p.attempt
+	if transportRef != "" {
+		a.row.TransportRef = transportRef
+	}
 	if a.exception {
 		t.state[a.cand.AccountLabel] = a.priorState
 	}
@@ -582,7 +586,10 @@ func (t *Tracker) observeLocked(req Request, resp Response, probe bool) {
 	t.obsSeq++
 	p := cleanPath(req.Path)
 	o := observation{key: urlKey(p, req.RawQuery), path: p, status: resp.Status, loc: redirectPath(t.cfg.Origin, p, resp), seq: t.obsSeq, probe: probe}
-	if t.anonymousLocked(req.Header) {
+	// 실린 세션 후보를 먼저 본다. 사용자 지정 헤더(X-Auth-Token 등)로 실은 세션은 그 헤더 이름을 아직 모르는 첫 요청에서도
+	// 무인증으로 분류되면 안 된다(#969 동찬 리뷰 P2).
+	a, sentAs, tk := t.carrierLocked(req.Header)
+	if a == nil && t.anonymousLocked(req.Header) {
 		for name := range newCookies(resp, t.cfg.Now()) {
 			t.anonCookies[name] = true
 		}
@@ -595,7 +602,6 @@ func (t *Tracker) observeLocked(req Request, resp Response, probe bool) {
 		t.reevaluateLocked()
 		return
 	}
-	a, sentAs, tk := t.carrierLocked(req.Header)
 	if a == nil {
 		return
 	}

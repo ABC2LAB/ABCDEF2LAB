@@ -45,7 +45,7 @@ func finishLoginAttempt(t *loginattempt.Tracker, p loginattempt.Plan, req logina
 	case p.Login && r.Reason == Unknown:
 		t.Unknown(p, loginAttemptRef(r))
 	case p.Login:
-		t.NotSent(p, string(r.Reason))
+		t.NotSent(p, loginAttemptRef(r), string(r.Reason))
 	case resp != nil:
 		t.Observe(req, *resp)
 	}

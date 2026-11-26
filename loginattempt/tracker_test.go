@@ -282,7 +282,7 @@ func TestExplorationWriteExceptionStates(t *testing.T) {
 	if q := tr.Prepare(formLogin("user1@owned.test", "alpha-pass-1"), false); !q.Exception {
 		t.Fatal("다른 계정 예외까지 막음")
 	} else {
-		tr.NotSent(q, "out_of_scope_path")
+		tr.NotSent(q, "seq-9", "out_of_scope_path")
 		if tr.ExceptionState("tester-a") != StateLoggedOut {
 			t.Fatal("다른 규칙으로 못 보낸 예외 상태를 되돌리지 않음")
 		}
@@ -346,11 +346,11 @@ func TestAccountAuthTableOrder(t *testing.T) {
 	unknown := formLogin("user2", "bravo-pass-2")
 	p := tr.Prepare(unknown, true)
 	tr.Unknown(p, "1")
-	tr.NotSent(tr.Prepare(formLogin("user2", "bravo-pass-2"), true), "method_not_approved")
+	tr.NotSent(tr.Prepare(formLogin("user2", "bravo-pass-2"), true), "", "method_not_approved")
 	if got := tr.AccountAuth()["tester-b"]; got != AuthResultUnknown {
 		t.Fatalf("결과 불명 뒤 미전송: %s", got)
 	}
-	tr.NotSent(tr.Prepare(formLogin("user1@owned.test", "alpha-pass-1"), true), "method_not_approved")
+	tr.NotSent(tr.Prepare(formLogin("user1@owned.test", "alpha-pass-1"), true), "", "method_not_approved")
 	if got := tr.AccountAuth()["tester-a"]; got != AuthNotSent {
 		t.Fatalf("미전송만: %s", got)
 	}
@@ -484,5 +484,54 @@ func TestSucceededSessionHandoffAndAccountOf(t *testing.T) {
 	}
 	if tr.AccountOf(hdr("Authorization", "Bearer "+tok, "Cookie", "sid=user-session-0004")) != "" {
 		t.Fatal("두 계정 세션이 같이 실렸는데 귀속함")
+	}
+}
+
+// 사용자 지정 헤더(X-Auth-Token)로만 세션을 싣는 앱: 그 헤더 이름을 처음 보는 요청도 무인증이 아니라 세션 요청이다.
+// 같은 URL의 무인증 401과 세션 200이 대조된다(#969 동찬 리뷰 P2).
+func TestCustomHeaderSessionIsNotAnonymous(t *testing.T) {
+	tr, rec := newTracker(t, false)
+	tok := "c3VwZXItc2VjcmV0LWN1c3RvbS1oZWFkZXItdG9rZW4"
+	tr.Observe(get("/api/me"), Response{Status: 401, Header: http.Header{}})
+	jl := Request{Method: "POST", Path: "/api/login", ContentType: "application/json", Body: []byte(`{"username":"user2","password":"bravo-pass-2"}`), Header: http.Header{}}
+	p := tr.Prepare(jl, true)
+	tr.Complete(p, "1", jl, Response{Status: 200, Header: hdr("Content-Type", "application/json"), Body: []byte(`{"auth":{"token":"` + tok + `"}}`)})
+	tr.Observe(get("/api/me", "X-Auth-Token", tok), Response{Status: 200, Header: http.Header{}})
+	r := rec.last("exploration-1")
+	if r.Outcome != OutcomeSucceeded || r.SessionSentAs != "X-Auth-Token:" || strings.Join(r.SessionNames, ",") != "auth.token" {
+		t.Fatalf("사용자 지정 헤더 세션: %+v", r)
+	}
+	// 그 뒤 같은 헤더를 실은 요청은 무인증 대조 근거가 아니다.
+	tr2, rec2 := newTracker(t, false)
+	p = tr2.Prepare(jl, true)
+	tr2.Complete(p, "1", jl, Response{Status: 200, Header: hdr("Content-Type", "application/json"), Body: []byte(`{"auth":{"token":"` + tok + `"}}`)})
+	tr2.Observe(get("/api/me", "X-Auth-Token", tok), Response{Status: 403, Header: http.Header{}})
+	tr2.Observe(get("/api/me", "X-Auth-Token", tok), Response{Status: 200, Header: http.Header{}})
+	if r := rec2.last("exploration-1"); r.Outcome == OutcomeSucceeded {
+		t.Fatal("세션을 실은 403을 무인증 막힘으로 셈")
+	}
+}
+
+// 보내지 않은 시도도 경계·E② 기록 참조를 남긴다: 상한 거부는 Prepare의 요청 참조, 다른 규칙 거부는 NotSent의 참조다.
+func TestNotSentRowsKeepTransportRef(t *testing.T) {
+	tr, rec := newTracker(t, false)
+	for i := 0; i < 3; i++ {
+		login := formLogin("user2", "nope")
+		p := tr.Prepare(login, true)
+		tr.Complete(p, "x", login, Response{Status: 401, Header: http.Header{}})
+	}
+	refused := formLogin("user2", "nope")
+	refused.TransportRef = "call_a/attempt_4"
+	if p := tr.Prepare(refused, true); p.Refusal != RefusalExhausted {
+		t.Fatal("상한 거부 아님")
+	}
+	if r := rec.last("exploration-4"); r.TransportRef != "call_a/attempt_4" {
+		t.Fatalf("상한 거부 행 참조: %q", r.TransportRef)
+	}
+	other := formLogin("user1@owned.test", "alpha-pass-1")
+	other.TransportRef = "call_a/attempt_5"
+	tr.NotSent(tr.Prepare(other, true), "call_a/attempt_5b", "budget_exhausted")
+	if r := rec.last("exploration-5"); r.TransportRef != "call_a/attempt_5b" || r.Refusal != "budget_exhausted" {
+		t.Fatalf("다른 거부 행: %+v", r)
 	}
 }
