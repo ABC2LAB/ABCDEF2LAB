@@ -30,6 +30,7 @@ import (
 
 	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/internal/pathscope"
+	"github.com/Autumn-27/artex/loginattempt"
 	"github.com/Autumn-27/artex/transmit/budget"
 )
 
@@ -43,6 +44,8 @@ type compiledRule struct {
 	methods   map[string]bool
 }
 type Execution struct {
+	// loginAttempts는 모델 직접 로그인 회차의 로그인 시도 판정기다(AttachLoginAttempts). 없으면 판정하지 않는다.
+	loginAttempts atomic.Pointer[loginattempt.Tracker]
 	// passwords는 호스트가 등록한 비밀번호다. 일반 제어 비밀과 응답 처리 의미를 분리한다.
 	passwords  [][]byte
 	issued     map[string]bool
@@ -1369,12 +1372,19 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	}
 	var session http.Header
 	var requestHeaders http.Header
+	// 모델 직접 로그인 판정(login_attempts.go). 모델 요청만 넘긴다.
+	var loginTracker *loginattempt.Tracker
+	var loginPlan loginattempt.Plan
+	var loginReq loginattempt.Request
+	var loginResp *loginattempt.Response
 	finish := func(resp *http.Response, cause error) (*http.Response, http.Header, Receipt, error) {
 		if e3 != nil {
 			e3.finish(&r, ctx)
 		}
 		var boundaryErr error
 		rr, aerr := c.finish(ctx, r, func(rr Receipt) {
+			// 로그인 판정을 관찰 기록보다 먼저 한다. 로그인 성공을 세운 요청도 그 계정으로 귀속된다(ResolveSentAccount).
+			finishLoginAttempt(loginTracker, loginPlan, loginReq, loginResp, rr)
 			c.observeHTTP(req, requestHeaders, resp, rr)
 			attempt := rr
 			attempt.Reason = r.Reason
@@ -1492,6 +1502,21 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		if p, ok := requestPath(req.URL); !ok || pathscope.ExcludedAny(p, e.cfg.ExcludedPaths) {
 			r.Decision, r.Reason = "denied", PolicyDenied
 			return finish(nil, ErrDenied)
+		}
+	}
+	// 모델 직접 로그인(사용자 결정 2026-11-26): 아이디별 연속 실패 상한에 닿은 로그인은 보내지 않는다. E② 사유 어휘는 늘리지
+	// 않고 운영자 제외 경로(#627)처럼 policy_denied로 남긴다. 고정 사유 login_attempts_exhausted는 로그인 시도 기록과 진단
+	// 로그에 있다(계약 §5).
+	if purpose == "" && e3 == nil {
+		if tracker := e.loginAttempts.Load(); tracker != nil {
+			loginTracker = tracker
+			loginReq = loginattempt.Request{Method: method, Path: req.URL.EscapedPath(), RawQuery: req.URL.RawQuery, ContentType: requestHeaders.Get("Content-Type"), Body: body, Header: requestHeaders.Clone()}
+			loginPlan = tracker.Prepare(loginReq, true)
+			if loginPlan.Refusal != "" {
+				diagnosticReceipt(e.ctx, r, "login_attempt_refused", "denied", loginPlan.Refusal)
+				r.Decision, r.Reason = "denied", PolicyDenied
+				return finish(nil, ErrDenied)
+			}
 		}
 	}
 	if boundary != nil {
@@ -1829,6 +1854,9 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		clear(responseBody)
 		r.Reason = Unknown
 		return finish(nil, ErrDenied)
+	}
+	if loginTracker != nil {
+		loginResp = observedLoginResponse(resp.StatusCode, resp.Header, responseBody)
 	}
 	if purpose == PurposeAuthPrep {
 		// 인증 준비 응답은 도구로 가지 않는다. extract가 보낼 세션 헤더만 뽑고 본문은 지운다. 상한을 넘은 응답은 끝까지 보지
