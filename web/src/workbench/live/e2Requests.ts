@@ -48,7 +48,9 @@ const LONG_PATH = "/{too_long}";
  * 경로 표시 글(전수조사 11/26: 요청 상세에 경로가 어떤 모양인지 보인다). 진단 요청 경로는 서버가 값을 가린 틀로만 남기고
  * (예: /users/{id}), 틀이 기록되지 않았거나 너무 길면 unavailable 이다(url_request_details attemptPathDetailState)
  */
-export function pathDetailText(state: PathDetailState, path?: string): string {
+export function pathDetailText(state: PathDetailState | null, path?: string): string | null {
+  // 이전 서버 응답(상태 칸 없음)은 모양을 지어내지 않는다(계약 §4.1 '상태 필드가 없는 이전 응답도 받는다')
+  if (state === null) return null;
   if (state === "exact") return "정확한 경로";
   if (state === "pattern_only") return "값을 가린 경로 틀(숫자 · ID 자리를 {id} 처럼 바꿈)";
   return path === LONG_PATH ? "경로가 너무 길어 틀로 남기지 않았어요" : "이 시도의 경로 틀이 기록되지 않았어요";
@@ -63,7 +65,8 @@ export type E2RequestRow = {
   call_ref: string;
   attempt_id: string;
   index: number;
-  path_detail_state: PathDetailState;
+  /** 없으면 null — 상태 칸이 없는 이전 서버 응답(1bb6f386 이전) */
+  path_detail_state: PathDetailState | null;
 };
 export type E2RequestsPage = { rows: E2RequestRow[]; total: number; next_cursor: number | null };
 
@@ -85,7 +88,8 @@ export type E2RequestDetail = {
   at: string;
   method?: string;
   path_pattern?: string;
-  path_detail_state: PathDetailState;
+  /** 없으면 null — 상태 칸이 없는 이전 서버 응답 */
+  path_detail_state: PathDetailState | null;
   rule_ref?: string;
   decision: E2Decision;
   /** 알려진 사유면 그 코드, 모르면 서버 코드 그대로(reasonCode) */
@@ -123,10 +127,18 @@ function optional<T>(v: unknown, ok: (x: unknown) => x is T): T | undefined {
 const method = (v: unknown): v is string => typeof v === "string" && METHOD.test(v);
 const path = (v: unknown): v is string => text(v, 512);
 
+/** 경로 상태 칸: 없으면 null(이전 서버), 있으면 아는 값만 — 모르는 값은 다른 뜻을 붙일 수 없어 받지 않는다 */
+function pathStateOf(v: unknown): PathDetailState | null {
+  if (v === undefined) return null;
+  if (!PATH_STATES.includes(v as PathDetailState)) invalid();
+  return v as PathDetailState;
+}
+
 function rowOf(v: unknown): E2RequestRow {
   if (!obj(v) || !instant(v.at) || !text(v.kind, 64) || !validCallRef(v.call_ref) || !validAttemptId(v.attempt_id))
     invalid();
-  if (!natural(v.index) || !PATH_STATES.includes(v.path_detail_state as PathDetailState)) invalid();
+  if (!natural(v.index)) invalid();
+  const pathState = pathStateOf(v.path_detail_state);
   const m = optional(v.method, method);
   const p = optional(v.path, path);
   const st = optional(v.status, httpStatus);
@@ -139,7 +151,7 @@ function rowOf(v: unknown): E2RequestRow {
     call_ref: v.call_ref,
     attempt_id: v.attempt_id,
     index: v.index,
-    path_detail_state: v.path_detail_state as PathDetailState,
+    path_detail_state: pathState,
   };
 }
 
@@ -164,7 +176,7 @@ export function parseE2RequestDetail(v: unknown, callRef: string, attemptId: str
   if (!obj(v) || v.format !== DETAIL_FORMAT || v.call_ref !== callRef || v.attempt_id !== attemptId) invalid();
   if (!text(v.kind, 64) || !natural(v.index) || !instant(v.at) || !text(v.decision, 32) || !text(v.reason, 64))
     invalid();
-  if (!PATH_STATES.includes(v.path_detail_state as PathDetailState)) invalid();
+  const pathState = pathStateOf(v.path_detail_state);
   const flags = [
     v.forward_attempted,
     v.request_written,
@@ -188,7 +200,7 @@ export function parseE2RequestDetail(v: unknown, callRef: string, attemptId: str
     at: v.at,
     ...(m === undefined ? {} : { method: m }),
     ...(pattern === undefined ? {} : { path_pattern: pattern }),
-    path_detail_state: v.path_detail_state as PathDetailState,
+    path_detail_state: pathState,
     ...(rule === undefined ? {} : { rule_ref: rule }),
     decision,
     reason,

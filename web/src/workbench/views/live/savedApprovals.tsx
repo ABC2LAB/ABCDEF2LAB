@@ -21,17 +21,18 @@ import { RequestSendResult } from "./workflowViews";
 /** 경로를 잇느라 읽는 요청 전체 기록 쪽 수 상한(100줄 × 이만큼). 넘으면 나머지 승인은 경로 없이 보인다 */
 const MAX_PATH_PAGES = 10;
 
-type Group = "allowed" | "denied" | "closed" | "pending";
+// 거르기 칸은 결과 그대로(사용자 11/26: '만료'를 누르면 만료만 — 취소는 따로)
+type Group = SavedApproval["state"];
 const GROUPS: readonly (readonly [Group, string])[] = [
   ["allowed", "허용"],
   ["denied", "거부"],
-  ["closed", "만료"],
+  ["expired", "만료"],
+  ["cancelled", "취소"],
   ["pending", "결정 안 됨"],
 ];
-const groupOf = (r: SavedApproval): Group => {
-  if (r.state === "allowed" || r.state === "denied" || r.state === "pending") return r.state;
-  return "closed";
-};
+const groupOf = (r: SavedApproval): Group => r.state;
+/** 머리 줄에 0 이어도 보이는 칸(취소 · 결정 안 됨은 있을 때만) */
+const ALWAYS_COUNTED: readonly Group[] = ["allowed", "denied", "expired"];
 const STATE_TEXT: Readonly<Record<SavedApproval["state"], string>> = {
   allowed: "허용",
   denied: "거부",
@@ -39,7 +40,13 @@ const STATE_TEXT: Readonly<Record<SavedApproval["state"], string>> = {
   cancelled: "취소",
   pending: "결정 안 됨",
 };
-const STATE_TONE: Readonly<Record<Group, string>> = { allowed: "in", denied: "deny", closed: "out", pending: "ap" };
+const STATE_TONE: Readonly<Record<Group, string>> = {
+  allowed: "in",
+  denied: "deny",
+  expired: "out",
+  cancelled: "out",
+  pending: "ap",
+};
 const at = (iso: string | undefined) => (iso ? clockOf(iso) || "—" : "—");
 
 /** 승인 기록 하나의 상세: 결과 · 보냄 · 시각 · 승인 ID, 보낸 요청이면 전송 결과(경로 틀 · 응답 · 이유) */
@@ -133,7 +140,7 @@ export function SavedApprovalSummary({
       <div className={s.sh}>
         <h2 id="lDecideH">승인 요청</h2>
         <span className={s.n}>
-          {GROUPS.filter(([g]) => g !== "pending" || count(g) > 0)
+          {GROUPS.filter(([g]) => ALWAYS_COUNTED.includes(g) || count(g) > 0)
             .map(([g, label]) => `${label} ${count(g)}`)
             .join(" · ")}
         </span>
