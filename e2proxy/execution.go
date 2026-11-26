@@ -12,7 +12,6 @@ import (
 	"errors"
 	"io"
 	"log"
-	"math"
 	"net"
 	"net/http"
 	"net/http/httptrace"
@@ -1977,16 +1976,16 @@ func stripHeaders(h http.Header) {
 	}
 }
 
-// RedactOutput removes host-supplied session credentials from a tool's output.
-// It is a bounded exact-value guard; it is not a universal encoding/DLP oracle.
-// 모델에 가는 글에 쓴다. model_visible_v1 실행은 대상이 비춘 비밀번호를 모델에 주므로 비밀번호는 여기서 가리지 않는다.
-// 저장 기록에는 RedactRecord를 쓴다.
+// RedactOutput은 모델에 가는 글의 가림이다. E③ 표식과 우리 제어 비밀(설정한 보호 값)은 늘 가린다(절대규칙 2). 시험 계정
+// 실행(제품)은 대상이 발급한 세션·응답과 시험 계정 자격을 모델에 준다(절대규칙 2, 2026-11-26 DLP 폐기). 시험 계정 실행이
+// 아닌 실행은 이전 정책대로 비밀번호(model_visible_v1 제외)·출력 가림 전용 세션 값도 가린다.
 func (e *Execution) RedactOutput(b []byte) []byte {
 	return e.redact(b, false)
 }
 
-// RedactRecord는 저장 기록(도구 출력 기록·근거·활동·보고서·화면 API·승인 미리보기)에 쓰는 가림이다. RedactOutput과 같고,
-// 비밀번호를 정책과 상관없이 늘 가린다.
+// RedactRecord는 저장 기록(도구 출력 기록·근거·활동·보고서·화면 API·승인 미리보기)에 쓰는 가림이다. 제품 기록은 내부
+// 담당자만 보므로 대상 응답·시험 계정 자격·세션 값을 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기). 기록은 뒤에 모델
+// 입력(그래프 요약·후보)으로 다시 들어갈 수 있으므로 E③ 표식과 제어 비밀은 늘 가린다.
 func (e *Execution) RedactRecord(b []byte) []byte {
 	return e.redact(b, true)
 }
@@ -1998,46 +1997,23 @@ func (e *Execution) redact(b []byte, record bool) []byte {
 	if len(e.marker) != 0 {
 		out = redactMarker(out, e.marker)
 	}
-	passwords := e.passwords
-	if !record && e.cfg.PasswordResponse == PasswordResponseModelVisible {
-		passwords = nil
-	}
-	sets := [][][]byte{e.secrets, passwords, e.redactOnly}
-	if e.cfg.HeaderMode == HeaderTestAccountPassthrough {
-		// 전체 토큰을 조각보다 먼저 가린다. 계정·갱신 간에 같은 claims를 공유해도 전체 토큰 가림이 깨지지 않는다.
-		values := append(append(append([][]byte(nil), e.secrets...), passwords...), e.redactOnly...)
-		sort.SliceStable(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
-		sets = [][][]byte{values}
-		out = redactEscapedJSONValues(out, values)
-	}
-	for _, set := range sets {
-		for _, v := range set {
-			if len(v) > 0 {
-				out = bytes.ReplaceAll(out, v, []byte("[REDACTED]"))
-			}
+	values := append([][]byte(nil), e.secrets...)
+	if !record && !e.testAccountPassthrough() {
+		if e.cfg.PasswordResponse != PasswordResponseModelVisible {
+			values = append(values, e.passwords...)
 		}
+		values = append(values, e.redactOnly...)
 	}
-	if e.cfg.HeaderMode == HeaderTestAccountPassthrough {
-		// 시험 계정 실행만 대상의 자격 응답 헤더를 넘긴다. 등록 하한(8바이트)보다 짧아 값 자체로 가릴 수 없는 발급 세션도
-		// 기록에 남지 않게 Set-Cookie 줄의 쿠키 값 자리와 Authentication-Info 값 전체를 구조로 가린다. 쿠키 이름·속성은
-		// 남긴다(#522 이동찬 리뷰).
-		out = issuedCookieLine.ReplaceAll(out, []byte("${1}[REDACTED]"))
-		out = authInfoLine.ReplaceAll(out, []byte("${1}[REDACTED]"))
-		// 모델은 받은 세션을 바꿔(예: JWT 내용을 고쳐 다시 붙임) 보내기도 해서 정확한 값 가림을 지나간다. 그래서 모델이 보내는
-		// 요청 자격 자리 — 명령의 Authorization·Cookie 헤더 값, curl --cookie 값, curl -v가 되찍는 요청 헤더 줄 — 는 값이
-		// 무엇이든 구조로 가린다. 대상이 응답으로 준 내용은 그대로 둔다(CLAUDE.md 규칙 2, 2026-11-14 Qwen3.6 점검 회차에서
-		// 서명이 맞지 않는 변형 토큰이 활동 기록에 남은 것을 발견).
-		out = redactRequestCredentials(out)
+	// 긴 값부터 가려 한 값이 다른 값의 일부여도 남지 않게 한다. JSON 문자열 안에 이스케이프된 값도 가린다.
+	sort.SliceStable(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
+	out = redactEscapedJSONValues(out, values)
+	for _, v := range values {
+		if len(v) > 0 {
+			out = bytes.ReplaceAll(out, v, []byte("[REDACTED]"))
+		}
 	}
 	return out
 }
-
-// issuedCookieLine은 Set-Cookie·Set-Cookie2 헤더 줄의 첫 이름=값에서 값 자리다(curl -i·-v 출력의 앞 "< " 포함).
-// authInfoLine은 Authentication-Info·Proxy-Authentication-Info 헤더 값 전체다.
-var (
-	issuedCookieLine = regexp.MustCompile(`(?im)^([<>* \t]*set-cookie2?[ \t]*:[ \t]*[^=;\r\n]*=)[^;\r\n]*`)
-	authInfoLine     = regexp.MustCompile(`(?im)^([<>* \t]*(?:proxy-)?authentication-info[ \t]*:[ \t]*)[^\r\n]*`)
-)
 
 // 출력 가림 전용 값의 하한·상한이다. 짧은 값은 흔한 문자열까지 가려 출력이 망가지므로 받지 않는다.
 const (
@@ -2103,6 +2079,11 @@ func (e *Execution) AddRedactValues(values ...[]byte) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.cfg.HeaderMode == HeaderTestAccountPassthrough {
+		// 시험 계정 실행은 세션을 모델에 주고 저장 기록에서도 가리지 않으므로(절대규칙 2, 2026-11-26 DLP 폐기) 가림 목록에
+		// 넣지 않는다. 짧은 세션 값도 받고, 세션 가림 칸 상한(#840)에도 닿지 않는다.
+		return nil
+	}
 	if len(values) > maxRedactValues {
 		return ErrConfig
 	}
@@ -2110,24 +2091,6 @@ func (e *Execution) AddRedactValues(values ...[]byte) error {
 		if len(v) < minRedactValueBytes || len(v) > maxRedactValueBytes {
 			return ErrConfig
 		}
-	}
-	if e.cfg.HeaderMode == HeaderTestAccountPassthrough {
-		fresh, ok := freshSessionRedactions(e.redactOnly, values, math.MaxInt)
-		if !ok {
-			return ErrConfig
-		}
-		// 계정 세션 칸은 대상 발급 세션과 따로 센다. 모델 단계(마감 전)는 확정 단계 직전 다시 로그인 몫을 남긴다.
-		limit := sessionRedactCapacity(e.cfg)
-		if !e.modelClosed {
-			limit -= e.cfg.ConfirmationRedactReserve
-		}
-		if e.sessionRedactions+len(fresh) > limit {
-			e.sessionRedactRefusals++
-			return ErrSessionRedactCapacity
-		}
-		e.redactOnly = append(e.redactOnly, fresh...)
-		e.sessionRedactions += len(fresh)
-		return nil
 	}
 	if len(e.redactOnly)+len(values) > maxRedactValues {
 		return ErrConfig

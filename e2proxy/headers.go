@@ -2,7 +2,6 @@ package e2proxy
 
 import (
 	"bytes"
-	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -218,25 +217,8 @@ func (e *Execution) safeHTTPResponseLocked(response *http.Response, body []byte)
 		return false
 	}
 
-	// 시험 계정 실행은 대상이 새로 발급한 세션(Set-Cookie 회전 등)도 모델에 준다. 그 값은 도구 출력·근거·활동 기록에서
-	// 가리도록 응답을 넘기기 전에 출력 가림 목록에 더한다(S09: 모델 입력만 예외, #522 이동찬 리뷰). 가릴 자리가 모자라면
-	// 기록에 남기지 않도록 응답을 통째로 보류한다.
-	if e.testAccountPassthrough() {
-		issued, short := issuedSessionValues(response)
-		if short {
-			// 8바이트보다 짧은 발급 값은 값으로 가릴 수 없다(흔한 문자열까지 가려짐). 헤더 줄이 아닌 모양(curl 쿠키 파일
-			// 등)으로 기록에 남을 수 있으니 그 응답을 보류한다. preserve 실행은 자격 응답을 늘 보류하므로 그보다 더 막지
-			// 않는다(#522 이동찬·윤재상 리뷰).
-			return false
-		}
-		// 회전 발급한 JWT도 인증 준비와 같은 출력 전용 조각 가림을 적용한다. 응답 보류용 보호 값은 늘리지 않는다.
-		fresh, ok := freshSessionRedactions(e.redactOnly, issued, math.MaxInt)
-		if !ok || e.issuedRedactions+len(fresh) > maxIssuedRedactValues {
-			return false
-		}
-		e.redactOnly = append(e.redactOnly, fresh...)
-		e.issuedRedactions += len(fresh)
-	}
+	// 시험 계정 실행은 대상이 새로 발급한 세션(Set-Cookie 회전 등)도 모델에 주고 저장 기록에서도 가리지 않는다(절대규칙 2,
+	// 2026-11-26 DLP 폐기). 그래서 짧은 발급 값이나 가림 자리 때문에 응답을 보류하지 않는다.
 	return true
 }
 

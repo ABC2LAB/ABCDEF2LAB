@@ -522,9 +522,9 @@ func e2HTTPAccountUsernames(dir string, auth E2HTTPFileAuth) map[string]bool {
 }
 
 // e2HTTPAccountCredentials는 결속된 등록 계정의 자격을 읽어 모델 지침에 넣을 값으로 돌려준다(사용자 결정 2026-11-26:
-// 모델이 직접 로그인한다, CLAUDE.md 절대규칙 2). 읽은 비밀번호는 이 실행의 보호 값으로 등록해 저장 기록 가림(RedactRecord)을
-// 유지한다. 읽지 못하거나 보호 값으로 등록하지 못한(짧은 값 등) 계정은 모델에 주지 않고 두 번째 값에 not_sent로 남긴다
-// (짧은 값 제외는 저장 기록 가림 때문이라 ⑥ DLP 폐기 때 같이 푼다).
+// 모델이 직접 로그인한다, CLAUDE.md 절대규칙 2). 읽은 비밀번호는 이 실행에 등록한다. model_visible_v1(제품)은 저장 기록에서도
+// 가리지 않으므로(2026-11-26 DLP 폐기) E②가 받기만 하고, 짧은 비밀번호 계정도 결속된다. 이전 정책 실행은 보호 값으로
+// 등록하지 못하는 값이면 그 계정을 모델에 주지 않는다. 읽지 못하거나 등록하지 못한 계정은 두 번째 값에 not_sent로 남긴다.
 func e2HTTPAccountCredentials(ctx context.Context, execution *e2proxy.Execution, dir string, auth E2HTTPFileAuth) ([]agent.E2HTTPAccountCredential, map[string]string) {
 	out := []agent.E2HTTPAccountCredential{}
 	unread := map[string]string{}
@@ -549,8 +549,8 @@ func e2HTTPAccountCredentials(ctx context.Context, execution *e2proxy.Execution,
 			logAccountAuthNotSent(ctx, account.Label)
 			continue
 		}
-		// 저장 기록 가림 값으로 등록하지 못하는 비밀번호(6바이트 미만 등)는 모델에 주지 않는다. 모델이 그 값을 도구 입력·응답에
-		// 다시 쓰면 저장 기록에 원문이 남기 때문이다(#967 동찬 리뷰 P1, 비밀번호 응답 보호 계약). 그 계정은 not_sent다.
+		// 이전 정책 실행에서 보호 값으로 등록하지 못하는 비밀번호는 모델에 주지 않는다(그 계정은 not_sent). model_visible_v1은
+		// 등록이 늘 성공한다(가리지 않으므로 받기만 함).
 		if execution.AddProtectedPasswords([]byte(cred.Password)) != nil {
 			unread[account.Label] = E2HTTPAuthNotSent
 			logAccountAuthNotSent(ctx, account.Label)
