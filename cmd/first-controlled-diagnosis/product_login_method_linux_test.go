@@ -38,6 +38,9 @@ func TestLoginMethodLearnedJournalAndView(t *testing.T) {
 	if ok, _ := r.recordLoginMethodLearned(id, "tester-a", rev+1, credA, learnedAt("/login", "run-job1", t0), productLoginEvidenceObserved); ok {
 		t.Fatal("결속 판이 다른 결과를 남김")
 	}
+	if ok, _ := r.recordLoginMethodLearned(id, "tester-a", rev, strings.Repeat("0", 64), learnedAt("/login", "run-job1", t0), productLoginEvidenceObserved); ok {
+		t.Fatal("결속 자격이 다른 결과를 남김")
+	}
 	if ok, err := r.recordLoginMethodLearned(id, "tester-a", rev, credA, learnedAt("/login", "run-job1", t0), productLoginEvidenceObserved); !ok || err != nil {
 		t.Fatalf("배운 방법을 남기지 못함: %v", err)
 	}
@@ -67,6 +70,14 @@ func TestLoginMethodLearnedJournalAndView(t *testing.T) {
 	}
 	if m := loginMethodOf(t, r, id, "tester-a"); m.State != productLoginMethodVerified || m.Verified == nil || m.Verified.RunRef != "run-job2" || m.Verified.Evidence != productLoginVerifiedEvidence {
 		t.Fatalf("검증 상태: %+v", m)
+	}
+	// 같은 방법을 다른 회차에서 다시 배우면 근거만 최신으로 바뀌고 검증은 그대로 인정된다.
+	again := learnedAt("/login", "run-job2b", t0.Add(90*time.Minute))
+	if ok, _ := r.recordLoginMethodLearned(id, "tester-a", rev, credA, again, productLoginEvidenceObserved); !ok {
+		t.Fatal("같은 방법을 다시 남기지 못함")
+	}
+	if m := loginMethodOf(t, r, id, "tester-a"); m.State != productLoginMethodVerified || m.Learned.RunRef != "run-job2b" {
+		t.Fatalf("같은 방법을 다시 배운 뒤 검증이 사라짐: %+v", m)
 	}
 	// 다른 방법을 배우면 learned로 돌아가고, 예전 방법을 다시 배워도 그 방법이 지금 것이 된 뒤의 검증이 없어 learned다.
 	other := learnedAt("/signin", "run-job3", t0.Add(2*time.Hour))
