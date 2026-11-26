@@ -158,8 +158,8 @@ func TestFirstDiagnosisModelCallRequestRejected(t *testing.T) {
 	}
 }
 
-// 요청 한도 응답에 Retry-After가 있으면 그 값을 기다리되 요청 한도 간격표의 가장 긴 간격을 넘지 않는다. 다시 보내기는 요청
-// 한도에서 최대 5번이다(사용자 결정 2026-11-26).
+// 요청 한도 응답에 Retry-After가 있으면 간격표의 그 칸과 Retry-After 중 큰 쪽을 기다리되 요청 한도 간격표의 가장 긴 간격을
+// 넘지 않는다(사용자 결정 2026-11-27 (나)). 다시 보내기는 요청 한도에서 최대 5번이다(사용자 결정 2026-11-26).
 func TestFirstDiagnosisRetryModelCallHonorsRetryAfter(t *testing.T) {
 	transient := errors.New("synthetic failure")
 	short := []time.Duration{50 * time.Millisecond}
@@ -173,8 +173,10 @@ func TestFirstDiagnosisRetryModelCallHonorsRetryAfter(t *testing.T) {
 	}{
 		// 간격표만이면 1+1+40ms.
 		"no hint": {0, false, true, 40 * time.Millisecond, time.Second},
-		// 힌트 0은 기다리지 않는다(간격표의 40ms도 쓰지 않음).
-		"zero hint": {0, true, true, 0, 30 * time.Millisecond},
+		// 힌트 0은 간격표보다 짧게 기다리게 하지 않는다(1+1+40ms 그대로).
+		"zero hint": {0, true, true, 40 * time.Millisecond, time.Second},
+		// 간격표 칸보다 긴 힌트(20ms)는 따른다: 20+20+40ms(마지막 칸은 40ms가 더 큼).
+		"middle hint": {20 * time.Millisecond, true, true, 80 * time.Millisecond, time.Second},
 		// 아주 긴 힌트는 가장 긴 간격(40ms)으로 잘린다: 3번 × 40ms.
 		"long hint": {time.Hour, true, true, 120 * time.Millisecond, time.Second},
 		// 요청 한도가 아니면 힌트(0)를 보지 않고 일반 간격표(50ms)대로 기다린다.

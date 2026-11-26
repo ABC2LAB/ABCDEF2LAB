@@ -247,8 +247,8 @@ var firstDiagnosisModelRetryDelays = []time.Duration{2 * time.Second, 6 * time.S
 // (2분)보다 짧게 둔다.
 //
 // 2026-11-26 사용자 결정(NodeGoat 회차 2: 429 40%, 계획 호출 하나가 5번째 시도에서 겨우 성공): 다시 보내기를 한 번 늘려 최대
-// 5번으로 하고, 응답에 Retry-After가 있으면 그 값을 따른다(상한은 이 표의 가장 긴 간격 30초). 최악 합계(5×30초)도 준비 단계
-// 상한(FirstDiagnosisPreparationTimeout)보다 짧다.
+// 5번으로 하고, 응답에 Retry-After가 있으면 이 표의 그 칸과 Retry-After 중 큰 쪽을 기다린다(위는 이 표의 가장 긴 간격 30초,
+// 2026-11-27 결정 (나)). 최악 합계(5×30초)도 준비 단계 상한(FirstDiagnosisPreparationTimeout)보다 짧다.
 var firstDiagnosisRateLimitRetryDelays = []time.Duration{2 * time.Second, 6 * time.Second, 15 * time.Second, 30 * time.Second, 30 * time.Second}
 
 // firstDiagnosisRetryModelCall은 호출 하나를 보내고, 호출이 실패했지만(callErr) 예산·승인이 막히지 않았으면 정한 간격으로
@@ -263,8 +263,8 @@ func firstDiagnosisRetryModelCallWith(ctx context.Context, delays, rateLimitDela
 	return firstDiagnosisRetryModelCallAfter(ctx, delays, rateLimitDelays, rateLimited, nil, once, retryable)
 }
 
-// firstDiagnosisRetryModelCallAfter는 위와 같되, 마지막 실패가 요청 한도이고 응답에 Retry-After가 있으면(retryAfter) 그
-// 값을 기다린다. 기다리는 시간은 요청 한도 간격표의 가장 긴 간격을 넘지 않는다.
+// firstDiagnosisRetryModelCallAfter는 위와 같되, 마지막 실패가 요청 한도이고 응답에 Retry-After가 있으면(retryAfter) 간격표의
+// 그 칸과 Retry-After 중 큰 쪽을 기다린다. 기다리는 시간은 요청 한도 간격표의 가장 긴 간격을 넘지 않는다.
 func firstDiagnosisRetryModelCallAfter(ctx context.Context, delays, rateLimitDelays []time.Duration, rateLimited func() bool, retryAfter func() (time.Duration, bool), once func() (llm.Message, string, llm.Usage, error, error), retryable func() bool) (llm.Message, string, llm.Usage, error) {
 	for attempt := 0; ; attempt++ {
 		message, reason, usage, callErr, budgetErr := once()
@@ -281,8 +281,10 @@ func firstDiagnosisRetryModelCallAfter(ctx context.Context, delays, rateLimitDel
 		}
 		wait := schedule[attempt]
 		if limited && retryAfter != nil {
+			// Retry-After는 기다림을 늘릴 때만 쓴다: 간격표의 이 칸과 Retry-After 중 큰 쪽, 위는 간격표의 가장 긴 간격이다
+			// (2026-11-27 사용자 결정 (나), #980 윤재상 리뷰: 0·짧은 값을 그대로 따르면 예전보다 빨리 포기한다).
 			if hint, ok := retryAfter(); ok {
-				wait = min(max(hint, 0), slices.Max(schedule))
+				wait = min(max(hint, wait), slices.Max(schedule))
 			}
 		}
 		timer := time.NewTimer(wait)
