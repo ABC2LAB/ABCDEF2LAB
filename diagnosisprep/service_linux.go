@@ -601,7 +601,7 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		}
 		if record.Job.State != Stopping {
 			record.Job.State = Stopping
-			record.Job.ReasonCode = "stop_requested"
+			record.Job.ReasonCode = stopRequestedReason
 			record.Job.Revision++
 			if err := s.save(record); err != nil {
 				return responseError(r, "unavailable"), nil
@@ -680,6 +680,10 @@ func monotonic(old, next Job) bool {
 	}
 	return true
 }
+
+// stopRequestedReason은 운영자가 중지를 요청한 실행의 사유다. 중지 중과 중지로 끝난 상태에 남는다.
+const stopRequestedReason = "stop_requested"
+
 func (s *Service) publish(id string, u Update) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -728,6 +732,11 @@ func (s *Service) publish(id string, u Update) error {
 	// 중지 요청을 후속 준비·실행 갱신으로 취소하지 않는다. 확인된 종료는 반영한다.
 	if old.Job.State == Stopping && active(next.Job.State) {
 		next.Job.State = Stopping
+	}
+	// 운영자 중지 요청 사유는 중지 중 갱신과 사유 없는 중지 끝 상태에서 지우지 않는다. 실행 쪽이 다른 사유(계정 결속 변경·
+	// 대상 철회·결과 불명 등)를 붙였으면 그 사유가 이긴다(B1: 끝 상태에서 운영자 중지를 구분).
+	if old.Job.State == Stopping && old.Job.ReasonCode == stopRequestedReason && u.ReasonCode == "" && (next.Job.State == Stopping || next.Job.State == Cancelled) {
+		next.Job.ReasonCode = stopRequestedReason
 	}
 	if old.Job.State == Stopping && phaseRank(next.Job.Phase) > phaseRank(old.Job.Phase) && next.Job.Phase != Closure && next.Job.Phase != Report {
 		return ErrUnavailable

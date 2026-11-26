@@ -6,6 +6,7 @@ import (
 
 	"github.com/Autumn-27/artex/diagnosis"
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/server"
 )
 
 // 마감 갱신의 결과 칸: completed는 그대로, cancelled는 intent 결과 개수만(outcome·closing_reason 버림), 나머지는
@@ -138,5 +139,48 @@ func TestAccountAuthProgressPublishesChangesAndCarriesLast(t *testing.T) {
 	}
 	if got := (&accountAuthProgress{}).final(closing); got["tester-b"] != "session_not_found" {
 		t.Fatalf("실행 중에 싣지 못했으면 마감 결과 %v", got)
+	}
+}
+
+// 진단 실행이 스스로 끝난 상태의 사유(B1): failed·unknown은 실행이 분류한 사유를 그대로 싣고, 중지는 원인 있는 중지만 이름을
+// 붙이며(실행 쪽 사유는 쓰지 않음), 완료에는 사유가 없다. 사용량을 모르면 결과 불명 사유가 이긴다.
+func TestURLSnapshotUpdateCarriesRunReason(t *testing.T) {
+	known := diagnosisprep.ModelUsage{UsageKnown: true}
+	plain := context.Background()
+	target, stopTarget := context.WithCancelCause(context.Background())
+	stopTarget(server.ErrFirstDiagnosisTargetEnded)
+	recheck, stopRecheck := context.WithCancelCause(context.Background())
+	stopRecheck(errAuthorityRecheckFailed)
+	timed, stopTimed := context.WithTimeout(context.Background(), 0)
+	defer stopTimed()
+	base := diagnosis.Snapshot{TaskID: "23", PreparationRef: "prep-1", Started: true, DrainComplete: true, ResultReady: true}
+	for name, tc := range map[string]struct {
+		ctx    context.Context
+		edit   func(*diagnosis.Snapshot)
+		usage  diagnosisprep.ModelUsage
+		state  diagnosisprep.State
+		reason string
+	}{
+		"failed exploration": {plain, func(s *diagnosis.Snapshot) { s.State, s.ReasonCode = diagnosis.Failed, "planning_exploration_failed" }, known, diagnosisprep.Failed, "planning_exploration_failed"},
+		"failed no reason":   {plain, func(s *diagnosis.Snapshot) { s.State = diagnosis.Failed }, known, diagnosisprep.Failed, ""},
+		"unknown closure": {plain, func(s *diagnosis.Snapshot) {
+			s.State, s.DrainComplete, s.ReasonCode = diagnosis.Unknown, false, diagnosis.ReasonClosureUnconfirmed
+		}, known, diagnosisprep.Unknown, diagnosis.ReasonClosureUnconfirmed},
+		"cancelled target":     {target, func(s *diagnosis.Snapshot) { s.State = diagnosis.Cancelled }, known, diagnosisprep.Cancelled, "target_ended"},
+		"cancelled plain":      {plain, func(s *diagnosis.Snapshot) { s.State = diagnosis.Cancelled }, known, diagnosisprep.Cancelled, ""},
+		"cancelled recheck":    {recheck, func(s *diagnosis.Snapshot) { s.State = diagnosis.Cancelled }, known, diagnosisprep.Cancelled, "authority_recheck_failed"},
+		"cancelled time limit": {timed, func(s *diagnosis.Snapshot) { s.State = diagnosis.Cancelled }, known, diagnosisprep.Cancelled, "run_time_limit_reached"},
+		"completed": {plain, func(s *diagnosis.Snapshot) {
+			s.State, s.Result = diagnosis.Completed, &diagnosis.RunResult{Outcome: diagnosis.OutcomeComplete, IntentOutcomes: diagnosis.IntentOutcomes{Done: 1}}
+		}, known, diagnosisprep.Completed, ""},
+		"usage unknown wins": {plain, func(s *diagnosis.Snapshot) { s.State, s.ReasonCode = diagnosis.Failed, "planning_exploration_failed" }, diagnosisprep.ModelUsage{}, diagnosisprep.Unknown, "model_usage_unknown"},
+	} {
+		s := base
+		tc.edit(&s)
+		var u diagnosisprep.Update
+		urlSnapshotUpdate(tc.ctx, s, tc.usage, nil)(&u)
+		if u.State != tc.state || u.ReasonCode != tc.reason || u.Phase != diagnosisprep.Report {
+			t.Fatalf("%s: state=%s reason=%q", name, u.State, u.ReasonCode)
+		}
 	}
 }

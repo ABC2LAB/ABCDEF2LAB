@@ -79,7 +79,7 @@ task로 여러 준비/실행/조회 파일을 묶고, run/call/attempt 해시와
 | `result_unknown`, `e2_http_execution_result_unknown` | 송신 결과를 확인 못함. 성공/미전송으로 추정하지 않음 |
 | `candidate_store_failed`, `result_storage_failed` | 후보 DB 저장 또는 최종 결과 저장 실패 |
 | `audit_failed`, `drain_failed` | 감사·실행 마감 실패. 로깅 장애와 다름 |
-| `closure_*`, `engine_task_failed` | 일반 HTTP 마감 판정에서 막은 검사(예: `closure_tool_outcome_invalid` 호출 분류, `closure_policy_limited_unmatched` 정책 제한 근거 없음, `closure_call_mismatch` 신뢰 결과와 E② 기록 불일치), 엔진이 작업을 실패로 표시함. 감독자 `stage_finished`·`run_finished`·`run_summary`에 `execution_failed` 대신 남음 |
+| `closure_*`, `engine_task_failed` | 일반 HTTP 마감 판정에서 막은 검사(예: `closure_tool_outcome_invalid` 호출 분류, `closure_policy_limited_unmatched` 정책 제한 근거 없음, `closure_call_mismatch` 신뢰 결과와 E② 기록 불일치), 엔진이 작업을 실패로 표시함. 감독자 `stage_finished`·`run_finished`·`run_summary`에 `execution_failed` 대신 남음. 엔진이 계획 준비 실패로 작업을 실패로 표시했으면 `engine_task_failed` 대신 그 분기 사유(`planning_exploration_failed` 등)가 남는다(B1). 실패 실행의 `run_finished` 사유는 진단 상태·진단 준비 Job의 `reason_code`로도 간다([실행 결과 상태 값 계약](contracts/run-outcome-states.md) §3.1) |
 | `user_cancelled`, `cancelled` | 사용자/문맥 취소. 일부 요청이 이미 나갔는지는 E② 감사 확인 |
 
 대상이 HTTP 4xx/5xx를 반환한 것은 응답을 받은 사실이며 모델 HTTP 오류나 정책 거절과 다르다.

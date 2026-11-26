@@ -53,6 +53,45 @@ type Snapshot struct {
 	Result         *RunResult `json:"result,omitempty"`
 	// AccountAuth는 시험 계정별 인증 준비 결과다(계약 §3.4, C14). completed·cancelled·failed, 계정을 결속한 실행만.
 	AccountAuth map[string]string `json:"account_auth,omitempty"`
+	// ReasonCode는 failed·unknown 실행의 고정 사유 코드다(계약 docs/contracts/run-outcome-states.md §3.1). 실행이 이미 분류한
+	// 사유(진단 로그 run_finished와 같은 값)만 싣고 원문 오류는 싣지 않는다. 모르면 없다.
+	ReasonCode string `json:"reason_code,omitempty"`
+}
+
+// 실행 상태 사유 코드다(진단 준비 Job의 reason_code와 같은 형식).
+var reasonCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+const (
+	// ReasonClosureUnconfirmed는 실행 마감(감사·결과 저장)을 확인하지 못해 결과 불명인 실행이다.
+	ReasonClosureUnconfirmed = "execution_closure_unconfirmed"
+	// ReasonResultUnconfirmed는 마감은 확인했지만 실행 결과가 없거나 계약에 맞지 않아 결과 불명인 실행이다(절대 규칙 5).
+	ReasonResultUnconfirmed = "execution_result_unconfirmed"
+)
+
+// reasonError는 Runner가 돌려준 실패에 고정 사유 코드를 싣는다. 호출자에게는 감싼 원래 오류로 보인다.
+type reasonError struct {
+	code string
+	err  error
+}
+
+func (e reasonError) Error() string { return e.err.Error() }
+func (e reasonError) Unwrap() error { return e.err }
+
+// WithReason은 실행 실패 오류에 고정 사유 코드를 싣는다. 오류가 없거나 코드 형식이 틀리면 원래 오류를 그대로 돌려준다.
+func WithReason(err error, code string) error {
+	if err == nil || !reasonCodePattern.MatchString(code) {
+		return err
+	}
+	return reasonError{code: code, err: err}
+}
+
+// ReasonOf는 오류에 실린 고정 사유 코드다. 없으면 빈 문자열이다.
+func ReasonOf(err error) string {
+	var r reasonError
+	if errors.As(err, &r) {
+		return r.code
+	}
+	return ""
 }
 
 // 시험 계정 인증 준비 결과 값이다(계약 §3.4). 자격·세션 값은 없다.
@@ -193,6 +232,9 @@ func validSnapshot(s Snapshot) bool {
 		return false
 	}
 	if s.AccountAuth != nil && (!AccountAuthState(s.State) || !ValidAccountAuth(s.AccountAuth)) {
+		return false
+	}
+	if s.ReasonCode != "" && (s.State != Failed && s.State != Unknown || !reasonCodePattern.MatchString(s.ReasonCode)) {
 		return false
 	}
 	switch s.State {

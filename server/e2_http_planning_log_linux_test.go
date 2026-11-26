@@ -165,8 +165,19 @@ func TestPlanningFailureReasonsPreserveReturnAndBudgets(t *testing.T) {
 			}
 			rounds := runtime.task.plannerRounds
 			out, err := runtime.PreparePlanning(inputCtx, inputTask)
-			if err != tc.want || tc.want != nil && out != inputCtx || task.firstDiagnosisBudgetLimited.Load() != tc.limited {
+			if (tc.want == nil) != (err == nil) || !errors.Is(err, tc.want) || tc.want != nil && out != inputCtx || task.firstDiagnosisBudgetLimited.Load() != tc.limited {
 				t.Fatal("관측이 기존 반환·예산 의미를 변경함", err)
+			}
+			// 엔진이 작업을 실패로 표시하는 분기는 진단 로그와 같은 고정 사유를 오류에 싣는다(B1). 원문 오류는 사유가 아니다.
+			if reason, ok := diagnosisCheckReason(err); tc.want != nil && !tc.limited && (!ok || reason != tc.reason) {
+				t.Fatalf("실패 오류의 사유 %q, 기대 %q", reason, tc.reason)
+			}
+			if tc.want != nil && !tc.limited {
+				failed := &Task{ID: task.ID}
+				failed.recordFirstDiagnosisFailure(err)
+				if failed.firstDiagnosisFailure() != tc.reason {
+					t.Fatal("작업에 실패 사유가 남지 않음")
+				}
 			}
 			wantRounds := rounds
 			if tc.want == nil {
@@ -202,7 +213,7 @@ func TestPlanningDiagnosticFailureDoesNotChangeReturn(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime.options.CheckAuthority = func(context.Context) error { return errors.New("synthetic-private-session") }
-	if _, err := runtime.PreparePlanning(ctx, task); err != ErrE2HTTPHost || runtime.task.plannerRounds != 0 || task.firstDiagnosisBudgetLimited.Load() {
+	if _, err := runtime.PreparePlanning(ctx, task); !errors.Is(err, ErrE2HTTPHost) || runtime.task.plannerRounds != 0 || task.firstDiagnosisBudgetLimited.Load() {
 		t.Fatal("운영 기록 장애가 실행 판정을 변경함")
 	}
 }

@@ -3,6 +3,8 @@ package diagnosis
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -406,5 +408,77 @@ func TestIntentOutcomesGoalMet(t *testing.T) {
 	}
 	if (RunResult{Outcome: OutcomePartial, IntentOutcomes: IntentOutcomes{Done: 1, GoalMet: 2}}).Valid() {
 		t.Fatal("partial without remaining work accepted")
+	}
+}
+
+// 실행이 분류한 실패 사유는 failed 상태까지 실리고, 마감·결과를 확인하지 못한 unknown은 그 사유가 붙는다(B1). 사유 없는 실패는
+// 사유 없이 failed다. 형식이 틀린 사유는 싣지 않는다. 완료·중지에는 사유가 없다.
+func TestRunReasonReachesSnapshot(t *testing.T) {
+	saved := Closure{DrainComplete: true, ResultReady: true}
+	for _, tc := range []struct {
+		name     string
+		runErr   error
+		closeErr error
+		closure  Closure
+		state    State
+		reason   string
+	}{
+		{"failed_with_reason", WithReason(errors.New("private failure"), "planning_exploration_failed"), nil, saved, Failed, "planning_exploration_failed"},
+		{"failed_wrapped_reason", fmt.Errorf("outer: %w", WithReason(errors.New("private failure"), "timeout")), nil, saved, Failed, "timeout"},
+		{"failed_without_reason", errors.New("private failure"), nil, saved, Failed, ""},
+		{"failed_invalid_reason", WithReason(errors.New("private failure"), "Bad Reason"), nil, saved, Failed, ""},
+		{"closure_unconfirmed", WithReason(errors.New("private failure"), "planning_exploration_failed"), errors.New("close failure"), Closure{DrainComplete: true, ResultReady: false}, Unknown, ReasonClosureUnconfirmed},
+		{"drain_incomplete", nil, nil, Closure{DrainComplete: false, ResultReady: true}, Unknown, ReasonClosureUnconfirmed},
+		{"result_unconfirmed", nil, nil, saved, Unknown, ReasonResultUnconfirmed},
+		{"cancelled", WithReason(context.Canceled, "user_cancelled"), nil, saved, Cancelled, ""},
+		{"completed", WithReason(nil, "planning_exploration_failed"), nil, Closure{DrainComplete: true, ResultReady: true, Result: completeResult()}, Completed, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &testRunner{finish: make(chan struct{}), runErr: tc.runErr, closeErr: tc.closeErr, closure: &tc.closure}
+			s := newTestService(t, runner)
+			_, _ = s.Call(context.Background(), request(Start))
+			close(runner.finish)
+			awaitState(t, s, tc.state)
+			response, _ := s.Call(context.Background(), request(Status))
+			if response.Snapshot.ReasonCode != tc.reason || !validSnapshot(*response.Snapshot) {
+				t.Fatalf("사유 %q, 기대 %q (유효 %v)", response.Snapshot.ReasonCode, tc.reason, validSnapshot(*response.Snapshot))
+			}
+		})
+	}
+}
+
+// 상대 구현이 보낸 사유는 failed·unknown에만, 정한 형식으로만 받는다.
+func TestSnapshotReasonValidation(t *testing.T) {
+	base := Snapshot{TaskID: "23", PreparationRef: "operator-prepared", Started: true, DrainComplete: true, ResultReady: true}
+	for _, tc := range []struct {
+		name  string
+		edit  func(*Snapshot)
+		valid bool
+	}{
+		{"failed", func(s *Snapshot) { s.State, s.ReasonCode = Failed, "engine_task_failed" }, true},
+		{"unknown", func(s *Snapshot) { s.State, s.ReasonCode = Unknown, ReasonClosureUnconfirmed }, true},
+		{"completed", func(s *Snapshot) { s.State, s.Result, s.ReasonCode = Completed, completeResult(), "engine_task_failed" }, false},
+		{"cancelled", func(s *Snapshot) { s.State, s.ReasonCode = Cancelled, "stop_requested" }, false},
+		{"running", func(s *Snapshot) {
+			s.State, s.DrainComplete, s.ResultReady, s.ReasonCode = Running, false, false, "engine_task_failed"
+		}, false},
+		{"upper case", func(s *Snapshot) { s.State, s.ReasonCode = Failed, "Engine_failed" }, false},
+		{"too long", func(s *Snapshot) { s.State, s.ReasonCode = Failed, "a"+strings.Repeat("b", 64) }, false},
+		{"raw error", func(s *Snapshot) { s.State, s.ReasonCode = Failed, "dial tcp: refused" }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := base
+			tc.edit(&s)
+			if validSnapshot(s) != tc.valid {
+				t.Fatalf("유효 %v, 기대 %v", validSnapshot(s), tc.valid)
+			}
+		})
+	}
+	if err := errors.New("x"); WithReason(err, "") != err || WithReason(err, "a b") != err || WithReason(nil, "timeout") != nil {
+		t.Fatal("형식이 틀린 사유나 오류 없음을 감쌈")
+	}
+	wrapped := WithReason(context.Canceled, "timeout")
+	if !errors.Is(wrapped, context.Canceled) || wrapped.Error() != context.Canceled.Error() {
+		t.Fatal("감싼 오류가 원래 오류로 보이지 않음")
 	}
 }

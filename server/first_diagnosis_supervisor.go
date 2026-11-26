@@ -629,6 +629,11 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 		s.runLogErr = loggedErr
 		s.completed = err == nil
 		s.mu.Unlock()
+		// 실패·시간 초과로 끝난 실행은 run_finished와 같은 고정 사유를 돌려주는 오류에 싣는다. 진단 실행 상태(diagnosis
+		// Snapshot.reason_code)가 이 사유를 싣는다(B1). 감싼 오류는 errors.Is로 원래 오류와 같게 보인다.
+		if status == "failed" || status == "timeout" {
+			err = diagnosis.WithReason(err, reason)
+		}
 		s.operations.Done()
 	}()
 	run, cancel := firstDiagnosisRunContext(ctx)
@@ -780,7 +785,8 @@ func (s *FirstDiagnosisSupervisor) Run(ctx context.Context, taskID string, inten
 			observed := ErrFirstDiagnosisSupervisor
 			if state.Status == "failed" {
 				// 엔진이 작업을 실패로 표시했다(Planner 준비 거부 등). 감독자의 마감 판정 실패와 나눠 보인다.
-				observed = firstDiagnosisCheckFailed(reasonEngineTaskFailed, ErrFirstDiagnosisSupervisor)
+				// 엔진이 실패로 표시하며 분류한 사유(계획 준비 실패 등)가 있으면 그 사유를, 없으면 일반 엔진 실패 사유를 쓴다(B1).
+				observed = firstDiagnosisCheckFailed(task.firstDiagnosisFailure(), ErrFirstDiagnosisSupervisor)
 			}
 			observedRunErr = diagnosisRunObservedError(observed, state.Status, intentState)
 			return ErrFirstDiagnosisSupervisor

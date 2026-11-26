@@ -563,6 +563,13 @@ func (r *E2HTTPRuntime) planningFailure(ctx context.Context, status, reason stri
 	_ = diagnosticlog.Emit(logContext, diagnosticlog.Event{Component: "planner", Event: "stage_finished", Stage: "planning", Status: status, ReasonCode: reason})
 }
 
+// planningFailed는 계획 준비 실패를 진단 로그에 남기고, 같은 고정 사유를 오류에 싣는다. 엔진이 그 오류로 작업을 실패로
+// 표시하면 감독자가 이 사유를 실행 상태(reason_code)까지 싣는다(B1). 감싼 오류는 errors.Is로 원래 오류와 같게 보인다.
+func (r *E2HTTPRuntime) planningFailed(ctx context.Context, status, reason string, err error) error {
+	r.planningFailure(ctx, status, reason)
+	return firstDiagnosisCheckFailed(reason, err)
+}
+
 // timeBudgetDrained는 계획 준비 중(탐색 단계·범위 선택이나 흐름 일시정지 대기)에 감독자가 시간 상한 마감 유예를 다 써서
 // 실행을 멈춘 경우인지 본다(agent.AbortTimeBudgetDrain).
 func timeBudgetDrained(ctx context.Context) bool {
@@ -582,8 +589,7 @@ func (r *E2HTTPRuntime) planningTimeBudget(ctx context.Context, task *Task) erro
 func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (context.Context, error) {
 	t, err := r.taskFor(task)
 	if err != nil {
-		r.planningFailure(ctx, "failed", "planning_task_unavailable")
-		return ctx, ErrE2HTTPHost
+		return ctx, r.planningFailed(ctx, "failed", "planning_task_unavailable", ErrE2HTTPHost)
 	}
 	if ctx == nil || ctx.Err() != nil {
 		status := "failed"
@@ -594,42 +600,35 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 				status = "cancelled"
 			}
 		}
-		r.planningFailure(ctx, status, "planning_context_closed")
-		return ctx, ErrE2HTTPHost
+		return ctx, r.planningFailed(ctx, status, "planning_context_closed", ErrE2HTTPHost)
 	}
 	if r.options.CheckAuthority != nil && r.options.CheckAuthority(ctx) != nil {
-		r.planningFailure(ctx, "failed", "planning_authority_rejected")
-		return ctx, ErrE2HTTPHost
+		return ctx, r.planningFailed(ctx, "failed", "planning_authority_rejected", ErrE2HTTPHost)
 	}
 	if err := r.prepareExploration(ctx, task, t); err != nil {
 		if timeBudgetDrained(ctx) {
 			return ctx, r.planningTimeBudget(ctx, task)
 		}
-		r.planningFailure(ctx, "failed", "planning_exploration_failed")
-		return ctx, err
+		return ctx, r.planningFailed(ctx, "failed", "planning_exploration_failed", err)
 	}
 	if r.options.Workflow != nil {
 		if err := r.options.Workflow.BeforePlanning(ctx); err != nil {
 			if timeBudgetDrained(ctx) {
 				return ctx, r.planningTimeBudget(ctx, task)
 			}
-			r.planningFailure(ctx, "blocked", "planning_workflow_blocked")
-			return ctx, err
+			return ctx, r.planningFailed(ctx, "blocked", "planning_workflow_blocked", err)
 		}
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
-		r.planningFailure(ctx, "failed", "planning_task_closed")
-		return ctx, ErrE2HTTPHost
+		return ctx, r.planningFailed(ctx, "failed", "planning_task_closed", ErrE2HTTPHost)
 	}
 	if t.blocked {
-		r.planningFailure(ctx, "blocked", "planning_task_blocked")
-		return ctx, ErrE2HTTPHost
+		return ctx, r.planningFailed(ctx, "blocked", "planning_task_blocked", ErrE2HTTPHost)
 	}
 	if t.ctx.Err() != nil {
-		r.planningFailure(ctx, "cancelled", "planning_task_cancelled")
-		return ctx, ErrE2HTTPHost
+		return ctx, r.planningFailed(ctx, "cancelled", "planning_task_cancelled", ErrE2HTTPHost)
 	}
 	if t.plannerRounds >= r.options.MaxPlannerRounds {
 		task.firstDiagnosisBudgetLimited.Store(true)
@@ -644,16 +643,14 @@ func (r *E2HTTPRuntime) PreparePlanning(ctx context.Context, task *Task) (contex
 	// Worker가 실행 중이어도 Planner를 깨운다(C27). 모델 동시성·예산·기존 lease 판정은 바꾸지 않는다.
 	if t.lease != nil {
 		if !t.validLease {
-			r.planningFailure(ctx, "failed", "planning_lease_invalid")
-			return ctx, ErrE2HTTPHost
+			return ctx, r.planningFailed(ctx, "failed", "planning_lease_invalid", ErrE2HTTPHost)
 		}
 		if err := r.leaseAdmission(task, t, *t.lease); err != nil {
 			status, reason := "failed", "planning_lease_invalid"
 			if errors.Is(err, ErrE2HTTPBudgetLimited) {
 				status, reason = "blocked", "planning_request_budget"
 			}
-			r.planningFailure(ctx, status, reason)
-			return ctx, err
+			return ctx, r.planningFailed(ctx, status, reason, err)
 		}
 	}
 	t.plannerRounds++

@@ -570,6 +570,20 @@ func TestFirstDiagnosisRuntimeDatabaseOwnedPostgres(t *testing.T) {
 			}
 			firstDiagnosisSupervisorEngineRun(t, manager, installer, prepareFail, "prepare-fail")
 		})
+		t.Run("actual-engine-exploration-failure-keeps-reason", func(t *testing.T) {
+			explorationFail, err := manager.CreateTask("Owned exploration failure fixture", "Keep the classified failure reason", nil, 60, 60)
+			if err != nil || explorationFail == nil {
+				t.Fatal("독립 탐색 실패 task 생성 실패")
+			}
+			if _, err := runtimePool.ExecContext(ctx, "UPDATE tasks SET paused=true WHERE id=$1", explorationFail.ID); err != nil {
+				t.Fatal("탐색 실패 task 준비 상태 저장 실패")
+			}
+			explorationFail.updateLifecycle(func(state *taskLifecycleState) { state.Paused = true })
+			if id, err := explorationFail.Store.AddIntent(map[string]any{"summary": "Fail exploration before planning"}, 1, nil, "system"); err != nil || id <= 0 {
+				t.Fatal("탐색 실패 intent 생성 실패")
+			}
+			firstDiagnosisSupervisorEngineRun(t, manager, installer, explorationFail, "exploration-fail")
+		})
 		t.Run("actual-engine-audit-close-failure-is-not-success", func(t *testing.T) {
 			closeFail, err := manager.CreateTask("Owned audit-close failure fixture", "Keep closure failure distinct from a command result", nil, 60, 60)
 			if err != nil || closeFail == nil {
