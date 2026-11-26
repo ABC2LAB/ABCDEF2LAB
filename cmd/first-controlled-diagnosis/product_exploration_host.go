@@ -20,6 +20,7 @@ import (
 	"github.com/Autumn-27/artex/exploration"
 	"github.com/Autumn-27/artex/exploreboundary"
 	"github.com/Autumn-27/artex/exploresandbox"
+	"github.com/Autumn-27/artex/loginattempt"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -237,7 +238,7 @@ func (l productMCPLease) Close(context.Context) error         { return nil }
 
 // factory는 한 실행의 결속(대상 기록·원본 digest·제외 경로)으로 탐색 host를 조립한다. 실제 연결·송신은 탐색 단계가
 // Boundary.Open·StartBrowser를 부를 때 시작한다. current는 대상 승인이 지금도 같은지 본다(철회·만료는 target_ended).
-func (h *productExplorationHost) factory(rec productTargetRecord, current func(productTargetRecord) error, digest string, excluded []string, maxBytes int64, connection *productTargetConnection, passwords *explorationPasswords) server.ExplorationPipelineFactory {
+func (h *productExplorationHost) factory(rec productTargetRecord, current func(productTargetRecord) error, digest string, excluded []string, maxBytes int64, connection *productTargetConnection, passwords *explorationPasswords, login *exploreboundary.WireLogin) server.ExplorationPipelineFactory {
 	// 검증한 IP·SPKI를 값으로 복사하여 다음 실행의 증거가 섞이지 않게 한다.
 	var selected productTargetConnection
 	if connection != nil {
@@ -265,7 +266,12 @@ func (h *productExplorationHost) factory(rec productTargetRecord, current func(p
 		if err != nil {
 			return server.ExplorationPipelineHost{}, err
 		}
-		boundary := exploreboundary.ControlBoundary{Client: h.control, SourceDigest: digest, Target: func(_ context.Context, ref string, revision uint64) (exploreboundary.Target, error) {
+		// 모델 직접 로그인(docs/contracts/model-login-attempts.md): 경계가 로그인 시도를 판정하고 탐색 쓰기 예외를 지킨다.
+		// 판정 설정이 없으면 탐색을 열지 않는다(연속 실패 상한 없이 로그인 POST가 나가지 않게).
+		if login == nil {
+			return server.ExplorationPipelineHost{}, exploration.ErrBinding
+		}
+		boundary := exploreboundary.ControlBoundary{Client: h.control, SourceDigest: digest, Login: login, Target: func(_ context.Context, ref string, revision uint64) (exploreboundary.Target, error) {
 			if ref != rec.Target.ID || revision != rec.Target.Revision {
 				return exploreboundary.Target{}, exploreboundary.ErrTargetEnded
 			}
@@ -304,4 +310,12 @@ func (h *productExplorationHost) factory(rec productTargetRecord, current func(p
 		}
 		return server.ExplorationPipelineHost{Session: session, Reader: reader, Fetch: fetch.Fetch, Sequences: reader.Sequences}, nil
 	}
+}
+
+// loginAttempts는 이 결속 탐색 세션의 로그인 시도 행을 경계에서 읽는다(세션을 닫은 뒤에도 다음 세션 전까지).
+func (h *productExplorationHost) loginAttempts(ctx context.Context, b exploration.Binding) ([]loginattempt.Row, uint64, error) {
+	if h == nil {
+		return nil, 0, exploration.ErrUnavailable
+	}
+	return exploreboundary.ControlReader{Client: h.control, Binding: b}.LoginAttempts(ctx)
 }

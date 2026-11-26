@@ -176,7 +176,7 @@ func (f hostFixture) current(productTargetRecord) error {
 // 브라우저 MCP 정보를 결속대로 주고, 마감하면 새 요청을 받지 않는다.
 func TestProductExplorationHostDrivesRealBoundary(t *testing.T) {
 	f := newHostFixture(t)
-	host, err := f.host.factory(f.rec, f.current, f.digest, []string{"/read/admin"}, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{})(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, []string{"/read/admin"}, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +240,7 @@ func TestProductExplorationHostDrivesRealBoundary(t *testing.T) {
 func TestProductExplorationHostHonorsTargetApproval(t *testing.T) {
 	f := newHostFixture(t)
 	f.ended.Store(true)
-	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{})(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestProductExplorationHostHonorsTargetApproval(t *testing.T) {
 	}
 	wrong := f.binding
 	wrong.TargetRevision = 3
-	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{})(t.Context(), wrong, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
+	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), wrong, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
 		t.Fatal("host accepted another target revision")
 	}
 }
@@ -333,11 +333,11 @@ func TestProductExplorationOptionsUseInstalledHost(t *testing.T) {
 func TestProductExplorationHostRecordRedaction(t *testing.T) {
 	f := newHostFixture(t)
 	connection := &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}
-	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, nil)(t.Context(), f.binding, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
+	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, nil, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
 		t.Fatalf("host opened without a password list: %v", err)
 	}
 	passwords := &explorationPasswords{values: [][]byte{[]byte("tester-password")}}
-	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, passwords)(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, passwords, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,5 +377,24 @@ func TestProductExplorationOptionsBindRunPasswords(t *testing.T) {
 	loaded.clearMaterials()
 	if got := string(host.Session.RedactRecord([]byte("after run"))); got != dlp.Redacted {
 		t.Fatalf("record after run end: %s", got)
+	}
+}
+
+// 모델 직접 로그인: 탐색 host는 경계 로그인 판정 설정 없이는 열지 않는다(연속 실패 상한 없이 로그인 POST가 나가지 않게).
+// 판정 설정은 실행 자료의 자격과 제품 기본 상한으로 만든다.
+func TestProductExplorationHostRequiresLoginConfig(t *testing.T) {
+	f := newHostFixture(t)
+	connection := &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}
+	passwords := &explorationPasswords{values: [][]byte{[]byte("tester-password")}}
+	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, passwords, nil)(t.Context(), f.binding, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
+		t.Fatalf("판정 설정 없이 탐색을 엶: %v", err)
+	}
+	login := productExplorationLogin([]agent.E2HTTPAccountCredential{{Label: "tester-a", Username: "user1", Password: "alpha-pass-1"}})
+	if len(login.Accounts) != 1 || login.Accounts[0].Label != "tester-a" || login.Accounts[0].Password != "alpha-pass-1" ||
+		login.MaxConsecutiveFailures != productLoginConsecutiveFailures || login.MaxContrastProbes != productLoginContrastProbes || login.TokenMinBytes != productLoginTokenMinBytes {
+		t.Fatalf("판정 설정: %+v", login.Accounts)
+	}
+	if empty := productExplorationLogin(nil); empty == nil || len(empty.Accounts) != 0 || empty.MaxConsecutiveFailures != productLoginConsecutiveFailures {
+		t.Fatal("계정 없는 회차도 상한을 지켜야 함")
 	}
 }

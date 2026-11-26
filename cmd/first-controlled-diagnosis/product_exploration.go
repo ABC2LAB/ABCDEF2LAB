@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/exploration"
+	"github.com/Autumn-27/artex/exploreboundary"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -62,6 +64,12 @@ func (b *urlPreparationRuntime) productExplorationOptions(l *urlLoadedProfile, e
 	binding := exploration.Binding{SessionRef: "explore-" + rand.Text(), RunRef: "run-" + e.Job.ID, JobID: e.Job.ID, TaskID: taskID, TargetRef: l.productTarget.Target.ID, TargetRevision: l.productTarget.Target.Revision, WriteMode: exploration.ReadOnly, CommMode: mode, Limits: limits}
 	maxDuration := min(timeout, time.Duration(limits.TimeBudgetSeconds)*time.Second)
 	options := server.ExplorationPipelineOptions{Workflow: flow, Binding: binding, SourceDigest: e.Job.SourceDigest, TargetURL: e.Job.Input.TargetURL, ApprovedPaths: productExplorationPaths(e.Job), MaxTurns: l.policy.Runtime.MaxWorkerTurns, MaxDuration: maxDuration}
+	// 탐색 에이전트도 등록 계정으로 브라우저에서 직접 로그인한다(사용자 결정 2026-11-26). 자격을 못 읽으면 탐색을 열지 않는다.
+	credentials, err := l.explorationCredentials()
+	if err != nil {
+		return server.ExplorationPipelineOptions{}, false
+	}
+	options.Credentials = credentials
 	if factory := b.hostCapabilities.Exploration; factory != nil {
 		options.OpenHost = func(ctx context.Context, got exploration.Binding, w *agent.Worker) (server.ExplorationPipelineHost, error) {
 			return factory(ctx, got, w)
@@ -74,14 +82,8 @@ func (b *urlPreparationRuntime) productExplorationOptions(l *urlLoadedProfile, e
 		}
 		// 탐색 기록 가림용 이 회차 시험 계정 비밀번호(메모리에만). 만들지 못하면 factory가 탐색을 열지 않는다.
 		passwords, _ := l.explorationPasswords()
-		options.OpenHost = host.factory(*l.productTarget, b.product.targets.current, e.Job.SourceDigest, excluded, limits.MaxResponseBytes, l.productConnection, passwords)
+		options.OpenHost = host.factory(*l.productTarget, b.product.targets.current, e.Job.SourceDigest, excluded, limits.MaxResponseBytes, l.productConnection, passwords, productExplorationLogin(credentials))
 	}
-	// 탐색 에이전트도 등록 계정으로 브라우저에서 직접 로그인한다(사용자 결정 2026-11-26). 자격을 못 읽으면 탐색을 열지 않는다.
-	credentials, err := l.explorationCredentials()
-	if err != nil {
-		return server.ExplorationPipelineOptions{}, false
-	}
-	options.Credentials = credentials
 
 	return options, true
 }
@@ -102,6 +104,8 @@ func (b *urlPreparationRuntime) productExplorationStage(l *urlLoadedProfile, e d
 			recordExplorationStage(stateDir, explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationRunning})
 			result, err := host.RunExplorationPipeline(ctx, task, options)
 			recordExplorationStage(stateDir, explorationResultRecord(result.Status == "NOT_RUN", result.Charge.Known, result.Charge.Requests))
+			// 탐색 단계 로그인 시도 행을 회차 기록에 옮긴다. 진단 단계(E②)가 이 행으로 아이디별 연속 실패를 이어 센다(계약 §5).
+			b.recordExplorationLoginAttempts(ctx, stateDir, options.Binding)
 			return result.Charge, err
 		}
 	}
@@ -113,4 +117,37 @@ func productExplorationPaths(job diagnosisprep.Job) []string {
 		return nil
 	}
 	return append([]string(nil), job.Scope.PathPrefixes...)
+}
+
+// productExplorationLogin은 탐색 경계의 로그인 시도 판정 설정이다. 계정이 없어도 판정한다(등록 밖 아이디도 연속 실패
+// 상한을 받는다, 계약 §1). 자격은 진단 단계와 같은 실행 자료에서 읽은 것이다.
+func productExplorationLogin(credentials []agent.E2HTTPAccountCredential) *exploreboundary.WireLogin {
+	login := &exploreboundary.WireLogin{Accounts: []exploreboundary.WireLoginAccount{}, MaxConsecutiveFailures: productLoginConsecutiveFailures,
+		MaxContrastProbes: productLoginContrastProbes, TokenMinBytes: productLoginTokenMinBytes}
+	for _, c := range credentials {
+		login.Accounts = append(login.Accounts, exploreboundary.WireLoginAccount{Label: c.Label, Username: c.Username, Password: c.Password})
+	}
+	return login
+}
+
+// recordExplorationLoginAttempts는 탐색 경계의 로그인 시도 행을 회차 상태 디렉터리 기록에 덧붙인다. 읽거나 쓰지 못하면
+// 로그만 남긴다(진단 단계는 탐색 실패 수를 모르는 채 0부터 센다).
+func (b *urlPreparationRuntime) recordExplorationLoginAttempts(ctx context.Context, stateDir string, binding exploration.Binding) {
+	host := b.product.exploration
+	if host == nil || b.hostCapabilities.Exploration != nil {
+		return
+	}
+	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), explorationCloseTimeout)
+	defer cancel()
+	rows, omitted, err := host.loginAttempts(readCtx, binding)
+	if err != nil {
+		log.Print("[first-diagnosis] 탐색 로그인 시도 기록을 경계에서 읽지 못함(진단 단계 연속 실패는 0부터)")
+		return
+	}
+	if omitted > 0 {
+		log.Printf("[first-diagnosis] 탐색 로그인 시도 행 %d개가 경계 상한으로 빠짐", omitted)
+	}
+	if err := server.AppendLoginAttemptRows(stateDir, rows); err != nil {
+		log.Print("[first-diagnosis] 탐색 로그인 시도 기록을 쓰지 못함")
+	}
 }

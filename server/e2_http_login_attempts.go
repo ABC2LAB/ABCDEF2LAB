@@ -126,3 +126,31 @@ func appendLoginAttemptRow(ctx context.Context, path string, row loginattempt.Ro
 		_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "login_attempt_record_failed", Stage: "execution", Status: "failed", RunRef: row.RunRef})
 	}
 }
+
+// AppendLoginAttemptRows는 앞 단계(탐색 경계)의 로그인 시도 행을 회차 상태 디렉터리 기록에 덧붙인다(0600). 진단 단계 판정기가
+// 실행을 잡을 때 이 행으로 연속 실패 수를 잇는다.
+func AppendLoginAttemptRows(stateDir string, rows []loginattempt.Row) error {
+	if stateDir == "" {
+		return errLoginAttempts
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	var buf []byte
+	for _, row := range rows {
+		b, err := json.Marshal(row)
+		if err != nil {
+			return errLoginAttempts
+		}
+		buf = append(append(buf, b...), '\n')
+	}
+	f, err := os.OpenFile(filepath.Join(stateDir, E2HTTPLoginAttemptsFile), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	if err != nil {
+		return errLoginAttempts
+	}
+	_, err = f.Write(buf)
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	return err
+}
