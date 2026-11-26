@@ -19,6 +19,12 @@ import (
 
 var ErrCandidateFinalVerdict = errors.New("candidate final verdict invalid")
 
+const (
+	candidateFinalMaxTokens     = 2048
+	candidateFinalEvidenceBytes = 12 << 10
+	candidateFinalPromptBytes   = 48 << 10
+)
+
 var candidateAccountRevision = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func candidateAuthComparable(original, comparison e2proxy.HTTPObservation) bool {
@@ -82,7 +88,7 @@ func modelObservation(row candidateverify.StoredObservationV2) candidateModelObs
 }
 
 func BuildCandidateFinalRequest(c CandidateAssessmentContext, maxTokens int) (llm.CompletionRequest, error) {
-	if maxTokens <= 0 || maxTokens > 2048 || c.Original.RequestID <= 0 || len(c.Followup) < 1 || len(c.Followup) > 3 ||
+	if maxTokens <= 0 || maxTokens > candidateFinalMaxTokens || c.Original.RequestID <= 0 || len(c.Followup) < 1 || len(c.Followup) > 3 ||
 		ownershipIDORCandidate(c.Original.Candidate) {
 		return llm.CompletionRequest{}, ErrCandidateFinalVerdict
 	}
@@ -126,11 +132,15 @@ func BuildCandidateFinalRequest(c CandidateAssessmentContext, maxTokens int) (ll
 		original := modelObservation(*c.Original.OriginalObservation)
 		input.Original = &original
 	}
-	if len(input.Evidence) > 12<<10 {
-		input.Evidence = input.Evidence[:12<<10]
+	if len(input.Evidence) > candidateFinalEvidenceBytes {
+		cut := candidateFinalEvidenceBytes
+		for cut > 0 && !utf8.RuneStart(input.Evidence[cut]) {
+			cut--
+		}
+		input.Evidence = input.Evidence[:cut]
 	}
 	raw, err := json.Marshal(input)
-	if err != nil || len(raw) > 48<<10 {
+	if err != nil || len(raw) > candidateFinalPromptBytes {
 		return llm.CompletionRequest{}, ErrCandidateFinalVerdict
 	}
 	return llm.CompletionRequest{System: []string{system}, Messages: []llm.Message{llm.UserText(string(raw))}, MaxTokens: maxTokens}, nil
@@ -141,7 +151,7 @@ func ParseCandidateFinalVerdict(raw []byte, c CandidateAssessmentContext) (Candi
 	if len(raw) == 0 || len(raw) > 16<<10 || !utf8.Valid(raw) {
 		return out, ErrCandidateFinalVerdict
 	}
-	if _, err := BuildCandidateFinalRequest(c, 2048); err != nil {
+	if _, err := BuildCandidateFinalRequest(c, candidateFinalMaxTokens); err != nil {
 		return out, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))

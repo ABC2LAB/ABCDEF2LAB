@@ -85,6 +85,9 @@ func TestSelectedCandidateReservationCountsAgainstInstallation(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+	// A published Completed state can precede the backend's return. Admission
+	// intentionally waits for both signals, so synchronize on the latter too.
+	awaitExecutionReturned(t, s, created.Job.ID)
 	digest := strings.Repeat("a", 64)
 	if err := s.ReserveCandidateBudget(context.Background(), "42", 1, digest); err != nil {
 		t.Fatal(err)

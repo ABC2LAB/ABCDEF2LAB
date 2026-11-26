@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/db"
@@ -271,6 +272,30 @@ func TestCandidateFinalModelPromptOmitsHostCheckpoint(t *testing.T) {
 	raw, err := json.Marshal(request)
 	if err != nil || strings.Contains(string(raw), "synthetic-host-secret-mac") || strings.Contains(string(raw), "selected_proof") {
 		t.Fatal("Host checkpoint leaked into model prompt", err)
+	}
+}
+
+func TestCandidateFinalEvidenceTruncatesAtUTF8Boundary(t *testing.T) {
+	for _, suffix := range []string{"가나다 Korean evidence", "🔒 한국어 English evidence"} {
+		t.Run(suffix, func(t *testing.T) {
+			c := syntheticCandidateAssessmentContext(t)
+			c.Original.Candidate.Evidence = strings.Repeat("A", candidateFinalEvidenceBytes-1) + suffix
+			request, err := BuildCandidateFinalRequest(c, 512)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var input struct {
+				Evidence string `json:"original_evidence"`
+			}
+			if len(request.Messages) != 1 || len(request.Messages[0].Content) != 1 ||
+				json.Unmarshal([]byte(request.Messages[0].Content[0].Text), &input) != nil {
+				t.Fatal("model prompt malformed")
+			}
+			if !strings.HasPrefix(c.Original.Candidate.Evidence, input.Evidence) || len(input.Evidence) > candidateFinalEvidenceBytes ||
+				strings.ContainsRune(input.Evidence, '\uFFFD') || !utf8.ValidString(input.Evidence) {
+				t.Fatalf("evidence was truncated inside a UTF-8 rune: %q", input.Evidence[len(input.Evidence)-8:])
+			}
+		})
 	}
 }
 

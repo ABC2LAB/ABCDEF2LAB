@@ -73,7 +73,14 @@ func TestSelectedFixtureCompletesOnlyObservedFreshGoal(t *testing.T) {
 	if name != "Bash" {
 		t.Fatal("out-of-scope denial probe not requested")
 	}
-	name, args := selectedFixtureResponse(t, h, []string{"add_intent", "prove_goal"}, withResult)
+	graph := map[string]any{
+		"goals":               []any{map[string]any{"id": 12, "state": "open", "text": "Observe approved products at https://juice.test:9443 and save a manual-review candidate."}},
+		"recent_done_intents": []any{map[string]any{"id": 13, "state": "done", "summary": "Observe https://juice.test:9443/rest/products/search through the enforced Bash boundary, preserve a manual-review candidate, and verify denial of /outside-approved.", "yields": []int{14}}},
+		"recent_facts":        []any{map[string]any{"id": 14, "from_intent": 13, "summary": "Synthetic approved read observed"}},
+	}
+	graphJSON, _ := json.Marshal(graph)
+	withGraph := append(append([]any{}, withResult...), map[string]any{"role": "system", "content": fixtureGraphOverviewMarker + string(graphJSON)})
+	name, args := selectedFixtureResponse(t, h, []string{"add_intent", "prove_goal"}, withGraph)
 	if name != "prove_goal" {
 		t.Fatal("observed goal not completed")
 	}
@@ -81,8 +88,14 @@ func TestSelectedFixtureCompletesOnlyObservedFreshGoal(t *testing.T) {
 		GoalID     int `json:"goal_id"`
 		EvidenceID int `json:"evidence_id"`
 	}
-	if json.Unmarshal([]byte(args), &proof) != nil || proof.GoalID != 2 || proof.EvidenceID != 4 {
-		t.Fatal("goal proof references wrong fresh-fixture nodes")
+	if json.Unmarshal([]byte(args), &proof) != nil || proof.GoalID != 12 || proof.EvidenceID != 14 {
+		t.Fatal("goal proof did not use the current graph nodes")
+	}
+	graph["recent_facts"] = []any{}
+	graphJSON, _ = json.Marshal(graph)
+	messageJSON, _ := json.Marshal(fixtureGraphOverviewMarker + string(graphJSON))
+	if _, _, ok := selectedGoalProof([]fixtureMessage{{Role: "system", Content: messageJSON}}, "https://juice.test:9443"); ok {
+		t.Fatal("missing observed fact became a goal proof")
 	}
 }
 

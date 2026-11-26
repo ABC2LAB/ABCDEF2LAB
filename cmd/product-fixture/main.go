@@ -192,6 +192,68 @@ type fixtureMessage struct {
 	Content json.RawMessage `json:"content"`
 }
 
+const fixtureGraphOverviewMarker = "[Situation this round (graph_overview prefetched, same as the result of calling that tool; call node_detail, list_facts and so on when you need detail)]:\n"
+
+// selectedGoalProof uses only the current planner overview. The fixture never
+// assumes node IDs from a fresh database or invents an unobserved fact.
+func selectedGoalProof(messages []fixtureMessage, target string) (int64, int64, bool) {
+	for _, message := range messages {
+		var content string
+		if json.Unmarshal(message.Content, &content) != nil {
+			continue
+		}
+		start := strings.Index(content, fixtureGraphOverviewMarker)
+		if start < 0 {
+			continue
+		}
+		var overview struct {
+			Goals []struct {
+				ID    int64  `json:"id"`
+				State string `json:"state"`
+				Text  string `json:"text"`
+			} `json:"goals"`
+			RecentFacts []struct {
+				ID         int64 `json:"id"`
+				FromIntent int64 `json:"from_intent"`
+			} `json:"recent_facts"`
+			RecentDoneIntents []struct {
+				ID      int64   `json:"id"`
+				State   string  `json:"state"`
+				Summary string  `json:"summary"`
+				Yields  []int64 `json:"yields"`
+			} `json:"recent_done_intents"`
+		}
+		if json.NewDecoder(strings.NewReader(content[start+len(fixtureGraphOverviewMarker):])).Decode(&overview) != nil {
+			continue
+		}
+		var goalID int64
+		for _, goal := range overview.Goals {
+			if goal.State == "open" && goal.Text == "Observe approved products at "+target+" and save a manual-review candidate." {
+				goalID = goal.ID
+			}
+		}
+		if goalID <= 0 {
+			continue
+		}
+		for _, intent := range overview.RecentDoneIntents {
+			if intent.State != "done" || !strings.HasPrefix(intent.Summary, "Observe "+target+"/rest/products/search through the enforced Bash boundary") {
+				continue
+			}
+			for _, fact := range overview.RecentFacts {
+				if fact.ID <= 0 || fact.FromIntent != intent.ID {
+					continue
+				}
+				for _, yielded := range intent.Yields {
+					if yielded == fact.ID {
+						return goalID, fact.ID, true
+					}
+				}
+			}
+		}
+	}
+	return 0, 0, false
+}
+
 type selectedFixtureObservation struct {
 	Source struct {
 		CallRef     string `json:"call_ref"`
@@ -452,10 +514,9 @@ func modelWithSelectionMode(target string, selected, nosniff, stored, authentica
 			if turn.planner == 1 {
 				tool("add_intent", "owned-intent", map[string]any{"intents": []any{map[string]any{"summary": "Observe " + target + "/rest/products/search through the enforced Bash boundary, preserve a manual-review candidate, and verify denial of /outside-approved.", "priority": 5}}})
 			} else if selected && turn.worker >= 3 && (!stored || turn.worker >= 4) && names["prove_goal"] {
-				// The dedicated E2E starts with an empty product DB: origin fact 1,
-				// generated goal 2, and the observed read fact 4. Never use this
-				// fixture mode against a persisted or shared installation.
-				tool("prove_goal", "owned-goal-proof", map[string]any{"goal_id": 2, "evidence_id": 4, "reason": "The approved read was observed and its review candidate was saved."})
+				if goalID, evidenceID, ok := selectedGoalProof(req.Messages, target); ok {
+					tool("prove_goal", "owned-goal-proof", map[string]any{"goal_id": goalID, "evidence_id": evidenceID, "reason": "The approved read was observed and its review candidate was saved."})
+				}
 			}
 		case names["Bash"]:
 			worker.Add(1)
