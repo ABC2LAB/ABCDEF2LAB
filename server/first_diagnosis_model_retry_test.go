@@ -162,7 +162,7 @@ func TestFirstDiagnosisModelCallRequestRejected(t *testing.T) {
 // 한도에서 최대 5번이다(사용자 결정 2026-11-26).
 func TestFirstDiagnosisRetryModelCallHonorsRetryAfter(t *testing.T) {
 	transient := errors.New("synthetic failure")
-	short := []time.Duration{time.Millisecond}
+	short := []time.Duration{50 * time.Millisecond}
 	long := []time.Duration{time.Millisecond, time.Millisecond, 40 * time.Millisecond}
 	always := func() bool { return true }
 	for name, tc := range map[string]struct {
@@ -177,8 +177,8 @@ func TestFirstDiagnosisRetryModelCallHonorsRetryAfter(t *testing.T) {
 		"zero hint": {0, true, true, 0, 30 * time.Millisecond},
 		// 아주 긴 힌트는 가장 긴 간격(40ms)으로 잘린다: 3번 × 40ms.
 		"long hint": {time.Hour, true, true, 120 * time.Millisecond, time.Second},
-		// 요청 한도가 아니면 힌트를 보지 않는다.
-		"not limited": {time.Hour, true, false, 0, time.Second},
+		// 요청 한도가 아니면 힌트(0)를 보지 않고 일반 간격표(50ms)대로 기다린다.
+		"not limited": {0, true, false, 50 * time.Millisecond, time.Second},
 	} {
 		n := 0
 		once := func() (llm.Message, string, llm.Usage, error, error) {
