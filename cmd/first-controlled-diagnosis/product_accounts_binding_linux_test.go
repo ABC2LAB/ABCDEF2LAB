@@ -16,6 +16,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -24,8 +25,17 @@ import (
 // accountRunFixture는 실제 제품 설치·대상 등록·승인까지 마친 제품 실행 환경이다(DNS·TLS 확인은 가짜).
 func accountRunFixture(t *testing.T) (*productRuntime, urlPreparationInstallation, diagnosisprep.ProductTarget, diagnosisprep.Input) {
 	t.Helper()
+	return accountRunFixtureWith(t, nil)
+}
+
+// accountRunFixtureWith는 accountRunFixture와 같고, 제품 설치를 만들기 전에 설치 틀을 바꾼다(외부 모델 설치 등).
+func accountRunFixtureWith(t *testing.T, change func(*urlNegativeFixture)) (*productRuntime, urlPreparationInstallation, diagnosisprep.ProductTarget, diagnosisprep.Input) {
+	t.Helper()
 	f := newURLNegativeFixture(t)
 	completeProductTemplateForTest(f)
+	if change != nil {
+		change(f)
+	}
 	m := f.config.Profiles[0]
 	m.TargetRef, m.ScopeRef, m.AllowPrivateTarget, m.Attestation = "", "", false, urlNonmutatingAttestation{}
 	f.policy.Rules = f.policy.Rules[:0]
@@ -529,5 +539,60 @@ func TestRunAccountsDigestKeepsLoginBindings(t *testing.T) {
 	}
 	if _, err := runAccountsDigest(productRunAccounts{Login: &login}); err == nil {
 		t.Fatal("digest without accounts")
+	}
+}
+
+// externalModelInstall은 설치 틀의 모델을 외부 API(OpenRouter) 모델로 바꾼다(TestURLPreparationOpenRouterInspectProtectedManifest와 같은 판).
+func externalModelInstall(f *urlNegativeFixture) {
+	f.launch.ModelExecutionMode = "openrouter"
+	f.launch.LocalLLMManifestPath = ""
+	f.launch.OpenRouterManifestPath = filepath.Join(filepath.Dir(f.path), "external.json")
+	f.launch.ModelBaseURL, f.launch.ModelRef = llmpolicy.OpenRouterBaseURL, llmpolicy.OpenRouterModel
+	p := &f.config.Profiles[0]
+	p.InputTokensPerCall = 262144
+	p.Budget.InputTokens = 524288
+	p.Budget.CostUSDMicros = 600000
+	p.AggregateBudget = p.Budget
+	f.write()
+	p.ManifestSHA256 = urlNegativeWrite(f.t, f.launch.OpenRouterManifestPath, map[string]any{
+		"version": 1, "profile_id": 1, "format": "openai", "base_url": llmpolicy.OpenRouterBaseURL, "model": llmpolicy.OpenRouterModel,
+		"provider_slug": "fixture/endpoint", "expected_provider_name": "Fixture", "approval_id": "url-inspect", "expires_at": time.Now().Add(time.Hour),
+		"strict_privacy_ack": true, "account_spend_cap_ack": true, "max_requests": 2, "max_input_tokens": 524288, "max_output_tokens": 2048, "max_cost_usd_micros": 600000,
+		"max_input_tokens_per_call": 262144, "max_output_tokens_per_call": 1024, "timeout_seconds": 2, "max_concurrent": 1,
+		"max_input_price_usd_micros_per_million": 1000000, "max_output_price_usd_micros_per_million": 1000000,
+	})
+	urlNegativeWrite(f.t, f.path, f.config)
+}
+
+// 외부 모델 동의 관문(9칸-1): 로그인 방식(9칸) 없이 자격만 있는 계정도 결속하므로 외부 모델로 가는 자격이 늘 수 있다. 그런
+// 계정도 같은 관문을 지난다 — 설치 단위 외부 전송 동의가 없으면 회차를 시작하지 않고(자격이 모델로 가지 않음), 동의가 있으면
+// 결속하고 그 동의를 launch로 넘긴다(서버가 외부 모델 회차의 인증 칸을 받음 · 시작 전에 감사 저널에 동의를 남김).
+func TestExternalModelAccountWithoutLoginMethodNeedsConsent(t *testing.T) {
+	runtime, _, target, input := accountRunFixtureWith(t, externalModelInstall)
+	r := runtime.targets
+	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: "u", Password: "seeded-pass-a"}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := runtime.load("ARTEX", input, false, "")
+	var failure urlPreparationError
+	if err == nil || !errors.As(err, &failure) || failure != "external_transfer_consent_required" {
+		if loaded != nil {
+			loaded.clearMaterials()
+		}
+		t.Fatalf("external model run without consent: %v", err)
+	}
+	if _, err := writeProductExternalConsent(runtime.config.StateDir, productExternalConsentInstall, "ARTEX", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.clearMaterials()
+	if loaded.policy.Auth == nil || loaded.policy.Auth.Login != nil || len(loaded.productAccounts) != 1 || !loaded.externalTestAccounts {
+		t.Fatalf("consented external run: auth=%+v accounts=%d external=%v", loaded.policy.Auth, len(loaded.productAccounts), loaded.externalTestAccounts)
 	}
 }
