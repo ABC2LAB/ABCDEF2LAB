@@ -225,6 +225,23 @@ func TestE2HTTPFactoryLearnedReloginWithCSRF(t *testing.T) {
 	}
 }
 
+func TestE2HTTPFactoryLearnedReloginRejectsRegistration(t *testing.T) {
+	target := &csrfTarget{csrf: map[string]string{}, sessions: map[string]bool{}}
+	srv := httptest.NewServer(target.handler(t))
+	defer srv.Close()
+	lease, clock, ctx := learnedLease(t, srv, 8, "GET", "POST")
+	learned := lease.AccountBindings().(E2HTTPLearnedRelogin)
+	method := csrfMethod()
+	method.Path = "/allowed/%73ignup"
+	before := len(target.requests())
+	clock.Advance(minSessionRefreshInterval)
+	res := learned.LearnedRelogin(ctx, E2HTTPLearnedLoginRequest{Label: "tester-a", Method: method, MaxFailures: 3})
+	if res.Result != E2HTTPAuthNotSent || res.Reason != learnedlogin.ReasonScopeDenied ||
+		res.Transport != learnedlogin.TransportNotSent || res.Requests != 0 || len(target.requests()) != before {
+		t.Fatalf("가입 경로를 학습 로그인으로 보내면 안 됨: %+v", res)
+	}
+}
+
 // 학습 로그인은 값을 지어내지 않고 범위 밖으로 보내지 않는다: 쓰기 승인이 없는 실행, Worker 범위 밖 경로, 위험 단어 경로,
 // 연속 실패 상한, 기록되지 않은 칸 값은 대상에 아무것도 보내지 않는다. 비밀번호가 틀리면 로그인 실패이고, 결과 불명 로그인은
 // 다시 보내지 않는다.
