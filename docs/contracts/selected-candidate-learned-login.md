@@ -41,7 +41,7 @@
 
 쓰지 않는 것: 탐색 근거 정책이 없는 이전 회차(`exploration_unaudited`), 감사 저널이 없거나 검증되지 않는 진단 단계 출처, 원본 회차 결속·기록·근거 유실·손상(`learned_login_record_invalid`·`learned_login_transport_unverified`).
 
-⑤-B에 요청할 것(담당자 전달): (a) 저장 때 `ReadConfirmationHistory`(인계 실패 표지)·`VerifyTransport`/`VerifyExplorationEvidence`/`VerifyFieldSources`를 거친 시도만 남기고 그 출처 수준을 저장 줄에 남기기(지금은 `Select()`만 거쳐, 출처를 대조하지 않은 방법도 `learned`로 남는다), (b) 읽기 경계가 방법이 지금 것이 된 시각(`since`)도 주기. 선택 검증의 재대조는 (a)가 들어와도 원본 기록 유실·변경을 보는 두 번째 확인으로 남긴다.
+⑤-B에 요청할 것(담당자 전달): (a) 저장 때 `ReadConfirmationHistory`(인계 실패 표지)·`VerifyTransport`/`VerifyExplorationEvidence`/`VerifyFieldSources`를 거친 시도만 남기고 그 출처 수준을 저장 줄에 남기기(#996 `5d3f7550`부터 인계 실패 표지는 막지만, 실제 송신 근거 대조 없이 `Select()` 결과를 `learned`로 남긴다 — 통합 시험 `TestLearnedStoreSkipsTransportProvenanceButSelectedRefuses`로 확인), (b) 읽기 경계가 방법이 지금 것이 된 시각(`since`)도 주기. 선택 검증의 재대조는 (a)가 들어와도 원본 기록 유실·변경을 보는 두 번째 확인으로 남긴다.
 
 ## 4. 실행 경계 (E②)
 
