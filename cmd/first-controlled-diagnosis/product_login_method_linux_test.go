@@ -1,12 +1,16 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/learnedlogin"
+	"github.com/Autumn-27/artex/server"
 )
 
 func loginMethodOf(t *testing.T, r *productTargetRegistry, id, label string) *diagnosisprep.ProductLoginMethod {
@@ -136,5 +140,54 @@ func TestLearnFromRunRows(t *testing.T) {
 	}
 	if m := loginMethodOf(t, r, id, "tester-b"); m.State != productLoginMethodNone {
 		t.Fatalf("적격 아닌 성공을 배움: %+v", m)
+	}
+}
+
+// 탐색 인계가 실패하면 일부 성공 행이 남아 있어도 다음 회차에 쓸 방법을 계정 저널에 저장하지 않는다.
+// 표지가 사라진 온전한 기록은 같은 경로에서 학습할 수 있어야 한다.
+func TestLearnLoginMethodsRequiresCompleteHandover(t *testing.T) {
+	r, _, rec := learnedAccountTarget(t)
+	id, label := rec.Target.ID, "tester-a"
+	credential := credentialOf(r, id, label)
+	runs, _ := liveRunFixtureWith(t, nil, func(policy *server.E2HTTPFilePolicy) {
+		policy.RunRef = "run-job1"
+		policy.Auth.ModelLogin = true
+		policy.Auth.Accounts[0].Credential.SHA256 = credential
+		policy.LoginAttempts = &server.E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
+	})
+	binding, err := openRunBinding(runs, liveJob)
+	if err != nil {
+		t.Fatalf("실행 결속 시험 준비 실패: %v", err)
+	}
+	if err := binding.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(runs, liveJob, "state")
+	row := modelSucceededRow("diagnosis-1", label, "/login")
+	row.ContrastSource = "observed"
+	raw, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, learnedlogin.AttemptsFile), append(raw, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(state, learnedlogin.AttemptsUnavailableFile)
+	if err := os.WriteFile(marker, []byte("unavailable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if rows, _, err := learnedlogin.ReadRows(state); err != nil || len(rows) != 1 {
+		t.Fatalf("부분 기록 시험 준비 실패: 행 %d, 오류 %v", len(rows), err)
+	}
+	r.learnLoginMethods(runs, liveJob, rec)
+	if m := loginMethodOf(t, r, id, label); m.State != productLoginMethodNone {
+		t.Fatalf("인계 실패 기록에서 방법을 저장함: %+v", m)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	r.learnLoginMethods(runs, liveJob, rec)
+	if m := loginMethodOf(t, r, id, label); m.State != productLoginMethodLearned || m.Method == nil || m.Method.Path != "/login" {
+		t.Fatalf("인계 완료 뒤 방법을 저장하지 못함: %+v", m)
 	}
 }

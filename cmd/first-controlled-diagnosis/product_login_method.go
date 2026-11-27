@@ -172,7 +172,9 @@ func (r *productTargetRegistry) learnLoginMethods(runsDir, jobID string, target 
 		credentials[a.Label] = a.Credential.SHA256
 		labels = append(labels, a.Label)
 	}
-	rows, _, err := learnedlogin.ReadRows(filepath.Join(runsDir, jobID, "state"))
+	// 탐색 인계가 끝나지 않은 회차의 일부 행으로 다음 회차에 쓸 방법을 남기지 않는다.
+	// 확정 단계와 같은 보호 읽기를 써서 실패 표지를 읽기 전후에 확인한다.
+	rows, _, err := learnedlogin.ReadConfirmationHistory(filepath.Join(runsDir, jobID, "state"))
 	if err != nil {
 		log.Printf("[login-method] 회차 %s 로그인 시도 기록을 읽지 못함(배운 방법 없음)", jobID)
 		return
