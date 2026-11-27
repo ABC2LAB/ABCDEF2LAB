@@ -9,8 +9,11 @@ import (
 	"errors"
 	"io"
 	"math"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const MaxBytes int64 = 16 << 20
@@ -27,7 +30,9 @@ var (
 	ErrClosed = errors.New("diagnostic_log_closed")
 )
 
-// Event에는 자유 텍스트나 요청·모델 원문을 담는 필드가 없다.
+// Event에는 요청·모델 원문을 담는 필드가 없다. 자유 텍스트는 모델 제공자의 요청 한도(429) 응답 본문에서 읽은 제공자
+// 이름(ProviderName)과 원문 오류(ProviderError)뿐이다(사용자 결정 2026-11-26, 429 원인 분석). 둘 다 길이를 자르고 제어
+// 문자를 빼며, 전송이 이 호출의 API 키를 가린 뒤에만 싣는다.
 // 식별자는 실제 호출자가 제공하며 외부 참조는 기록 직전에 해시한다.
 type Event struct {
 	CountKnown           bool      `json:"count_known,omitempty"`
@@ -69,6 +74,9 @@ type Event struct {
 	DurationMS           int64     `json:"duration_ms,omitempty"`
 	Count                int       `json:"count,omitempty"`
 	HTTPStatus           int       `json:"http_status,omitempty"`
+	RetryAfterMS         int64     `json:"retry_after_ms,omitempty"`
+	ProviderName         string    `json:"provider_name,omitempty"`
+	ProviderError        string    `json:"provider_error,omitempty"`
 	InputTokens          int64     `json:"input_tokens,omitempty"`
 	OutputTokens         int64     `json:"output_tokens,omitempty"`
 	ReservedTokens       int64     `json:"reserved_tokens,omitempty"`
@@ -276,7 +284,7 @@ func (l *Logger) Close() error {
 	return l.err
 }
 func valid(e Event) bool {
-	return allowed(components, e.Component, false) && allowed(events, e.Event, false) && allowed(stages, e.Stage, true) && allowed(statuses, e.Status, true) && allowed(reasons, e.ReasonCode, true) && allowed(tools, e.Tool, true) && allowed(roles, e.Role, true) && allowed(models, e.Model, true) && allowed(providers, e.Provider, true) && allowed(levels, e.Level, true) && e.CandidateID >= 0 && len(e.AttemptRef) <= maxReferenceBytes && validAccountLabel(e.AccountLabel) && (e.AccountLabel == "") == (e.Event != "account_auth_checked") && e.TaskID >= 0 && e.IntentID >= 0 && e.DurationMS >= 0 && e.Count >= 0 && e.HTTPStatus >= 0 && e.HTTPStatus <= 599 && e.InputTokens >= 0 && e.OutputTokens >= 0 && e.ReservedTokens >= 0 && finite(e.ReservedCostUSD) && finite(e.ReportedCostUSD) && e.TargetRequests >= 0 && e.Approved >= 0 && e.Denied >= 0 && e.Blocked >= 0 && e.Candidates >= 0 && e.ReservedInputTokens >= 0 && e.ReservedOutputTokens >= 0 && e.ReservedCostMicros >= 0 && e.CostMicros >= 0 && len(e.ModelRef) <= maxReferenceBytes && len(e.ProviderRef) <= maxReferenceBytes && len(e.RunRef) <= maxReferenceBytes && len(e.CallRef) <= maxReferenceBytes
+	return allowed(components, e.Component, false) && allowed(events, e.Event, false) && allowed(stages, e.Stage, true) && allowed(statuses, e.Status, true) && allowed(reasons, e.ReasonCode, true) && allowed(tools, e.Tool, true) && allowed(roles, e.Role, true) && allowed(models, e.Model, true) && allowed(providers, e.Provider, true) && allowed(levels, e.Level, true) && e.CandidateID >= 0 && len(e.AttemptRef) <= maxReferenceBytes && validAccountLabel(e.AccountLabel) && (e.AccountLabel == "") == (e.Event != "account_auth_checked") && e.TaskID >= 0 && e.IntentID >= 0 && e.DurationMS >= 0 && e.Count >= 0 && e.HTTPStatus >= 0 && e.HTTPStatus <= 599 && e.RetryAfterMS >= 0 && ProviderNameText(e.ProviderName) == e.ProviderName && ProviderErrorText(e.ProviderError) == e.ProviderError && e.InputTokens >= 0 && e.OutputTokens >= 0 && e.ReservedTokens >= 0 && finite(e.ReservedCostUSD) && finite(e.ReportedCostUSD) && e.TargetRequests >= 0 && e.Approved >= 0 && e.Denied >= 0 && e.Blocked >= 0 && e.Candidates >= 0 && e.ReservedInputTokens >= 0 && e.ReservedOutputTokens >= 0 && e.ReservedCostMicros >= 0 && e.CostMicros >= 0 && len(e.ModelRef) <= maxReferenceBytes && len(e.ProviderRef) <= maxReferenceBytes && len(e.RunRef) <= maxReferenceBytes && len(e.CallRef) <= maxReferenceBytes
 }
 func validAccountLabel(label string) bool                    { return label == "" || accountLabel.MatchString(label) }
 func finite(n float64) bool                                  { return n >= 0 && !math.IsNaN(n) && !math.IsInf(n, 0) }
@@ -296,4 +304,40 @@ func RoleFrom(ctx context.Context) string {
 	}
 	role, _ := ctx.Value(roleKey{}).(string)
 	return role
+}
+
+// 제공자 이름·원문 오류의 길이 상한(바이트)이다.
+const (
+	maxProviderNameBytes  = 64
+	maxProviderErrorBytes = 512
+)
+
+// ProviderNameText는 제공자 이름을 기록 형식으로 다듬는다: 영문·숫자·공백과 ._/- 만 남기고 64바이트로 자른다.
+func ProviderNameText(name string) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(name) {
+		if b.Len() >= maxProviderNameBytes {
+			break
+		}
+		if r < 0x80 && (r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(" ._/-", r)) {
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// ProviderErrorText는 원문 오류를 기록 형식으로 다듬는다: 올바른 UTF-8만, 제어 문자는 공백으로, 512바이트 안에서 글자
+// 단위로 자른다.
+func ProviderErrorText(text string) string {
+	var b strings.Builder
+	for _, r := range strings.ToValidUTF8(text, "") {
+		if unicode.IsControl(r) {
+			r = ' '
+		}
+		if b.Len()+utf8.RuneLen(r) > maxProviderErrorBytes {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
 }

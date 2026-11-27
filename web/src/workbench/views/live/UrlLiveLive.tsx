@@ -36,6 +36,7 @@ import { entrySeverity, entrySeverityLabel, type SeverityLevel } from "@/lib/dia
 import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import { downloadDiagnostic, fetchCoverage, fetchRemediation, type Remediation } from "../../live/api";
+import { renderedCopyText } from "../../live/copyMask";
 import {
   candidateCountText,
   candidateErrorText,
@@ -58,7 +59,6 @@ import {
   planState,
   sevKey,
 } from "../../live/map";
-import { maskSecrets } from "../../live/mask";
 import { ErrorNote, LoadingRow, NotYet } from "../../live/parts";
 import { runDurationMissingWhy, runDurationSec, runStartMissingWhy, runStartText } from "../../live/runTiming";
 import type { SavedApproval } from "../../live/savedApprovals";
@@ -73,11 +73,13 @@ import { Markdown } from "../../ui/Markdown";
 import { InspHead, InspOpenButton, Isec, PaneToggle, useScrollTopOnChange, vulnClassParts } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalHistory, ApprovalQueue, useRequestApprovals } from "./approvals";
+import { SelectedVerificationCard } from "./candidateVerificationView";
 import { AssetGraphTab } from "./coverageGraphView";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
 import { AccountAuthWarning, LoginMethodMissingWarning } from "./liveAccountWarnings";
 import { PriceCapsNotice } from "./PriceCapsNotice";
 import { ProductVerdictReport, productConfirmationSummary, useProductVerdicts } from "./productVerdictViews";
+import { useReportFollowup } from "./remediationFollowupView";
 import { ReportReadError } from "./runRows";
 import {
   ReportApprovalDetail,
@@ -749,7 +751,7 @@ export function UrlLiveLive() {
     if (titleBook.current.task !== task) titleBook.current = { task, names: new Map() };
     for (const e of pickedRem.data?.entries ?? []) {
       if (!e.entry_id.startsWith("candidate-")) continue;
-      const title = maskSecrets(e.title).trim();
+      const title = e.title.trim();
       if (title) titleBook.current.names.set(e.entry_id.slice("candidate-".length), title);
     }
     return new Map(titleBook.current.names);
@@ -1166,7 +1168,7 @@ export function Sev({ e }: { e: RemediationEntry }) {
   return (
     <span
       className={cx(s.sev, k ? s[k] : s["sev-none"])}
-      title={e.severity_source === "worker_estimate" ? maskSecrets(e.severity_rationale ?? "") : undefined}
+      title={e.severity_source === "worker_estimate" ? (e.severity_rationale ?? "") : undefined}
     >
       {entrySeverityLabel(e)}
     </span>
@@ -1212,7 +1214,7 @@ export function entryEp(e: RemediationEntry): { m: string | null; p: string; mor
       );
       m = ms.size === 1 ? [...ms][0] : null;
     }
-    return { m: m && HTTP_METHOD.test(m) ? m : null, p: maskSecrets(ep.p), more: 0 };
+    return { m: m && HTTP_METHOD.test(m) ? m : null, p: ep.p, more: 0 };
   }
   const seen = new Map<string, { m: string | null; p: string }>();
   for (const o of obs) {
@@ -1221,7 +1223,7 @@ export function entryEp(e: RemediationEntry): { m: string | null; p: string; mor
     if (ep && !seen.has(`${ep.m ?? ""} ${ep.p}`)) seen.set(`${ep.m ?? ""} ${ep.p}`, ep);
   }
   const [first, ...rest] = [...seen.values()];
-  return first ? { m: first.m, p: maskSecrets(first.p), more: rest.length } : null;
+  return first ? { m: first.m, p: first.p, more: rest.length } : null;
 }
 
 /** 대표 경로와 E② 요청 시도의 관찰 경로를 구분한다. 둘 다 취약점 확정 근거가 아니다. */
@@ -1273,7 +1275,7 @@ export function prettyEvidence(raw: string): string {
     return v;
   };
   const value = unwrap(raw);
-  return maskSecrets(typeof value === "string" ? value : JSON.stringify(value, null, 2));
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
 type Audience = "shared" | "internal";
@@ -1345,6 +1347,7 @@ export function FindingDetail({
   taskId,
   onReload,
   onOpen,
+  verify = false,
 }: {
   e: RemediationEntry | undefined;
   host: string | null;
@@ -1352,6 +1355,8 @@ export function FindingDetail({
   onReload: () => void;
   /** 있으면 머리 딱지 줄 오른쪽 끝(패널 열고 닫기 버튼 밑)에 '상세 보기' — 이 발견의 상세 페이지를 연다 (보고서) */
   onOpen?: (e: RemediationEntry) => void;
+  /** 선택 검증 칸을 둘지(보고서만 — 검증은 정상 종료된 점검에서만 된다) */
+  verify?: boolean;
 }) {
   if (!e) {
     return (
@@ -1368,11 +1373,11 @@ export function FindingDetail({
       <InspHead
         eyebrow={
           <>
-            {`${e.vuln_class ? maskSecrets(e.vuln_class) : diagnosticOutcomeLabels[o]} · `}
+            {`${e.vuln_class ? e.vuln_class : diagnosticOutcomeLabels[o]} · `}
             <span className={s.host}>{host}</span>
           </>
         }
-        title={maskSecrets(e.title) || e.entry_id}
+        title={e.title || e.entry_id}
         chips={
           <>
             <Sev e={e} />
@@ -1391,16 +1396,18 @@ export function FindingDetail({
           ARTEX 와 달리 위험도 · 처리 상태를 여기서 바꾸지 않는다 — 판정은 저장된 E③ 근거만 따른다(절대규칙 3 · 5) */}
       <div className={s.fdet}>
         <StatusCard e={e} />
+        {/* 검토 필요 후보의 선택 검증(#950) — 선택 검증 대상이거나 기록이 있을 때만, 보고서에서만 */}
+        {verify ? <SelectedVerificationCard taskId={taskId} entryId={e.entry_id} /> : null}
         {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
           <Isec t="심각도 근거 · 모델 제안">
-            <p>{maskSecrets(e.severity_rationale ?? "")}</p>
+            <p>{e.severity_rationale ?? ""}</p>
             <p className={s.help}>이 등급은 검토 우선순위 제안이며 취약점 확정이나 CVSS 점수가 아닙니다.</p>
           </Isec>
         ) : null}
         {!e.available ? (
           <div className={cx(s.note, s.warn)} role="note">
             <Icon name="alert" />
-            <span>{maskSecrets(e.unavailable_reason)}</span>
+            <span>{e.unavailable_reason}</span>
           </div>
         ) : null}
         <DiagnosticEntrySections
@@ -1447,7 +1454,7 @@ function StatusCard({ e, host }: { e: RemediationEntry; host?: string | null }) 
           <dd>
             {e.vuln_class ? (
               <span className={s["chip-list"]}>
-                {vulnClassParts(maskSecrets(e.vuln_class)).map((part) => (
+                {vulnClassParts(e.vuln_class).map((part) => (
                   <span key={part} className={s.chip}>
                     {part}
                   </span>
@@ -1509,7 +1516,7 @@ export function FindingPage({
       <div className={s["fpage-h"]}>
         <BackButton to="취약점 목록" onClick={onBack} />
         <h2 ref={head} tabIndex={-1}>
-          {maskSecrets(e.title) || e.entry_id}
+          {e.title || e.entry_id}
         </h2>
         <Sev e={e} />
         <Outcome o={o} />
@@ -1519,7 +1526,7 @@ export function FindingPage({
           {!e.available ? (
             <div className={cx(s.note, s.warn)} role="note">
               <Icon name="alert" />
-              <span>{maskSecrets(e.unavailable_reason)}</span>
+              <span>{e.unavailable_reason}</span>
             </div>
           ) : null}
           <DiagnosticEntrySections
@@ -1534,9 +1541,10 @@ export function FindingPage({
           <StatusCard e={e} host={host} />
           {/* E③ 확정 단계 판정: 이 후보를 참조하는 제품 판정이 있을 때만(목록과 같은 표시 규칙) */}
           <VerdictDetailCard taskId={taskId} entryId={e.entry_id} />
+          <SelectedVerificationCard taskId={taskId} entryId={e.entry_id} />
           {entrySeverity(e) && e.severity_source === "worker_estimate" ? (
             <Isec t="심각도 근거 · 모델 제안">
-              <p>{maskSecrets(e.severity_rationale ?? "")}</p>
+              <p>{e.severity_rationale ?? ""}</p>
               <p className={s.help}>이 등급은 검토 우선순위 제안이며 취약점 확정이나 CVSS 점수가 아닙니다.</p>
             </Isec>
           ) : null}
@@ -1593,14 +1601,8 @@ const SEV_FILTERS: ReadonlyArray<readonly [SevFilter, string]> = [
   ["info", "정보성"],
 ];
 
-/**
- * 보고서 글에 넣을 서버 글: 원문에 먼저 가린다. 엔티티 · 역슬래시 · HTML 주석을 일부러 막지 않는다 — Markdown 이 그것들을 풀어
- * 이어 붙인 글에 Markdown 부품이 다시 가림을 걸어야(remarkMaskSecrets) 숨긴 비밀까지 잡는다(#677 리뷰). 막아 두면 키는 그대로
- * 숨고 값만 평문으로 남는다.
- */
-const mdText = (v: string) => maskSecrets(v);
-/** 목록 줄 안에 넣는 글: 줄바꿈을 띄어쓰기로(목록이 깨지지 않게). */
-const mdInline = (v: string) => mdText(v).replace(/\s*\n+\s*/g, " ");
+/** 목록 줄 안에 넣는 글: 줄바꿈을 띄어쓰기로(목록이 깨지지 않게). 서버 글은 가리지 않는다(DLP 폐기). */
+const mdInline = (v: string) => v.replace(/\s*\n+\s*/g, " ");
 /** 코드 상자: 본문 안의 ` 줄보다 긴 울타리로 감싼다(본문이 상자를 닫지 못하게). */
 function mdFence(body: string): string {
   const longest = Math.max(2, ...[...body.matchAll(/`+/g)].map((m) => m[0].length));
@@ -1664,7 +1666,7 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
       at ? `발견 시각 ${at}` : "",
     ].filter(Boolean);
     if (facts.length) out.push(facts.join(" · "), "");
-    if (e.summary) out.push(mdText(e.summary), "");
+    if (e.summary) out.push(e.summary, "");
     out.push("**요청 시도 · 응답 관찰:**", "");
     if (e.source_load_failed)
       out.push("근거 불러오기 실패. 현재 결속을 확인할 수 없어 재현 단계를 제공하지 않습니다.", "");
@@ -1684,16 +1686,17 @@ export function buildPocMarkdown(entries: readonly RemediationEntry[], info: Poc
   return out.join("\n");
 }
 
-/** 보고서 탭: 점검 보고서 (ARTEX 모양 — 문서 아이콘 · 제목, [복사], 테두리 상자 안 스크롤). 복사는 그려진 가린 글. */
+/** 보고서 탭: 점검 보고서 (ARTEX 모양 — 문서 아이콘 · 제목, [복사], 테두리 상자 안 스크롤). 화면은 가리지 않고, 복사만 그려진 글을 가린다. */
 function PocReport({ entries, info }: { entries: readonly RemediationEntry[]; info: PocInfo }) {
   const box = useRef<HTMLDivElement>(null);
   const [msg, setMsg] = useState("");
-  // 원문 Markdown 이 아니라 그려진 글을 복사한다: 붙여 넣은 곳의 Markdown 이 서식으로 쪼갠 값을 다시 이어 붙이지 않게
+  // 원문 Markdown 이 아니라 그려진 글을 가려서 복사한다: 클립보드는 화면 밖(팀 채팅 · 이슈)으로 나가므로 가리고(#975 이동찬 P2),
+  // 붙여 넣은 곳의 Markdown 이 서식으로 쪼갠 값을 다시 이어 붙이지 않게 그려진 글을 쓴다
   async function copy() {
     const el = box.current;
-    const shown = el ? el.innerText || el.textContent || "" : "";
     try {
-      await navigator.clipboard.writeText(maskSecrets(shown));
+      // 상세 보고와 같은 복사 처리: 블록 · 표 줄 단위로 모아 가린다(#975 이동찬 리뷰)
+      await navigator.clipboard.writeText(el ? renderedCopyText(el) : "");
       setMsg("보고서 글을 복사했습니다.");
     } catch (error) {
       console.warn("보고서 글 복사 실패", error);
@@ -1752,15 +1755,15 @@ export function FindingRows({
           feBody = (
             <span className={s.fe}>
               <EntryEp e={e} />
-              {e.vuln_class ? <span>{maskSecrets(e.vuln_class)}</span> : null}
+              {e.vuln_class ? <span>{e.vuln_class}</span> : null}
             </span>
           );
-        else if (e.summary) feBody = <span className={s.fe}>{maskSecrets(e.summary)}</span>;
+        else if (e.summary) feBody = <span className={s.fe}>{e.summary}</span>;
         const cells = (
           <>
             <Sev e={e} />
             <span className={s.fm}>
-              <span className={s.ft}>{maskSecrets(e.title) || e.entry_id}</span>
+              <span className={s.ft}>{e.title || e.entry_id}</span>
               {feBody}
             </span>
             <span className={s.fs}>
@@ -1799,6 +1802,8 @@ const R_TABS = [
   ["doc", "보고서"],
   // 끝난 점검의 승인 · 거부 기록(사용자 11/26) — 기록이 있을 때만(showApprovalTab)
   ["approvals", "승인 기록"],
+  // 이행점검(사용자 11/26, 이동찬 구상): 이 점검 뒤에 같은 대상으로 돌린 점검들의 조치별 판정 — 저장된 조치가 있을 때만
+  ["followup", "이행점검"],
 ] as const;
 type RTab = (typeof R_TABS)[number][0];
 
@@ -1822,7 +1827,11 @@ export function UrlReportLive() {
   const verdicts = useProductVerdicts(taskId, visible);
   // 승인 기록 탭: 끝난 점검의 저장 승인 이력(계약 saved-request-approvals). 기록이 없으면 탭을 두지 않는다
   const savedAp = useSavedApprovals(taskId, visible);
-  const rTabs = R_TABS.filter(([k]) => k !== "approvals" || showApprovalTab(savedAp));
+  const [tab, setTab] = useState<RTab>("list");
+  const fu = useReportFollowup(taskId ?? "", visible && !!taskId, tab === "followup", openInsp);
+  const rTabs = R_TABS.filter(
+    ([k]) => (k !== "approvals" || showApprovalTab(savedAp)) && (k !== "followup" || fu.showTab),
+  );
   const { confirmed: productConfirmed, notice: productConfirmationNotice } = productConfirmationSummary(verdicts);
   // 저장된 실행 기록(diagnosis-run)은 보고서에서 더 쓰지 않는다(사용자 11/19 — 실행 종료 기록 · 요청 수를 뺌)
   // 자산 탐색 숫자 칸 3개(발견한 API · 보낸 요청 · 막은 요청)를 보고서에도(사용자 11/25). 보고서는 끝난 점검이라 전송 기록을
@@ -1835,7 +1844,6 @@ export function UrlReportLive() {
     enabled: visible && !!taskId && !covOff.forbidden,
   });
   const covPct = cov.data?.enabled && cov.data.pct !== null ? Math.round(cov.data.pct * 100) : null;
-  const [tab, setTab] = useState<RTab>("list");
   const tabRefs = useRef<Partial<Record<RTab, HTMLButtonElement | null>>>({});
   const [sel, setSel] = useState<string | null>(null);
   // 다른 취약점을 고르면 오른쪽 패널을 맨 위로(사용자 11/24)
@@ -1847,7 +1855,14 @@ export function UrlReportLive() {
   } | null>(null);
   const apSel = apPick && apPick.task === taskId ? apPick : null;
   const apMode = tab === "approvals";
-  const reportInspRef = useScrollTopOnChange<HTMLElement>(apMode ? `ap:${apSel?.row.id ?? ""}` : sel);
+  const fuMode = tab === "followup";
+  let inspKey = sel;
+  if (apMode) inspKey = `ap:${apSel?.row.id ?? ""}`;
+  else if (fuMode) inspKey = `fu:${fu.pickKey}`;
+  const reportInspRef = useScrollTopOnChange<HTMLElement>(inspKey);
+  let rInspLabel = "취약점 상세";
+  if (apMode) rInspLabel = "승인 기록 상세";
+  else if (fuMode) rInspLabel = "이행점검 상세";
   // 오른쪽 패널 머리 '상세 보기'로 연 발견 (그 발견이 목록에서 사라지면 — 다른 점검 등 — 목록으로 돌아간다).
   // 단독 발견 상세(#finding)도 같은 발견을 보도록 공용 상태(findingPick)에 둔다
   const detail = usePickedFinding(taskId);
@@ -2131,7 +2146,7 @@ export function UrlReportLive() {
                 </div>
               </section>
             ) : null}
-            {flow ? <CrawlMeters flow={flow} e2={crawlE2.data} /> : null}
+            {flow ? <CrawlMeters flow={flow} e2={crawlE2.data} e2Failed={!!crawlE2.error && !crawlE2.data} /> : null}
             <section className={s.sec}>
               <div className={s["seg-tabs"]} role="tablist" aria-label="보고서 내용" id="rTabs">
                 {rTabs.map(([k, label], i) => (
@@ -2154,6 +2169,7 @@ export function UrlReportLive() {
                     {k === "approvals" && savedAp.data ? (
                       <span className={s.c}>{savedAp.data.approvals.length}</span>
                     ) : null}
+                    {k === "followup" && fu.count ? <span className={s.c}>{fu.count}</span> : null}
                   </button>
                 ))}
               </div>
@@ -2214,17 +2230,21 @@ export function UrlReportLive() {
                   />
                 ) : null}
               </div>
+              <div role="tabpanel" id="rp-followup" aria-label="이행점검" hidden={tab !== "followup"}>
+                {fuMode ? fu.body : null}
+              </div>
             </section>
           </div>
-          <aside className={s.vi} id="rInsp" ref={reportInspRef} aria-label={apMode ? "승인 기록 상세" : "취약점 상세"}>
-            {apMode ? (
-              <ReportApprovalDetail pick={apSel} task={taskId} />
-            ) : (
+          <aside className={s.vi} id="rInsp" ref={reportInspRef} aria-label={rInspLabel}>
+            {apMode ? <ReportApprovalDetail pick={apSel} task={taskId} /> : null}
+            {fuMode ? fu.panel : null}
+            {apMode || fuMode ? null : (
               <FindingDetail
                 e={chosen}
                 host={host}
                 taskId={taskId}
                 onReload={rem.reload}
+                verify
                 onOpen={(e) => {
                   setDetail(e.entry_id);
                   // 좁은 화면은 상세가 서랍이라 닫아야 가운데 페이지가 보인다(넓은 화면은 페이지가 패널 자리를 쓴다)

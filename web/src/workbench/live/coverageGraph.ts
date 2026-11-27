@@ -31,7 +31,14 @@ export type CgNode = {
   origin: string | null;
   /** 엔드포인트만: 가린 경로 구조(`/` 또는 `/{id}` 1~32개 + 끝 슬래시). 서버가 안 주거나 모양이 다르면 null */
   displayPath: string | null;
+  /**
+   * 엔드포인트만: 표시 경로의 상세 수준(coverage-graph-display-path.md). `exact` = 루트 `/` 그대로, `pattern_only` = 조각을
+   * 가린 구조, `unavailable` = 표시할 경로를 만들 수 없음(경로 없음 · 조각 상한 · 빈 조각). 이전 서버(칸 없음) · 모르는 값 · 표시 경로와 어긋난 값이면 null
+   */
+  pathDetail: CgPathDetail | null;
 };
+export const CG_PATH_DETAILS = ["exact", "pattern_only", "unavailable"] as const;
+export type CgPathDetail = (typeof CG_PATH_DETAILS)[number];
 export type CgEdge = { src: string; dst: string };
 export type CgGraph = {
   nodes: CgNode[];
@@ -59,6 +66,7 @@ export function parseCoverageGraph(raw: CoverageGraph): CgGraph {
       continue;
     }
     seen.add(key);
+    const displayPath = n.kind === "endpoint" ? displayPathOf(n.display_path) : null;
     nodes.push({
       key,
       kind: n.kind,
@@ -69,7 +77,8 @@ export function parseCoverageGraph(raw: CoverageGraph): CgGraph {
       port: posInt(n.port),
       statusCode: posInt((n as { status_code?: unknown }).status_code),
       origin: originOf(n.url),
-      displayPath: n.kind === "endpoint" ? displayPathOf(n.display_path) : null,
+      displayPath,
+      pathDetail: n.kind === "endpoint" ? pathDetailOf(n.path_detail_state, displayPath) : null,
     });
   }
   const edges: CgEdge[] = [];
@@ -96,6 +105,18 @@ export function parseCoverageGraph(raw: CoverageGraph): CgGraph {
 const DISPLAY_PATH = /^(?:\/|(?:\/\{id\}){1,32}\/?)$/;
 function displayPathOf(v: unknown): string | null {
   return typeof v === "string" && DISPLAY_PATH.test(v) ? v : null;
+}
+
+/**
+ * 상세 수준은 서버 계산(server/report_graph_display_path.go)과 같은 짝일 때만 받는다: `exact` ⇔ 표시 경로 `/`,
+ * `pattern_only` ⇔ `/` 아닌 표시 경로, `unavailable` ⇔ 표시 경로 없음. 서버가 만들 수 없는 짝이면 상세 수준을 모르는 것으로
+ * 둔다(null) — 표시 경로 자체는 위 검증대로 따로 보인다.
+ */
+function pathDetailOf(v: unknown, displayPath: string | null): CgPathDetail | null {
+  if (v === "exact") return displayPath === "/" ? v : null;
+  if (v === "pattern_only") return displayPath && displayPath !== "/" ? v : null;
+  if (v === "unavailable") return displayPath === null ? v : null;
+  return null;
 }
 
 /** origin 만 받는다: http(s), 자격 · 경로 · query · fragment 없음. 서버 공개 처리와 같은 모양이 아니면 보이지 않는다. */
@@ -142,6 +163,20 @@ export function coverageNodeLabel(n: CgNode): string {
 }
 
 const HIDDEN_LABEL = /^자산 #0$/;
+
+/**
+ * 노드 상세의 경로 줄. 표시 경로는 저장된 URL의 구조일 뿐이라 요청 · 진단 근거가 아니라고 함께 적는다. 상세 수준을 모르면
+ * (이전 서버) 표시 경로가 있을 때만 예전 문구를 쓰고, 없으면 줄을 두지 않는다 — 기록이 없다고 단정하지 않는다.
+ */
+export function coveragePathDetailLine(n: CgNode): string | null {
+  if (n.kind !== "endpoint") return null;
+  // unavailable 은 저장된 경로가 없을 때만이 아니라 조각 수 상한 · 빈 조각 때문에 표시값을 못 만들 때도 온다
+  // (server coverageGraphDisplayPath) — '기록되지 않음'으로 단정하지 않고 응답이 말하는 것만 적는다(#970 이동찬 P3)
+  if (n.pathDetail === "unavailable") return "상세 경로 표시 불가 — 이 자산은 표시할 경로를 만들 수 없습니다";
+  if (!n.displayPath) return null;
+  if (n.pathDetail === "exact") return `표시 경로 ${n.displayPath} — 루트 경로 그대로입니다(요청 · 진단 근거 아님)`;
+  return `표시 경로 ${n.displayPath} — 경로 조각을 가린 구조입니다(요청 · 진단 근거 아님)`;
+}
 
 /** 종류 이름을 붙인 이름(읽기 · 상세용). 이름이 이미 종류로 시작하면('엔드포인트 #100') 두 번 붙이지 않는다. */
 export function coverageNodeTitle(n: CgNode): string {

@@ -640,7 +640,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		return unknown("gateway_start_unconfirmed", false)
 	}
 	if p.set(func(u *diagnosisprep.Update) { u.State = diagnosisprep.Running; u.Started = response.Snapshot.Started }) != nil {
-		cancel()
+		stopRunForProgress(stopTarget, cancel)
 	}
 	ticker := time.NewTicker(urlStatusPollInterval)
 	defer ticker.Stop()
@@ -668,7 +668,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			// (Publish 계약: 실패는 실행 허가가 아니다).
 			if auth, changed := accountAuth.next(d.runtime); changed {
 				if p.set(func(u *diagnosisprep.Update) { u.AccountAuth = auth }) != nil {
-					cancel()
+					stopRunForProgress(stopTarget, cancel)
 					continue
 				}
 				accountAuth.published = auth
@@ -685,21 +685,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 			s := status.Snapshot
 			switch s.State {
 			case diagnosis.Completed, diagnosis.Cancelled, diagnosis.Failed, diagnosis.Unknown:
-				usage := modelBudget.Snapshot()
-				return p.set(func(u *diagnosisprep.Update) {
-					u.Phase = diagnosisprep.Report
-					u.State = diagnosisprep.State(s.State)
-					u.Started = s.Started
-					u.DrainComplete = s.DrainComplete
-					u.ResultReady = s.ResultReady
-					u.ModelUsage = &usage
-					u.Result = s.Result
-					u.AccountAuth = accountAuth.final(s.AccountAuth)
-					if !usage.UsageKnown {
-						u.State = diagnosisprep.Unknown
-						u.ReasonCode = "model_usage_unknown"
-					}
-				})
+				return p.set(urlSnapshotUpdate(ctx, *s, modelBudget.Snapshot(), accountAuth.final(s.AccountAuth)))
 			}
 		}
 	}
@@ -737,6 +723,7 @@ func (r *urlGatewayRunner) Run(ctx context.Context) error {
 		r.runDone = make(chan struct{})
 	}
 	r.mu.Unlock()
+	// 감독자는 실패 사유를 오류에 실어 돌려준다(B1). 진단 실행 상태가 그 사유를 싣는다.
 	err := r.launch.supervisor.Run(ctx, r.taskID, 0, "")
 	r.mu.Lock()
 	r.runErr = err
@@ -789,6 +776,29 @@ func urlStoppedUpdate(ctx context.Context, state *diagnosis.Closure, usage diagn
 		if !state.DrainComplete || !state.ResultReady {
 			u.State = diagnosisprep.Unknown
 			u.ReasonCode = "execution_closure_unconfirmed"
+		}
+		if !usage.UsageKnown {
+			u.State = diagnosisprep.Unknown
+			u.ReasonCode = "model_usage_unknown"
+		}
+	}
+}
+
+// urlSnapshotUpdate는 진단 실행이 스스로 끝난 상태(completed·cancelled·failed·unknown)의 마감 갱신이다. 실행이 분류한
+// 사유(failed·unknown)를 상태까지 싣고, 중지는 원인 있는 중지만 이름을 붙인다(B1). 사용량을 확인하지 못하면 결과 불명이다.
+func urlSnapshotUpdate(ctx context.Context, s diagnosis.Snapshot, usage diagnosisprep.ModelUsage, auth map[string]string) func(*diagnosisprep.Update) {
+	return func(u *diagnosisprep.Update) {
+		u.Phase = diagnosisprep.Report
+		u.State = diagnosisprep.State(s.State)
+		u.Started = s.Started
+		u.DrainComplete = s.DrainComplete
+		u.ResultReady = s.ResultReady
+		u.ModelUsage = &usage
+		u.Result = s.Result
+		u.AccountAuth = auth
+		u.ReasonCode = s.ReasonCode
+		if s.State == diagnosis.Cancelled {
+			u.ReasonCode = urlStopReason(ctx)
 		}
 		if !usage.UsageKnown {
 			u.State = diagnosisprep.Unknown
@@ -931,10 +941,17 @@ func (r *urlGatewayRunner) Close(ctx context.Context) (diagnosis.Closure, error)
 	if !drained {
 		return result, errors.Join(resultErr, saveErr)
 	}
-	if resultErr != nil && (!errors.Is(resultErr, server.ErrFirstDiagnosisOutcome) || !onlyRunOutcome(resultErr, r.runErr)) {
-		return result, errors.Join(resultErr, saveErr)
+	return result, runCloseError(resultErr, r.runErr, saveErr)
+}
+
+// runCloseError는 자원을 다 닫은 실행의 마감 오류다. 마감 오류가 Run이 돌려준 실행 실패와 정확히 같은 값이면 실행 결과이지
+// 마감 실패가 아니므로 저장 오류만 남긴다(진단 서비스가 failed·사유로 싣는다). 다른 마감·검증 오류가 있으면 숨기지 않는다
+// (unknown).
+func runCloseError(resultErr, runErr, saveErr error) error {
+	if resultErr != nil && (!errors.Is(resultErr, server.ErrFirstDiagnosisOutcome) || !onlyRunOutcome(resultErr, runErr)) {
+		return errors.Join(resultErr, saveErr)
 	}
-	return result, saveErr
+	return saveErr
 }
 func (b *urlPreparationRuntime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if server.ProductCandidatePath(r) {
@@ -1105,6 +1122,9 @@ func watchURLPreparation(hard context.Context, done <-chan struct{}, ticks <-cha
 					stopTarget(err)
 					continue
 				}
+				// 설치·위임 재확인 실패(승인 기간 밖, 보호 파일 변경, 대상 기록 확인 실패)는 지금처럼 즉시 멈춘다. 원인을 실어
+				// 끝 상태 사유로 운영자 중지와 구분한다(B1, 상태 값은 측정 뒤 결정).
+				stopTarget(errAuthorityRecheckFailed)
 				cancel()
 				return
 			}
@@ -1112,11 +1132,39 @@ func watchURLPreparation(hard context.Context, done <-chan struct{}, ticks <-cha
 	}
 }
 
+// errAuthorityRecheckFailed는 실행 중 설치·위임 재확인(urlLoadedProfile.current)이 실패해 멈춘 원인이다.
+var errAuthorityRecheckFailed = errors.New("authority_recheck_failed")
+
+// errProgressSaveFailed는 실행 중 진행 상태(실행 시작·계정별 인증 상태)를 진단 준비 서비스에 저장하지 못해 멈춘 원인이다.
+var errProgressSaveFailed = errors.New("progress_save_failed")
+
+// stopRunForProgress는 진행 저장 실패로 실행을 즉시 멈춘다(Publish 계약: 실패는 실행 허가가 아니다). 원인을 실어 끝 상태
+// 사유로 운영자 중지와 구분한다(B1).
+func stopRunForProgress(stopTarget context.CancelCauseFunc, cancel context.CancelFunc) {
+	stopTarget(errProgressSaveFailed)
+	cancel()
+}
+
 // urlStopReason은 중지(cancelled) 실행의 사유 코드다. 결속한 시험 계정이 해제·만료·판 변경·자격 교체되어 새 송신을
-// 멈춘 경우만 이름을 붙인다(C14). 다른 중지는 지금처럼 사유 없이 둔다.
+// 멈춘 경우(C14), 대상 승인이 철회·만료된 경우, 실행 중 설치·위임 재확인이나 진행 저장이 실패한 경우, 회차 실행 시간
+// 한도(hard 문맥 기한)에 닿은 경우(B1)에 이름을 붙인다. 운영자 중지의 stop_requested는 진단 준비 서비스가 중지 요청 때
+// 붙이고 끝 상태에서 지우지 않는다. 원인을 모르는 중지는 사유 없이 둔다.
+//
+// 실행 시간 한도는 시간 상한 마감(budget_limited, #830·#964)과 다른 경로다. 감독자는 실행 끝 시각에서 확정 몫·유예·결과
+// 저장 여유를 뺀 때 마감을 시작해 보통 completed·budget_limited로 끝난다. 그 마감이 남긴 여유 안에 끝나지 않으면 hard 문맥
+// 기한이 실행을 끊고, 그때 이 사유가 붙는다.
 func urlStopReason(ctx context.Context) string {
-	if errors.Is(context.Cause(ctx), errAccountBindingChanged) {
+	switch cause := context.Cause(ctx); {
+	case errors.Is(cause, errAccountBindingChanged):
 		return "account_binding_changed"
+	case errors.Is(cause, server.ErrFirstDiagnosisTargetEnded):
+		return "target_ended"
+	case errors.Is(cause, errAuthorityRecheckFailed):
+		return "authority_recheck_failed"
+	case errors.Is(cause, errProgressSaveFailed):
+		return "progress_save_failed"
+	case errors.Is(cause, context.DeadlineExceeded):
+		return "run_time_limit_reached"
 	}
 	return ""
 }

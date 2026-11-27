@@ -22,6 +22,10 @@
 - 설정 오류로 끝난 회차(`config_end`)는 시도로 세지 않는다(쪽별 줄의 시도·무효율에서 빼고 따로 적는다).
 - 일찍 끝난 회차 규칙이 걸린 회차(제공자 장애 끝·설정 오류·그 밖에 일찍 끝나 유효로 둔 회차)를 회차 ID·끝 상태·사유·근거
   호출로 따로 목록에 적는다(회차 디렉터리의 `early-end.json`, 측정 뒤 사람이 하나씩 검토한다).
+- 회차별 모델 호출 429(제공자 요청 한도) 표: 시도마다 전달한 모델 호출 수·429 수·비율을 적는다(회차의 `llm-summary.json`).
+  완료 회차는 서명된 근거 목록(`evidence`)의 해시와 파일이 맞을 때만 값을 쓰고, 맞지 않거나 파일이 없으면 "—"다. 무효 회차는
+  러너가 서명하지 않아 같은 파일 값을 "서명 밖"으로 표시해 적는다. 시간 상한 회차에서 429가 쓴 시간은 결과에 바로 닿아서
+  (2026-11-26 NodeGoat 회차 2: 실제 동시 1에서 40%) 회차마다 남긴다. 집계·판정·manifest에는 쓰지 않는 보조 기록이다.
 
 종료 코드: 0 집계·manifest 작성(경고가 있어도), 2 입력 오류(형식·중복·쪽 섞임·멈춤 판정 조건) 또는 manifest 파일이 이미 있음,
 3 측정 실패(쪽별 멈춤 무효가 상한 이상, manifest를 쓰지 않음).
@@ -30,6 +34,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import hmac
 import json
 import os
@@ -62,6 +67,8 @@ RECORDS_UNCOLLECTED = "records-uncollected.json"
 # 바꾸지 않는다(바꾸면 다음 측정부터).
 FAULT_STALL_LIMIT_PER_SIDE = 2
 MEASUREMENT_FAILED = 3
+# 러너가 회차마다 쓰는 모델 호출 요약(runner.py·runner_split_run.py가 같은 이름으로 쓴다). forwarded_requests·rate_limited를 읽는다.
+LLM_SUMMARY_NAME = "llm-summary.json"
 
 
 class SessionError(Exception):
@@ -86,6 +93,40 @@ class Attempt:
     # 멈춤 무효 회차에서 멈춤으로 판정된 장애 사건 때 모델 호출이 진행 중이었는지(fault-stall.json v3 inflight_model_calls_at_fault).
     # 참 = 하나라도 진행 중, 거짓 = 모두 0, None = 모름(칸 없음·못 읽음). 판정·상한 셈에는 쓰지 않는 공정성 기록이다(2026-11-22 사용자)
     stall_inflight: bool | None = None
+    # 회차의 모델 호출 429 기록(llm-summary.json). 못 읽거나 서명 근거와 맞지 않으면 None — 표에서 "—"다.
+    rate_limit: RateLimit | None = None
+
+
+@dataclass(frozen=True)
+class RateLimit:
+    calls: int  # 계측 게이트웨이가 제공자로 전달한 모델 호출 수(429 포함)
+    limited: int  # 그중 제공자 쪽이 429로 답한 수
+    signed: bool  # 서명된 완료 결과의 근거 목록 해시와 맞췄으면 참. 무효 회차는 늘 거짓(서명 밖)
+
+
+def _rate_limit(directory: Path, result: dict | None) -> RateLimit | None:
+    """회차의 llm-summary.json에서 전달 호출·429 수. 완료 결과(result)가 있으면 그 서명된 근거 해시와 파일이 같을 때만 읽는다.
+    result가 None이면(무효·결과 없음) 서명 밖 값으로 읽는다. 형식이 틀리면 None이다(0으로 세지 않음)."""
+    path = directory / LLM_SUMMARY_NAME
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    if result is not None:
+        evidence = result.get("evidence")
+        expected = evidence.get(LLM_SUMMARY_NAME) if isinstance(evidence, dict) else None
+        if not isinstance(expected, str) or not SHA256.match(expected) or hashlib.sha256(raw).hexdigest() != expected:
+            return None
+    try:
+        summary = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(summary, dict):
+        return None
+    calls, limited = summary.get("forwarded_requests"), summary.get("rate_limited")
+    if (type(calls) is not int or type(limited) is not int or calls < 0 or limited < 0 or limited > calls):
+        return None
+    return RateLimit(calls, limited, result is not None)
 
 
 def expected_order(repeats: int) -> list[str]:
@@ -139,7 +180,7 @@ def _attempt(directory: Path, key: bytes, errors: list[str], allow_fixture_e2: b
     result_path = directory / RESULT_NAME
     if not result_path.exists():
         started = datetime.strptime(match.group(2), "%Y%m%dt%H%M%Sz").replace(tzinfo=timezone.utc)
-        return Attempt(directory.name, side, started, INVALID, RESULT_MISSING, None)
+        return Attempt(directory.name, side, started, INVALID, RESULT_MISSING, None, rate_limit=_rate_limit(directory, None))
     result = _load_json(result_path, errors)
     if result is None:
         return None
@@ -159,7 +200,8 @@ def _attempt(directory: Path, key: bytes, errors: list[str], allow_fixture_e2: b
             errors.append(f"{directory.name}: 무효 결과에 사유가 없음")
             return None
         return Attempt(directory.name, side, started, INVALID, reasons[0], None, early_end=_early_end(directory),
-                       stall_inflight=_stall_inflight(directory) if reasons[0] == FAULT_STALL_REASON else None)
+                       stall_inflight=_stall_inflight(directory) if reasons[0] == FAULT_STALL_REASON else None,
+                       rate_limit=_rate_limit(directory, None))
     # 서명된 E② 자리. 가짜 E²(stub) 회차는 배치 확인용이라 시범·공식 세션 집계에 넣지 않는다(프로토콜 §2).
     e2_mode = result.get("e2_mode")
     if e2_mode not in E2_MODES:
@@ -190,7 +232,8 @@ def _attempt(directory: Path, key: bytes, errors: list[str], allow_fixture_e2: b
             for phase in ("pre", "post")):
         errors.append(f"{directory.name}: {RECORD_NAME}에 pre·post 스냅샷 경로가 없음")
         return None
-    return Attempt(directory.name, side, started, COMPLETE, None, record, task_sha256, result, early_end=_early_end(directory))
+    return Attempt(directory.name, side, started, COMPLETE, None, record, task_sha256, result, early_end=_early_end(directory),
+                   rate_limit=_rate_limit(directory, result))
 
 
 def _stall_seconds(attempt: Attempt) -> int | None:
@@ -405,6 +448,34 @@ def auxiliary(attempts: list[Attempt]) -> list[str]:
     return lines
 
 
+def _ratio(limited: int, calls: int) -> str:
+    return f"{100 * limited / calls:.1f}%" if calls else "—"
+
+
+def rate_limit_table(attempts: list[Attempt]) -> list[str]:
+    """회차별 모델 호출 429 표(시작 순서, 무효·결과 없음 포함)와 쪽별 유효 회차 합. 값이 없는 회차는 "—"이고 합에서 빠진다."""
+    lines = ["| 순서 | 쪽 | 회차 | 시작(UTC) | 결과 | 모델 호출 | 429 | 429 비율 |", "|---|---|---|---|---|---|---|---|"]
+    for index, attempt in enumerate(sorted(attempts, key=lambda a: (a.started_at, a.run_id)), 1):
+        outcome = "유효" if attempt.status == COMPLETE else f"무효 `{attempt.reason}`"
+        rl = attempt.rate_limit
+        if rl is None:
+            values = "— | — | —"
+        else:
+            mark = "" if rl.signed else " (서명 밖)"
+            values = f"{rl.calls} | {rl.limited} | {_ratio(rl.limited, rl.calls)}{mark}"
+        lines.append(f"| {index} | {SIDE_LETTER[attempt.side]} | `{attempt.run_id}` | {attempt.started_at.strftime('%Y-%m-%d %H:%M')} "
+                     f"| {outcome} | {values} |")
+    lines += ["", "| 쪽 | 유효 회차 | 429 기록 있는 유효 회차 | 모델 호출 합 | 429 합 | 429 비율 | 회차별 비율 최대 |", "|---|---|---|---|---|---|---|"]
+    for side in SIDES:
+        valid = [a for a in attempts if a.side == side and a.status == COMPLETE]
+        known = [a.rate_limit for a in valid if a.rate_limit is not None]
+        calls, limited = sum(r.calls for r in known), sum(r.limited for r in known)
+        worst = max((r.limited / r.calls for r in known if r.calls), default=None)
+        lines.append(f"| {SIDE_LETTER[side]} | {len(valid)} | {len(known)} | {calls if known else '—'} | {limited if known else '—'} "
+                     f"| {_ratio(limited, calls) if known else '—'} | {'—' if worst is None else f'{100 * worst:.1f}%'} |")
+    return lines
+
+
 def write_new(path: Path, payload: dict) -> None:
     """새 파일로만 쓴다(덮어쓰기 거부)."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
@@ -444,6 +515,7 @@ def main(argv: list[str] | None = None) -> int:
     print("\n".join(["", "보조 지표(프로토콜 §5, 효율 주장의 근거로 쓰지 않음):", *auxiliary(attempts)]))
     for warning in warnings:
         print(warning, file=sys.stderr)
+    print("\n".join(["", "회차별 모델 호출 429(제공자 요청 한도, 보조 기록 — 집계·판정에 쓰지 않음):", *rate_limit_table(attempts)]))
     stall_lines, failures = fault_stall_tally(attempts)
     print("\n".join(["", "제공자 장애 무효(멈춤·일찍 끝남, 결정안 §7, 0이어도 늘):", *stall_lines]))
     print("\n".join(["", "일찍 끝난 회차 규칙이 걸린 회차(평가 프로토콜 §5.1·고정 초안 §26, 측정 뒤 하나씩 검토):", *early_end_list(attempts)]))

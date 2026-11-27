@@ -29,13 +29,13 @@
 | `GET /api/product/targets/{id}/accounts` | 목록 `{"accounts": ProductAccount[], "account_statement": "..."}`(계정이 없으면 `accounts` 칸 없음). `account_statement`는 시험 계정 표시 때 화면이 그대로 띄워 동의받는 진술 문장이다. 외부 전송 동의 문장은 2026-11-26부터 이 목록에 싣지 않는다(설치 단위 동의, 아래 `external-transfer-consent`). 문장이 없으면 동의 칸을 보이지 않는다 |
 | `GET /api/product/external-transfer-consent` | 설치 단위 외부 전송 동의 상태(관리자) `{"external_consent": {"required", "statement"?, "consented", "source"?, "consented_by"?, "consented_at"?}}`. `required`가 거짓이면(외부 모델 없음) 나머지 칸 없음. 동의했으면 `source`는 `install`(설치 입력)·`admin`(관리자 화면). 화면 파서 `lib/diagnosis/external-transfer-consent.ts`는 서버 `validProductExternalConsent`와 같은 규칙으로 닫는다. 외부 모델 점검은 동의가 있어야 시작한다(없으면 검토 사유 `external_transfer_consent_required`) |
 | `POST /api/product/external-transfer-consent` `{"statement_confirmed": true, "statement_sha256": "…"}` | 관리자 동의를 한 번 남긴다(이미 있으면 먼저 남긴 동의 그대로). `statement_sha256`은 화면이 보인 문장의 SHA-256(소문자 16진수) — 지금 문장과 다르면 409 `statement_changed`(화면은 새 문장을 다시 읽음). 거짓·빈 본문은 409 `statement_required`, 해시 형식 밖은 400, 외부 모델이 없는 설치는 409 `external_transfer_not_installed`. 설치 프로필을 읽지 못하면 조회 · 동의 모두 오류(외부 모델 없음으로 보이지 않음) |
-| `POST /api/product/targets/{id}/accounts` `{"label": "..."}` | 등록(분류 `real`). 라벨은 소문자·숫자·`_`·`-`만(사용자명·이메일 원문 금지) |
-| `POST …/accounts/{label}/mark-test` `{"statement_confirmed": true}` | 시험 계정 표시(본인 진술 동의 필수, 없으면 409 `statement_required`) |
-| `POST …/accounts/{label}/unmark` `{}` | 표시 해제 |
+| `POST /api/product/targets/{id}/accounts` `{"label": "..."}` | 등록. 라벨은 소문자·숫자·`_`·`-`만(사용자명·이메일 원문 금지) |
+| `POST …/accounts/{label}/mark-test` `{"statement_confirmed": true}` | 시험 계정 표시. **화면은 부르지 않는다**(계정 분류 폐지, 아래). 서버에서 걷기 전까지 남아 있다 |
+| `POST …/accounts/{label}/unmark` `{}` | 표시 해제. **화면은 부르지 않는다**. 지금 서버는 해제할 때 자격도 지운다 |
 | `GET`·`PUT /api/product/targets/{id}/login` | 대상 로그인 방식(경로·형식·필드 이름·세션 위치). 자격 값 없음 |
 | `PUT …/accounts/{label}/credential` `{"username","password"}` | 자격 등록(서버 보호 파일, 응답·목록에 값·해시 없음). 사용자명 앞뒤에 공백이 있으면 `invalid_account_credential`(400). 화면도 등록 전에 같은 규칙을 확인한다. |
 
-화면(`AccountClassifyLive`, 2026-11-21): 대상을 고르면 로그인 방식을 읽어 칸에 채우고 저장한다(형식 검사는 서버 `ValidTargetLogin`과 같은 규칙, 승인 경로 안인지는 서버만 본다). 계정마다 자격을 입력한다. 자격 칸은 React 상태에 두지 않는 비제어 입력이고 보낼 때 한 번 읽고 바로 비운다(실패·형식 밖도). URL·브라우저 저장소·로그에 넣지 않는다. 브라우저 비밀번호 관리자에 들어가지 않게 form 제출을 쓰지 않고 `autoComplete="off"`·관리자 무시 표시를 단다(모든 브라우저가 저장 제안을 안 한다고 보장하지는 않는다). 비밀번호가 E② 보호 값 하한(6바이트)보다 짧으면 서버는 저장하지만 실행 때 그 계정으로 로그인하지 않으므로, 등록 뒤 라벨과 함께 따로 알린다(값 없음). 등록 여부는 목록의 `credential_configured`가 참일 때만 '자격 등록됨'이다. 쓰기 실패는 서버 사유 코드를 한국어 문구로 보인다.
+화면(`TargetAccountsLive` '시험 계정', 2026-11-21 · 11-26 분류 폐지): 대상을 고르면 로그인 방식을 읽어 칸에 채우고 저장한다(형식 검사는 서버 `ValidTargetLogin`과 같은 규칙, 승인 경로 안인지는 서버만 본다). 계정마다 자격을 입력한다. 자격 칸은 React 상태에 두지 않는 비제어 입력이고 보낼 때 한 번 읽고 바로 비운다(실패·형식 밖도). URL·브라우저 저장소·로그에 넣지 않는다. 브라우저 비밀번호 관리자에 들어가지 않게 form 제출을 쓰지 않고 `autoComplete="off"`·관리자 무시 표시를 단다(모든 브라우저가 저장 제안을 안 한다고 보장하지는 않는다). 비밀번호가 E② 보호 값 하한(6바이트)보다 짧으면 서버는 저장하지만 실행 때 그 계정으로 로그인하지 않으므로, 등록 뒤 라벨과 함께 따로 알린다(값 없음). 등록 여부는 목록의 `credential_configured`가 참일 때만 '자격 등록됨'이다. 쓰기 실패는 서버 사유 코드를 한국어 문구로 보인다.
 
 `ProductAccount`: `label`, `classification`(`test`|`real`), `reason`(`target_reapproved`|`target_expired`|`manual_unmark`, 없을 수 있음), `registered_by`, `registered_at`, `classified_by`, `classified_at`, `marked_revision`, `credential_configured`(bool, 값 없음).
 
@@ -43,7 +43,7 @@
 
 계정 목록과 계정 변경 응답에서 자격이 저장됐지만 대상 로그인 방식이 없으면 `login_method_missing: true`를 함께 준다. 이때 점검은 익명으로 진행한다. 로그인 방식을 등록하면 다음 조회부터 이 필드를 생략한다. 실제 로그인 결과는 회차의 `account_auth`에서 확인한다.
 
-화면 분류 대응: `test` → `test_approved`, `real` → `unmarked`. 서버에는 "승인 대기" 상태가 없다(표시하는 사람이 곧 승인자). 화면의 `test_pending`은 서버 값으로는 나오지 않는다. `approvedBy`·`approvedAt`은 `classified_by`·`classified_at`이다. 실행에서 계정별 로그인 결과는 실행 결과 `account_auth` 칸이다([실행 결과 계약](run-outcome-states.md) 3.4).
+계정 분류 폐지(사용자 결정 2026-11-26, [모델 로그인 시도 기록 계약](model-login-attempts.md) §0): 프로그램은 계정을 시험 · 실계정으로 나누지 않고, 서버는 자격이 저장된 등록 계정을 회차에 결속한다(#967). 화면은 `label`·`credential_configured`·`login_method_missing`만 읽고 `classification`·`reason`·`classified_by`·`classified_at`·`marked_revision`·`account_statement`는 읽지 않는다. 새 점검 · 진행 화면의 '시험 계정 있음'(`lib/diagnosis/target-account-presence.ts`)도 `credential_configured`가 참인 계정 수로 센다. 표시 · 해제 API와 이 칸들을 서버에서 걷는 것은 따로 한다. 실행에서 계정별 로그인 결과는 실행 결과 `account_auth` 칸이다([실행 결과 계약](run-outcome-states.md) 3.4).
 
 ## 2. 접근통제 지도 — 지금 연결 가능
 
@@ -113,6 +113,10 @@
 - 시험: `TestE2FlowTargetRequestsMatchJournalAndExplorationRecord`(내역이 저널에서 따로 센 수·탐색 기록과 같고 합이 맞음), `TestE2FlowTargetRequestsExplorationStates`.
 
 그 task의 전송 통제 감사 기록(실행 결속 디렉터리의 저널, HMAC 체인 검증 뒤)을 호출(call) 단위로 묶은 투영이다. 저널 검증이 실패하면 사건을 하나도 보이지 않고 `journal: "invalid"`로 답한다(일부만 보이고 "정상"으로 보이게 하지 않는다).
+
+**저널 없음(`journal: "none"`, 2026-11-27 사용자 결정)**: 실행은 결속됐지만 E② 저널이 아직 없으면(저널은 첫 진단 작업이 E②를 잡을 때 만든다 — 탐색·계획 중이거나, E②를 한 번도 잡지 않고 끝난 회차: 탐색 실패·의도 0·범위 선택 대기 중 시간 상한 등) 404가 아니라 200으로 `journal: "none"`을 준다. 호출은 빈 목록, `counts`는 모두 0, `last_index` 0, `more` 거짓, `omitted_calls` 0이고, `target_requests`는 진단 갈래(`model`·`login`·`confirmation`·`unclassified`)가 0이고 탐색 수는 탐색 기록 그대로다(`exploration_state` 규칙 같음). 헤더로 모델 쓰기 요약을 청하면 `model_writes`도 0으로 싣는다. 그래서 E②를 거치지 않고 끝난 회차의 '보낸 요청'도 탐색 요청 수로 보인다(이전에는 404라 '읽기 실패'). 실행 결속 전(실행 디렉터리·정책이 없음)은 지금처럼 404다. 화면은 `none`을 '진단 요청 전·아직 전송 통제 기록이 없음'으로 보인다(문구는 이경준). 요청 전체 기록·요청 상세(아래)의 `not_journaled` 404는 그대로다(아래 '취득 기록'이 있는데 저널이 없으면 `journal_invalid` 409).
+
+**취득 기록으로 `none`과 무효를 가른다(2026-11-27 결정, #983 리뷰 P1)**: 실행은 E②를 잡을 때 화면용 저널(`state/events.jsonl`)을 만들기 **전에** 취득 기록 `state/e2-acquire.json`(`version: "e2-acquire/v1"`, 실행 `scope`, `policy_revision`)을 배타 생성·fsync한다. 남기지 못하면 저널을 만들지 않고 E②를 잡지 않는다([실행 준비](../../server/e2_http_factory.go)). E②를 잡는 곳은 첫 진단 작업 준비(`PrepareWork`) 하나뿐이고, 탐색이 회차 요청 예산을 다 써 예산 한도로 마감한 실행과 마감·확정 단계는 E②를 따로 잡지 않는다. 그래서 `none`은 **저널도 취득 기록도 없을 때만** 준다. 취득 기록은 있는데 저널이 없으면(지워졌거나 만들지 못함) 사건·`target_requests` 없이 `journal: "invalid"`로 답한다(감사 기록 누락을 '진단 요청 전'으로 보이지 않는다). 취득 기록이 없다고 확인하지 못한 경우도 `none`으로 답하지 않는다. 취득 기록은 감사 기록이 아니고(HMAC 없음) 허용 판단·송신·계수에 쓰지 않는다. **한계**: 이 기록이 생기기 전 판으로 돈 실행은 취득 기록이 없어, 저널이 없어진 경우를 `none`과 구분하지 못한다. 저널과 취득 기록이 함께 없어진 경우도 같다(독립 저장소 대조는 아래 '신뢰 체크포인트 연결' 후속의 몫).
 
 현재 [제품 조회](../../cmd/first-controlled-diagnosis/url_live_views.go)는 감사 키 pin과 읽은 저널의 HMAC 체인을 검증한다. `VerifyJournalEvents`에 신뢰 체크포인트를 전달하지 않아 끝 행이 삭제된 유효 접두부도 `journal: "verified"`로 표시될 수 있다.
 

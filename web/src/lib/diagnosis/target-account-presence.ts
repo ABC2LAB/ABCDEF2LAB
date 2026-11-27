@@ -3,8 +3,12 @@ import { ApiError, apiFetch } from "./api";
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const ref = (v: unknown): v is string => typeof v === "string" && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(v);
 
-/** 현재 URL의 서버 승인 대상과 실제 계정 API만 조회한다. 조회 실패는 계정 없음이 아니다. */
-export async function readExternalTestAccountPresence(
+/**
+ * 현재 URL의 서버 승인 대상과 실제 계정 API만 조회해, 이 대상에 점검에 쓸 시험 계정이 있는지 본다. 조회 실패는 계정 없음이
+ * 아니다. 계정 분류 폐지(사용자 결정 2026-11-26, #967) 뒤 서버는 자격이 저장된 등록 계정을 회차에 결속하므로, 같은 기준
+ * (credential_configured)으로 센다. 서버가 아직 싣는 classification 칸은 보지 않는다.
+ */
+export async function readTargetAccountPresence(
   target: string,
   signal?: AbortSignal,
 ): Promise<{ hasTestAccounts: boolean; loginMethodMissing: boolean; targetId?: string }> {
@@ -33,24 +37,16 @@ export async function readExternalTestAccountPresence(
   const accounts = result.accounts ?? [];
   if (
     !Array.isArray(accounts) ||
-    accounts.some(
-      (a) =>
-        !object(a) ||
-        !(typeof a.label === "string" && /^[a-z0-9][a-z0-9_-]{0,31}$/.test(a.label)) ||
-        !["test", "real"].includes(String(a.classification)),
-    )
+    accounts.some((a) => !object(a) || !(typeof a.label === "string" && /^[a-z0-9][a-z0-9_-]{0,31}$/.test(a.label)))
   )
     throw new ApiError(422, "invalid_account_contract");
   // 자격은 저장됐는데 이 대상의 로그인 방식이 없으면 서버가 login_method_missing: true 를 준다(#914, workbench-live-data).
-  // 대상 설정 상태일 뿐이라 MFA · 지원 안 함으로 읽지 않고, 없다고 로그인 성공으로도 읽지 않는다. 시험 계정만 본다
-  const loginMethodMissing = accounts.some(
-    (a) =>
-      object(a) && a.classification === "test" && a.credential_configured === true && a.login_method_missing === true,
-  );
+  // 대상 설정 상태일 뿐이라 MFA · 지원 안 함으로 읽지 않고, 없다고 로그인 성공으로도 읽지 않는다
+  const configured = accounts.filter((a) => object(a) && a.credential_configured === true);
   return {
-    hasTestAccounts: accounts.some((a) => object(a) && a.classification === "test"),
-    loginMethodMissing,
-    // 진행 화면의 '로그인 방식 등록' 안내가 계정 분류 화면에서 이 대상을 미리 고르게 한다
+    hasTestAccounts: configured.length > 0,
+    loginMethodMissing: configured.some((a) => object(a) && a.login_method_missing === true),
+    // 진행 화면의 '로그인 방식 등록' 안내가 시험 계정 화면에서 이 대상을 미리 고르게 한다
     targetId: t.id,
   };
 }

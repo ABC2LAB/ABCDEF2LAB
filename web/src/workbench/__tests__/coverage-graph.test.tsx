@@ -14,9 +14,11 @@ import { ApiError, apiFetch } from "@/lib/diagnosis/api";
 
 import type { CoverageGraph } from "../live/api";
 import {
+  type CgNode,
   coverageGraphStats,
   coverageNodeLabel,
   coverageNodeTitle,
+  coveragePathDetailLine,
   FOLD_LIMIT,
   FOLD_STEP,
   layoutCoverageGraph,
@@ -128,6 +130,7 @@ const DISPLAY_FIXTURE: CoverageGraph = {
       url: "https://api.example.test",
       tested: true,
       display_path: "/{id}/{id}",
+      path_detail_state: "pattern_only",
     }),
     node("a:22", "endpoint", {
       label: "https://api.example.test",
@@ -135,20 +138,28 @@ const DISPLAY_FIXTURE: CoverageGraph = {
       url: "https://api.example.test",
       tested: true,
       display_path: "/{id}/{id}/{id}",
+      path_detail_state: "pattern_only",
     }),
     node("a:23", "endpoint", {
       label: "https://api.example.test",
       asset_id: 23,
       url: "https://api.example.test",
       display_path: "/{id}/{id}/{id}",
+      path_detail_state: "pattern_only",
     }),
     node("a:24", "endpoint", {
       label: "https://api.example.test",
       asset_id: 24,
       url: "https://api.example.test",
       display_path: "/",
+      path_detail_state: "exact",
     }),
-    node("a:25", "endpoint", { label: "https://api.example.test", asset_id: 25, url: "https://api.example.test" }),
+    node("a:25", "endpoint", {
+      label: "https://api.example.test",
+      asset_id: 25,
+      url: "https://api.example.test",
+      path_detail_state: "unavailable",
+    }),
   ],
   edges: [{ src: "a:14", dst: "c:1" }, ...[21, 22, 23, 24, 25].map((id) => ({ src: `a:${id}`, dst: "a:14" }))],
 };
@@ -226,6 +237,68 @@ describe("표시 경로(display_path, #904)", () => {
     expect(detail).toHaveTextContent("origin https://api.example.test");
     expect(detail).toHaveTextContent("표시 경로 /{id}/{id}");
     expect(detail).toHaveTextContent("요청 · 진단 근거 아님");
+  });
+});
+
+describe("표시 경로 상세 수준(path_detail_state, #945)", () => {
+  const nodes = (raw: CoverageGraph) => new Map(parseCoverageGraph(raw).nodes.map((n) => [n.key, n]));
+  const line = (by: Map<string, CgNode>, key: string) => {
+    const n = by.get(key);
+    if (!n) throw new Error(`no node ${key}`);
+    return coveragePathDetailLine(n);
+  };
+
+  it("서버 합성 응답의 세 값을 읽고 상세 줄을 고른다", () => {
+    const by = nodes(DISPLAY_FIXTURE);
+    expect(by.get("a:21")?.pathDetail).toBe("pattern_only");
+    expect(by.get("a:24")?.pathDetail).toBe("exact");
+    expect(by.get("a:25")?.pathDetail).toBe("unavailable");
+    expect(line(by, "a:21")).toBe("표시 경로 /{id}/{id} — 경로 조각을 가린 구조입니다(요청 · 진단 근거 아님)");
+    expect(line(by, "a:24")).toBe("표시 경로 / — 루트 경로 그대로입니다(요청 · 진단 근거 아님)");
+    expect(line(by, "a:25")).toBe("상세 경로 표시 불가 — 이 자산은 표시할 경로를 만들 수 없습니다");
+    expect(line(by, "a:14")).toBeNull();
+  });
+
+  it("이전 응답(칸 없음)은 상세 수준을 모름 — 표시 경로가 없으면 '표시 불가'로 단정하지 않는다", () => {
+    const by = nodes(LEGACY_FIXTURE);
+    expect(by.get("a:22")?.pathDetail).toBeNull();
+    expect(line(by, "a:22")).toBeNull();
+    const old = nodes({ nodes: [node("e:1", "endpoint", { asset_id: 1, display_path: "/{id}" })], edges: [] });
+    expect(old.get("e:1")?.pathDetail).toBeNull();
+    expect(line(old, "e:1")).toBe("표시 경로 /{id} — 경로 조각을 가린 구조입니다(요청 · 진단 근거 아님)");
+  });
+
+  it("서버가 만들 수 없는 짝 · 모르는 값 · 엔드포인트 밖 칸은 상세 수준으로 쓰지 않는다", () => {
+    const by = nodes({
+      nodes: [
+        node("e:1", "endpoint", { asset_id: 1, display_path: "/{id}", path_detail_state: "exact" }),
+        node("e:2", "endpoint", { asset_id: 2, display_path: "/", path_detail_state: "pattern_only" }),
+        node("e:3", "endpoint", { asset_id: 3, display_path: "/{id}", path_detail_state: "unavailable" }),
+        node("e:4", "endpoint", { asset_id: 4, path_detail_state: "pattern_only" }),
+        node("e:5", "endpoint", { asset_id: 5, path_detail_state: "exact" }),
+        node("e:6", "endpoint", { asset_id: 6, display_path: "/{id}", path_detail_state: "PATTERN_ONLY" }),
+        node("e:7", "endpoint", { asset_id: 7, display_path: "/api/users", path_detail_state: "pattern_only" }),
+        node("s:1", "service", { asset_id: 8, path_detail_state: "unavailable" }),
+      ],
+      edges: [],
+    });
+    for (const k of ["e:1", "e:2", "e:3", "e:4", "e:5", "e:6", "e:7", "s:1"])
+      expect(by.get(k)?.pathDetail, k).toBeNull();
+    // 어긋난 짝이어도 검증을 넘은 표시 경로는 예전 문구로 보이고, 표시 경로가 없으면 줄을 두지 않는다
+    expect(line(by, "e:3")).toBe("표시 경로 /{id} — 경로 조각을 가린 구조입니다(요청 · 진단 근거 아님)");
+    expect(line(by, "e:4")).toBeNull();
+    expect(line(by, "s:1")).toBeNull();
+  });
+
+  it("상세에 '상세 경로 표시 불가'를 보이고 '기록되지 않음'으로 단정하지 않는다", async () => {
+    serve(DISPLAY_FIXTURE);
+    render(<CoverageGraphSection taskId="1" active />);
+    const svg = await screen.findByTestId("coverage-graph");
+    fireEvent.keyDown(within(svg).getByRole("button", { name: /엔드포인트 #25/ }), { key: "Enter" });
+    const detail = screen.getByTestId("coverage-graph-detail");
+    expect(detail).toHaveTextContent("상세 경로 표시 불가");
+    expect(detail).not.toHaveTextContent(/기록되지 않/);
+    expect(detail).not.toHaveTextContent("표시 경로");
   });
 });
 

@@ -5,10 +5,10 @@
 //    실행 중에도 오고, 다시 로그인으로 값이 바뀌면 시각도 바뀐다 — 점검 상태 2초 조회를 그대로 따라 갱신된다. 칸이 없으면
 //    (계정을 안 쓰는 점검 · 인증 준비 전) 아무것도 띄우지 않는다. 라벨과 고정 결과만 보이고 사용자명 · 비밀번호 같은 값은 없다.
 // ② 로그인 방식 없음: 대상 계정 목록의 login_method_missing(#914). 자격은 저장됐는데 로그인 방식이 없으면 시험 계정으로 로그인하지
-//    않고 익명으로 점검한다 — 계정 분류 화면(로그인 방식 등록)으로 가는 버튼을 둔다. 목록을 못 읽으면 띄우지 않는다(단정하지 않음).
+//    않고 익명으로 점검한다 — 시험 계정 화면(로그인 방식 등록)으로 가는 버튼을 둔다. 목록을 못 읽으면 띄우지 않는다(단정하지 않음).
 
 import type { URLAccountAuth, URLAccountAuthResult } from "@/lib/diagnosis/diagnosis-url";
-import { readExternalTestAccountPresence } from "@/lib/diagnosis/external-account-consent";
+import { readTargetAccountPresence } from "@/lib/diagnosis/target-account-presence";
 
 import { cx } from "../../lib/cx";
 import { shortTimeOf } from "../../live/map";
@@ -147,7 +147,7 @@ export function LoginMethodMissingWarning({
   const { goTo } = useShell();
   const focusTargetOn = useWb((st) => st.focusTargetOn);
   const show = active && !authTried;
-  const poll = usePoll((signal) => readExternalTestAccountPresence(targetUrl, signal), [targetUrl], {
+  const poll = usePoll((signal) => readTargetAccountPresence(targetUrl, signal), [targetUrl], {
     enabled: show,
   });
   const v = poll.data;

@@ -23,7 +23,6 @@ import { SEVL } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import { fetchCoverage } from "../../live/api";
 import { clockOf, fmtDur, planState, sevKey } from "../../live/map";
-import { maskSecrets } from "../../live/mask";
 import { NotYet, useNow } from "../../live/parts";
 import {
   runDurationMissingWhy,
@@ -370,6 +369,7 @@ export function JobSummary({
   result,
   coverage,
   e2Flow,
+  e2FlowFailed = false,
 }: {
   /** 보낼 요청 승인 대기 줄 (모르면 null) */
   approvals?: readonly RequestApproval[] | null;
@@ -381,6 +381,8 @@ export function JobSummary({
   coverage?: number | null;
   /** 부모가 이미 읽은 e2-flow(대시보드). 주지 않으면 여기서 읽는다(목록 기록 화면) */
   e2Flow?: E2Flow | null;
+  /** 부모가 e2-flow 를 읽지 못했나(조회 실패 — '0건'이 아니라 '읽기 실패'로 보인다) */
+  e2FlowFailed?: boolean;
 }) {
   const { goTo } = useShell();
   const handle = useUrl((st) => st.handle);
@@ -400,6 +402,7 @@ export function JobSummary({
     !!job && URL_ENDED_STATES.includes(job.state),
   );
   const sentFlow = e2Flow ?? ownE2.data;
+  const sentFailed = e2Flow === undefined ? !!ownE2.error && !ownE2.data : e2FlowFailed;
   // 끝난 점검만 목록에서 숨길 수 있다(화면 표시만, 기록은 그대로). 확인 상자는 버튼 줄 아래에 둔다(사용자 11/23)
   const hideRun = useHideRunConfirm(
     handle && job && URL_ENDED_STATES.includes(job.state) && cap.kind === "v2"
@@ -465,7 +468,7 @@ export function JobSummary({
     ["작업", job?.task_id ? `#${job.task_id}` : "아직 없음"],
     // 숫자는 대상에 나간 요청 총계, 마우스를 올리면 '모델 · 로그인 · 확정 · 탐색' 내역(사용자 11/25). 진단 흐름의
     // counts.sent(모델 진단 요청만)는 쓰지 않는다 — 11/24 화면 50건 vs 저널 56건(로그인 6)이 그 차이였다
-    ...(sentTask ? [["보낸 요청", <SentRequestsValue key="sent" flow={sentFlow} />] as const] : []),
+    ...(sentTask ? [["보낸 요청", <SentRequestsValue key="sent" flow={sentFlow} failed={sentFailed} />] as const] : []),
     ...(outcomeText ? [["실행 결과", outcomeText] as const] : []),
   ];
 
@@ -520,7 +523,7 @@ export function JobSummary({
                 [
                   <span key={label} className={s.tipline}>
                     {accountName(i)}
-                    <HelpTip label={`${accountName(i)} 서버 라벨 보기`}>서버 라벨: {maskSecrets(label)}</HelpTip>
+                    <HelpTip label={`${accountName(i)} 서버 라벨 보기`}>서버 라벨: {label}</HelpTip>
                   </span>,
                   result,
                 ] as const,

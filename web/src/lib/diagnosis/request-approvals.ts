@@ -25,9 +25,23 @@ export type RequestApproval = {
   consumed: boolean;
   execution_state: "not_sent" | "awaiting_dispatch" | "dispatch_pending" | "completed" | "unknown";
   reason?: string;
+  /**
+   * 승인 대기가 결정 없이 닫힌 까닭(docs/first-diagnosis-launch.md '라이브 목록', #953). `cancelled`·`expired`에만 오고 `reason`
+   * (E② 전송 결과)과 다른 칸이다. 이전 서버는 싣지 않는다.
+   */
+  closed_reason?: RequestApprovalClosedReason;
   live: boolean;
   can_decide: boolean;
 };
+
+/** 취소로 닫힌 까닭(서버 approvalClosedReason). 만료는 늘 `approval_expired` 하나다. */
+export const APPROVAL_CANCEL_REASONS = [
+  "model_stage_closed",
+  "request_timeout",
+  "operator_stopped",
+  "run_closed",
+] as const;
+export type RequestApprovalClosedReason = (typeof APPROVAL_CANCEL_REASONS)[number] | "approval_expired";
 
 /** 실제 감독자 결과. 전송 차단과 실행 마감, 취약점 판정을 서로 대신하지 않는다. */
 export type RequestApprovalRunState = {
@@ -307,8 +321,20 @@ function isApproval(value: unknown, taskId: string): value is RequestApproval {
     ) &&
     object(value.input_preview) &&
     Object.values(value.input_preview).every((item) => typeof item === "string") &&
-    ["reason", "decided_by", "decided_at"].every((key) => value[key] === undefined || typeof value[key] === "string")
+    ["reason", "decided_by", "decided_at"].every((key) => value[key] === undefined || typeof value[key] === "string") &&
+    closedReasonFits(value.state, value.closed_reason)
   );
+}
+
+/**
+ * 서버 projectedClosedReason 과 같은 짝만 받는다: `expired` → `approval_expired`, `cancelled` → 취소 까닭 넷 중 하나, 그 밖의
+ * 상태에는 없음. 칸이 없는 것은 이전 서버라 어느 상태든 받는다.
+ */
+function closedReasonFits(state: unknown, reason: unknown): boolean {
+  if (reason === undefined) return true;
+  if (state === "expired") return reason === "approval_expired";
+  if (state === "cancelled") return (APPROVAL_CANCEL_REASONS as readonly unknown[]).includes(reason);
+  return false;
 }
 function isUsage(value: unknown): value is ModelUsage {
   return (

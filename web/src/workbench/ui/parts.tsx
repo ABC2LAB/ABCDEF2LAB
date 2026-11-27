@@ -6,6 +6,7 @@
 import { Fragment, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
 import { cx } from "../lib/cx";
+import { maskForCopy } from "../live/copyMask";
 import { useUrl } from "../live/urlDiagnosis";
 import { useShell } from "../shell";
 import { useWb } from "../store";
@@ -252,7 +253,8 @@ export function CopyButton({
   const onClick = () => {
     const el = document.getElementById(targetId);
     if (!el) return;
-    const txt = el.textContent ?? "";
+    // 코드 상자(요청 · 응답 원문) 복사도 클립보드로 나가는 글이라 가린다(#975 이동찬 P2). 화면 글은 그대로다
+    const txt = maskForCopy(el.textContent ?? "");
     const done = () => setCopied((n) => n + 1);
     const fallback = () => {
       try {

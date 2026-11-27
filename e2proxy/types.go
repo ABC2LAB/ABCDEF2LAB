@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/x509"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/netip"
 	"time"
@@ -60,9 +59,6 @@ var (
 	ErrWithheld = errors.New("e2proxy: response withheld")
 	// ErrAuthSession은 인증 준비 응답을 받았지만 설정한 세션 위치에서 세션을 찾지 못했다는 뜻이다(로그인 실패 포함).
 	ErrAuthSession = errors.New("e2proxy: auth session not found")
-	// ErrSessionRedactCapacity는 시험 계정 세션 가림 칸(SessionRedactCapacity, 모델 단계는 확정 몫을 뺀 칸)이 모자라 새
-	// 세션을 받지 않은 것이다. ErrConfig와 같은 갈래로도 본다(errors.Is).
-	ErrSessionRedactCapacity = fmt.Errorf("%w: session redaction capacity", ErrConfig)
 	// ErrE3JournalUnavailable은 E③ 송신에 필요한 v3 감사·계정 결속이 아직 연결되지 않았다는 뜻이다.
 	ErrE3JournalUnavailable = errors.New("e2proxy: e3 journal v3 unavailable")
 )
@@ -175,12 +171,6 @@ type Config struct {
 	E3Verifier E3Verifier `json:"-"`
 	// E③ 몫은 회차 전체 대상 예산 안에서 별도로 센다. 0이면 프로그램 송신은 닫힌다.
 	E3ConfirmationRequests uint64 `json:"-"`
-	// SessionRedactCapacity는 시험 계정 세션(인증 준비·다시 로그인, AddRedactValues)으로 등록할 수 있는 출력 가림 값 수다.
-	// 0이면 기본 64개다. 상한은 MaxSessionRedactValues다. 대상 응답에서 받은 발급 세션은 따로 센다(maxIssuedRedactValues).
-	SessionRedactCapacity int `json:"-"`
-	// ConfirmationRedactReserve는 그 칸 안에서 확정 단계 직전 다시 로그인 몫으로 처음부터 떼어 두는 값 수다. 모델 단계가
-	// 마감되기 전(CloseModelStage 전)의 등록은 칸 − 몫까지만 쓴다. 칸의 절반을 넘을 수 없다.
-	ConfirmationRedactReserve int `json:"-"`
 	// 생성은 제품 대상의 명시적 쓰기 동의와 리셋 가능 상태가 모두 확인된 실행만 허용한다.
 	E3WriteConsent bool `json:"-"`
 	E3Resettable   bool `json:"-"`

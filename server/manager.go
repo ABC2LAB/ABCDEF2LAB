@@ -67,6 +67,9 @@ type Task struct {
 	// firstDiagnosisBudgetLimited는 실행 상한에 닿아 새 Planner 라운드·작업을 받지 않는다는 표시다.
 	// 진행 중 작업이 끝나면 실패가 아니라 budget_limited로 마감한다.
 	firstDiagnosisBudgetLimited atomic.Bool
+	// firstDiagnosisFailureReason은 엔진이 작업을 실패로 표시하며 분류한 고정 사유다(계획 준비 실패 등). 감독자가 실행 실패
+	// 사유로 상태 API까지 싣는다(B1). 없으면 일반 엔진 실패 사유를 쓴다.
+	firstDiagnosisFailureReason atomic.Pointer[string]
 	lifecycleMu                 sync.RWMutex
 	llmMu                       sync.RWMutex
 

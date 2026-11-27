@@ -1,7 +1,8 @@
 // 실제 엔진 API 호출 (live 모드). 팀 lib(api·engine·request-approvals·remediation)을 그대로 쓰고,
 // 없는 것만 apiFetch 로 부른다. 응답 모양은 origin/dev 의 Go 핸들러(server/*.go)에서 확인했다.
 // - 네트워크 실패(fetch TypeError)는 ApiError(status 0) 로 바꿔 올린다 → isOffline · errorText 로 판별.
-// - 원문 비밀이 들어올 수 있는 칸(트래픽 원문 · 도구 입력 · 파라미터 값 · 요청 미리보기)은 여기서 maskSecrets 를 거친다.
+// - 트래픽 원문 · 도구 입력 · 파라미터 값 · 요청 미리보기는 가리지 않고 그대로 보인다(DLP 폐기, CLAUDE.md 절대규칙 2: 제품 화면은
+//   내부 담당자만 보므로 대상 응답 · 시험 계정 자격 · 세션 값을 가리지 않는다). 우리 제어 비밀은 서버가 애초에 싣지 않는다.
 // - 서비스 자산의 auth[] · extra · LLM proxy · API 키 힌트처럼 화면에 필요 없는 민감 칸은 받아도 버린다.
 // - 토큰은 URL·쿼리에 넣지 않는다(apiFetch 가 Authorization 헤더로만 보낸다).
 
@@ -9,8 +10,6 @@ import { ApiError, apiFetch, apiFetchBlob } from "@/lib/diagnosis/api";
 import * as engine from "@/lib/diagnosis/engine";
 import { type RemediationData, readRemediation } from "@/lib/diagnosis/remediation";
 import * as ra from "@/lib/diagnosis/request-approvals";
-
-import { maskJson, maskParam, maskSecrets } from "./mask";
 
 // ---------- 공통 ----------
 
@@ -260,7 +259,7 @@ export type FindingAsset = engine.EngineFindingAsset;
  * - **판정(확정/의심/판단 불가) 칸이 없다.** status 는 처리 상태(워크플로) → `findingStatusLabel` 로 "처리 상태"로만 보인다.
  * - task 목록에서 id 는 발견 **노드** id, finding_id 는 독립 발견 표 id(없을 수 있음). 상세 조회(fetchFinding)는 finding_id 로.
  * - 전체 목록(fetchFindings)에서는 id = finding_id.
- * - summary · evidence 는 서버 원문이다 → 요청·응답 조각이 섞일 수 있으니 보일 때 maskSecrets 를 거칠 것.
+ * - summary · evidence 는 서버 원문이다(요청·응답 조각이 섞일 수 있고 가리지 않는다).
  */
 export interface LiveFinding {
   id: string;
@@ -390,7 +389,7 @@ export interface LiveActivity {
   kind: string;
   tool: string;
   is_error: boolean;
-  /** 사람이 읽는 요약(서버 원문) → 보일 때 maskSecrets */
+  /** 사람이 읽는 요약(서버 원문) */
   summary: string;
 }
 
@@ -464,7 +463,7 @@ export function fetchIntents(taskId: string, limit = 300): Promise<LiveIntent[]>
 
 // ---------- 자산(엔드포인트) ----------
 
-/** 엔드포인트 파라미터 (db ParamItem). value 는 maskParam 을 거친 값. */
+/** 엔드포인트 파라미터 (db ParamItem). value 는 서버 값 그대로. */
 export interface EndpointParam {
   location: string;
   name: string;
@@ -513,7 +512,7 @@ function normEndpoint(a: Record<string, unknown>): LiveEndpoint {
     port: typeof a.port === "number" ? a.port : null,
     params: params.map((p) => {
       const name = str(p.name);
-      return { location: str(p.location), name, value: maskParam(name, str(p.value)), type: str(p.type) };
+      return { location: str(p.location), name, value: str(p.value), type: str(p.type) };
     }),
     last_seen: str(a.last_seen),
     task_ids: Array.isArray(a.task_ids) ? (a.task_ids as unknown[]).map((v) => num(v)) : [],
@@ -550,7 +549,7 @@ export function fetchEndpoints(taskId: string, max = 500): Promise<EndpointList>
   });
 }
 
-/** 자산에 걸린 의도·사실·발견 한 줄 (server CoverageAssetRefDTO). summary 는 서버 원문 → maskSecrets. */
+/** 자산에 걸린 의도·사실·발견 한 줄 (server CoverageAssetRefDTO). summary 는 서버 원문. */
 export interface AssetRef {
   id: number;
   kind: string;
@@ -588,7 +587,7 @@ export function fetchAssetRefs(taskId: string, assetId: number | string): Promis
 
 // ---------- 트래픽 ----------
 
-/** 트래픽 목록 한 줄 (server TrafficExchangeDTO). url 의 쿼리에 비밀이 있을 수 있어 보일 때 maskSecrets. */
+/** 트래픽 목록 한 줄 (server TrafficExchangeDTO). */
 export interface TrafficRow {
   id: string;
   /** RFC3339 */
@@ -658,17 +657,17 @@ export function fetchTraffic(params: TrafficQuery = {}): Promise<TrafficPage> {
   });
 }
 
-/** 요청·응답 원문 한 쌍. **이미 maskSecrets 를 거친 글**이다(서버 원문은 가림 없음). */
-export interface TrafficExchangeMasked {
-  reqMasked: string;
-  respMasked: string;
+/** 요청·응답 원문 한 쌍(가리지 않음). */
+export interface TrafficExchange {
+  req: string;
+  resp: string;
 }
 
-/** GET /api/traffic/exchange?id= — 요청·응답 원문을 받아 가린 뒤 돌려준다. 기록 꺼짐·없는 id 는 404. */
-export function fetchTrafficExchange(id: string): Promise<TrafficExchangeMasked> {
+/** GET /api/traffic/exchange?id= — 요청·응답 원문. 기록 꺼짐·없는 id 는 404. */
+export function fetchTrafficExchange(id: string): Promise<TrafficExchange> {
   return call(async () => {
     const r = await apiFetch<{ req?: string; resp?: string }>(`/api/traffic/exchange?id=${enc(id)}`);
-    return { reqMasked: maskSecrets(str(r?.req)), respMasked: maskSecrets(str(r?.resp)) };
+    return { req: str(r?.req), resp: str(r?.resp) };
   });
 }
 
@@ -808,14 +807,25 @@ export interface PendingApproval {
   created_at: string;
 }
 
-/** 승인 상세: + 가린 도구 입력 · 걸린 규칙/판정 이유. */
+/** 승인 상세: + 도구 입력 · 걸린 규칙/판정 이유. */
 export interface PendingApprovalDetail extends PendingApproval {
-  /** tool_input(JSON) 을 보기 좋게 풀어 maskSecrets 를 거친 글 */
-  toolInputMasked: string;
-  /** 규칙 메시지 또는 모델 판정 이유 (서버 원문 → maskSecrets 거침) */
+  /** tool_input(JSON) 을 보기 좋게 푼 글 */
+  toolInput: string;
+  /** 규칙 메시지 또는 모델 판정 이유 (서버 원문) */
   reason: string;
   decision_source: string;
   decided_at: string | null;
+}
+
+/** 서버가 준 JSON 값을 보기 좋은 글로(문자열이면 그대로). */
+function jsonText(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 function normPending(p: Record<string, unknown>): PendingApproval {
@@ -838,14 +848,14 @@ export function fetchPendingApprovals(): Promise<PendingApproval[]> {
   });
 }
 
-/** GET /api/intercept/pending/{id} — 한 건 상세(이미 결정된 것도 상태와 함께). 도구 입력은 가려서 준다. */
+/** GET /api/intercept/pending/{id} — 한 건 상세(이미 결정된 것도 상태와 함께). */
 export function fetchPendingApproval(id: number): Promise<PendingApprovalDetail> {
   return call(async () => {
     const r = (await engine.getPendingApproval(id)) as unknown as Record<string, unknown>;
     return {
       ...normPending(r),
-      toolInputMasked: maskJson(r.tool_input),
-      reason: maskSecrets(str(r.reason)),
+      toolInput: jsonText(r.tool_input),
+      reason: str(r.reason),
       decision_source: str(r.decision_source),
       decided_at: typeof r.decided_at === "string" ? r.decided_at : null,
     };
@@ -859,7 +869,7 @@ export function decidePendingApproval(id: number, decision: "allowed" | "denied"
 
 // ---------- 요청별 승인 (request-approvals, 첫 진단 모드) ----------
 
-/** 요청별 승인 한 건 (팀 타입). input_preview 값은 maskParam 을 거친 값. */
+/** 요청별 승인 한 건 (팀 타입). input_preview 값은 서버 값 그대로. */
 export type RequestApproval = ra.RequestApproval;
 /** 실행 감독자 상태 (팀 타입). 전송 통제 집계는 run.execution.counts → approvalCounts. */
 export type RequestApprovalRun = ra.RequestApprovalRunState;
@@ -879,9 +889,7 @@ export function fetchRequestApprovals(taskId: string): Promise<RequestApprovalSt
     const r = await ra.readRequestApprovalState(taskId);
     const approvals = arr(r?.approvals).map((a) => ({
       ...a,
-      input_preview: Object.fromEntries(
-        Object.entries(a.input_preview ?? {}).map(([k, v]) => [k, maskParam(k, String(v))]),
-      ),
+      input_preview: Object.fromEntries(Object.entries(a.input_preview ?? {}).map(([k, v]) => [k, String(v)])),
     }));
     return { approvals, run: r.run };
   });

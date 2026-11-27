@@ -93,15 +93,6 @@ export function ErrorNote({ error, onRetry }: { error: unknown; onRetry?: () => 
   );
 }
 
-/** 가림 안내. 요청·응답 원문 · 도구 입력 · 증거처럼 maskSecrets 를 거친 글 곁에 둔다. */
-export function MaskedNote() {
-  return (
-    <p className={s.help}>
-      <Icon name="lock" /> 화면 표시용 가림 — 서버 원문은 가려지지 않습니다
-    </p>
-  );
-}
-
 /** "추정" 딱지. 엔진이 주지 않아 화면이 짐작한 값(호스트 · 경로 종류 · 로컬 모델 …) 곁에. */
 export function EstimateTag({ title = "엔진이 주지 않는 값을 화면이 추정했습니다" }: { title?: string }) {
   return (

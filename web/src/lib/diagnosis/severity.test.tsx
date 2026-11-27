@@ -52,6 +52,8 @@ beforeEach(() => {
   resetUrl();
   sessionStorage.clear();
   localStorage.clear();
+  // 이 시험은 점검별(점검 하나) 대시보드를 본다 — 기본 보기는 전체(통합 대시보드, 11/26)
+  localStorage.setItem("abc2lab-dash-mode", "run");
 });
 afterEach(() => {
   cleanup();

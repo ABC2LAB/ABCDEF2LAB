@@ -302,7 +302,7 @@ export interface FeedRow {
   dot: "ok" | "col" | "blk" | null;
 }
 
-/** 활동 → 지난 활동 줄. 요약이 비면 도구 이름. 화면에서는 text 에 maskSecrets 를 걸 것. */
+/** 활동 → 지난 활동 줄. 요약이 비면 도구 이름. 요약은 서버 글 그대로(가리지 않음). */
 export function feedRow(a: LiveActivity): FeedRow {
   let dot: FeedRow["dot"] = null;
   if (a.is_error) dot = "blk";

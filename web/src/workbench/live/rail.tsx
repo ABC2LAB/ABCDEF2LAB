@@ -15,7 +15,6 @@ import { Icon } from "../ui/icons";
 import s from "../workbench.module.css";
 import { useHiddenRunIDs } from "./hiddenRuns";
 import { clockOf } from "./map";
-import { maskSecrets } from "./mask";
 import { runModeText, useRunInput } from "./runInput";
 import { selectUrlRun, useUrl } from "./urlDiagnosis";
 import { scanViewFor, URL_ENDED_STATES, URL_PRESTART_STATES, urlHost, urlStateText } from "./urlMap";
@@ -133,7 +132,7 @@ function ServerRunRow({ run, list }: { run: URLRunSummary; list: View }) {
   const name = run.display_name?.trim();
   let title = run.task_id ? `작업 ${run.task_id}` : "점검";
   if (info) title = info.host;
-  else if (name) title = maskSecrets(name);
+  else if (name) title = name;
   // 같은 주소 점검을 구분하게 진단 모드 · 시작 시각을 붙인다(사용자 11/24)
   const sub = [
     urlStateText(run.state),

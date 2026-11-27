@@ -426,6 +426,12 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if mode == "prepare-fail" {
 		runtime.host.runtime.options.AuthorizeIntent = func(context.Context, E2HTTPRequest) error { return ErrE2HTTPHost }
 	}
+	if mode == "exploration-fail" {
+		// 탐색 단계가 실패하면 계획 준비가 planning_exploration_failed로 실패하고 엔진이 작업을 실패로 표시한다(NodeGoat 회차 1).
+		runtime.host.runtime.options.Exploration = func(context.Context, *Task) (ExplorationCharge, error) {
+			return ExplorationCharge{}, errors.New("synthetic exploration failure")
+		}
+	}
 	if mode == "close-fail" {
 		acquire := runtime.host.runtime.options.Acquire
 		runtime.host.runtime.options.Acquire = func(ctx context.Context, request E2HTTPRequest) (E2HTTPRunOptions, error) {
@@ -443,10 +449,20 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 			return options, nil
 		}
 	}
+	// exploration-fail: 마감 검사가 원인으로 싣는 오류가 Run이 돌려준 (사유 붙은) 오류와 같은 값이어야 게이트웨이가 실행
+	// 결과로 본다(#979 동찬 리뷰 P1, cmd onlyRunOutcome). 다르면 같은 실패가 마감 실패(unknown)로 바뀐다.
+	var explorationRunErr error
 	defer func() {
 		closeCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
 		defer stop()
-		if err := runtime.Close(closeCtx); err != nil && !(((mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause") || mode == "prepare-fail" || mode == "pre-run-stop" || mode == "goal-met-unmatched-limit") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
+		closeErr := runtime.Close(closeCtx)
+		if mode == "exploration-fail" {
+			var outcome firstDiagnosisOutcomeFailure
+			if !errors.As(closeErr, &outcome) || explorationRunErr == nil || outcome.cause != explorationRunErr {
+				t.Errorf("마감 오류의 원인이 Run 오류와 같은 값이 아님: %v", closeErr)
+			}
+		}
+		if err := closeErr; err != nil && !(((mode == "cancel" || mode == "user-stop" || mode == "pause" || mode == "engine-pause") || mode == "prepare-fail" || mode == "exploration-fail" || mode == "pre-run-stop" || mode == "goal-met-unmatched-limit") && errors.Is(err, ErrFirstDiagnosisOutcome) || mode == "close-fail" && errors.Is(err, ErrE2HTTPClosure)) {
 			t.Error("실제 Engine 경로 최종 종료 실패")
 		}
 
@@ -895,7 +911,7 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 		if early := time.Until(closeAt); early > 0 {
 			t.Fatalf("시간 상한 %s 전에 빈 계획으로 마감함 err=%v result=%+v", early, runErr, supervisor.RunResult())
 		}
-	} else if goalAfterWork || mode == "goal-met" || mode == "request-budget" || mode == "request-budget-overflow" || mode == "planner-limit" || mode == "prepare-fail" {
+	} else if goalAfterWork || mode == "goal-met" || mode == "request-budget" || mode == "request-budget-overflow" || mode == "planner-limit" || mode == "prepare-fail" || mode == "exploration-fail" {
 		// 목표 달성 선언·실행 상한으로 스스로 끝나거나 실행에 들어가지 못하는 모드다.
 		runErr = supervisor.Run(ctx, task.ID, 0, "")
 	} else {
@@ -1043,6 +1059,15 @@ func firstDiagnosisSupervisorEngineRun(t *testing.T, manager *Manager, installer
 	if mode == "prepare-fail" {
 		if runErr == nil || hits.Load() != 0 || provider.calls != 0 {
 			t.Fatal("Planner 또는 준비 실패가 통제 밖 대상 송신으로 이어짐")
+		}
+		return
+	}
+	if mode == "exploration-fail" {
+		explorationRunErr = runErr
+		// 엔진이 분류한 실패 사유가 감독자의 실행 실패 사유(진단 상태 reason_code로 가는 값)까지 간다(B1).
+		if !errors.Is(runErr, ErrFirstDiagnosisSupervisor) || hits.Load() != 0 || task.lifecycleSnapshot().Status != "failed" ||
+			diagnosis.ReasonOf(runErr) != "planning_exploration_failed" {
+			t.Fatalf("탐색 실패 사유가 실행 실패 사유로 가지 않음 err=%v reason=%q status=%s hits=%d", runErr, diagnosis.ReasonOf(runErr), task.lifecycleSnapshot().Status, hits.Load())
 		}
 		return
 	}

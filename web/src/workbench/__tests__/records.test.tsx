@@ -495,6 +495,8 @@ describe("끝난 점검 삭제 (화면 목록에서만, 기록은 그대로, 202
   const hiddenToggle = () => screen.getByRole("button", { name: /^삭제한 점검/ });
   beforeEach(() => {
     window.localStorage.clear();
+    // 이 묶음의 대시보드 시험은 점검별(점검 하나) 대시보드를 본다 — 기본 보기는 전체(통합 대시보드, 11/26)
+    window.localStorage.setItem("abc2lab-dash-mode", "run");
     useHiddenRuns.setState({ owner: null, ids: [], showing: false });
     vi.mocked(api.fetchRemediation).mockResolvedValue({ task_id: 42, entries: [] });
   });
