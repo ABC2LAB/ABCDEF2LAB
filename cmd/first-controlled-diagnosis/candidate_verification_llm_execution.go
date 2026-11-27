@@ -137,6 +137,7 @@ WHERE id=$1 AND method='llm/v1'`, requestID).Scan(&originalTaskID, &evidenceDige
 		ownerResp.Job == nil || ownerResp.Job.Scope == nil || ownerResp.Job.TaskID != ownerReq.TaskID {
 		return errPreparation
 	}
+	phase = "load"
 	l, err := b.load("ARTEX", ownerResp.Job.Input)
 	if err != nil || l == nil {
 		return errPreparation
@@ -164,6 +165,7 @@ JOIN diagnostic_candidate_verification_events e ON e.request_id=q.id AND e.step=
 WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 		return errPreparation
 	}
+	phase = "plan"
 	plan, err := server.ReadApprovedCandidateLLMPlan(ctx, tx, requestID, digest)
 	if err != nil || plan.TaskID != originalTaskID || ownerResp.Job.Scope.TargetRef != plan.TargetID || l.productTarget.Target.ID != plan.TargetID {
 		return errPreparation
@@ -172,6 +174,7 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 	if err != nil || currentTarget == nil || !server.CandidateLLMPlanStillApproved(time.Now().UTC(), plan, ownerResp.Job.Input, *ownerResp.Job.Scope, *currentTarget) || l.current() != nil {
 		return errPreparation
 	}
+	phase = "account_binding"
 	if plan.AccountRef != "" && plan.AuthPreparation != nil && plan.AuthPreparation.Kind != "" {
 		// 학습 로그인 계획(v2): 지금 고른 학습 방법·출처 수준이 승인한 그대로일 때만 그 계정 하나를 싣는다. 9칸으로 대신하지 않는다.
 		if reason := b.bindCandidateLearnedAccount(l, plan); reason != "" {
@@ -268,6 +271,7 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 			count++
 		}
 	}
+	phase = "budget"
 	if count != plan.MaxRequests {
 		return errPreparation
 	}
@@ -305,9 +309,11 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 		return errPreparation
 	}
 	defer l.releaseInputs()
+	phase = "connection"
 	if l.prepareTargetConnection(hard, b.resolver, jobID) != nil || l.current() != nil {
 		return errPreparation
 	}
+	phase = "task"
 	dsnPin, err := l.databasePin()
 	if err != nil {
 		return errPreparation
