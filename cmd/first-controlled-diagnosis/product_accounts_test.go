@@ -55,18 +55,17 @@ func accountByLabel(t *testing.T, r *productTargetRegistry, id, label string) di
 	return diagnosisprep.ProductAccount{}
 }
 
-// 계정은 real로 시작하고, 승인된 대상의 승인자가 진술에 동의해야 test가 된다. 대상 판이 바뀌면(철회) real로 돌아가고
-// 사유는 target_reapproved, 표시를 떼면 manual_unmark다. 다시 열어도(저널 재생) 같은 상태다.
-func TestProductAccountClassificationLifecycle(t *testing.T) {
+// 계정은 등록만 한다(계정 분류 폐지, 사용자 결정 2026-11-26). 목록은 라벨 · 등록자 · 등록 시각만이고, 철회된 대상에는 새 계정을
+// 붙이지 않는다. 다시 열어도(저널 재생) 같은 상태다.
+func TestProductAccountLifecycle(t *testing.T) {
 	r, root, pending := accountTestTarget(t, false)
 	if _, err := r.registerAccount("ARTEX", pending.ID, "tester-a"); err != nil {
 		t.Fatal(err)
 	}
-	if a := accountByLabel(t, r, pending.ID, "tester-a"); a.Classification != "real" || a.Reason != "" || a.RegisteredBy != "ARTEX" {
-		t.Fatalf("new account %+v", a)
-	}
-	if _, err := r.markTestAccount("ARTEX", pending.ID, "tester-a", true); err == nil || err.Error() != "target_not_approved" {
-		t.Fatalf("pending target allowed a test mark: %v", err)
+	a := accountByLabel(t, r, pending.ID, "tester-a")
+	encoded, _ := json.Marshal(a)
+	if a.RegisteredBy != "ARTEX" || a.RegisteredAt.IsZero() || strings.Contains(string(encoded), "classif") || strings.Contains(string(encoded), "marked") {
+		t.Fatalf("new account %s", encoded)
 	}
 	txt := map[string][]string{pending.ChallengeName: {pending.ChallengeValue}}
 	r.lookupTXT = func(_ context.Context, name string) ([]string, error) { return txt[name], nil }
@@ -74,41 +73,12 @@ func TestProductAccountClassificationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.markTestAccount("ARTEX", approved.ID, "tester-a", false); err == nil || err.Error() != "statement_required" {
-		t.Fatalf("mark without the statement: %v", err)
-	}
-	if _, err := r.markTestAccount("other", approved.ID, "tester-a", true); err == nil || err.Error() != "target_not_found" {
-		t.Fatalf("another principal marked: %v", err)
-	}
-	if _, err := r.markTestAccount("ARTEX", approved.ID, "missing", true); err == nil || err.Error() != "account_not_found" {
-		t.Fatalf("missing account marked: %v", err)
-	}
-	marked, err := r.markTestAccount("ARTEX", approved.ID, "tester-a", true)
-	if err != nil || marked.Classification != "test" || marked.MarkedRevision != approved.Revision || marked.ClassifiedBy != "ARTEX" || marked.ClassifiedAt.IsZero() {
-		t.Fatalf("mark: %+v %v", marked, err)
-	}
-	// 같은 판에 다시 표시해도 새 기록을 만들지 않는다.
-	before := accountJournalLines(t, root)
-	if again, err := r.markTestAccount("ARTEX", approved.ID, "tester-a", true); err != nil || again.Classification != "test" || accountJournalLines(t, root) != before {
-		t.Fatalf("repeated mark: %+v %v", again, err)
-	}
 	if _, err := r.revoke("ARTEX", approved.ID); err != nil {
 		t.Fatal(err)
-	}
-	if a := accountByLabel(t, r, approved.ID, "tester-a"); a.Classification != "real" || a.Reason != "target_reapproved" || a.MarkedRevision != approved.Revision {
-		t.Fatalf("revoked target kept the test mark: %+v", a)
-	}
-	if _, err := r.markTestAccount("ARTEX", approved.ID, "tester-a", true); err == nil || err.Error() != "target_not_approved" {
-		t.Fatalf("revoked target allowed a new mark: %v", err)
 	}
 	if _, err := r.registerAccount("ARTEX", approved.ID, "tester-b"); err == nil || err.Error() != "target_not_approved" {
 		t.Fatalf("revoked target accepted a new account: %v", err)
 	}
-	unmarked, err := r.unmarkAccount("ARTEX", approved.ID, "tester-a")
-	if err != nil || unmarked.Classification != "real" || unmarked.Reason != "manual_unmark" {
-		t.Fatalf("unmark: %+v %v", unmarked, err)
-	}
-	// 다시 열면 저널 재생으로 같은 상태다.
 	if err := r.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -117,28 +87,49 @@ func TestProductAccountClassificationLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if a := accountByLabel(t, reopened, approved.ID, "tester-a"); a.Classification != "real" || a.Reason != "manual_unmark" {
-		t.Fatalf("replayed account %+v", a)
+	if got := accountByLabel(t, reopened, approved.ID, "tester-a"); got.RegisteredBy != "ARTEX" || !got.RegisteredAt.Equal(a.RegisteredAt) {
+		t.Fatalf("replayed account %+v", got)
 	}
 }
 
-// 표시를 뗀 계정은 real(manual_unmark)이고, 같은 승인 판에서 다시 표시할 수 있다.
-func TestProductAccountUnmarkThenRemark(t *testing.T) {
-	r, _, target := accountTestTarget(t, true)
-	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
+// 예전 저널의 시험 계정 표시(mark_test) · 해제(unmark) 줄은 그대로 다시 읽는다(설치가 멈추지 않음). 해제 줄은 그때처럼 자격 해시를
+// 지우고, 표시 줄은 응답에 아무 칸도 남기지 않는다. 다른(이전) 대상 판의 표시 줄도 받는다.
+func TestProductAccountLegacyMarkJournalReplays(t *testing.T) {
+	r, root, target := accountTestTarget(t, true)
+	for _, label := range []string{"tester-a", "tester-b"} {
+		if _, err := r.registerAccount("ARTEX", target.ID, label); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.setAccountCredential("ARTEX", target.ID, label, diagnosisprep.AccountCredential{Username: "u-" + label, Password: "p-" + label}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC()
+	for _, e := range []productAccountEvent{
+		{TargetID: target.ID, Label: "tester-a", Action: accountMarkTest, Actor: "ARTEX", At: now, TargetRevision: target.Revision, StatementSHA256: productAccountStatementSHA256()},
+		{TargetID: target.ID, Label: "tester-a", Action: accountUnmark, Actor: "ARTEX", At: now, TargetRevision: target.Revision},
+		{TargetID: target.ID, Label: "tester-b", Action: accountMarkTest, Actor: "ARTEX", At: now, TargetRevision: target.Revision - 1, StatementSHA256: productAccountStatementSHA256()},
+	} {
+		raw, _ := json.Marshal(e)
+		if err := r.accountJournal.Append(raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if a, err := r.unmarkAccount("ARTEX", target.ID, "tester-a"); err != nil || a.Classification != "real" || a.Reason != "" {
-		t.Fatalf("unmark of an unmarked account: %+v %v", a, err)
+	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
+	if err != nil {
+		t.Fatal("legacy mark/unmark lines stopped the registry:", err)
 	}
-	if _, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err != nil {
-		t.Fatal(err)
+	defer reopened.Close()
+	if accountByLabel(t, reopened, target.ID, "tester-a").CredentialConfigured {
+		t.Fatal("legacy unmark line did not drop the credential")
 	}
-	if a, err := r.unmarkAccount("ARTEX", target.ID, "tester-a"); err != nil || a.Classification != "real" || a.Reason != "manual_unmark" {
-		t.Fatalf("unmark: %+v %v", a, err)
-	}
-	if a, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err != nil || a.Classification != "test" {
-		t.Fatalf("remark: %+v %v", a, err)
+	b := accountByLabel(t, reopened, target.ID, "tester-b")
+	encoded, _ := json.Marshal(b)
+	if !b.CredentialConfigured || strings.Contains(string(encoded), "classif") {
+		t.Fatalf("legacy mark line changed the account view: %s", encoded)
 	}
 }
 
@@ -212,30 +203,6 @@ func accountJournalLines(t *testing.T, root string) int {
 		size += info.Size()
 	}
 	return int(size)
-}
-
-// 표시는 그 표시를 한 대상 판에만 묶인다. 다른(이전) 판에 남은 표시는 지금 승인 판에서 test로 읽지 않는다.
-func TestProductAccountMarkFromAnotherRevisionReadsReal(t *testing.T) {
-	r, root, target := accountTestTarget(t, true)
-	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
-		t.Fatal(err)
-	}
-	e := productAccountEvent{TargetID: target.ID, Label: "tester-a", Action: accountMarkTest, Actor: "ARTEX", At: time.Now().UTC(), TargetRevision: target.Revision - 1, StatementSHA256: productAccountStatementSHA256()}
-	raw, _ := json.Marshal(e)
-	if err := r.accountJournal.Append(raw); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Close(); err != nil {
-		t.Fatal(err)
-	}
-	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	if a := accountByLabel(t, reopened, target.ID, "tester-a"); a.Classification != "real" || a.Reason != "target_reapproved" {
-		t.Fatalf("mark from revision %d read as %+v on revision %d", e.TargetRevision, a, target.Revision)
-	}
 }
 
 func cookieLogin() diagnosisprep.TargetLogin {
@@ -412,27 +379,8 @@ func TestProductAccountCredentialRejectedOnRevokedTarget(t *testing.T) {
 	}
 }
 
-// 승인이 만료되면 표시한 계정도 real(target_expired)로 읽고 새 표시를 받지 않는다(판단할 수 없으면 실계정).
-func TestProductAccountExpiredApprovalReadsReal(t *testing.T) {
-	r, _, target := accountTestTarget(t, true)
-	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
-		t.Fatal(err)
-	}
-	if a, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err != nil || a.Classification != "test" {
-		t.Fatalf("mark: %+v %v", a, err)
-	}
-	expired := target.ExpiresAt.Add(time.Second)
-	r.now = func() time.Time { return expired }
-	if a := accountByLabel(t, r, target.ID, "tester-a"); a.Classification != "real" || a.Reason != "target_expired" {
-		t.Fatalf("expired approval kept the test mark: %+v", a)
-	}
-	if _, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err == nil || err.Error() != "target_not_approved" {
-		t.Fatalf("expired target accepted a mark: %v", err)
-	}
-}
-
 // 제품 제어 경로(준비 프로세스 쪽)가 계정·로그인·자격 조작을 레지스트리로 잇고, 응답은 계약 검사를 통과하며, 목록에는 진술
-// 문장이 실리고, 자격 값은 응답에 없고 요청 구조체의 값 참조는 쓴 뒤 비운다.
+// 문장 · 분류 칸이 없고(계정 분류 폐지), 자격 값은 응답에 없고 요청 구조체의 값 참조는 쓴 뒤 비운다.
 func TestProductControlAccountDispatch(t *testing.T) {
 	r, _, target := accountTestTarget(t, true)
 	endpoint := productPreparationEndpoint{product: &productRuntime{targets: r}}
@@ -451,8 +399,9 @@ func TestProductControlAccountDispatch(t *testing.T) {
 	}
 	list := call(&diagnosisprep.ProductRequest{Operation: "accounts", TargetID: target.ID})
 	// 외부 전송 동의는 설치 단위라 계정 목록에 싣지 않는다(external_consent 조작).
-	if len(list.Accounts) != 1 || list.AccountStatement != productAccountStatement || list.ExternalConsent != nil {
-		t.Fatalf("accounts: %+v", list)
+	listed, _ := json.Marshal(list)
+	if len(list.Accounts) != 1 || list.ExternalConsent != nil || strings.Contains(string(listed), "statement") || strings.Contains(string(listed), "classif") {
+		t.Fatalf("accounts: %s", listed)
 	}
 	login := cookieLogin()
 	if got := call(&diagnosisprep.ProductRequest{Operation: "target_login_set", TargetID: target.ID, Login: &login}); got.Login == nil || got.Login.Path != login.Path {
@@ -464,8 +413,16 @@ func TestProductControlAccountDispatch(t *testing.T) {
 	if got.Account == nil || !got.Account.CredentialConfigured || strings.Contains(string(encoded), "seeded-") {
 		t.Fatalf("credential response: %s", encoded)
 	}
-	if got := call(&diagnosisprep.ProductRequest{Operation: "account_mark_test", TargetID: target.ID, Account: &diagnosisprep.AccountRequest{Label: "tester-a", StatementConfirmed: true}}); got.Account == nil || got.Account.Classification != "test" {
-		t.Fatalf("mark: %+v", got)
+	if got := call(&diagnosisprep.ProductRequest{Operation: "account_credential_clear", TargetID: target.ID, Account: &diagnosisprep.AccountRequest{Label: "tester-a"}}); got.Account == nil || got.Account.CredentialConfigured {
+		t.Fatalf("credential clear: %+v", got)
+	}
+	// 시험 계정 표시 · 해제 작업은 없다(요청 계약이 받지 않음)
+	for _, op := range []string{"account_mark_test", "account_unmark"} {
+		req := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "product-control", Principal: "ARTEX", Command: diagnosisprep.ProductControl,
+			Product: &diagnosisprep.ProductRequest{Operation: op, TargetID: target.ID, Account: &diagnosisprep.AccountRequest{Label: "tester-a"}}}
+		if diagnosisprep.ValidateRequest(req) == nil {
+			t.Errorf("%s accepted", op)
+		}
 	}
 }
 
@@ -508,8 +465,9 @@ func TestProductAccountCredentialHashIsSalted(t *testing.T) {
 	}
 }
 
-// 시험 계정 표시를 떼면 자격 파일도 지우고(재생 뒤에도 미설정), 대상을 철회하면 그 대상 계정의 자격 파일을 지운다.
-func TestProductAccountCredentialRemovedOnUnmarkAndRevoke(t *testing.T) {
+// 그 계정만 자격을 철회한다(#982 이동찬 P2): 저널에 철회 줄을 남기고 자격 파일을 지우며, 다른 계정 자격 · 등록은 그대로다.
+// 자격이 없으면 기록하지 않고, 철회된 대상에도 받는다(더 안전한 쪽). 다시 열어도(저널 재생) 미설정이다.
+func TestProductAccountCredentialClear(t *testing.T) {
 	r, root, target := accountTestTarget(t, true)
 	for _, label := range []string{"tester-a", "tester-b"} {
 		if _, err := r.registerAccount("ARTEX", target.ID, label); err != nil {
@@ -519,23 +477,99 @@ func TestProductAccountCredentialRemovedOnUnmarkAndRevoke(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err != nil {
-		t.Fatal(err)
+	if _, err := r.clearAccountCredential("ARTEX", target.ID, "missing"); err == nil || err.Error() != "account_not_found" {
+		t.Fatalf("clear of a missing account: %v", err)
 	}
-	if a, err := r.unmarkAccount("ARTEX", target.ID, "tester-a"); err != nil || a.CredentialConfigured {
-		t.Fatalf("unmark kept the credential: %+v %v", a, err)
+	if _, err := r.clearAccountCredential("other", target.ID, "tester-a"); err == nil || err.Error() != "target_not_found" {
+		t.Fatalf("another principal cleared: %v", err)
+	}
+	a, err := r.clearAccountCredential("ARTEX", target.ID, "tester-a")
+	if err != nil || a.CredentialConfigured || a.Label != "tester-a" {
+		t.Fatalf("clear: %+v %v", a, err)
 	}
 	if _, err := os.Stat(r.credentialPath(target.ID, "tester-a")); !os.IsNotExist(err) {
-		t.Fatal("credential file left after unmark")
+		t.Fatal("credential file left after clear")
 	}
 	if !accountByLabel(t, r, target.ID, "tester-b").CredentialConfigured {
-		t.Fatal("unmarking one account removed another account's credential")
+		t.Fatal("clearing one account removed another account's credential")
+	}
+	before := accountJournalLines(t, root)
+	if again, err := r.clearAccountCredential("ARTEX", target.ID, "tester-a"); err != nil || again.CredentialConfigured || accountJournalLines(t, root) != before {
+		t.Fatalf("repeated clear wrote again: %+v %v", again, err)
 	}
 	if _, err := r.revoke("ARTEX", target.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(r.credentialPath(target.ID, "tester-b")); !os.IsNotExist(err) {
-		t.Fatal("credential file left after target revoke")
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if accountByLabel(t, reopened, target.ID, "tester-a").CredentialConfigured {
+		t.Fatal("cleared credential configured after replay")
+	}
+}
+
+// 자격 철회 줄은 자격이 있는 계정에만 있다 — 자격 없는 계정 · 진술 해시 · 자격 해시가 붙은 줄은 재생이 받지 않는다(설치 정지).
+func TestProductAccountCredentialClearReplayRejectsForged(t *testing.T) {
+	for name, forge := range map[string]func(productAccountEvent) productAccountEvent{
+		"no credential": func(e productAccountEvent) productAccountEvent { e.Label = "tester-b"; return e },
+		"statement": func(e productAccountEvent) productAccountEvent {
+			e.StatementSHA256 = productAccountStatementSHA256()
+			return e
+		},
+		"hash": func(e productAccountEvent) productAccountEvent {
+			e.CredentialSHA256 = strings.Repeat("a", 64)
+			return e
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, root, target := accountTestTarget(t, true)
+			for _, label := range []string{"tester-a", "tester-b"} {
+				if _, err := r.registerAccount("ARTEX", target.ID, label); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: "u", Password: "p"}); err != nil {
+				t.Fatal(err)
+			}
+			e := forge(productAccountEvent{TargetID: target.ID, Label: "tester-a", Action: accountCredentialClear, Actor: "ARTEX", At: time.Now().UTC(), TargetRevision: target.Revision})
+			raw, _ := json.Marshal(e)
+			if err := r.accountJournal.Append(raw); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil }); err == nil {
+				reopened.Close()
+				t.Fatal("forged credential clear replayed")
+			}
+		})
+	}
+}
+
+// 대상을 철회하면 그 대상 계정의 자격 파일을 지운다(재생 뒤에도 미설정).
+func TestProductAccountCredentialRemovedOnRevoke(t *testing.T) {
+	r, root, target := accountTestTarget(t, true)
+	for _, label := range []string{"tester-a", "tester-b"} {
+		if _, err := r.registerAccount("ARTEX", target.ID, label); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.setAccountCredential("ARTEX", target.ID, label, diagnosisprep.AccountCredential{Username: "u-" + label, Password: "p-" + label}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.revoke("ARTEX", target.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, label := range []string{"tester-a", "tester-b"} {
+		if _, err := os.Stat(r.credentialPath(target.ID, label)); !os.IsNotExist(err) {
+			t.Fatalf("%s credential file left after target revoke", label)
+		}
 	}
 	if err := r.Close(); err != nil {
 		t.Fatal(err)
@@ -549,38 +583,5 @@ func TestProductAccountCredentialRemovedOnUnmarkAndRevoke(t *testing.T) {
 		if accountByLabel(t, reopened, target.ID, label).CredentialConfigured {
 			t.Fatalf("%s configured after replay", label)
 		}
-	}
-}
-
-// 해제 때 자격 파일을 못 지워도(디렉터리 쓰기 불가) 해제는 기록되고, 저널에서 자격 해시가 빠져 남은 파일은 쓰이지 않는다.
-func TestProductAccountUnmarkDropsCredentialEvenIfFileStays(t *testing.T) {
-	r, _, target := accountTestTarget(t, true)
-	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: "u", Password: "p"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Dir(r.credentialPath(target.ID, "tester-a"))
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	a, err := r.unmarkAccount("ARTEX", target.ID, "tester-a")
-	if err != nil || a.Reason != "manual_unmark" || a.CredentialConfigured {
-		t.Fatalf("unmark with an undeletable file: %+v %v", a, err)
-	}
-	// 디렉터리를 되돌려 파일을 다시 읽을 수 있어도 자격 해시가 빠졌으니 미설정이다.
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(r.credentialPath(target.ID, "tester-a")); err != nil {
-		t.Fatal("fixture expected the file to stay")
-	}
-	if accountByLabel(t, r, target.ID, "tester-a").CredentialConfigured {
-		t.Fatal("unmarked account still uses the leftover credential file")
 	}
 }
