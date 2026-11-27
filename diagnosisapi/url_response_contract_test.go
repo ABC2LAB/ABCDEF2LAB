@@ -364,7 +364,7 @@ func TestURLStatusCombinesTimeLimitAndConfirmation(t *testing.T) {
 		Draft struct {
 			TimeLimit *diagnosisprep.TimeLimit `json:"time_limit"`
 		} `json:"draft"`
-		ServerTime time.Time `json:"server_time"`
+		ServerTime   time.Time       `json:"server_time"`
 		Confirmation urlConfirmation `json:"confirmation"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
