@@ -22,6 +22,9 @@ import (
 )
 
 var calls, goals, planner, worker, allowed, denied, authLogins, authenticatedReads, structuredReads, exploreTurns, exploreBash atomic.Int64
+
+// anonymousReads는 인증 후보 대상이 세션 없이 받은 상품 읽기 수(401), loginPages는 공개 로그인 화면 GET 수다.
+var anonymousReads, loginPages atomic.Int64
 var holdNextTargetRead, heldTargetReads, holdNextFinalModel, heldFinalModels atomic.Int64
 
 // exploreBashSeen은 탐색 직접 Bash 결과에서 모델이 본 상태 코드 줄이다(예: "approved=200 outside=403"). 값은 소유 fixture의 상태 코드뿐이다.
@@ -35,6 +38,15 @@ func main() {
 	// 인증서 이름과 DNS 응답은 대상 이름 목록에서 만든다. 기본값은 Juice Shop 수용시험의 이름이고, 연습 대상 회차는
 	// overlay가 바꾼다. 대상 이름이 제품 목표 문장으로 모델에 가므로 대상마다 맞춘다.
 	hostsFlag := flag.String("hosts", defaultFixtureHosts, "owned target names: name=ipv4,...")
+	// 로그인 합성 모델(workflow-login-model)의 대상 로그인 모양이다. 앱별 값은 시험 overlay가 준다.
+	login := workflowLoginConfig{}
+	flag.StringVar(&login.loginPath, "login-path", "", "owned target login API path")
+	flag.StringVar(&login.identityPath, "identity-path", "", "owned target identity path")
+	flag.StringVar(&login.usernameField, "username-field", "username", "login JSON username field")
+	flag.StringVar(&login.passwordField, "password-field", "password", "login JSON password field")
+	flag.StringVar(&login.tokenField, "token-field", "auth_token", "login response token field")
+	flag.StringVar(&login.header, "session-header", "Authorization", "session header")
+	flag.StringVar(&login.prefix, "session-prefix", "Bearer ", "session header value prefix")
 	flag.Parse()
 	hosts, e := parseFixtureHosts(*hostsFlag)
 	must(e)
@@ -71,9 +83,9 @@ func main() {
 				c.Close()
 			}
 		}
-		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "explore_bash_seen": exploreBashSeen.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load(), "auth_logins": authLogins.Load(), "authenticated_reads": authenticatedReads.Load(), "structured_reads": structuredReads.Load(), "held_target_reads": heldTargetReads.Load(), "held_final_models": heldFinalModels.Load()})
+		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "explore_bash_seen": exploreBashSeen.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load(), "auth_logins": authLogins.Load(), "authenticated_reads": authenticatedReads.Load(), "anonymous_reads": anonymousReads.Load(), "login_pages": loginPages.Load(), "structured_reads": structuredReads.Load(), "held_target_reads": heldTargetReads.Load(), "held_final_models": heldFinalModels.Load()})
 	})
-	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" || *mode == "selected-model-stored-nosniff" || *mode == "selected-model-auth-nosniff" || *mode == "selected-model-structured-nosniff" || *mode == "selected-model-overconfident-nosniff" || *mode == "selected-model-unsupported-write" {
+	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" || *mode == "selected-model-stored-nosniff" || *mode == "selected-model-auth-nosniff" || *mode == "selected-model-structured-nosniff" || *mode == "selected-model-overconfident-nosniff" || *mode == "selected-model-unsupported-write" || *mode == "workflow-login-model" {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
 		mux.HandleFunc("POST /hold-next-final", func(w http.ResponseWriter, r *http.Request) {
@@ -83,20 +95,29 @@ func main() {
 		handler := model(*target)
 		if *mode == "workflow-model" {
 			handler = workflowModel()
+		} else if *mode == "workflow-login-model" {
+			if login.loginPath == "" || login.identityPath == "" {
+				must(fmt.Errorf("login_fixture_paths_required"))
+			}
+			handler = workflowLoginModel(login)
 		} else if *mode == "selected-model" {
 			handler = selectedModel(*target)
 		} else if *mode == "selected-model-nosniff" {
 			handler = selectedNosniffModel(*target)
 		} else if *mode == "selected-model-stored-nosniff" {
-			handler = modelWithSelectionMode(*target, true, true, true, false, false, false, false)
+			handler = modelWithSelectionMode(*target, true, true, true, nil, false, false, false)
 		} else if *mode == "selected-model-auth-nosniff" {
-			handler = modelWithSelectionMode(*target, true, true, false, true, false, false, false)
+			// 인증 후보 시나리오(S03·S04)는 모델이 지침의 등록 계정 줄로 직접 로그인한다. 대상 로그인 경로는 overlay가 준다.
+			if login.loginPath == "" {
+				must(fmt.Errorf("login_fixture_path_required"))
+			}
+			handler = modelWithSelectionMode(*target, true, true, false, &login, false, false, false)
 		} else if *mode == "selected-model-structured-nosniff" {
-			handler = modelWithSelectionMode(*target, true, true, false, false, true, false, false)
+			handler = modelWithSelectionMode(*target, true, true, false, nil, true, false, false)
 		} else if *mode == "selected-model-overconfident-nosniff" {
-			handler = modelWithSelectionMode(*target, true, true, false, false, false, true, false)
+			handler = modelWithSelectionMode(*target, true, true, false, nil, false, true, false)
 		} else if *mode == "selected-model-unsupported-write" {
-			handler = modelWithSelectionMode(*target, true, true, false, false, false, false, true)
+			handler = modelWithSelectionMode(*target, true, true, false, nil, false, false, true)
 		}
 		mux.Handle("POST /v1/chat/completions", handler)
 		must(http.ListenAndServe(":8080", mux))
@@ -137,6 +158,14 @@ func main() {
 			json.NewEncoder(w).Encode(map[string]string{"auth_token": fmt.Sprintf("synthetic-session-%s-%d", strings.TrimPrefix(input.Username, "owned-"), authLogins.Load())})
 			return
 		}
+		if *mode == "selected-target-auth-nosniff" && r.Method == "GET" && r.URL.Path == "/login" {
+			// 워크플로 자동 모드 회차의 크롤 시작 페이지다. 상품 경로는 세션 없이 401이라 시작 페이지가 될 수 없다. 상품
+			// 경로로 가는 링크는 두지 않는다(크롤이 세션 없이 상품을 읽지 않게).
+			loginPages.Add(1)
+			w.Header().Set("Content-Type", "text/html")
+			io.WriteString(w, `<html><body><h1>Owned synthetic login</h1><form method="post" action="/login"><input name="username"><input type="password" name="password"><button>Log in</button></form></body></html>`)
+			return
+		}
 		if r.Method == "GET" && r.URL.Path == "/rest/products/search" {
 			allowed.Add(1)
 			if holdNextTargetRead.CompareAndSwap(1, 0) {
@@ -153,6 +182,7 @@ func main() {
 			if *mode == "selected-target-auth-nosniff" {
 				if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer synthetic-session-a-") &&
 					!strings.HasPrefix(r.Header.Get("Authorization"), "Bearer synthetic-session-b-") {
+					anonymousReads.Add(1)
 					w.WriteHeader(http.StatusUnauthorized)
 					return
 				}
@@ -185,7 +215,12 @@ func must(e error) {
 	}
 }
 
-type fixtureTurns struct{ goals, planner, worker, explore int }
+type fixtureTurns struct {
+	goals, planner, worker, explore int
+	// 인증 후보 시나리오(워크플로 자동 모드)의 Planner 순서: 초기 탐색 의도 → 진단 의도. awaiting은 방금 낸 도구 호출의
+	// 결과를 받는 다음 요청이다(그 요청은 이번 라운드를 끝낸다).
+	discoverySent, deepSent, awaiting bool
+}
 
 type fixtureMessage struct {
 	Role    string          `json:"role"`
@@ -341,23 +376,28 @@ func model(target string) http.Handler {
 // selectedModel is a disposable, no-cost fixture for the candidate API E2E.
 // Its initial diagnosis has one goal and one observed fact in a fresh DB.
 func selectedModel(target string) http.Handler {
-	return modelWithSelectionMode(target, true, false, false, false, false, false, false)
+	return modelWithSelectionMode(target, true, false, false, nil, false, false, false)
 }
 
 func selectedNosniffModel(target string) http.Handler {
-	return modelWithSelectionMode(target, true, true, false, false, false, false, false)
+	return modelWithSelectionMode(target, true, true, false, nil, false, false, false)
 }
 
 func modelWithSelection(target string, selected bool) http.Handler {
-	return modelWithSelectionMode(target, selected, false, false, false, false, false, false)
+	return modelWithSelectionMode(target, selected, false, false, nil, false, false, false)
 }
 
-func modelWithSelectionMode(target string, selected, nosniff, stored, authenticated, structured, overconfident, unsupportedWrite bool) http.Handler {
+// login이 있으면 인증 후보 시나리오(S03·S04)다. 회차는 워크플로 자동 모드로 돌고(모델 로그인 계약 §2-2: 진단 단계 로그인은
+// 쓰기 승인 범위를 따른다), Worker는 workflow-login-model과 같은 조각으로 지침의 등록 계정 줄에서 직접 로그인한다.
+func modelWithSelectionMode(target string, selected, nosniff, stored bool, login *workflowLoginConfig, structured, overconfident, unsupportedWrite bool) http.Handler {
 	var mu sync.Mutex
 	turns := map[string]*fixtureTurns{}
 	originPattern := regexp.MustCompile(`https://(?:juice-a|juice-b|juice|synthetic)\.test:9443`)
 	exactGoal := regexp.MustCompile(`Inspect the approved (?:read-only )?HTTPS target (https://(?:juice-a|juice-b|juice|synthetic)\.test:9443)`)
-	syntheticSession := regexp.MustCompile(`synthetic-session-a-[0-9]+`)
+	var tokenPattern *regexp.Regexp
+	if login != nil {
+		tokenPattern = fixtureTokenPattern(login.tokenField)
+	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -513,7 +553,9 @@ func modelWithSelectionMode(target string, selected, nosniff, stored, authentica
 		case names["add_intent"] && !names["Bash"]:
 			planner.Add(1)
 			turn.planner++
-			if turn.planner == 1 {
+			if login != nil {
+				selectedLoginPlanner(turn, tool, req.Messages, target, names["prove_goal"])
+			} else if turn.planner == 1 {
 				tool("add_intent", "owned-intent", map[string]any{"intents": []any{map[string]any{"summary": "Observe " + target + "/rest/products/search through the enforced Bash boundary, preserve a manual-review candidate, and verify denial of /outside-approved.", "priority": 5}}})
 			} else if selected && turn.worker >= 3 && (!stored || turn.worker >= 4) && names["prove_goal"] {
 				if goalID, evidenceID, ok := selectedGoalProof(req.Messages, target); ok {
@@ -523,24 +565,16 @@ func modelWithSelectionMode(target string, selected, nosniff, stored, authentica
 		case names["Bash"]:
 			worker.Add(1)
 			turn.worker++
+			if login != nil {
+				if !selectedLoginWorker(tool, req.Messages, target, *login, tokenPattern) {
+					http.Error(w, "trusted_observation_missing", 500)
+					return
+				}
+				break
+			}
 			switch turn.worker {
 			case 1:
-				command := "curl --silent --show-error --max-time 5 " + target + "/rest/products/search"
-				if authenticated {
-					var session string
-					for _, m := range req.Messages {
-						if value := syntheticSession.FindString(string(m.Content)); value != "" {
-							session = value
-							break
-						}
-					}
-					if session == "" {
-						http.Error(w, "owned_session_missing", 400)
-						return
-					}
-					command = "curl --silent --show-error --max-time 5 --header 'Authorization: Bearer " + session + "' " + target + "/rest/products/search"
-				}
-				tool("Bash", "owned-allow", map[string]any{"command": command, "timeout_ms": 7000})
+				tool("Bash", "owned-allow", map[string]any{"command": "curl --silent --show-error --max-time 5 " + target + "/rest/products/search", "timeout_ms": 7000})
 			case 2:
 				ref := ""
 				for _, m := range req.Messages {
@@ -561,7 +595,7 @@ func modelWithSelectionMode(target string, selected, nosniff, stored, authentica
 					return
 				}
 				if nosniff {
-					tool("submit_diagnostic_candidate", "owned-candidate", map[string]any{"call_ref": ref, "vulnclass": "security_headers", "name": "HTML nosniff 후보", "summary": "합성 HTML 응답의 보안 헤더 상태를 별도 요청으로 검증합니다.", "remediation": "HTML 응답에 X-Content-Type-Options: nosniff를 설정하세요."})
+					tool("submit_diagnostic_candidate", "owned-candidate", selectedNosniffCandidate(ref))
 				} else {
 					tool("submit_diagnostic_candidate", "owned-candidate", map[string]any{"call_ref": ref, "vulnclass": "access_control", "name": "소유 Juice Shop 관찰 후보", "summary": "실제 HTTPS 상품 응답을 관찰했습니다. 확정 취약점이 아닌 수동 검토 후보입니다.", "remediation": "실제 접근 권한을 별도로 검증하세요."})
 				}
@@ -572,16 +606,13 @@ func modelWithSelectionMode(target string, selected, nosniff, stored, authentica
 				}
 				fallthrough
 			case 4:
-				deniedTarget := target + "/outside-approved"
-				if target == "https://juice-a.test:9443" {
-					deniedTarget = "https://juice-b.test:9443/rest/products/search"
-				}
-				if target == "https://juice-b.test:9443" {
-					deniedTarget = "https://juice-a.test:9443/rest/products/search"
-				}
-				tool("Bash", "owned-deny", map[string]any{"command": "curl --silent --show-error --max-time 5 " + deniedTarget, "timeout_ms": 7000})
+				tool("Bash", "owned-deny", map[string]any{"command": "curl --silent --show-error --max-time 5 " + selectedDeniedTarget(target), "timeout_ms": 7000})
 			}
 		default:
+			if login != nil {
+				// 워크플로 회차의 다른 역할(요약·마무리)은 workflow-login-model처럼 도구 없이 끝낸다.
+				break
+			}
 			http.Error(w, "unexpected_role", 400)
 			return
 		}

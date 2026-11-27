@@ -128,12 +128,15 @@ func productTargetsHTTP(w http.ResponseWriter, r *http.Request, owner string, en
 	}
 }
 
-// productAccountRequest는 대상 계정 경로(C14 결정 1·2)를 제품 제어 요청으로 바꾼다. 자격 값은 받지 않는다.
+// productAccountRequest는 대상 계정 경로(C14 결정 1·2)를 제품 제어 요청으로 바꾼다.
 //
-//	GET  /api/product/targets/{id}/accounts                  목록(분류·사유·등록자·표시자)
-//	POST /api/product/targets/{id}/accounts                  {"label": "..."} 등록(분류 real)
-//	POST /api/product/targets/{id}/accounts/{label}/mark-test {"statement_confirmed": true} 시험 계정 표시(대상 승인자)
-//	POST /api/product/targets/{id}/accounts/{label}/unmark    {} 표시 해제
+//	GET  /api/product/targets/{id}/accounts                   목록(라벨·등록자·등록 시각·자격 등록 여부)
+//	POST /api/product/targets/{id}/accounts                   {"label": "..."} 등록
+//	PUT  /api/product/targets/{id}/accounts/{label}/credential {"username","password"} 자격 등록(값은 응답·목록에 없음)
+//	DELETE /api/product/targets/{id}/accounts/{label}/credential (본문 없음 또는 {}) 그 계정만 자격 철회(결속 사본도 지움)
+//
+// 계정 분류 폐지(사용자 결정 2026-11-26, docs/contracts/model-login-attempts.md §0): 시험 계정 표시(mark-test)·해제(unmark)
+// 경로는 없앴다(404). 프로그램은 계정을 분류하지 않고, 자격이 저장된 등록 계정을 회차에 결속한다.
 func productAccountRequest(w http.ResponseWriter, r *http.Request, parts []string, request *diagnosisprep.ProductRequest) bool {
 	switch {
 	case len(parts) == 2 && r.Method == "GET":
@@ -149,21 +152,6 @@ func productAccountRequest(w http.ResponseWriter, r *http.Request, parts []strin
 		}
 		request.Operation = "account_register"
 		request.Account = &diagnosisprep.AccountRequest{Label: body.Label}
-		return true
-	case len(parts) == 4 && r.Method == "POST" && parts[3] == "mark-test":
-		var body struct {
-			StatementConfirmed bool `json:"statement_confirmed"`
-		}
-		if !diagnosisprep.ValidAccountLabel(parts[2]) || !productAccountBody(w, r, &body) {
-			writeJSON(w, 400, map[string]string{"error": "invalid_account_request"})
-			return false
-		}
-		if !body.StatementConfirmed {
-			writeJSON(w, 409, map[string]string{"error": "statement_required"})
-			return false
-		}
-		request.Operation = "account_mark_test"
-		request.Account = &diagnosisprep.AccountRequest{Label: parts[2], StatementConfirmed: true}
 		return true
 	case len(parts) == 4 && r.Method == "PUT" && parts[3] == "credential":
 		// 자격 값은 준비 프로세스로만 넘긴다. 읽은 본문 바이트는 바로 지우고, 요청 구조체의 값 참조는 넘긴 뒤 버린다
@@ -182,13 +170,13 @@ func productAccountRequest(w http.ResponseWriter, r *http.Request, parts []strin
 		request.Account = &diagnosisprep.AccountRequest{Label: parts[2]}
 		request.Credential = &cred
 		return true
-	case len(parts) == 4 && r.Method == "POST" && parts[3] == "unmark":
+	case len(parts) == 4 && r.Method == "DELETE" && parts[3] == "credential":
 		raw, e := io.ReadAll(http.MaxBytesReader(w, r.Body, 128))
 		if !diagnosisprep.ValidAccountLabel(parts[2]) || e != nil || len(raw) > 0 && string(raw) != "{}" {
 			writeJSON(w, 400, map[string]string{"error": "invalid_account_request"})
 			return false
 		}
-		request.Operation = "account_unmark"
+		request.Operation = "account_credential_clear"
 		request.Account = &diagnosisprep.AccountRequest{Label: parts[2]}
 		return true
 	}

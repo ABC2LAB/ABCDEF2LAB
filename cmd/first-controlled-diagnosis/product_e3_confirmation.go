@@ -51,6 +51,11 @@ type productE3Confirmation struct {
 	// newBridge는 실제 E² 브리지를 만든다(e2live.NewLive). 시험만 바꾼다.
 	newBridge func(*e2proxy.Execution, server.E2HTTPAccountBindings, e3contract.RunBinding) (productE3Bridge, error)
 	deps      e3contract.Deps
+	// identityPath는 동결 선언의 신원 경로다(input이 채움). 학습 로그인 검증의 세션 없는 대조 요청 경로다.
+	identityPath string
+	// learned는 이 회차 학습 로그인 재사용 상태다(product_learned_login.go). learnedBindings는 확정 단계가 쓴 계정 결속이다.
+	learned         *productLearnedLogin
+	learnedBindings server.E2HTTPAccountBindings
 }
 
 // productE3Bridge는 확정 단계가 쓰는 E² 브리지(e2live.Live)다.
@@ -126,6 +131,7 @@ func (c *productE3Confirmation) run(ctx context.Context, taskID string, begin fu
 			deps := c.deps
 			deps.Transport, deps.Journal = productEndedE3Connection{}, productEndedE3Connection{}
 			res := e3contract.RunWithoutExecution(ctx, deps, in)
+			c.finishLearned(nil)
 			raw, err := json.Marshal(res)
 			if err == nil {
 				err = writeRunPrivateFile(c.runsDir, c.jobID, productE3ConfirmationFile, raw)
@@ -149,6 +155,9 @@ func (c *productE3Confirmation) run(ctx context.Context, taskID string, begin fu
 	defer release()
 	deps.Started = begin
 	res := e3contract.Run(confirmCtx, deps, in)
+	// 배운 로그인 방법과 프로그램 재현 검증을 남긴다(모델 로그인 계약 §6-1·§6-2). 판정·결과 파일과 상관없다. 검증은 확정
+	// 단계가 completed로 끝나고 신원 확인을 통과시킨 판정의 근거 관찰로만 세운다.
+	c.finishLearned(acceptedIdentityEvidence(res))
 	// 판정은 확정 단계에서 Host가 검증한 근거 체크포인트와 함께 바로 저장한다(E1 (가), 봉인 확인은 따로). 쓰기 기록은 생성
 	// 요청마다 보내기 전에 이미 남겼다(productWriteRecorder).
 	c.storeVerdicts(ctx, taskID, res, checkpoint)
@@ -179,6 +188,8 @@ func (c *productE3Confirmation) stopped(ctx context.Context, taskID string) erro
 	} else {
 		res = e3contract.RunStopped(ctx, deps, in)
 	}
+	// 확정 단계를 돌지 못한 회차도 모델 단계에서 배운 로그인 방법은 남긴다(검증은 없음).
+	c.finishLearned(nil)
 	raw, err := json.Marshal(res)
 	if err == nil {
 		err = writeRunPrivateFile(c.runsDir, c.jobID, productE3ConfirmationFile, raw)
@@ -277,12 +288,15 @@ func (c *productE3Confirmation) wiredDeps(taskID string) (e3contract.Deps, func(
 		return deps, func() {}, nil
 	}
 	deps.Transport, deps.Journal = adapter, adapter
-	if relogin, ok := accounts.(server.E2HTTPAccountRelogin); ok {
-		deps.Relogin = func(ctx context.Context, label string) bool {
-			result := relogin.Relogin(ctx, label)
-			// 라벨·세션 값 없이 고정 결과 코드만 남긴다.
-			log.Printf("[e3-confirmation] task %s 확정 전 다시 로그인: %s", taskID, result)
-			return server.E2HTTPAuthSent(result)
+	legacy, hasLegacy := accounts.(server.E2HTTPAccountRelogin)
+	learned, hasLearned := accounts.(server.E2HTTPLearnedRelogin)
+	// 결속된 실행 정책을 읽을 수 없거나 계정이 없으면 기존 설정 경로도 연결하지 않는다.
+	if ll := c.learnedLoginState(); ll != nil && (hasLearned || hasLegacy) {
+		// 기존 설정만 제공하는 계정 저장소도 같은 이력 차단을 거쳐야 한다.
+		deps.Relogin = func(ctx context.Context, label string) int { return ll.relogin(ctx, label, learned, legacy) }
+		if hasLearned {
+			c.learnedBindings = accounts
+			deps.Transport = productIdentityTap{Transport: adapter, observe: ll.observeIdentity}
 		}
 	}
 	checkpoint := func(ctx context.Context, binding e3contract.RunBinding, ref e3contract.CallRef) (e3v3.Checkpoint, error) {
@@ -450,8 +464,62 @@ func (c *productE3Confirmation) input(taskID string) (e3contract.Input, time.Dur
 			log.Printf("[e3-confirmation] 회차 %s 동결 선언을 읽지 못해 계정 역할을 비움", c.jobID)
 		}
 	}
+	c.identityPath = decl.Identity.Path
 	in.Owner, in.Cross = productE3Roles(decl, c.accounts)
+	// 이 회차 인증 결과가 없어도 배운 방법(이 회차 성공·저장된 방법)이 있는 계정은 확정 단계에 쓴다(모델 로그인 계약 §6-1).
+	if ll := c.learnedLoginState(); ll != nil {
+		// 이 회차 성공 행의 출처는 그 실행의 E② 감사 근거와 대조한다. 실행을 받지 못하면(끝남·연결 없음) 진단 행은 쓰지 않는다.
+		if c.handle != nil {
+			if execution, _, reason := c.handle(taskID); reason == "" && execution != nil {
+				ll.setAudit(e2AuditLookup(execution))
+			}
+		}
+		in.Owner, in.Cross = usableLearnedAccounts(in.Owner, in.Cross, ll.usable)
+	}
 	return in, share
+}
+
+// learnedLoginState는 이 회차 학습 로그인 재사용 상태를 한 번 만든다. 실행 정책에 결속 계정이 없으면 nil이다(배울 계정 없음).
+func (c *productE3Confirmation) learnedLoginState() *productLearnedLogin {
+	if c.learned != nil {
+		if c.learned.identityPath == "" {
+			c.learned.identityPath = c.identityPath
+		}
+		return c.learned
+	}
+	binding, err := openRunBinding(c.runsDir, c.jobID)
+	if err != nil {
+		return nil
+	}
+	policy := binding.policy
+	if binding.Close() != nil {
+		log.Printf("[e3-confirmation] 회차 %s 실행 정책 닫기 실패", c.jobID)
+	}
+	if policy.Auth == nil || len(policy.Auth.Accounts) == 0 {
+		return nil
+	}
+	credentials := map[string]string{}
+	for _, a := range policy.Auth.Accounts {
+		credentials[a.Label] = a.Credential.SHA256
+	}
+	c.learned = newProductLearnedLogin(c.registry, c.runsDir, c.jobID, c.target, policy.RunRef, credentials, c.identityPath)
+	return c.learned
+}
+
+// finishLearned는 프로그램 로그인 성공 판정과 verified 기록을 한다. accepted는 확정 단계가 신원 근거로 받아들인 호출이다.
+func (c *productE3Confirmation) finishLearned(accepted map[productEvidenceKey]bool) {
+	ll := c.learnedLoginState()
+	if ll == nil {
+		return
+	}
+	bindings := c.learnedBindings
+	ll.finish(func(label string) string {
+		if bindings == nil {
+			return ""
+		}
+		ref, _ := bindings.AccountBindingRef(ll.runRef, label)
+		return ref
+	}, accepted)
 }
 
 // timeShare는 실행 시작 때 발급한 실행 정책에 적힌 확정 단계 시간 몫이다. input이 확정 단계에 주는 몫과 같은 파일·같은
@@ -470,7 +538,7 @@ func (c *productE3Confirmation) timeShare() (time.Duration, error) {
 }
 
 // productE3Admitted는 발급한 실행 정책의 확정 몫(withE3ConfirmationShare)에서 몫에 든 종류 수와 시간 몫을 되읽는다.
-// 요청 몫 = 고정 4(다시 로그인 2 + 신원 2) + 종류×4, 시간 몫 = 요청 몫 × 확정 요청 시간 상한(기본값)이다. 칸이 없거나 이 모양이 아니면 -1(몫을 받지
+// 요청 몫 = 고정 7(다시 로그인 5 + 신원 2) + 종류×4, 시간 몫 = 요청 몫 × 확정 요청 시간 상한(기본값)이다. 칸이 없거나 이 모양이 아니면 -1(몫을 받지
 // 못함)이고, 둘 다 0이면 든 종류가 없다.
 func productE3Admitted(l server.E2HTTPFileLimits) (int, time.Duration) {
 	if l.E3ConfirmationRequests == nil || l.E3ConfirmationTimeoutMS == nil {

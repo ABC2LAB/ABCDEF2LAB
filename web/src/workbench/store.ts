@@ -27,6 +27,8 @@ export const useWb = create<{
   setAccent: (accent: Accent) => void;
   setTheme: (theme: Theme) => void;
   nPrefill: (url: string) => void;
+  /** 새 점검 화면이 넘겨받은 주소를 지운다(그 사이 새로 넘긴 주소는 남긴다) */
+  nPrefillTaken: (seq: number) => void;
   focusTargetOn: (id: string) => void;
   setPanelMin: (panel: Panel, min: boolean) => void;
 }>((set) => ({
@@ -39,6 +41,7 @@ export const useWb = create<{
   setAccent: (accent) => set({ accent }),
   setTheme: (theme) => set({ theme }),
   nPrefill: (url) => set((st) => ({ prefill: { url, seq: (st.prefill?.seq ?? 0) + 1 } })),
+  nPrefillTaken: (seq) => set((st) => (st.prefill?.seq === seq ? { prefill: null } : {})),
   focusTargetOn: (id) => set((st) => ({ focusTarget: { id, seq: (st.focusTarget?.seq ?? 0) + 1 } })),
   setPanelMin: (panel, min) => set(panel === "rail" ? { railMin: min } : { inspMin: min }),
 }));

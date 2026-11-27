@@ -5,6 +5,7 @@ vi.mock("@/lib/diagnosis/api", () => ({ apiFetch: vi.fn() }));
 import { apiFetch } from "@/lib/diagnosis/api";
 
 import {
+  clearAccountCredential,
   getAccounts,
   getProductTargets,
   isValidAccountLabel,
@@ -112,6 +113,25 @@ describe("등록 쓰기 — 자격 값 없이 label만", () => {
     );
     api.mockClear();
     await expect(registerAccount("t1", "User@x")).rejects.toThrow();
+    expect(api).not.toHaveBeenCalled();
+  });
+});
+
+describe("자격 지우기(#982) — 값 없이 DELETE", () => {
+  it("clearAccountCredential: DELETE …/credential, 응답이 미설정일 때만 참, 형식 밖 라벨은 보내지 않는다", async () => {
+    api.mockResolvedValueOnce({ account: { label: "owner", credential_configured: false } });
+    expect(await clearAccountCredential("t1", "owner")).toBe(true);
+    expect(api).toHaveBeenCalledWith(
+      "/api/product/targets/t1/accounts/owner/credential",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(api.mock.calls[0][1]).not.toHaveProperty("body");
+    api.mockResolvedValueOnce({ account: { label: "owner", credential_configured: true } });
+    expect(await clearAccountCredential("t1", "owner")).toBe(false);
+    api.mockResolvedValueOnce({});
+    expect(await clearAccountCredential("t1", "owner")).toBe(false);
+    api.mockClear();
+    await expect(clearAccountCredential("t1", "User@x")).rejects.toThrow();
     expect(api).not.toHaveBeenCalled();
   });
 });

@@ -134,48 +134,39 @@ func TestProductRunBindsRegisteredAccountsAndStopsOnUnmark(t *testing.T) {
 	if loaded.current() != nil {
 		t.Fatal("fresh binding failed its check")
 	}
-	// 옛 시험 표시 API는 결속에 쓰지 않는다(화면 정리 전까지 받기만 한다). 표시해도 결속은 그대로다.
-	if _, err := r.markTestAccount("ARTEX", target.ID, "real-b", true); err != nil {
-		t.Fatal(err)
-	}
-	if loaded.current() != nil {
-		t.Fatal("marking an account stopped the run")
-	}
-	if _, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err != nil {
-		t.Fatal(err)
-	}
-	// 표시를 떼면(옛 API) 그 계정 자격을 지운다. 결속한 실행은 확인이 실패한다(새 송신 정지, 더 안전한 쪽). 결속 디렉터리와
-	// 실행 디렉터리의 사본도 지운다(다른 계정 사본은 둔다).
-	runCopy := filepath.Join(cfg.RunsDir, "job-unmark", bindingCredentialName(target.ID, "tester-a", strings.Repeat("c", 64)))
-	otherCopy := filepath.Join(cfg.RunsDir, "job-unmark", bindingCredentialName(target.ID, "real-b", strings.Repeat("d", 64)))
+	// 결속한 계정의 자격을 바꾸면(제품 제어 account_credential_set) 결속한 실행은 확인이 실패한다(새 송신 정지). 결속 디렉터리와
+	// 실행 디렉터리의 그 계정 사본도 지운다(다른 계정 사본은 둔다). 시험 계정 표시 · 해제는 없다(계정 분류 폐지, 2026-11-26).
+	runCopy := filepath.Join(cfg.RunsDir, "job-replace", bindingCredentialName(target.ID, "tester-a", strings.Repeat("c", 64)))
+	otherCopy := filepath.Join(cfg.RunsDir, "job-replace", bindingCredentialName(target.ID, "real-b", strings.Repeat("d", 64)))
 	if os.MkdirAll(filepath.Dir(runCopy), 0o700) != nil || os.WriteFile(runCopy, []byte("{}"), 0o600) != nil || os.WriteFile(otherCopy, []byte("{}"), 0o600) != nil {
 		t.Fatal("run copy fixture")
 	}
 	endpoint := productPreparationEndpoint{product: runtime}
 	req := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "product-control", Principal: "ARTEX", Command: diagnosisprep.ProductControl,
-		Product: &diagnosisprep.ProductRequest{Operation: "account_unmark", TargetID: target.ID, Account: &diagnosisprep.AccountRequest{Label: "tester-a"}}}
+		Product: &diagnosisprep.ProductRequest{Operation: "account_credential_set", TargetID: target.ID, Account: &diagnosisprep.AccountRequest{Label: "tester-a"},
+			Credential: &diagnosisprep.AccountCredential{Username: "u-replaced", Password: "seeded-pass-replaced"}}}
 	if resp, err := endpoint.Call(t.Context(), req); err != nil || resp.Product == nil || resp.Product.Reason != "" {
-		t.Fatalf("unmark: %v %+v", err, resp)
+		t.Fatalf("credential replace: %v %+v", err, resp)
 	}
 	if err := loaded.current(); !errors.Is(err, errAccountBindingChanged) {
-		t.Fatalf("unmarked bound account did not stop the run: %v", err)
+		t.Fatalf("replaced credential of a bound account did not stop the run: %v", err)
 	}
 	if _, err := os.Stat(runCopy); !os.IsNotExist(err) {
-		t.Fatal("run directory credential copy left after unmark")
+		t.Fatal("run directory credential copy left after credential replace")
 	}
 	if _, err := os.Stat(otherCopy); err != nil {
 		t.Fatal("another account's run copy removed")
 	}
 	if copies, _ := filepath.Glob(filepath.Join(cfg.StateDir, "bindings", "*", "account-"+target.ID+".tester-a.*")); len(copies) != 0 {
-		t.Fatalf("credential copy left after unmark: %v", copies)
+		t.Fatalf("credential copy left after credential replace: %v", copies)
 	}
-	// 새 실행은 자격이 남은 real-b로 결속하고, 대상을 철회하면 그 대상의 사본을 모두 지운다.
+	// 새 실행은 바뀐 자격으로 두 계정을 다시 결속하고, 대상을 철회하면 그 대상의 사본을 모두 지운다.
 	next, err := runtime.load("ARTEX", input, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	next.clearMaterials()
-	if next.policy.Auth == nil || len(next.policy.Auth.Accounts) != 1 || next.policy.Auth.Accounts[0].Label != "real-b" {
+	if next.policy.Auth == nil || len(next.policy.Auth.Accounts) != 2 {
 		t.Fatalf("next binding: %+v", next.policy.Auth)
 	}
 	if _, err := runtime.revoke("ARTEX", target.ID); err != nil {
@@ -227,10 +218,14 @@ func TestProductRunAccountsSelection(t *testing.T) {
 			t.Fatal("자격 등록 응답에서 로그인 방식 미설정 상태 누락", err)
 		}
 	}
-	for _, label := range []string{"tester-a", "tester-b"} {
-		account, err := r.markTestAccount("ARTEX", target.ID, label, true)
-		if err != nil || account.LoginMethodMissing != (label == "tester-a") {
-			t.Fatal("시험 계정 표시 후 자격과 로그인 설정 상태 불일치", err)
+	// 시험 계정 표시 없이 목록이 자격 · 로그인 방식 상태를 그대로 보인다(계정 분류 폐지, 2026-11-26)
+	listed, err := r.listAccounts("ARTEX", target.ID)
+	if err != nil || len(listed) != 3 {
+		t.Fatal("계정 목록 조회 실패", err)
+	}
+	for _, account := range listed {
+		if account.LoginMethodMissing != (account.Label != "tester-b") {
+			t.Fatal("자격과 로그인 설정 상태 불일치", account.Label)
 		}
 	}
 	if got, digest, err := r.runAccounts(rec); err != nil || digest != "" || len(got.Accounts) != 0 {
@@ -267,11 +262,26 @@ func TestProductRunAccountsSelection(t *testing.T) {
 	if r.accountsCurrent(rec, nil) != nil {
 		t.Fatal("run without bound accounts stopped")
 	}
+	// 그 계정만 자격을 철회하면(#982 이동찬 P2) 다음 결속에서 빠지고, 그 계정을 결속한 실행은 멈춘다
+	fresh, _, err := r.runAccounts(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.clearAccountCredential("ARTEX", target.ID, "tester-a"); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(r.accountsCurrent(rec, fresh.Accounts), errAccountBindingChanged) {
+		t.Fatal("run bound to a cleared credential kept sending")
+	}
+	after, _, err := r.runAccounts(rec)
+	if err != nil || len(after.Accounts) != 1 || after.Accounts[0].Label != "real-c" {
+		t.Fatalf("selection after clear: %+v %v", after, err)
+	}
 }
 
 // 저장 보고서는 현재 송신 권한·계정 선택과 상관없이 그 실행의 결속을 다시 찾는다: 계정 없는 실행은 대상 철회 뒤에도,
-// 계정을 결속한 실행은 해제·철회 뒤에도 작업의 원본 요약으로 같은 결속을 연다(#520 리뷰).
-func TestProductReportLoadsBindingAfterRevokeAndUnmark(t *testing.T) {
+// 계정을 결속한 실행은 자격 교체·철회 뒤에도 작업의 원본 요약으로 같은 결속을 연다(#520 리뷰).
+func TestProductReportLoadsBindingAfterRevokeAndCredentialChange(t *testing.T) {
 	runtime, _, target, input := accountRunFixture(t)
 	r := runtime.targets
 	plain, err := runtime.load("ARTEX", input, false, "")
@@ -289,9 +299,6 @@ func TestProductReportLoadsBindingAfterRevokeAndUnmark(t *testing.T) {
 	if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: "u", Password: "seeded-pass-a"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.markTestAccount("ARTEX", target.ID, "tester-a", true); err != nil {
-		t.Fatal(err)
-	}
 	withAccounts, err := runtime.load("ARTEX", input, false, "")
 	if err != nil {
 		t.Fatal(err)
@@ -302,10 +309,11 @@ func TestProductReportLoadsBindingAfterRevokeAndUnmark(t *testing.T) {
 		t.Fatal("account binding shares the plain binding digest")
 	}
 	endpoint := productPreparationEndpoint{product: runtime}
-	unmark := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "product-control", Principal: "ARTEX", Command: diagnosisprep.ProductControl,
-		Product: &diagnosisprep.ProductRequest{Operation: "account_unmark", TargetID: target.ID, Account: &diagnosisprep.AccountRequest{Label: "tester-a"}}}
-	if resp, err := endpoint.Call(t.Context(), unmark); err != nil || resp.Product == nil || resp.Product.Reason != "" {
-		t.Fatalf("unmark: %v %+v", err, resp)
+	replace := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "product-control", Principal: "ARTEX", Command: diagnosisprep.ProductControl,
+		Product: &diagnosisprep.ProductRequest{Operation: "account_credential_set", TargetID: target.ID, Account: &diagnosisprep.AccountRequest{Label: "tester-a"},
+			Credential: &diagnosisprep.AccountCredential{Username: "u", Password: "seeded-pass-b"}}}
+	if resp, err := endpoint.Call(t.Context(), replace); err != nil || resp.Product == nil || resp.Product.Reason != "" {
+		t.Fatalf("credential replace: %v %+v", err, resp)
 	}
 	if _, err := runtime.revoke("ARTEX", target.ID); err != nil {
 		t.Fatal(err)

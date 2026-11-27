@@ -59,8 +59,9 @@ func TestProductTargetHTTPOnlyPassesBoundedOperatorIntent(t *testing.T) {
 	}
 }
 
-// 대상 계정 경로(C14)는 라벨·진술 동의만 넘기고, 자격 값이나 다른 칸은 준비 프로세스로 보내지 않는다.
-func TestProductAccountHTTPPassesOnlyLabelAndStatement(t *testing.T) {
+// 대상 계정 경로(C14)는 라벨만 넘기고, 자격 값이나 다른 칸은 준비 프로세스로 보내지 않는다. 계정 분류 폐지(2026-11-26)로
+// 시험 계정 표시(mark-test) · 해제(unmark) 경로는 없다(404, 준비 프로세스에 닿지 않음).
+func TestProductAccountHTTPPassesOnlyLabel(t *testing.T) {
 	p := &productControlRecorder{}
 	id := "target-" + strings.Repeat("b", 32)
 	base := "/api/product/targets/" + id + "/accounts"
@@ -75,25 +76,25 @@ func TestProductAccountHTTPPassesOnlyLabelAndStatement(t *testing.T) {
 	if invoke("GET", base, "").Code != 200 || last().Operation != "accounts" || last().TargetID != id || last().Account != nil {
 		t.Fatal("account list not forwarded")
 	}
-	if invoke("POST", base, `{"label":"tester-a"}`).Code != 200 || last().Operation != "account_register" || last().Account.Label != "tester-a" || last().Account.StatementConfirmed {
+	if invoke("POST", base, `{"label":"tester-a"}`).Code != 200 || last().Operation != "account_register" || last().Account.Label != "tester-a" {
 		t.Fatal("account registration not forwarded")
 	}
-	if invoke("POST", base+"/tester-a/mark-test", `{"statement_confirmed":true}`).Code != 200 || last().Operation != "account_mark_test" || !last().Account.StatementConfirmed {
-		t.Fatal("test mark not forwarded")
-	}
-	if invoke("POST", base+"/tester-a/unmark", "{}").Code != 200 || last().Operation != "account_unmark" || last().Account.Label != "tester-a" {
-		t.Fatal("unmark not forwarded")
+	// 그 계정만 자격 철회(#982 이동찬 P2): 본문 없음 · {} 둘 다 받는다
+	for _, body := range []string{"", "{}"} {
+		if invoke("DELETE", base+"/tester-a/credential", body).Code != 200 || last().Operation != "account_credential_clear" || last().Account.Label != "tester-a" || last().Credential != nil {
+			t.Fatalf("credential clear (body %q) not forwarded", body)
+		}
 	}
 	before := len(p.requests)
 	for name, c := range map[string][3]string{
 		"password field":      {"POST", base, `{"label":"tester-a","password":"seeded-secret"}`},
 		"username label":      {"POST", base, `{"label":"user@example.test"}`},
 		"classification":      {"POST", base, `{"label":"tester-a","classification":"test"}`},
-		"statement missing":   {"POST", base + "/tester-a/mark-test", `{}`},
-		"statement false":     {"POST", base + "/tester-a/mark-test", `{"statement_confirmed":false}`},
-		"mark extra field":    {"POST", base + "/tester-a/mark-test", `{"statement_confirmed":true,"revision":9}`},
-		"unmark body":         {"POST", base + "/tester-a/unmark", `{"reason":"x"}`},
-		"bad label path":      {"POST", base + "/Tester/unmark", "{}"},
+		"mark test removed":   {"POST", base + "/tester-a/mark-test", `{"statement_confirmed":true}`},
+		"unmark removed":      {"POST", base + "/tester-a/unmark", "{}"},
+		"bad label path":      {"PUT", base + "/Tester/credential", `{"username":"u","password":"p"}`},
+		"clear bad label":     {"DELETE", base + "/Tester/credential", ""},
+		"clear with body":     {"DELETE", base + "/tester-a/credential", `{"username":"u"}`},
 		"unknown action":      {"POST", base + "/tester-a/delete", "{}"},
 		"get one account":     {"GET", base + "/tester-a", ""},
 		"approve with suffix": {"POST", "/api/product/targets/" + id + "/approve/x", "{}"},
@@ -102,8 +103,13 @@ func TestProductAccountHTTPPassesOnlyLabelAndStatement(t *testing.T) {
 			t.Errorf("%s reached preparation (code %d)", name, w.Code)
 		}
 	}
+	for _, path := range []string{base + "/tester-a/mark-test", base + "/tester-a/unmark"} {
+		if w := invoke("POST", path, `{"statement_confirmed":true}`); w.Code != 404 {
+			t.Errorf("%s answered %d, want 404 (route removed)", path, w.Code)
+		}
+	}
 	p.reason = "account_not_found"
-	if invoke("POST", base+"/tester-z/unmark", "{}").Code != 404 {
+	if invoke("PUT", base+"/tester-z/credential", `{"username":"seeded-user","password":"seeded-pass"}`).Code != 404 {
 		t.Fatal("missing account not mapped to 404")
 	}
 }

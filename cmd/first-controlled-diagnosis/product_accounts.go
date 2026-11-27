@@ -16,12 +16,14 @@ import (
 	"github.com/Autumn-27/artex/e2proxy"
 )
 
-// 대상 계정 분류(C14 결정 1·2, docs/account-login-decision.md). 계정은 대상 등록에 붙고 다른 대상에서 쓸 수 없다.
-// 분류 기본값은 real이고, test는 그 대상을 승인한 운영자가 진술에 동의해 표시한 판이 지금도 같은 승인 판일 때만이다.
-// 대상 판이 바뀌면(재승인·철회) 저장된 표시는 남아도 real로 읽는다(target_reapproved). 표시를 떼면 manual_unmark다.
-// 이 저널이 감사 기록이다: 누가·언제·어느 대상 판·어느 라벨을 등록·표시·해제했는지. 자격 값은 넣지 않는다.
+// 대상 계정(C14 결정 1·2, docs/account-login-decision.md). 계정은 대상 등록에 붙고 다른 대상에서 쓸 수 없다.
+// 계정 분류 폐지(사용자 결정 2026-11-26, CLAUDE.md 절대규칙 2, docs/contracts/model-login-attempts.md §0): 프로그램은 계정을
+// 시험·실계정으로 나누지 않고, 자격이 저장된 등록 계정을 회차에 결속한다. 시험 계정 표시·해제는 새로 받지 않는다.
+// 이 저널이 감사 기록이다: 누가·언제·어느 대상 판·어느 라벨을 등록했고 자격·로그인 방식을 바꿨는지. 자격 값은 넣지 않는다.
+// 예전 저널의 표시(mark_test)·해제(unmark) 줄은 그대로 다시 읽는다 — 해제 줄은 그때처럼 자격 해시를 지운다(그 뒤 자격을 다시
+// 넣지 않았으면 그 계정은 자격 없음이다).
 
-// productAccountStatement는 시험 계정 표시 때 승인자가 동의하는 진술이다. 저널에는 이 문장의 SHA-256만 남긴다.
+// productAccountStatement는 예전 시험 계정 표시 진술이다. 이 문장으로 남은 표시 줄(mark_test)을 다시 읽을 때만 쓴다.
 const productAccountStatement = "이 계정은 우리 조직이 소유한 일회용 시험 계정이고 실제 사용자 데이터가 없으며, 대상 운영 주체가 이 계정으로 시험하는 것을 허락했다."
 
 // productExternalConsentStatementV2는 11/23~11/26 회차별 동의 진술이다(초안 입력 external_test_accounts). 2026-11-26부터
@@ -78,35 +80,54 @@ type productAccountEvent struct {
 	CredentialSHA256 string                     `json:"credential_sha256,omitempty"`
 	// JobRef는 external_consent 줄의 진단 작업이다(그 실행에서 동의를 확인함).
 	JobRef string `json:"job_ref,omitempty"`
+	// login_method_verified 줄의 칸이다(모델 로그인 계약 §6-1-2, 값 없음). 이 줄의 CredentialSHA256은 그 회차에 결속된 자격
+	// 해시, TargetRevision은 그 회차의 대상 판이다.
+	MethodSHA256 string `json:"method_sha256,omitempty"`
+	RunRef       string `json:"run_ref,omitempty"`
+	Stage        string `json:"stage,omitempty"`
+	AttemptRef   string `json:"attempt_ref,omitempty"`
+	Evidence     string `json:"evidence,omitempty"`
 }
 
 const (
-	accountRegister    = "register"
+	accountRegister = "register"
+	// accountMarkTest · accountUnmark는 예전 시험 계정 표시·해제 줄이다. 다시 읽기만 하고 새로 쓰지 않는다.
 	accountMarkTest    = "mark_test"
 	accountUnmark      = "unmark"
 	accountLoginConfig = "login_config"
 	accountCredential  = "credential"
+	// accountCredentialClear는 그 계정만 저장 자격을 철회한 줄이다(#982 이동찬 P2). 그 뒤 자격을 다시 넣기 전까지 결속하지 않는다.
+	accountCredentialClear = "credential_clear"
 	// accountExternalConsent는 외부 API 실행의 시험 계정 동의다(감사만, 계정 상태는 바꾸지 않음).
 	accountExternalConsent = "external_consent"
+	// accountLoginMethodVerified는 배운 로그인 방법을 확정 단계 프로그램 로그인으로 검증한 줄이다(product_learned_login.go).
+	accountLoginMethodVerified = "login_method_verified"
 )
 
 type productAccountState struct {
-	label          string
-	registeredBy   string
-	registeredAt   time.Time
-	marked         bool
-	markedRevision uint64
-	classifiedBy   string
-	classifiedAt   time.Time
-	unmarked       bool
+	label        string
+	registeredBy string
+	registeredAt time.Time
+	// marked는 예전 표시 줄 재생 검증용이다(해제 줄은 표시된 계정에만 있었다). 응답·결속에는 쓰지 않는다.
+	marked bool
 	// credentialSHA256은 마지막으로 쓴 자격 보호 파일의 해시다. 파일이 지금도 이 해시일 때만 자격이 있다고 본다.
 	credentialSHA256 string
+	// loginVerified는 방법 해시별 마지막 login_method_verified 줄이다. 지금 배운 방법(learned)·그 방법이 지금 것이 된 뒤·
+	// 대상 판·자격 판과 모두 같을 때만 상태에 반영한다(계약 §6-1-1·§6-1-2, loginMethodVerifiedFor). 다른 방법의 검증 줄이
+	// 지금 방법의 검증을 덮지 않게 방법마다 따로 둔다.
+	loginVerified map[string]*productLoginVerified
 }
 
 // replayAccount는 저널 한 줄을 상태에 반영한다. 대상 저널을 먼저 다 읽은 뒤에 부른다.
 func (r *productTargetRegistry) replayAccount(e productAccountEvent) error {
 	rec, ok := r.records[e.TargetID]
 	if !ok || e.Actor != rec.Principal || e.At.IsZero() || e.TargetRevision < 1 || e.TargetRevision > rec.Target.Revision {
+		return errPreparation
+	}
+	if e.Action == accountLoginMethodVerified {
+		return r.replayLoginMethodVerified(rec, e)
+	}
+	if e.MethodSHA256 != "" || e.RunRef != "" || e.Stage != "" || e.AttemptRef != "" || e.Evidence != "" {
 		return errPreparation
 	}
 	if e.Action == accountExternalConsent {
@@ -146,18 +167,23 @@ func (r *productTargetRegistry) replayAccount(e productAccountEvent) error {
 		if st == nil || e.StatementSHA256 != productAccountStatementSHA256() {
 			return errPreparation
 		}
-		st.marked, st.unmarked, st.markedRevision, st.classifiedBy, st.classifiedAt = true, false, e.TargetRevision, e.Actor, e.At
+		st.marked = true
 	case accountUnmark:
 		if st == nil || !st.marked || e.StatementSHA256 != "" {
 			return errPreparation
 		}
-		// 해제하면 자격도 지운다(실계정 자격을 필요 이상 들고 있지 않는다).
-		st.marked, st.unmarked, st.classifiedBy, st.classifiedAt, st.credentialSHA256 = false, true, e.Actor, e.At, ""
+		// 예전 해제는 자격도 지웠다(그때 기록 그대로 재생한다).
+		st.marked, st.credentialSHA256 = false, ""
 	case accountCredential:
 		if st == nil || !urlDigestValid(e.CredentialSHA256) || e.StatementSHA256 != "" {
 			return errPreparation
 		}
 		st.credentialSHA256 = e.CredentialSHA256
+	case accountCredentialClear:
+		if st == nil || st.credentialSHA256 == "" || e.StatementSHA256 != "" {
+			return errPreparation
+		}
+		st.credentialSHA256 = ""
 	default:
 		return errPreparation
 	}
@@ -173,27 +199,6 @@ func (r *productTargetRegistry) appendAccount(e productAccountEvent) error {
 		return err
 	}
 	return r.replayAccount(e)
-}
-
-// accountView는 지금 대상 판·시각 기준의 분류다. 목록과 이후 실행 결속이 이 판정 하나를 쓴다. 대상 판이 바뀌면(재승인·철회)
-// target_reapproved, 승인이 만료됐으면 target_expired로 real이다(판단할 수 없으면 실계정).
-func accountView(rec productTargetRecord, st *productAccountState, now time.Time) diagnosisprep.ProductAccount {
-	a := diagnosisprep.ProductAccount{Label: st.label, Classification: "real", RegisteredBy: st.registeredBy, RegisteredAt: st.registeredAt}
-	switch {
-	case st.marked:
-		a.ClassifiedBy, a.ClassifiedAt, a.MarkedRevision = st.classifiedBy, st.classifiedAt, st.markedRevision
-		switch {
-		case rec.Target.State != "approved" || rec.Target.Revision != st.markedRevision:
-			a.Reason = "target_reapproved"
-		case !now.Before(rec.Target.ExpiresAt):
-			a.Reason = "target_expired"
-		default:
-			a.Classification = "test"
-		}
-	case st.unmarked:
-		a.ClassifiedBy, a.ClassifiedAt, a.Reason = st.classifiedBy, st.classifiedAt, "manual_unmark"
-	}
-	return a
 }
 
 // accountTarget은 운영자 소유 대상과 그 계정 묶음을 찾는다. r.mu를 잡은 채로 부른다.
@@ -225,14 +230,14 @@ func (r *productTargetRegistry) listAccounts(principal, id string) ([]diagnosisp
 
 // 계정 API 응답 시점의 자격과 로그인 설정을 같은 잠금 안에서 읽는다.
 func (r *productTargetRegistry) accountResponse(rec productTargetRecord, st *productAccountState) diagnosisprep.ProductAccount {
-	view := accountView(rec, st, r.now())
+	view := diagnosisprep.ProductAccount{Label: st.label, RegisteredBy: st.registeredBy, RegisteredAt: st.registeredAt}
 	view.CredentialConfigured = r.credentialConfigured(rec.Target.ID, st)
 	_, hasLogin := r.logins[rec.Target.ID]
 	view.LoginMethodMissing = view.CredentialConfigured && !hasLogin
 	return view
 }
 
-// registerAccount는 대상에 계정 라벨을 붙인다. 분류는 real로 시작한다. 철회된 대상에는 붙이지 않는다.
+// registerAccount는 대상에 계정 라벨을 붙인다. 철회된 대상에는 붙이지 않는다.
 func (r *productTargetRegistry) registerAccount(principal, id, label string) (diagnosisprep.ProductAccount, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -256,38 +261,10 @@ func (r *productTargetRegistry) registerAccount(principal, id, label string) (di
 	return r.accountResponse(rec, r.accounts[id][label]), nil
 }
 
-// markTestAccount는 승인된 대상의 승인자가 진술에 동의해 계정을 시험 계정으로 표시한다. 표시는 지금 대상 판에만 묶인다.
-func (r *productTargetRegistry) markTestAccount(principal, id, label string, statementConfirmed bool) (diagnosisprep.ProductAccount, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	rec, byTarget, err := r.accountTarget(principal, id)
-	if err != nil {
-		return diagnosisprep.ProductAccount{}, err
-	}
-	st := byTarget[label]
-	switch {
-	case st == nil:
-		return diagnosisprep.ProductAccount{}, errors.New("account_not_found")
-	case !statementConfirmed:
-		return diagnosisprep.ProductAccount{}, errors.New("statement_required")
-	case rec.Target.State != "approved" || !r.now().Before(rec.Target.ExpiresAt):
-		return diagnosisprep.ProductAccount{}, errors.New("target_not_approved")
-	}
-	// 승인자 = 대상 등록 기록의 운영자(DNS 소유 증명과 본인 진술을 한 사람)다. accountTarget이 이미 그 운영자만 받는다.
-	if accountView(rec, st, r.now()).Classification == "test" {
-		return r.accountResponse(rec, st), nil
-	}
-	if err := r.appendAccount(productAccountEvent{TargetID: id, Label: label, Action: accountMarkTest, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision,
-		StatementSHA256: productAccountStatementSHA256()}); err != nil {
-		return diagnosisprep.ProductAccount{}, errPreparation
-	}
-	return r.accountResponse(rec, st), nil
-}
-
 // recordExternalConsent는 외부 모델 실행이 시험 계정을 썼다는 감사 줄을 대상 계정 저널에 남긴다(설치 단위 동의 문장 해시·
 // 주체·시각·작업). 동의 자체는 설치 단위 기록이 정하고(product_external_consent.go), 이 줄은 어느 회차가 그 동의로 계정을
 // 썼는지 남긴다. 남길 수 있는 주체는 대상 승인자(등록 운영자, accountTarget)뿐이고 대상은 지금 승인 상태여야 한다.
-// 남기지 못하면 그 실행은 시작하지 않는다(#552 윤재상 리뷰: 시험 계정 표시와 같은 수준의 기록).
+// 남기지 못하면 그 실행은 시작하지 않는다(#552 윤재상 리뷰).
 func (r *productTargetRegistry) recordExternalConsent(principal, id, jobRef string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -300,33 +277,6 @@ func (r *productTargetRegistry) recordExternalConsent(principal, id, jobRef stri
 	}
 	return r.appendAccount(productAccountEvent{TargetID: id, Action: accountExternalConsent, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision,
 		StatementSHA256: productExternalConsentStatementSHA256(), JobRef: jobRef})
-}
-
-// unmarkAccount는 시험 계정 표시를 뗀다(더 안전한 쪽이라 대상 상태와 관계없이 받는다). 표시가 없으면 기록하지 않는다.
-// 결정안은 해제를 "그 대상에 권한이 있는 누구나"로 둔다. 지금 대상 권한은 등록한 운영자 한 사람뿐이라 accountTarget과
-// 같다. 권한 모델이 넓어지면 표시(승인자만)는 그대로 두고 해제 쪽만 넓힌다.
-func (r *productTargetRegistry) unmarkAccount(principal, id, label string) (diagnosisprep.ProductAccount, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	rec, byTarget, err := r.accountTarget(principal, id)
-	if err != nil {
-		return diagnosisprep.ProductAccount{}, err
-	}
-	st := byTarget[label]
-	if st == nil {
-		return diagnosisprep.ProductAccount{}, errors.New("account_not_found")
-	}
-	if !st.marked {
-		return r.accountResponse(rec, st), nil
-	}
-	// 해제는 더 안전한 쪽이라 자격 파일을 못 지워도 기록한다. 저널에서 자격 해시가 빠지므로 남은 파일은 쓰이지 않는다.
-	if err := r.removeCredential(id, label); err != nil {
-		log.Printf("[preparation] 시험 계정 해제 때 자격 파일 삭제 실패: 대상=%s", id)
-	}
-	if err := r.appendAccount(productAccountEvent{TargetID: id, Label: label, Action: accountUnmark, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision}); err != nil {
-		return diagnosisprep.ProductAccount{}, errPreparation
-	}
-	return r.accountResponse(rec, st), nil
 }
 
 // validTargetLoginFor는 로그인 방식이 형식에 맞고 경로가 그 대상의 승인 경로 접두 안이며 정규 경로인지 본다.
@@ -465,6 +415,33 @@ func (r *productTargetRegistry) setAccountCredential(principal, id, label string
 	if err := r.appendAccount(productAccountEvent{TargetID: id, Label: label, Action: accountCredential, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision,
 		CredentialSHA256: hex.EncodeToString(sum[:])}); err != nil {
 		return diagnosisprep.ProductAccount{}, errPreparation
+	}
+	return r.accountResponse(rec, st), nil
+}
+
+// clearAccountCredential은 그 계정만 저장 자격을 철회한다(#982 이동찬 P2 — 표시 해제가 하던 '계정 하나 자격 철회'를 분류 없이
+// 남긴다). 철회 사건을 저널에 남기고 자격 파일을 지운다. 결속 사본(실행 · 결속 디렉터리)은 부르는 쪽(제품 제어)이 지우고,
+// 저널 해시가 빠지므로 그 계정을 결속한 실행은 다음 확인에서 멈춘다(errAccountBindingChanged). 더 안전한 쪽이라 철회된 대상에도
+// 받고, 파일을 못 지워도 기록한다(해시가 빠져 남은 파일은 쓰이지 않음). 자격이 없으면 기록하지 않는다.
+func (r *productTargetRegistry) clearAccountCredential(principal, id, label string) (diagnosisprep.ProductAccount, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, byTarget, err := r.accountTarget(principal, id)
+	if err != nil {
+		return diagnosisprep.ProductAccount{}, err
+	}
+	st := byTarget[label]
+	if st == nil {
+		return diagnosisprep.ProductAccount{}, errors.New("account_not_found")
+	}
+	if st.credentialSHA256 == "" {
+		return r.accountResponse(rec, st), nil
+	}
+	if err := r.appendAccount(productAccountEvent{TargetID: id, Label: label, Action: accountCredentialClear, Actor: principal, At: r.now(), TargetRevision: rec.Target.Revision}); err != nil {
+		return diagnosisprep.ProductAccount{}, errPreparation
+	}
+	if err := r.removeCredential(id, label); err != nil {
+		log.Printf("[preparation] 계정 자격 철회 때 자격 파일 삭제 실패: 대상=%s", id)
 	}
 	return r.accountResponse(rec, st), nil
 }
