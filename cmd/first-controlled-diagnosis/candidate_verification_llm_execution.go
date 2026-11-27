@@ -167,12 +167,7 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 		return errPreparation
 	}
 	if plan.AccountRef == "" {
-		if plan.AuthPreparation != nil {
-			return errPreparation
-		}
-		// The original was anonymous. Account material is unnecessary for a
-		// read-only follow-up and must not be copied into its authority root.
-		if _, err := l.detachAccounts(); err != nil {
+		if l.prepareAnonymousCandidate(plan) != nil {
 			return errPreparation
 		}
 	} else {
@@ -381,11 +376,9 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 	if err != nil {
 		return errPreparation
 	}
-	options := server.FirstDiagnosisHTTPStartOptions{Host: server.FirstDiagnosisHTTPHostConfig{PolicyFile: launch.HTTP.PolicyFile,
-		AuthorityFile: launch.HTTP.AuthorityFile, AuthorityRoot: launch.HTTP.AuthorityRoot}, SkillDir: launch.SkillDir, DataDir: launch.DataDir, KeyDir: launch.KeyDir,
-		LocalLLMManifestPath: launch.LocalLLMManifestPath, ModelExecutionMode: launch.ModelExecutionMode, OpenRouterManifestPath: launch.OpenRouterManifestPath,
-		Supervisor: guard, Hooks: server.FirstDiagnosisHTTPHooks{HostSocket: launch.E2HostSocket, CheckAuthority: func() error { return checkCurrent(hard, plan) }},
-		CleanupTimeout: time.Duration(launch.ShutdownTimeoutSeconds) * time.Second}
+	options := candidateLLMStartOptions(launch)
+	options.Supervisor = guard
+	options.Hooks = server.FirstDiagnosisHTTPHooks{HostSocket: launch.E2HostSocket, CheckAuthority: func() error { return checkCurrent(hard, plan) }}
 	phase = "e2_execution"
 	observations, err := server.ExecuteSelectedCandidateActions(hard, manager, options, prepared.TaskID, runRef, plan)
 	if err != nil {
@@ -398,6 +391,28 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 		return errPreparation
 	}
 	return nil
+}
+
+// prepareAnonymousCandidate는 원래 관찰이 익명인 후보(계획에 계정 참조 없음)의 실행 준비다. 계정 준비 계획이 붙어 있으면
+// 거부하고, 결속 계정을 뗀다(detachAccounts — 자격 사본은 읽기 전용 후속 실행의 권한 디렉터리에 들어가면 안 된다). 계정이
+// 등록된 대상의 익명 후보도 이 길로 돈다(시연 경로: 외부 모델 설치에서도 인증 칸 없는 정책이라 호스트가 받는다).
+func (l *urlLoadedProfile) prepareAnonymousCandidate(plan server.CandidateLLMPlan) error {
+	if plan.AccountRef != "" || plan.AuthPreparation != nil {
+		return errPreparation
+	}
+	if _, err := l.detachAccounts(); err != nil {
+		return errPreparation
+	}
+	return nil
+}
+
+// candidateLLMStartOptions는 선택 검증(#950) 실행의 E② 호스트 시작 옵션이다(감독 · 훅은 부르는 쪽이 채운다). 시험 계정 동의
+// 칸(ExternalTestAccounts)은 싣지 않는다: 외부 모델 설치에서 계정 붙은 #950은 호스트가 받지 않는다(측정 뒤 동의 칸).
+func candidateLLMStartOptions(launch launchConfig) server.FirstDiagnosisHTTPStartOptions {
+	return server.FirstDiagnosisHTTPStartOptions{Host: server.FirstDiagnosisHTTPHostConfig{PolicyFile: launch.HTTP.PolicyFile,
+		AuthorityFile: launch.HTTP.AuthorityFile, AuthorityRoot: launch.HTTP.AuthorityRoot}, SkillDir: launch.SkillDir, DataDir: launch.DataDir, KeyDir: launch.KeyDir,
+		LocalLLMManifestPath: launch.LocalLLMManifestPath, ModelExecutionMode: launch.ModelExecutionMode, OpenRouterManifestPath: launch.OpenRouterManifestPath,
+		CleanupTimeout: time.Duration(launch.ShutdownTimeoutSeconds) * time.Second}
 }
 
 func candidateLLMTerminalEvent(ctx context.Context, pool *sql.DB, requestID int64, state, reason string) error {

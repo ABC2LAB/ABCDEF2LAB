@@ -13,6 +13,7 @@ import os
 import re
 import secrets
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -39,6 +40,52 @@ def draft_input(scenario):
     if scenario in AUTH_SCENARIOS:
         value.update({"target_url": "https://synthetic.test:9443/login", "workflow_mode": "ai_auto_v1"})
     return value
+
+
+# S03A(9칸-1, 시연 경로의 수용 짝): S02와 같은 비인증 대상 · 익명 후보로 선택 검증(#950)을 돌리되, 제품에 시험 계정 자격만
+# 등록한다(로그인 방식 9칸 없이 결속). 흐름은 S02 그대로라 시나리오 목록을 늘리지 않고 S02로 읽는다.
+ACCOUNT_ONLY_SCENARIO = "S03A"
+
+
+def account_only_argv(argv):
+    """`--scenario S03A`를 S02로 바꿔 읽는다. 바꾼 인자 목록과 S03A였는지를 돌려준다."""
+    out, found = [], False
+    for i, arg in enumerate(argv):
+        if arg == "--scenario=" + ACCOUNT_ONLY_SCENARIO:
+            out.append("--scenario=S02")
+            found = True
+        elif arg == ACCOUNT_ONLY_SCENARIO and i > 0 and argv[i - 1] == "--scenario":
+            out.append("S02")
+            found = True
+        else:
+            out.append(arg)
+    return out, found
+
+
+def register_account_only(product, token, target_id):
+    """S03A: 시험 계정 라벨과 자격만 등록한다(로그인 방식 9칸 PUT 없음). 계정 응답에 login_method_missing이 없어야 한다."""
+    base = "/api/product/targets/" + target_id
+    request(product, base + "/accounts", token, body={"label": "owned-a"})
+    request(product, base + "/accounts/owned-a/credential", token,
+            body={"username": "owned-a", "password": "synthetic-secret-a"}, method="PUT")
+    accounts = request(product, base + "/accounts", token).get("accounts")
+    if (not isinstance(accounts, list) or len(accounts) != 1 or accounts[0].get("label") != "owned-a"
+            or accounts[0].get("credential_configured") is not True or "login_method_missing" in accounts[0]):
+        raise RuntimeError("account_only_registration_unexpected")
+
+
+def check_account_bound(draft):
+    """S03A: 9칸 없이 자격만 있는 계정이 회차에 결속됐다(결속한 실행만 account_auth에 그 라벨이 있다)."""
+    if "owned-a" not in (draft.get("account_auth") or {}):
+        raise RuntimeError("account_only_not_bound:" + str(draft.get("account_auth")))
+
+
+def check_account_only_sends(target_stats):
+    """S03A: 대상이 받은 요청에 자격 헤더(Authorization · Cookie)가 하나도 없고 범위 밖 송신이 0이다(후속 GET 1건은 S02 검사)."""
+    if request(target_stats, "/header-stats")["credential_header_requests"] != 0:
+        raise RuntimeError("account_only_credential_header_sent")
+    if request(target_stats, "/stats")["outside_received"] != 0:
+        raise RuntimeError("out_of_scope_target_send")
 
 
 def check_model_login(draft):
@@ -180,7 +227,8 @@ def main():
     parser.add_argument("--scenario", choices=("S01", "S02", "S03", "S04", "S05", "S06", "S07", "S07B", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M"), default="S02")
     parser.add_argument("--resume-task", type=int, help="Continue an owned fixture task after a harness failure")
     parser.add_argument("--reuse-target", action="store_true", help="Use the previously approved owned fixture target")
-    args = parser.parse_args()
+    argv, account_only = account_only_argv(sys.argv[1:])
+    args = parser.parse_args(argv)
     if not re.fullmatch(r"[0-9a-f]{40}", args.head) or not re.fullmatch(r"[a-z0-9-]{3,40}", args.project):
         raise RuntimeError("invalid_owned_image_identity")
     for service in ("preparation", "synthetic-model"):
@@ -225,6 +273,8 @@ def main():
                 # 계정 분류 폐지(2026-11-26): 자격이 저장된 등록 계정을 결속한다. 시험 계정 표시(mark-test)는 없다
                 request(product, account_base + "/accounts/owned-a/credential", token,
                         body={"username": "owned-a", "password": "synthetic-secret-a"}, method="PUT")
+            if account_only:
+                register_account_only(product, token, target["id"])
         draft = request(product, "/api/diagnoses/v2/drafts", token, body={"version": "diagnosis-api.v2",
             "input": draft_input(args.scenario)}, key=secrets.token_hex(16), expected=201)["draft"]
         prefix = "/api/diagnoses/v2/drafts/" + draft["id"]
@@ -242,6 +292,8 @@ def main():
             raise RuntimeError("diagnosis_not_completed:" + draft["state"] + ":" + str(draft.get("reason_code")))
         if args.scenario in AUTH_SCENARIOS:
             check_model_login(draft)
+        if account_only:
+            check_account_bound(draft)
         task = draft["task_id"]
     run = request(product, "/api/tasks/" + task + "/diagnosis-run", token)["run"]
     if run["outcome"] != "completed" or not run["execution"]["audit_complete"]:
@@ -488,6 +540,9 @@ def main():
         if recovered_candidate is None or (host_recovered and recovered_candidate.get("outcome") != "model_supported") or (
                 not host_recovered and recovered_candidate.get("outcome") in ("model_supported", "model_refuted")):
             raise RuntimeError("recovery_verdict_missing_from_report")
+    if account_only:
+        check_account_only_sends(target_stats)
+        args.scenario = ACCOUNT_ONLY_SCENARIO
     print(json.dumps({"scenario": args.scenario, "head": args.head, "status": "PASS", "initial_candidates": len(candidates),
         "before_approval_target_sends": pending_target - after_diagnosis_target, "initial_target_sends": None if args.resume_task else after_diagnosis_target - before_target,
         "approved_followup_sends": after_target - pending_target, "out_of_scope_sends": request(target_stats, "/stats")["outside_received"],

@@ -167,7 +167,7 @@ func NewFirstDiagnosisHTTPHost(ctx context.Context, cfg FirstDiagnosisHTTPHostCo
 	digest := sha256.Sum256(raw)
 	clear(raw)
 	approval := authority.approval()
-	if decodeErr != nil || authority.AuthorizePolicy(ctx, digest) != nil || policy.ValidFrom.Before(approval.ValidFrom) || policy.ValidUntil.After(approval.ValidUntil) || policy.Auth != nil && cfg.ExternalModel && !cfg.ExternalTestAccounts {
+	if decodeErr != nil || authority.AuthorizePolicy(ctx, digest) != nil || policy.ValidFrom.Before(approval.ValidFrom) || policy.ValidUntil.After(approval.ValidUntil) || !firstDiagnosisHTTPPolicyAllowed(policy, cfg) {
 		authority.revoke()
 		_ = authority.close()
 		return nil, ErrFirstDiagnosisHTTPHost

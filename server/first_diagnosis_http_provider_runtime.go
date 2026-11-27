@@ -104,6 +104,24 @@ func firstDiagnosisHTTPModelConfig(options FirstDiagnosisHTTPStartOptions) (Firs
 	return modelOptions, host, nil
 }
 
+// firstDiagnosisHTTPPolicyAllowed는 외부 API 모델 호스트가 시험 계정 동의 없이 인증 칸(결속 계정)이 있는 정책을 받지 않는
+// 판정이다(CLAUDE.md 규칙 2, C14). 인증 칸이 없는 정책(익명 실행)은 외부 모델이어도 받는다. 호스트 생성(NewFirstDiagnosisHTTPHost)과
+// FirstDiagnosisHTTPHostAdmits가 같이 쓴다.
+func firstDiagnosisHTTPPolicyAllowed(policy E2HTTPFilePolicy, cfg FirstDiagnosisHTTPHostConfig) bool {
+	return policy.Auth == nil || !cfg.ExternalModel || cfg.ExternalTestAccounts
+}
+
+// FirstDiagnosisHTTPHostAdmits는 이 시작 옵션으로 만들 호스트가 정책을 받는지 미리 본다. 외부 API 여부는 StartFirstDiagnosisHTTP와
+// 같은 모델 설정 검사(firstDiagnosisHTTPModelConfig)로 정하고, 판정은 호스트 생성과 같은 firstDiagnosisHTTPPolicyAllowed다.
+// 대상 송신 · 모델 호출 · 파일 쓰기는 없다(모델 설정 파일만 읽음). external은 호스트 설정의 외부 모델 여부다.
+func FirstDiagnosisHTTPHostAdmits(options FirstDiagnosisHTTPStartOptions, policy E2HTTPFilePolicy) (external, admitted bool, err error) {
+	_, host, err := firstDiagnosisHTTPModelConfig(options)
+	if err != nil {
+		return false, false, err
+	}
+	return host.ExternalModel, firstDiagnosisHTTPPolicyAllowed(policy, host), nil
+}
+
 func StartFirstDiagnosisHTTP(ctx context.Context, manager *Manager, options FirstDiagnosisHTTPStartOptions) (*FirstDiagnosisHTTPRuntime, error) {
 	if ctx == nil || ctx.Err() != nil || manager == nil || manager.pg == nil || manager.pg.DB == nil || e2HTTPNil(options.Supervisor) || options.CleanupTimeout <= 0 || options.CleanupTimeout > 2*time.Minute || options.Shutdown.BlockAdmission == nil || options.Shutdown.CancelAndDrain == nil || options.Shutdown.CheckResults == nil {
 		return nil, ErrFirstDiagnosisHTTPHost

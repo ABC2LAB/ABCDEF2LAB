@@ -19,6 +19,8 @@ MODES = {
     "S02": "selected-model-nosniff",
     "S03": "selected-model-auth-nosniff",
     "S04": "selected-model-auth-nosniff",
+    # S03A(9칸-1): S02와 같은 모델 · 대상. 수용 대본이 시험 계정 자격만 등록한다(로그인 방식 없음).
+    "S03A": "selected-model-nosniff",
     "S05": "selected-model-structured-nosniff",
     "S06": "selected-model-unsupported-write",
     "S07": "selected-model-nosniff",
