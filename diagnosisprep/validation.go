@@ -383,7 +383,7 @@ func ValidateResponse(r Request, response Response) error {
 		return ErrProtocol
 	}
 	if response.Error != "" {
-		if response.Product != nil || response.RunPage != nil || response.Release != nil || (validReleaseError(response.Error) && r.Command != Release) {
+		if response.Product != nil || response.RunPage != nil || response.Release != nil || response.Confirmation != nil || (validReleaseError(response.Error) && r.Command != Release) {
 			return ErrProtocol
 		}
 		if !validError(response.Error) || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 {
@@ -396,6 +396,10 @@ func ValidateResponse(r Request, response Response) error {
 		return nil
 	}
 	if response.BusyReason != "" {
+		return ErrProtocol
+	}
+	// 확정 단계 상태는 회차를 돌려준 Status에만, 계약 모양으로만 온다.
+	if response.Confirmation != nil && (r.Command != Status || response.Job == nil || !validProductConfirmationState(*response.Confirmation)) {
 		return ErrProtocol
 	}
 	switch r.Command {

@@ -490,6 +490,48 @@ export function parseURLCatalog(raw: unknown): URLDiagnosisCatalog {
   });
   return { ownerContext: String(e.owner_context), profiles };
 }
+/** E③ 확정 단계 결과 상태 5개(e3-product-confirmation-interface.md §7). 회차 state의 completed와 다른 칸이다. */
+export const URL_CONFIRMATION_STATUSES = [
+  "disabled",
+  "start_refused",
+  "completed",
+  "interrupted",
+  "confirmation_integrity_failed",
+] as const;
+export type URLConfirmationStatus = (typeof URL_CONFIRMATION_STATUSES)[number];
+/**
+ * 회차 상태 응답의 확정 단계 결과(e3-product-confirmation-interface.md '회차 상태 응답').
+ * record: recorded(결과 파일 있음) · absent(아직·기록 없음 — 꺼짐으로 추정하지 않음) · unreadable(있는데 못 읽음).
+ * 확정 단계 completed는 취약점 확정이 아니다.
+ */
+export type URLConfirmation =
+  | { record: "recorded"; status: URLConfirmationStatus; reason: string | null }
+  | { record: "absent" | "unreadable"; status: null; reason: null };
+
+function parseURLConfirmationValue(v: unknown): URLConfirmation {
+  if (!object(v)) return invalid();
+  exact(v, ["record", "status", "reason"]);
+  if (!["record", "status", "reason"].every((key) => Object.hasOwn(v, key))) return invalid();
+  if (v.record === "absent" || v.record === "unreadable") {
+    if (v.status !== null || v.reason !== null) return invalid();
+    return { record: v.record, status: null, reason: null };
+  }
+  if (
+    v.record !== "recorded" ||
+    !URL_CONFIRMATION_STATUSES.includes(v.status as URLConfirmationStatus) ||
+    (v.reason !== null && (typeof v.reason !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(v.reason)))
+  )
+    return invalid();
+  return { record: "recorded", status: v.status as URLConfirmationStatus, reason: v.reason as string | null };
+}
+
+/** 회차 상태(drafts/{id}/status) 응답의 확정 단계 결과. 제품 설치가 아니거나 이전 서버면 undefined(칸 없음). */
+export function parseURLConfirmation(raw: unknown, owner: string): URLConfirmation | undefined {
+  parseURLJob(raw, owner);
+  const value = (raw as Record<string, unknown>).confirmation;
+  return value === undefined ? undefined : parseURLConfirmationValue(value);
+}
+
 /**
  * 시간 상한이 있는 응답의 서버 응답 시각(RFC3339Nano UTC). 남은 시간은 run_deadline_at − server_time 으로 세고,
  * 브라우저 시계와의 차이는 받은 순간의 (server_time − 브라우저 now)로 보정한다. 시간 상한이 없는 응답은 undefined.
@@ -500,7 +542,8 @@ export function parseURLServerTime(raw: unknown, owner: string): string | undefi
 }
 export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
   const e = envelope(raw, owner);
-  exact(e, ["version", "owner_context", "draft", "server_time"]);
+  exact(e, ["version", "owner_context", "draft", "server_time", "confirmation"]);
+  if (e.confirmation !== undefined) parseURLConfirmationValue(e.confirmation);
   const d = e.draft;
   if (
     !object(d) ||

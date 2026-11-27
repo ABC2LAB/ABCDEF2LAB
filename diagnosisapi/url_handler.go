@@ -245,12 +245,47 @@ func (h *URLHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		now := h.options.Now().UTC()
 		serverTime = &now
 	}
+	var confirmation *urlConfirmation
+	if req.Command == diagnosisprep.Status && response.Confirmation != nil {
+		confirmation = urlConfirmationOf(*response.Confirmation)
+	}
 	writeJSON(w, status, struct {
 		Version      string             `json:"version"`
 		OwnerContext string             `json:"owner_context"`
 		Draft        *diagnosisprep.Job `json:"draft"`
 		ServerTime   *time.Time         `json:"server_time,omitempty"`
-	}{URLVersion, urlOwnerContext(owner), response.Job, serverTime})
+		Confirmation *urlConfirmation   `json:"confirmation,omitempty"`
+	}{URLVersion, urlOwnerContext(owner), response.Job, serverTime, confirmation})
+}
+
+// urlConfirmation은 회차 상태 응답의 E③ 확정 단계 결과다(docs/contracts/e3-product-confirmation-interface.md '회차 상태
+// 응답'). record는 결과 파일의 조회 상태(recorded·absent·unreadable)이고, status·reason은 recorded일 때만 값이 있다(그 밖엔 null). 회차 state의
+// completed와 확정 단계 status의 completed는 다른 칸이며, 확정 단계 completed는 취약점 확정이 아니다.
+type urlConfirmation struct {
+	Record string  `json:"record"`
+	Status *string `json:"status"`
+	Reason *string `json:"reason"`
+}
+
+const (
+	urlConfirmationRecorded   = "recorded"
+	urlConfirmationAbsent     = "absent"
+	urlConfirmationUnreadable = "unreadable"
+)
+
+func urlConfirmationOf(c diagnosisprep.ProductConfirmationState) *urlConfirmation {
+	switch {
+	case !c.Present:
+		return &urlConfirmation{Record: urlConfirmationAbsent}
+	case c.Status == diagnosisprep.ConfirmationUnreadable:
+		return &urlConfirmation{Record: urlConfirmationUnreadable}
+	}
+	// 사유 없음은 null이다. 판정 목록 confirmation의 status·reason과 같은 값이다.
+	out := &urlConfirmation{Record: urlConfirmationRecorded, Status: &c.Status}
+	if c.Reason != "" {
+		out.Reason = &c.Reason
+	}
+	return out
 }
 
 func validURLInput(input diagnosisprep.Input) bool {

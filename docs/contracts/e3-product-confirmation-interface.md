@@ -232,6 +232,26 @@ E②를 닫는 순서는 이렇다(사유별로 E②를 닫지 않는다).
 - 시험: 감독자 통합 시험(`firstDiagnosisCheckClosingPath`)이 모든 모드에서 확정 단계 훅과 중지 기록 가운데 정확히 하나가 한 번 불리고, 확정 단계 훅 때 E② 연결이 살아 있고 모델 단계가 마감돼 있거나(사유 없음) 실행이 한 번도 없었는지(`lease_missing`), 그 뒤 모델 단계 송신이 0인지 본다.
 - `RunResult.Requests`는 "보낸 요청"이 아니라 확정 단계가 **보내려고 시도한 수**다(E②가 몫 끝·정책으로 보내지 않은 것 포함, 다시 로그인은 실제로 보낸 것만).
 
+### 7.4 회차 상태 응답(2026-11-27)
+
+화면이 판정 목록을 따로 부르지 않고도 회차 상태에서 확정 단계 결과를 읽게, 제품 설치의 URL v2 회차 상태 응답(`GET /api/diagnoses/v2/drafts/{id}/status`) 최상위에 `confirmation`을 싣는다. 값은 판정 목록 `policy_source`와 **같은 판독기**(`readConfirmationState`, `runs/<job>/e3-confirmation.json`)에서 온다. 두 조회가 같은 파일 상태를 읽고 판정 목록 조회도 성공하면 상태·사유가 같다. 파일 작성 중이나 두 조회 사이에 결과가 기록되면 값이 일시적으로 다를 수 있다. 판정 목록은 정책 동결본을 먼저 읽으므로 동결본을 읽지 못하면 확정 단계 상태도 반환하지 않는다. 회차 소유는 그 Status가 이미 확인한다(운영자 주체·자기 회차만). 판독기가 하는 검사(형식 판본·상태·사유·건너뛴 종류 모양·0600 등)보다 약하게 읽지 않는다.
+
+```json
+{"version":"diagnosis-api.v2","owner_context":"…","draft":{"state":"completed","…":"…"},
+ "confirmation":{"record":"recorded","status":"confirmation_integrity_failed","reason":"journal_integrity_failed"}}
+```
+
+| `record` | `status` | `reason` | 뜻 | 판정 목록 `confirmation` |
+|---|---|---|---|---|
+| `recorded` | 위 표의 5개 중 하나 | 사유 코드 또는 `null` | 결과 파일을 읽음 | `{status, reason}` 같은 값 |
+| `absent` | `null` | `null` | 결과 파일이 없음. 실행 중이면 아직 기록 전, 끝난 회차면 확정 단계까지 가지 않았거나 이 기록이 생기기 전 회차 | `null` |
+| `unreadable` | `null` | `null` | 파일은 있는데 못 읽음·형식·값이 계약 밖 | `status: "unreadable"` |
+
+- `absent`를 `disabled`(꺼짐)로 추정하지 않는다. `unreadable`은 조회 상태이지 확정 단계 결과 상태가 아니다(그래서 `record`로 나눴다).
+- 회차 `draft.state`의 `completed`와 `confirmation.status`의 `completed`는 다른 칸이다. 확정 단계 `completed`는 취약점 확정이 아니고, 판정 결과는 판정 목록·상세가 말한다. `confirmation_integrity_failed`는 사유와 함께 그대로 보이고 "발견 없음"으로 보이면 안 된다(§7).
+- 칸이 없으면 제품 설치가 아니거나 이전 서버다. Status 밖의 응답(시작·중지·검증·조회)에는 없다. 보호 IPC 검사는 `confirmation`을 Status의 회차 응답에만, 계약 모양으로만 받는다.
+- 공유 예시 `run-confirmation.status.example.json`(실행 중 기록 전·다섯 상태·못 읽음·제품 아님)을 Go handler와 웹 파서(`parseURLConfirmation`)가 함께 확인한다.
+
 ## 8. 리셋 게이트
 
 `ResetGate.Check`는 `{previous_writes, reset_confirmed, residue}`를 돌려준다(결정 §6.1). `CheckRunStart`는 다음 경우 모두 거절한다:

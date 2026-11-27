@@ -215,6 +215,9 @@ type Response struct {
 	Job        *Job      `json:"job,omitempty"`
 	Authorized *bool     `json:"authorized,omitempty"`
 	Error      string    `json:"error,omitempty"`
+	// Confirmation은 제품 설치의 Status 응답에 붙는 E③ 확정 단계 결과 파일의 상태다(판정 목록 policy_source와 같은 판독기,
+	// docs/contracts/e3-product-confirmation-interface.md '회차 상태 응답'). 제품이 아닌 설치·다른 명령에는 없다.
+	Confirmation *ProductConfirmationState `json:"confirmation,omitempty"`
 	// BusyReason은 Start의 "busy" 거절 사유다(start_refusal.go). 다른 오류·성공 응답에는 없다. 모르면 비운다.
 	BusyReason string           `json:"busy_reason,omitempty"`
 	Product    *ProductResponse `json:"product,omitempty"`
