@@ -121,6 +121,7 @@ func TestExplorationEvidenceControlsE3Reuse(t *testing.T) {
 				t.Fatal(err)
 			}
 			ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
+			ll.taskID, ll.sourceDigest = 19, strings.Repeat("a", 64)
 			fake := &fakeLearnedAccounts{result: authenticatedResult(), contrast: server.E2HTTPLoginContrastResult{Sent: true, Status: 401}}
 			ll.relogin(t.Context(), "tester-a", fake, fake)
 			want := learnedlogin.Reason("")
@@ -194,6 +195,12 @@ func TestRequiredExplorationEvidenceDoesNotFallBack(t *testing.T) {
 			}
 			if _, _, reason := ll.plan("tester-a"); reason != want || len(fake.requests) != 1 && want == "" || len(fake.requests) != 0 && want != "" {
 				t.Fatalf("작업·원본 결속 실패: reason=%q, requests=%d", reason, len(fake.requests))
+			}
+			// A present v2 projection must retain its binding even if an old
+			// policy lacks the required/v2 marker.
+			ll.explorationEvidenceRequired = false
+			if _, _, reason := ll.plan("tester-a"); reason != want {
+				t.Fatalf("기존 정책의 v2 근거 결속 실패: reason=%q, want=%q", reason, want)
 			}
 		})
 	}
