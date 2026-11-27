@@ -127,7 +127,7 @@ func validHistoryRow(row Row) bool {
 		return false
 	}
 	if len(row.FieldSources) > 0 {
-		if len(row.FieldSources) != len(row.FieldsFromResponse) {
+		if len(row.FieldSources) > len(row.FieldsFromResponse) {
 			return false
 		}
 		seen := map[string]bool{}
@@ -141,8 +141,7 @@ func validHistoryRow(row Row) bool {
 			for _, name := range row.FieldsFromResponse {
 				found = found || name == source.Destination
 			}
-			if !found || source.SourcePath != row.FieldSources[0].SourcePath || source.SourceType != row.FieldSources[0].SourceType ||
-				source.SourceRef != row.FieldSources[0].SourceRef || source.SourceStatus != row.FieldSources[0].SourceStatus {
+			if !found {
 				return false
 			}
 			seen[source.Destination] = true
@@ -165,6 +164,26 @@ func validHistoryRow(row Row) bool {
 		return row.Outcome == OutcomeUnknown
 	}
 	return false
+}
+
+// Earlier v2 trackers could record a partial or multi-GET source without
+// source_unresolved. Preserve those protected rows and failure counts while
+// refusing to reconstruct a method from them.
+func replayableRowFieldSources(row Row) bool {
+	if len(row.FieldSources) == 0 {
+		return true
+	}
+	if len(row.FieldSources) != len(row.FieldsFromResponse) {
+		return false
+	}
+	first := row.FieldSources[0]
+	for _, source := range row.FieldSources[1:] {
+		if source.SourcePath != first.SourcePath || source.SourceType != first.SourceType ||
+			source.SourceRef != first.SourceRef || source.SourceStatus != first.SourceStatus {
+			return false
+		}
+	}
+	return true
 }
 
 // unambiguousRowKeys는 JSON 해석 시 뒤의 값이 앞의 값을 덮는 행을 거부한다. 구조체 디코더가 같은 칸으로 보는
@@ -295,6 +314,8 @@ func Select(rows []Row, runRef string, labels []string) map[string]Selection {
 		case !validRef(r.TransportRef):
 			sel = Selection{Reason: ReasonTransportUnverified}
 		case r.SourceUnresolved:
+			sel = Selection{Reason: ReasonPrepUnavailable}
+		case !replayableRowFieldSources(r):
 			sel = Selection{Reason: ReasonPrepUnavailable}
 		case len(r.QueryKeys) > 0:
 			// 질의 값은 기록에 없다(§3 query_keys는 이름뿐). 질의가 있던 로그인은 다시 만들 수 없다.

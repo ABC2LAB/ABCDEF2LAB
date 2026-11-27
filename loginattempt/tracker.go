@@ -300,6 +300,25 @@ func (t *Tracker) Prepare(req Request, writeAllowed bool) Plan {
 			a.row.SourceUnresolved = true
 		}
 	}
+	// A v2 method can replay one issuance GET only. A partial or mixed
+	// source must remain a valid history row, but must not become a method.
+	if len(a.row.FieldSources) > 0 {
+		if len(a.row.FieldSources) != len(cand.FieldsFromResponse) {
+			a.row.SourceUnresolved = true
+		} else {
+			first := a.row.FieldSources[0]
+			for _, source := range a.row.FieldSources[1:] {
+				if source.SourcePath != first.SourcePath || source.SourceRef != first.SourceRef ||
+					source.SourceType != first.SourceType || source.SourceStatus != first.SourceStatus {
+					a.row.SourceUnresolved = true
+					break
+				}
+			}
+		}
+		if a.row.SourceUnresolved {
+			a.row.FieldSources = nil
+		}
+	}
 	t.attempts = append(t.attempts, a)
 	if t.cfg.HistoryUnavailable {
 		t.refuseLocked(a, RefusalHistoryUnavailable)

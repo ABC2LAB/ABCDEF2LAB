@@ -27,14 +27,11 @@ func (t *Tracker) rememberSourceLocked(req Request, resp Response) {
 	if err != nil || media != "application/json" && media != "text/html" && media != "application/xhtml+xml" {
 		return
 	}
-	if length := resp.Header.Get("Content-Length"); length != "" {
-		n, err := strconv.ParseInt(length, 10, 64)
-		if err != nil || n != int64(len(resp.Body)) {
-			return
-		}
-	} else if media != "application/json" {
-		// A partial HTML prefix can already contain a hidden input. Without a
-		// complete length, it cannot identify an unambiguous issuance page.
+	// A partial JSON or HTML prefix may already contain a token. The tracker
+	// cannot prove completion for a body without an exact length.
+	length := resp.Header.Get("Content-Length")
+	n, lengthErr := strconv.ParseInt(length, 10, 64)
+	if lengthErr != nil || n != int64(len(resp.Body)) {
 		return
 	}
 	screen, reason := learnedlogin.ParseScreen(learnedlogin.Response{Status: resp.Status, Header: resp.Header, Body: resp.Body})
@@ -60,7 +57,7 @@ func (t *Tracker) fieldSourceLocked(req Request, destination, value string) (Row
 		}
 		// V2 issues exactly one bare GET. If the original issuance required
 		// prior authentication, that request cannot be faithfully replayed.
-		if source.requestHeader.Get("Cookie") != "" || source.requestHeader.Get("Authorization") != "" {
+		if !replayableSourceHeaders(source.requestHeader) {
 			continue
 		}
 		typ, field, ok := source.screen.FindValueSource(value)
@@ -90,4 +87,20 @@ func (t *Tracker) fieldSourceLocked(req Request, destination, value string) (Row
 			SourceType: typ, SourceField: field, SourceRef: source.ref, SourceStatus: source.status}
 	}
 	return result, count == 1
+}
+
+// The E③ preparation GET sends no captured authentication context. Accept
+// only ordinary representation-negotiation headers from the original GET;
+// unknown or account-specific headers could be required by the issuer.
+func replayableSourceHeaders(header http.Header) bool {
+	for name := range header {
+		canonical := http.CanonicalHeaderKey(name)
+		switch canonical {
+		case "Accept", "Accept-Language", "Accept-Encoding", "User-Agent", "Cache-Control", "Pragma", "Connection", "Dnt", "Upgrade-Insecure-Requests",
+			"Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site", "Sec-Fetch-User":
+		default:
+			return false
+		}
+	}
+	return true
 }
