@@ -6,7 +6,7 @@
 //   등록 계정을 회차에 결속한다(#967). 그래서 화면은 시험 표시 · 해제 · 표시 진술을 다루지 않는다. 서버가 아직 싣는
 //   classification · account_statement 칸은 읽지 않는다(표시 · 해제 API를 서버에서 걷는 것은 따로).
 // ※ 읽기: getProductTargets(대상 목록)·getAccounts(대상)·getTargetLogin(로그인 방식)=실 GET. 쓰기: registerAccount=실 POST,
-//   setTargetLogin(로그인 방식)·setAccountCredential(자격)=실 PUT.
+//   setTargetLogin(로그인 방식)·setAccountCredential(자격)=실 PUT, clearAccountCredential(그 계정 자격 철회)=실 DELETE.
 // ※ 자격(setAccountCredential)은 이 seam 에서 유일하게 값을 보내는 쓰기다. 값은 인자로 받아 요청 본문에만 싣고 저장·반환·
 //   로그하지 않는다. 화면은 입력 칸 값을 보낼 때만 읽고 바로 비운다. 등록 여부는 목록의 credential_configured 로만 보인다.
 //   표현/데이터 분리 — 파싱은 전부 여기(seam), 화면은 그리기만.
@@ -332,6 +332,20 @@ export async function setAccountCredential(
 }
 
 /**
+ * 그 계정만 저장 자격을 철회한다(DELETE …/accounts/{label}/credential, #982 이동찬 P2). 서버가 철회 줄을 감사 저널에 남기고
+ * 자격 파일과 실행 결속 사본을 지운다 — 그 계정을 결속한 실행은 다음 확인에서 멈추고, 다음 회차에는 결속하지 않는다.
+ * 값은 보내지도 받지도 않는다. 응답의 credential_configured 가 거짓일 때만 철회됨으로 본다.
+ */
+export async function clearAccountCredential(targetId: string, label: string): Promise<boolean> {
+  if (!ACCOUNT_LABEL.test(label)) throw new Error("invalid_account_label");
+  const res = await apiFetch<unknown>(`${accountsBase(targetId)}/${encodeURIComponent(label)}/credential`, {
+    method: "DELETE",
+    redirect: "error",
+  });
+  return isObj(res) && isObj(res.account) && res.account.credential_configured !== true;
+}
+
+/**
  * 계정·로그인 쓰기 실패 → 한국어 문구. 서버 사유 코드(오류 본문 error)는 값 없는 고정 코드다(product_targets_http.go).
  * 모르는 코드는 일반 문구에 코드만 붙인다(코드 모양이 아니면 붙이지 않는다).
  */
@@ -351,6 +365,7 @@ const WRITE_FAILURE_TEXT: Record<string, string> = {
   product_control_unavailable: "제품 제어 서비스에 닿지 못했습니다. 잠시 뒤 다시 시도하세요.",
   authentication_changed: "로그인 세션이 바뀌었습니다. 다시 로그인한 뒤 시도하세요.",
   invalid_login_response: "서버 응답 형식이 맞지 않아 결과를 확인하지 못했습니다. 목록을 다시 읽으세요.",
+  credential_not_cleared: "서버가 자격 철회를 확인하지 못했습니다. 목록을 다시 읽어 '자격 없음'인지 확인하세요.",
   credential_not_confirmed:
     "서버가 자격 등록을 확인하지 못했습니다. 목록의 '자격 등록됨' 표시를 확인하고 다시 입력하세요.",
 };

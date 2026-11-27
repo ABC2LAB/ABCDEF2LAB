@@ -118,9 +118,6 @@ func TestProductTargetCapacityReusesOnlyInactiveRecords(t *testing.T) {
 				if _, err = r.registerAccount("ARTEX", a.ID, "tester-a"); err != nil {
 					t.Fatal(err)
 				}
-				if _, err = r.markTestAccount("ARTEX", a.ID, "tester-a", true); err != nil {
-					t.Fatal(err)
-				}
 			}
 			b, err := r.register("ARTEX", targetTestSpec("b.example.test"))
 			if err != nil {

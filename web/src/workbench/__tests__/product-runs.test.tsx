@@ -9,6 +9,7 @@ import { activeURLRun, endedURLRun, type URLRunSummary } from "@/lib/diagnosis/d
 import { readURLHandle, storeURLHandle, type URLDiagnosisJob } from "@/lib/diagnosis/diagnosis-url";
 import { catalog, owner, ready, running } from "@/lib/diagnosis/diagnosis-url-fixtures";
 
+import { cx } from "../lib/cx";
 import { LiveGate, setLiveAuthState, useLiveAuthBoot } from "../live/auth";
 import { LiveRailTasks } from "../live/rail";
 import { useSource } from "../live/source";
@@ -830,5 +831,51 @@ describe("브라우저를 다시 띄운 뒤 진행 중 점검 찾기(사용자 2
     fireEvent.click(within(runList).getAllByRole("button")[0]);
     await waitFor(() => expect(goTo).toBe("running"));
     expect(useUrl.getState().selectedID).toBe(runs.find(activeURLRun)?.id);
+  });
+
+  it("끝난 점검이 5개를 넘으면 5줄만 두고 그 아래에 묶음 머리와 같은 글꼴의 '전체 보기'(화살표 · 수 없음)를 두며, 누르면 그 목록 화면으로 간다(사용자 11/27)", async () => {
+    let goTo: View | null = null;
+    const shell = { route: "dashboard" as View, goTo: (v: View) => (goTo = v) } as unknown as Shell;
+    const endedJobs = (n: number) =>
+      structuredClone({
+        [a.id]: a,
+        ...Object.fromEntries(
+          Array.from({ length: n }, (_, i) => [`job-e${i}`, { ...b, id: `job-e${i}`, task_id: String(50 + i) }]),
+        ),
+      });
+    const renderRail = async (n: number) => {
+      cleanup();
+      jobs = endedJobs(n);
+      await act(async () => {
+        await loadUrlRuns(owner);
+      });
+      render(
+        <ShellContext.Provider value={shell}>
+          <LiveRailTasks />
+        </ShellContext.Provider>,
+      );
+      return document.getElementById("rsec-done") as HTMLElement;
+    };
+    // 5개까지는 다 보이고 '전체 보기'가 없다
+    let doneList = await renderRail(5);
+    await waitFor(() => expect(within(doneList).getAllByRole("button")).toHaveLength(5));
+    expect(within(doneList).queryByRole("button", { name: /전체 보기/ })).toBeNull();
+    // 6개면 5줄 + '전체 보기'(수는 묶음 머리에만)
+    doneList = await renderRail(6);
+    await waitFor(() => expect(within(doneList).getAllByRole("button")).toHaveLength(6));
+    const all = within(doneList).getByRole("button", { name: /전체 보기/ });
+    expect(within(doneList).getAllByRole("button").at(-1)).toBe(all);
+    // 묶음 머리('끝난 점검 6')와 같은 글꼴, 화살표 · 수는 없다(사용자 11/27)
+    const head = screen.getByRole("button", { name: /끝난 점검/ });
+    expect(all.className).toBe(cx(s.rh, s["rh-more"]));
+    expect(all.querySelector("svg")).toBeNull();
+    expect(all.querySelector(`.${s.c}`)).toBeNull();
+    expect(all).toHaveTextContent(/^전체 보기$/);
+    expect(head.querySelector(`.${s.c}`)).toHaveTextContent("6");
+    expect(within(doneList).queryByText(/전체 \d+건/)).toBeNull();
+    // 펼침 머리가 아니라 목록 화면으로 가는 줄이다
+    expect(all).not.toHaveAttribute("aria-expanded");
+    fireEvent.click(all);
+    expect(goTo).toBe("finished");
   });
 });
