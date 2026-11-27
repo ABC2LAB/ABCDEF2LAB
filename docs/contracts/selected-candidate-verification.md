@@ -14,6 +14,7 @@
 - 동일 소유자·후보·멱등키의 재요청은 같은 이력을 돌려준다. 다른 키라도 동일 후보/digest/출처/판정의 재검토는 중복 기록하지 않는다. task 행 잠금으로 동시 요청을 직렬화한다. 최신 이력부터 최대 100건씩 반환하며 `truncated=true`이면 `next_before`를 다음 GET의 `before`로 사용한다.
 - `diagnostic_candidate_verification_requests`와 `diagnostic_candidate_verification_events`는 원본 후보 및 최초 자동 판정·종료 기록을 수정하지 않는 추가 기록이다. 요청 INSERT trigger가 task·candidate·intent edge·run·digest·version 결속을 확인한다. `product_api`는 두 표의 SELECT/INSERT 및 ID sequence USAGE, 후보 결속을 위한 `exploration_edges` 네 열의 SELECT를 얻는다. 요청 행 잠금에 필요한 `UPDATE(id)` 외에 UPDATE/DELETE/TRUNCATE는 받지 않는다. 실제 UPDATE는 저장 트리거가 거부한다. 기존 설치에는 스키마 마이그레이션과 설치 역할 GRANT 적용이 필요하다.
 - `diagnostic_candidate_observations_v2`는 `product_runtime`에 SELECT·INSERT, `product_api`에 SELECT만 부여한다. 보호 실행 역할은 선택 검증을 위해 저장 관찰을 읽으며 두 역할 모두 이를 수정·삭제하지 못한다. 기존 설치에는 이 표와 역할 GRANT도 필요하다.
+- 계정(9칸-1): `active/v1` 후보는 원래 회차가 계정 없는 실행(`HeaderPreserve`)이었던 관찰만 받는다(`server/candidate_verification_plan.go`). 9칸-1부터 자격만 있어도 대상 계정을 결속하므로, 계정이 있는 대상의 회차(시험 계정 헤더 모드)에서 나온 후보는 `active/v1` 후보가 되지 않는다(한계, 관찰 단위 자격 판정은 측정 뒤). 계정이 있는 대상의 예전 익명 회차 후보는 실행할 때 결속 계정을 뗀다: 자격 사본을 지우고 정책 인증 칸 · 실행 계정 · 외부 계정 동의를 끄고 `HeaderPreserve`로 정확한 GET 하나를 보낸다. 떼지 못했거나 발급 뒤 권한 디렉터리에 자격 사본이 보이면 시작하지 않는다. 이 실행 경로는 단위 시험(계정 떼기 · 발급 뒤 검사)까지만 확인한다 — `scripts/eval`에 `active/v1`을 도는 수용 대본은 없다. 같은 도우미를 쓰는 #950 익명 분기는 선택 후보 수용 S03A(계정 자격만 등록한 대상의 익명 후보)와 시연 경로 단위 시험이 지킨다.
 - 선택 검증 요청 행은 사건 추가를 직렬화하는 잠금 대상이다. PostgreSQL의 `FOR UPDATE`에 필요한 `UPDATE(id)` 권한만 `product_api`와 `product_runtime`에 부여하고, 실제 UPDATE는 저장 트리거가 거부한다. 요청 원본은 보존한다.
 
 ## 응답과 상태

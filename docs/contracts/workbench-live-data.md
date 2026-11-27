@@ -37,11 +37,11 @@
 
 화면(`TargetAccountsLive` '시험 계정', 2026-11-21 · 11-26 분류 폐지): 대상을 고르면 로그인 방식을 읽어 칸에 채우고 저장한다(형식 검사는 서버 `ValidTargetLogin`과 같은 규칙, 승인 경로 안인지는 서버만 본다). 계정마다 자격을 입력한다. 자격 칸은 React 상태에 두지 않는 비제어 입력이고 보낼 때 한 번 읽고 바로 비운다(실패·형식 밖도). URL·브라우저 저장소·로그에 넣지 않는다. 브라우저 비밀번호 관리자에 들어가지 않게 form 제출을 쓰지 않고 `autoComplete="off"`·관리자 무시 표시를 단다(모든 브라우저가 저장 제안을 안 한다고 보장하지는 않는다). 비밀번호가 E② 보호 값 하한(6바이트)보다 짧으면 서버는 저장하지만 실행 때 그 계정으로 로그인하지 않으므로, 등록 뒤 라벨과 함께 따로 알린다(값 없음). 등록 여부는 목록의 `credential_configured`가 참일 때만 '자격 등록됨'이다. 쓰기 실패는 서버 사유 코드를 한국어 문구로 보인다.
 
-`ProductAccount`: `label`, `registered_by`, `registered_at`(등록 시각 — 목록은 라벨순이라 등록 순서는 이 값으로 본다), `credential_configured`(bool, 값 없음), `login_method_missing`(아래). 예전 분류 칸(`classification`·`reason`·`classified_by`·`classified_at`·`marked_revision`)은 싣지 않는다.
+`ProductAccount`: `label`, `registered_by`, `registered_at`(등록 시각 — 목록은 라벨순이라 등록 순서는 이 값으로 본다), `credential_configured`(bool, 값 없음), `login_method_missing`(아래, 9칸-1부터 서버가 내지 않음). 예전 분류 칸(`classification`·`reason`·`classified_by`·`classified_at`·`marked_revision`)은 싣지 않는다.
 
 계정마다 배운 로그인 방법 `login_method`(`state` `none`·`learned`·`verified`, 언제·근거·값 없는 방법)를 싣는다. 칸 이름·값·모양은 [모델 로그인 시도 기록 계약](model-login-attempts.md) §6-1-3이다(모델 로그인 PR에서 서버·웹 파서를 같이 고침).
 
-계정 목록과 계정 변경 응답에서 자격이 저장됐지만 대상 로그인 방식이 없으면 `login_method_missing: true`를 함께 준다. 이때 점검은 익명으로 진행한다. 로그인 방식을 등록하면 다음 조회부터 이 필드를 생략한다. 실제 로그인 결과는 회차의 `account_auth`에서 확인한다.
+9칸-1부터 서버는 `login_method_missing`을 내지 않는다(계정 목록 · 계정 변경 응답 둘 다). 자격이 있으면 대상 로그인 방식이 없어도 결속하고 모델이 직접 로그인한다. 실제 결과는 회차 `account_auth`다. 이 칸을 읽는 화면 정리는 9칸-2다.
 
 계정 분류 폐지(사용자 결정 2026-11-26, [모델 로그인 시도 기록 계약](model-login-attempts.md) §0): 프로그램은 계정을 시험 · 실계정으로 나누지 않고, 서버는 자격이 저장된 등록 계정을 회차에 결속한다(#967). 화면은 `label`·`registered_at`·`credential_configured`·`login_method_missing`만 읽는다. 새 점검 · 진행 화면의 '시험 계정 있음'(`lib/diagnosis/target-account-presence.ts`)도 `credential_configured`가 참인 계정 수로 센다. 서버도 표시 · 해제 API와 분류 칸 · 표시 진술을 걷었다(#972 뒤 서버 PR). 실행에서 계정별 로그인 결과는 실행 결과 `account_auth` 칸이다([실행 결과 계약](run-outcome-states.md) 3.4).
 
