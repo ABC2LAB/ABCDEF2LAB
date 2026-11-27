@@ -39,7 +39,7 @@ func (ll *productLearnedLogin) verifySelection(label string, sel learnedlogin.Se
 	ll.mu.Unlock()
 	provenance, reason := learnedlogin.Provenance(""), learnedlogin.Reason("")
 	if sel.Row.Stage == learnedlogin.StageExploration && (ll.explorationEvidenceRequired || evidencePresent || evidenceErr != nil) {
-		if evidenceErr != nil || evidence == nil || ll.explorationEvidenceRequired && (evidence.Schema != learnedlogin.ExplorationEvidenceSchema || evidence.TaskID != strconv.FormatInt(ll.taskID, 10) || evidence.SourceDigest != ll.sourceDigest) {
+		if ll.invalidExplorationEvidence() || evidenceErr != nil || evidence == nil || sel.Row.RunRef != ll.runRef {
 			reason = learnedlogin.ReasonTransportUnverified
 		} else {
 			provenance, reason = learnedlogin.VerifyExplorationEvidence(sel.Row, *evidence, ll.jobID, ll.targetID, ll.revision)
@@ -68,6 +68,25 @@ func (ll *productLearnedLogin) verifySelection(label string, sel learnedlogin.Se
 	}
 	ll.provenance[label] = provenance
 	return ""
+}
+
+// The protected projection and the login rows are separate inputs. Compare
+// both with the current run policy even when a v2 file appears in a legacy run.
+func (ll *productLearnedLogin) invalidExplorationEvidence() bool {
+	if ll.explorationEvidenceErr != nil {
+		return true
+	}
+	if !ll.explorationEvidencePresent {
+		return ll.explorationEvidenceRequired
+	}
+	e := ll.explorationEvidence
+	if e == nil || e.RunRef != ll.runRef || e.JobID != ll.jobID || e.TargetRef != ll.targetID || e.TargetRevision != ll.revision {
+		return true
+	}
+	if e.Schema == learnedlogin.ExplorationEvidenceSchema {
+		return ll.taskID <= 0 || e.TaskID != strconv.FormatInt(ll.taskID, 10) || ll.sourceDigest == "" || e.SourceDigest != ll.sourceDigest
+	}
+	return ll.explorationEvidenceRequired
 }
 
 // setAudit은 이 실행의 E② 감사 결과 조회를 붙인다(확정 단계가 실행을 받은 뒤).
@@ -297,7 +316,7 @@ func (ll *productLearnedLogin) plan(label string) (learnedlogin.Learned, string,
 	if ll.rowsErr != nil {
 		return learnedlogin.Learned{}, "", learnedlogin.ReasonRecordInvalid
 	}
-	if ll.explorationEvidenceRequired && (ll.explorationEvidenceErr != nil || !ll.explorationEvidencePresent || ll.explorationEvidence == nil || ll.explorationEvidence.Schema != learnedlogin.ExplorationEvidenceSchema || ll.explorationEvidence.TaskID != strconv.FormatInt(ll.taskID, 10) || ll.explorationEvidence.SourceDigest != ll.sourceDigest) {
+	if ll.invalidExplorationEvidence() {
 		return learnedlogin.Learned{}, "", learnedlogin.ReasonTransportUnverified
 	}
 	credential, bound := ll.credentials[label]
