@@ -651,7 +651,9 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		var selectedSessionHeaders func() (http.Header, bool)
 		credentialHeader := ""
 		if policy.Auth != nil {
-			credentialHeader = policy.Auth.Login.Header
+			if policy.Auth.Login != nil {
+				credentialHeader = policy.Auth.Login.Header
+			}
 			accountRefs := make(map[string]string, len(policy.Auth.Accounts))
 			for _, account := range policy.Auth.Accounts {
 				accountRefs[account.Label] = CandidateAccountRevision(account.Label, account.Credential.SHA256)

@@ -184,9 +184,9 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 		l.productAccounts = nil
 		l.policy.HeaderMode = e2proxy.HeaderPreserve
 	} else {
-		if l.policy.Auth == nil || plan.AuthPreparation == nil || l.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough ||
+		if l.policy.Auth == nil || l.policy.Auth.Login == nil || plan.AuthPreparation == nil || l.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough ||
 			l.policy.Auth.Login.Method != plan.AuthPreparation.Method || l.policy.Auth.Login.Path != plan.AuthPreparation.ExactPath ||
-			server.CandidateLoginDigest(l.policy.Auth.Login) != plan.AuthPreparation.LoginDigest {
+			server.CandidateLoginDigest(*l.policy.Auth.Login) != plan.AuthPreparation.LoginDigest {
 			return errPreparation
 		}
 		var selected *server.E2HTTPFileAuthAccount
@@ -235,7 +235,7 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 	}
 	count := len(plan.Actions)
 	if l.policy.Auth != nil {
-		login := l.policy.Auth.Login
+		login := *l.policy.Auth.Login
 		l.policy.Rules = append(l.policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: plan.Origin,
 			ConnectIP: l.productTarget.SelectedIP, PathPrefix: login.Path, PathScopeRef: "auth-login-path",
 			Methods: []string{login.Method}, Purpose: e2proxy.PurposeAuthPrep,

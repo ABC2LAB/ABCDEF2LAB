@@ -697,7 +697,7 @@ func urlDatabaseProtected(c urlPreparationInstallation, conn *pgx.ConnConfig) bo
 }
 
 func urlAuthRuleValid(policy server.E2HTTPFilePolicy, rule server.E2HTTPFileRule, prefixes []string) bool {
-	if rule.Purpose != e2proxy.PurposeAuthPrep || len(rule.Methods) != 1 || rule.Methods[0] != "POST" || policy.Auth == nil || policy.Auth.RuleRef != rule.Ref || policy.Auth.Login.Path != rule.PathPrefix {
+	if rule.Purpose != e2proxy.PurposeAuthPrep || len(rule.Methods) != 1 || rule.Methods[0] != "POST" || policy.Auth == nil || policy.Auth.Login == nil || policy.Auth.RuleRef != rule.Ref || policy.Auth.Login.Path != rule.PathPrefix {
 		return false
 	}
 	for _, prefix := range prefixes {

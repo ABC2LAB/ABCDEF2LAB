@@ -128,7 +128,7 @@ func authTestDir(t *testing.T) string {
 }
 
 func cookieAuth(accounts ...E2HTTPFileAuthAccount) E2HTTPFileAuth {
-	return E2HTTPFileAuth{RuleRef: "auth-login", Login: diagnosisprep.TargetLogin{Method: "POST", Path: "/login", Format: "form", UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}, Accounts: accounts}
+	return E2HTTPFileAuth{RuleRef: "auth-login", Login: &diagnosisprep.TargetLogin{Method: "POST", Path: "/login", Format: "form", UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}, Accounts: accounts}
 }
 
 // 계정마다 로그인 요청을 한 번씩 보내 결과를 계정별로 남기고, 인증된 계정의 세션만 돌려주며, 세션 값은 출력에서 가린다.
@@ -258,7 +258,7 @@ func TestE2HTTPAuthPrepResultUnknownIsNotRetried(t *testing.T) {
 
 // 쿠키 방식은 설정한 이름이 모두 있어야 세션이다. JSON 방식은 경로 끝이 빈 값 아닌 문자열이어야 한다.
 func TestE2HTTPAuthExtractor(t *testing.T) {
-	cookies := cookieAuth().Login
+	cookies := *cookieAuth().Login
 	cookies.Cookies = []string{"a", "b"}
 	resp := &http.Response{StatusCode: 200, Header: http.Header{"Set-Cookie": {"a=one-value-123"}}}
 	if _, err := authExtractor(cookies)(resp, nil); err == nil {
@@ -268,7 +268,7 @@ func TestE2HTTPAuthExtractor(t *testing.T) {
 	if h, err := authExtractor(cookies)(resp, nil); err != nil || h.Get("Cookie") != "a=one-value-123; b=two-value-456" {
 		t.Fatalf("cookies: %v %v", h, err)
 	}
-	token := cookieAuth().Login
+	token := *cookieAuth().Login
 	token.Cookies, token.JSONField, token.Header, token.Prefix = nil, "data.token", "Authorization", "Bearer "
 	for body, ok := range map[string]bool{`{"data":{"token":"tok-123456"}}`: true, `{"data":{"token":5}}`: false, `{"data":"x"}`: false, `{"data":{"token":""}}`: false, `not json`: false} {
 		_, err := authExtractor(token)(&http.Response{StatusCode: 200, Header: http.Header{}}, []byte(body))
@@ -319,5 +319,59 @@ func TestE2HTTPSessionsOnlyInTestAccountMode(t *testing.T) {
 		if got := e2HTTPSessionsFor(mode, sessions); got != nil {
 			t.Errorf("%s got sessions", mode)
 		}
+	}
+}
+
+// 로그인 방식(9칸) 없이 결속한 계정(9칸-1, 계약 model-login-attempts §7): 모델 직접 로그인 회차이고 인증 준비 규칙이 없을 때만
+// 받는다. 모델 로그인을 끈 정책 · 규칙 참조가 남은 정책 · 인증 준비 규칙이 있는 정책은 받지 않는다.
+func TestE2HTTPFileAuthWithoutLogin(t *testing.T) {
+	rules := []E2HTTPFileRule{{Ref: "read", PathPrefix: "/read", Methods: []string{"GET"}}}
+	pin := E2HTTPFilePin{File: "tester-a.json", SHA256: strings.Repeat("a", 64)}
+	noLogin := func() E2HTTPFileAuth {
+		return E2HTTPFileAuth{ModelLogin: true, Accounts: []E2HTTPFileAuthAccount{{Label: "tester-a", Credential: pin}}}
+	}
+	good := noLogin()
+	if !validE2HTTPFileAuth(&good, e2proxy.HeaderTestAccountPassthrough, rules) {
+		t.Fatal("model-login auth without a login method rejected")
+	}
+	if raw, _ := json.Marshal(good); strings.Contains(string(raw), `"login"`) {
+		t.Fatalf("auth without a login method carries a login field: %s", raw)
+	}
+	for name, c := range map[string]struct {
+		change func(*E2HTTPFileAuth)
+		rules  []E2HTTPFileRule
+	}{
+		"program login":  {func(a *E2HTTPFileAuth) { a.ModelLogin = false }, rules},
+		"rule ref":       {func(a *E2HTTPFileAuth) { a.RuleRef = "read" }, rules},
+		"auth prep rule": {func(*E2HTTPFileAuth) {}, append(append([]E2HTTPFileRule{}, rules...), E2HTTPFileRule{Ref: "auth-login", PathPrefix: "/login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep})},
+		"no accounts":    {func(a *E2HTTPFileAuth) { a.Accounts = nil }, rules},
+	} {
+		a := noLogin()
+		c.change(&a)
+		if validE2HTTPFileAuth(&a, e2proxy.HeaderTestAccountPassthrough, c.rules) {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}
+
+// 로그인 방식(9칸)이 없으면 프로그램 로그인(인증 준비 · 다시 로그인)은 대상에 아무것도 보내지 않고 not_sent다.
+func TestE2HTTPProgramLoginNotSentWithoutLogin(t *testing.T) {
+	target := &authLoginTarget{token: "seeded-session-cookie-99aa"}
+	srv := httptest.NewServer(target.handler(t))
+	defer srv.Close()
+	dir := authTestDir(t)
+	pin := authCredentialPin(t, dir, "tester-a.json", "tester@owned.test", "seeded-pass-88ff")
+	auth := E2HTTPFileAuth{ModelLogin: true, Accounts: []E2HTTPFileAuthAccount{{Label: "tester-a", Credential: pin}}}
+	e := authTestExecution(t, srv.URL, &authEventCounter{})
+	result, err := e2HTTPAuthPrep(t.Context(), e, dir, srv.URL, auth)
+	if err != nil || result.AccountAuth["tester-a"] != E2HTTPAuthNotSent || len(result.Sessions) != 0 || len(result.CallRefs) != 0 {
+		t.Fatalf("auth prep without a login method: %v %+v", err, result)
+	}
+	header, state := e2HTTPRefreshSession(t.Context(), e, dir, srv.URL, auth, &e2HTTPRefreshCounter{}, newE2HTTPProgramCalls(), "tester-a", true)
+	if state != E2HTTPAuthNotSent || len(header) != 0 {
+		t.Fatalf("relogin without a login method: %q %v", state, header)
+	}
+	if target.posts.Load() != 0 {
+		t.Fatalf("login posts %d without a login method, want 0", target.posts.Load())
 	}
 }

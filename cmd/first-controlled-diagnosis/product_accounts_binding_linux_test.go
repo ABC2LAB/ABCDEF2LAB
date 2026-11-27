@@ -179,7 +179,7 @@ func TestProductRunBindsRegisteredAccountsAndStopsOnUnmark(t *testing.T) {
 
 // 인증 준비 규칙은 auth_prep·POST 하나·인증 칸이 가리키는 규칙·증명한 경로 접두 안이어야 결속을 읽는다.
 func TestURLAuthRuleValid(t *testing.T) {
-	policy := server.E2HTTPFilePolicy{Auth: &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: diagnosisprep.TargetLogin{Path: "/read/login"}}}
+	policy := server.E2HTTPFilePolicy{Auth: &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: &diagnosisprep.TargetLogin{Path: "/read/login"}}}
 	rule := server.E2HTTPFileRule{Ref: "auth-login", PathPrefix: "/read/login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep}
 	if !urlAuthRuleValid(policy, rule, []string{"/read"}) {
 		t.Fatal("valid auth rule rejected")
@@ -202,8 +202,9 @@ func TestURLAuthRuleValid(t *testing.T) {
 	}
 }
 
-// 실행 고르기: 로그인 방식이 없거나 자격이 없는 계정은 고르지 않는다. 시험 표시는 보지 않는다(분류 없음, 2026-11-26).
-// 자격을 바꾸면 요약이 바뀌고 결속한 실행은 멈춘다.
+// 실행 고르기: 자격이 없는 계정은 고르지 않는다. 로그인 방식(9칸)이 없어도 자격이 있으면 결속하고(9칸-1, 계약
+// model-login-attempts §7) 로그인 방식 칸은 비운다. 로그인 방식을 넣으면 같은 계정이 로그인 방식과 함께 결속되고 요약이
+// 바뀐다. 시험 표시는 보지 않는다(분류 없음, 2026-11-26). 자격을 바꾸면 요약이 바뀌고 결속한 실행은 멈춘다.
 func TestProductRunAccountsSelection(t *testing.T) {
 	r, _, target := accountTestTarget(t, true)
 	rec := r.approvals[target.ID]
@@ -228,8 +229,10 @@ func TestProductRunAccountsSelection(t *testing.T) {
 			t.Fatal("자격과 로그인 설정 상태 불일치", account.Label)
 		}
 	}
-	if got, digest, err := r.runAccounts(rec); err != nil || digest != "" || len(got.Accounts) != 0 {
-		t.Fatalf("selection without a login method: %+v %q %v", got, digest, err)
+	noLogin, noLoginDigest, err := r.runAccounts(rec)
+	if err != nil || noLoginDigest == "" || noLogin.Login != nil || len(noLogin.Accounts) != 2 ||
+		noLogin.Accounts[0].Label != "real-c" || noLogin.Accounts[1].Label != "tester-a" {
+		t.Fatalf("selection without a login method: %+v %q %v", noLogin, noLoginDigest, err)
 	}
 	if _, err := r.setTargetLogin("ARTEX", target.ID, cookieLogin()); err != nil {
 		t.Fatal(err)
@@ -244,8 +247,11 @@ func TestProductRunAccountsSelection(t *testing.T) {
 		}
 	}
 	got, digest, err := r.runAccounts(rec)
-	if err != nil || digest == "" || len(got.Accounts) != 2 || got.Accounts[0].Label != "real-c" || got.Accounts[1].Label != "tester-a" {
+	if err != nil || digest == "" || got.Login == nil || len(got.Accounts) != 2 || got.Accounts[0].Label != "real-c" || got.Accounts[1].Label != "tester-a" {
 		t.Fatalf("selection: %+v %v", got, err)
+	}
+	if digest == noLoginDigest {
+		t.Fatal("adding a login method kept the binding digest")
 	}
 	if r.accountsCurrent(rec, got.Accounts) != nil {
 		t.Fatal("fresh selection not current")
@@ -463,4 +469,60 @@ func TestRemoveRunCredentials(t *testing.T) {
 	}
 	removeRunCredentials(runs, "../escape", auth)
 	removeRunCredentials(runs, "job-1", nil)
+}
+
+// 9칸-1(계약 model-login-attempts §7): 로그인 방식 없이 자격만 등록한 계정도 실행에 결속한다. 정책 인증 칸에는 로그인 방식 ·
+// 규칙 참조가 없고 인증 준비 규칙도 없다(프로그램 로그인 없음, 모델이 직접 로그인). 시험 계정 헤더 모드로 묶인다.
+func TestProductBindsAccountWithoutLoginMethod(t *testing.T) {
+	runtime, _, target, input := accountRunFixture(t)
+	r := runtime.targets
+	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: "u", Password: "seeded-pass-a"}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.clearMaterials()
+	auth := loaded.policy.Auth
+	if auth == nil || auth.Login != nil || auth.RuleRef != "" || !auth.ModelLogin || len(auth.Accounts) != 1 || auth.Accounts[0].Label != "tester-a" ||
+		loaded.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough || len(loaded.productAccounts) != 1 {
+		t.Fatalf("binding without a login method: %+v header=%s accounts=%d", auth, loaded.policy.HeaderMode, len(loaded.productAccounts))
+	}
+	for _, rule := range loaded.policy.Rules {
+		if rule.Purpose == e2proxy.PurposeAuthPrep || rule.Ref == "auth-login" {
+			t.Fatalf("auth preparation rule without a login method: %+v", rule)
+		}
+	}
+	if loaded.materials[auth.Accounts[0].Credential.File] == nil {
+		t.Fatal("bound credential copy missing")
+	}
+}
+
+// 로그인 방식이 있는 결속의 요약은 9칸-1 전과 같은 값이다(이미 만든 결속 디렉터리 이름이 그대로 맞는다).
+func TestRunAccountsDigestKeepsLoginBindings(t *testing.T) {
+	login := diagnosisprep.TargetLogin{Method: "POST", Path: "/login", Format: "form", UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}
+	accounts := []productRunAccount{{Label: "tester-a", CredentialSHA256: strings.Repeat("a", 64)}}
+	got, err := runAccountsDigest(productRunAccounts{Login: &login, Accounts: accounts, PasswordResponse: e2proxy.PasswordResponseModelVisible})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := json.Marshal(struct {
+		Login            diagnosisprep.TargetLogin `json:"login"`
+		Accounts         []productRunAccount       `json:"accounts"`
+		PasswordResponse string                    `json:"password_response,omitempty"`
+	}{login, accounts, e2proxy.PasswordResponseModelVisible})
+	if got != urlSHA(before) {
+		t.Fatal("binding digest with a login method changed")
+	}
+	without, err := runAccountsDigest(productRunAccounts{Accounts: accounts, PasswordResponse: e2proxy.PasswordResponseModelVisible})
+	if err != nil || without == "" || without == got {
+		t.Fatalf("binding digest without a login method: %q %v", without, err)
+	}
+	if _, err := runAccountsDigest(productRunAccounts{Login: &login}); err == nil {
+		t.Fatal("digest without accounts")
+	}
 }
