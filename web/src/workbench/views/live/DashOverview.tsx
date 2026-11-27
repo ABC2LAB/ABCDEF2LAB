@@ -91,8 +91,6 @@ export type SourceRead<T> = { state: "ok"; value: T } | { state: "absent" } | { 
  * 503 으로 답하므로 503 · 409 등은 조회 실패다(#978 머지 뒤 이경준 리뷰 P2: isUnsupported 로 읽으면 실패가 0건으로 보임).
  */
 export const ABSENT_STATUSES: readonly number[] = [404];
-/** 승인 대기 목록은 실행 결속이 없는 점검(403)도 '대기 없음'이다 */
-export const APPROVAL_ABSENT_STATUSES: readonly number[] = [403, 404];
 /** absent 에 든 HTTP 상태는 absent, 그 밖의 오류는 failed. 중단은 그대로 올린다 */
 export async function sourceOf<T>(p: Promise<T>, absent: readonly number[] = ABSENT_STATUSES): Promise<SourceRead<T>> {
   try {
@@ -311,6 +309,17 @@ export function activeInfoOf(reads: {
   };
 }
 
+/**
+ * 진행 중 사용자 승인 점검의 승인 대기를 읽는다. 403 은 실행 결속 없음만이 아니라 작업 조회 일시 실패도 같은 403 이라 가를 수
+ * 없어 조회 실패로 둔다(#989 이동찬 P2). 결속은 작업을 띄울 때(admitRun) 잡혀 진행 중 점검에선 거의 늘 있다.
+ */
+export function readActiveApprovals(
+  task: string,
+  read: (task: string) => Promise<RequestApprovalState> = fetchRequestApprovals,
+): Promise<SourceRead<RequestApprovalState>> {
+  return sourceOf(read(task));
+}
+
 async function readActive(row: URLRunSummary, owner: string, signal: AbortSignal): Promise<ActiveInfo> {
   const status = await sourceOf(readURLStatus(row.id, owner, signal));
   const job = status.state === "ok" ? status.value : null;
@@ -318,9 +327,7 @@ async function readActive(row: URLRunSummary, owner: string, signal: AbortSignal
   const none: SourceRead<never> = { state: "absent" };
   const [flow, approvals, e2] = await Promise.all([
     job?.input.workflow_mode && job.started ? sourceOf(readWorkflow(job)) : none,
-    task && job?.input.workflow_mode === "user_approval_v1"
-      ? sourceOf(fetchRequestApprovals(task), APPROVAL_ABSENT_STATUSES)
-      : none,
+    task && job?.input.workflow_mode === "user_approval_v1" ? readActiveApprovals(task) : none,
     task && job?.started ? sourceOf(getE2Flow(task, undefined, signal)) : none,
   ]);
   return activeInfoOf({ status, flow, approvals, e2 });
@@ -929,6 +936,11 @@ export function pendingTileOf(tally: PendingTally, loaded: boolean): { n: number
 export function scopeUnreadOf(infos: readonly { info: ActiveInfo | undefined }[]): number {
   return infos.filter(({ info }) => info?.jobFailed || info?.flowFailed).length;
 }
+/** '범위 확인 대기' 칸 덧글. 못 읽은 수는 상태 · 탐색 흐름 둘 다 센다(scopeUnreadOf, #989 이동찬 P3) */
+export function scopeSubOf(unread: number): string {
+  const base = "탐색이 끝나 점검할 경로를 골라야 함";
+  return unread ? `${base} · 상태 · 탐색 흐름을 못 읽은 점검 ${unread}건` : base;
+}
 
 /** 통합 대시보드. tabs = 머리 제목 옆 보기 전환(전체 · 점검별) */
 export function DashOverview({ tabs }: { tabs?: ReactNode }) {
@@ -1127,11 +1139,7 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
             <TodoTile
               k="범위 확인 대기"
               n={(active.data || !actRows.length) && (selecting.length > 0 || !statusUnread) ? selecting.length : null}
-              sub={
-                statusUnread
-                  ? `탐색이 끝나 점검할 경로를 골라야 함 · 상태를 못 읽은 점검 ${statusUnread}건`
-                  : "탐색이 끝나 점검할 경로를 골라야 함"
-              }
+              sub={scopeSubOf(statusUnread)}
               onOpen={selecting[0] ? () => open(selecting[0].row, "scope") : undefined}
             />
             <TodoTile

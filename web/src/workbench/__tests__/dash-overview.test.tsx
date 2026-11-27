@@ -15,7 +15,6 @@ import { resetUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext } from "../shell";
 import {
   type ActiveInfo,
-  APPROVAL_ABSENT_STATUSES,
   activeE2Text,
   activeInfoOf,
   cutOf,
@@ -35,6 +34,8 @@ import {
   partialNoteOf,
   pendingTallyOf,
   pendingTileOf,
+  readActiveApprovals,
+  scopeSubOf,
   scopeUnreadOf,
   sourceOf,
   ThinBar,
@@ -284,9 +285,6 @@ it("출처 읽기: 그 경로가 없는 서버(404)만 '없음', 503 · 409 등 
   // 이 서버는 읽기 실패(DB · 봉인 확인 · 승인 기록 읽기)를 503 으로 답한다 — 경로 없음이 아니다
   for (const status of [403, 409, 500, 501, 503])
     expect(await sourceOf(Promise.reject(new ApiError(status, "x")))).toEqual({ state: "failed" });
-  // 승인 대기 목록은 실행 결속이 없는 점검(403)까지 '없음'이다
-  expect(await sourceOf(Promise.reject(new ApiError(403, "x")), APPROVAL_ABSENT_STATUSES)).toEqual({ state: "absent" });
-  expect(await sourceOf(Promise.reject(new ApiError(503, "x")), APPROVAL_ABSENT_STATUSES)).toEqual({ state: "failed" });
   expect(await sourceOf(Promise.reject(new TypeError("fetch failed")))).toEqual({ state: "failed" });
   expect(await sourceOf(Promise.reject(new Error("shape")))).toEqual({ state: "failed" });
   // 중단(다른 점검으로 바뀜)은 실패로 세지 않고 그대로 올린다
@@ -501,33 +499,34 @@ it("제품 판정 목록이 503 이면 확정 0건이 아니라 부분 결과이
   );
 });
 
-it("승인 대기 목록이 503 이면 '승인 대기 0'으로 보이지 않는다 — 403(실행 결속 없음)은 대기가 없는 것이다", async () => {
+it("승인 대기 목록이 403 · 503 이면 '승인 대기 0'으로 보이지 않는다 — 403 은 작업 조회 실패와 결속 없음을 가를 수 없다(#989 이동찬 P2)", async () => {
   const r1 = row("1", "running", "2026-11-27T01:00:00Z");
-  const failed = activeInfoOf({
-    status: absent,
-    flow: absent,
-    approvals: await sourceOf(rejected(503), APPROVAL_ABSENT_STATUSES),
-    e2: absent,
-  });
-  expect(failed.pendingFailed).toBe(true);
-  expect(pendingTileOf(pendingTallyOf([{ row: r1, info: failed }]), true)).toEqual({
-    n: null,
-    note: "못 읽은 점검 1건 · 승인 대기가 있을 수 있음",
-  });
-  const unbound = activeInfoOf({
-    status: absent,
-    flow: absent,
-    approvals: await sourceOf(rejected(403), APPROVAL_ABSENT_STATUSES),
-    e2: absent,
-  });
-  expect(unbound.pendingFailed).toBe(false);
-  expect(pendingTileOf(pendingTallyOf([{ row: r1, info: unbound }]), true)).toEqual({ n: 0, note: null });
+  for (const status of [403, 503]) {
+    const failed = activeInfoOf({
+      status: absent,
+      flow: absent,
+      approvals: await readActiveApprovals("1", () => rejected(status)),
+      e2: absent,
+    });
+    expect(failed.pendingFailed).toBe(true);
+    expect(pendingTileOf(pendingTallyOf([{ row: r1, info: failed }]), true)).toEqual({
+      n: null,
+      note: "못 읽은 점검 1건 · 승인 대기가 있을 수 있음",
+    });
+  }
+  // AI 자동 등 승인 대기를 묻지 않는 점검(absent)은 대기 0 이다
+  const notAsked = activeInfoOf({ status: absent, flow: absent, approvals: absent, e2: absent });
+  expect(notAsked.pendingFailed).toBe(false);
+  expect(pendingTileOf(pendingTallyOf([{ row: r1, info: notAsked }]), true)).toEqual({ n: 0, note: null });
 });
 
 it("탐색 흐름을 못 읽은 진행 중 점검은 '범위 확인 대기'를 확인하지 못한 점검으로 센다", async () => {
   const failed = activeInfoOf({ status: absent, flow: await sourceOf(rejected(503)), approvals: absent, e2: absent });
   expect(failed.flowFailed).toBe(true);
   expect(scopeUnreadOf([{ info: failed }])).toBe(1);
+  // 칸 덧글은 상태 · 탐색 흐름 둘 다 센다는 뜻으로 쓴다(#989 이동찬 P3)
+  expect(scopeSubOf(1)).toBe("탐색이 끝나 점검할 경로를 골라야 함 · 상태 · 탐색 흐름을 못 읽은 점검 1건");
+  expect(scopeSubOf(0)).toBe("탐색이 끝나 점검할 경로를 골라야 함");
   // 흐름이 아직 시작 전(읽은 값이 null)인 점검은 못 읽은 것이 아니다
   const notStarted = activeInfoOf({
     status: absent,
