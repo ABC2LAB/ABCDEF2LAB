@@ -83,13 +83,8 @@ func selectedStoredComparisons(c CandidateSelectedContext, seal db.SealCheckReco
 	}
 	var comparisons []candidateverify.StoredObservationV2
 	for _, row := range c.Observations {
-		source, obs := row.Source, row.Source.Observation
-		if source.CallRef == primary.CallRef || obs.AttemptRef == base.AttemptRef ||
-			obs.Method != base.Method || obs.Endpoint != base.Endpoint || obs.RuleRef != base.RuleRef ||
-			!candidateRequestContextComparable(base, obs) ||
-			!obs.ExactFunction || source.ScopeDigest != primary.ScopeDigest ||
-			source.PolicyRevision != primary.PolicyRevision || row.HeaderMode != c.OriginalObservation.HeaderMode ||
-			obs.Sequence <= c.Candidate.SaveFence.AttemptHighWater {
+		// 분석 입력의 관찰 관계(candidateAnalysisRelation)도 같은 조건을 쓴다.
+		if !storedComparisonEligible(c, *c.OriginalObservation, row) {
 			continue
 		}
 		if !candidateverify.ValidSelectedStoredObservation(c.TaskID, c.RunRef, row) || !selectedObservationSealed(row, seal) {
