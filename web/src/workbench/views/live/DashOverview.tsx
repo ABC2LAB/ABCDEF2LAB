@@ -13,6 +13,7 @@
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
+import { ApiError } from "@/lib/diagnosis/api";
 import { activeURLRun, endedURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
 import { readURLStatus, type URLDiagnosisJob, urlReasonLabels } from "@/lib/diagnosis/diagnosis-url";
 import { diagnosticOutcome } from "@/lib/diagnosis/diagnostic-results";
@@ -23,9 +24,9 @@ import { entrySeverity } from "@/lib/diagnosis/severity";
 
 import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
-import { fetchRemediation, fetchRequestApprovals } from "../../live/api";
+import { fetchRemediation, fetchRequestApprovals, type RequestApprovalState } from "../../live/api";
 import { useHiddenRunIDs } from "../../live/hiddenRuns";
-import { dateTimeOf, fmtDur, isUnsupported, sevKey } from "../../live/map";
+import { dateTimeOf, fmtDur, sevKey } from "../../live/map";
 import { fetchProductVerdicts, type ProductVerdictList, type ProductVerdictShown } from "../../live/productVerdicts";
 import { useRunInput } from "../../live/runInput";
 import { runDurationSec, runElapsedSec } from "../../live/runTiming";
@@ -73,8 +74,11 @@ const sevText = (k: SevF) => (k === "none" ? "위험도 미평가" : SEVL[k]);
 
 /** 전송 통제 수(허용은 응답까지 받은 것만 — 결과 불명 · 송신 실패와 겹쳐 세지 않게, #917 리뷰) */
 type E2Sum = { allowed: number; denied: number; unsupported: number; unsure: number };
-/** 전송 기록 읽기: 수 · invalid(검증 실패) · absent(기록이 없음 — 그 경로가 없거나 아직 없음) · failed(조회 실패) */
-type E2Read = E2Sum | "invalid" | "absent" | "failed";
+/**
+ * 전송 기록 읽기: 수 · none(저널 없음 — E②를 잡기 전이거나 잡지 않고 끝남, 진단 요청 없음) · invalid(검증 실패) · absent(기록이
+ * 없음 — 그 경로가 없거나 아직 없음) · failed(조회 실패)
+ */
+export type E2Read = E2Sum | "none" | "invalid" | "absent" | "failed";
 const isE2Sum = (x: E2Read): x is E2Sum => typeof x === "object";
 
 /**
@@ -82,13 +86,20 @@ const isE2Sum = (x: E2Read): x is E2Sum => typeof x === "object";
  * 보이지 않으려는 것이다(절대 규칙 5, #978 이동찬 · 이경준 리뷰).
  */
 export type SourceRead<T> = { state: "ok"; value: T } | { state: "absent" } | { state: "failed" };
-/** 미지원 응답(isUnsupported: 403 · 404 · 409 · 501 · 503)은 absent, 그 밖의 오류는 failed. 중단은 그대로 올린다 */
-export async function sourceOf<T>(p: Promise<T>): Promise<SourceRead<T>> {
+/**
+ * '그 경로가 없음'으로 읽는 HTTP 상태: 그 경로가 없는 서버(404)뿐이다. 이 서버는 읽기 실패(DB · 봉인 확인 · 승인 기록 읽기)를
+ * 503 으로 답하므로 503 · 409 등은 조회 실패다(#978 머지 뒤 이경준 리뷰 P2: isUnsupported 로 읽으면 실패가 0건으로 보임).
+ */
+export const ABSENT_STATUSES: readonly number[] = [404];
+/** 승인 대기 목록은 실행 결속이 없는 점검(403)도 '대기 없음'이다 */
+export const APPROVAL_ABSENT_STATUSES: readonly number[] = [403, 404];
+/** absent 에 든 HTTP 상태는 absent, 그 밖의 오류는 failed. 중단은 그대로 올린다 */
+export async function sourceOf<T>(p: Promise<T>, absent: readonly number[] = ABSENT_STATUSES): Promise<SourceRead<T>> {
   try {
     return { state: "ok", value: await p };
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
-    return isUnsupported(error) ? { state: "absent" } : { state: "failed" };
+    return error instanceof ApiError && absent.includes(error.status) ? { state: "absent" } : { state: "failed" };
   }
 }
 /** 한 번에 limit 개씩만 돌린다(결과 순서는 입력 순서) */
@@ -162,9 +173,10 @@ export function usableStat(row: Pick<URLRunSummary, "state">, run: EndedRun | un
   return cutOf(row.state) && total === 0 ? null : st;
 }
 
-function e2SumOf(read: SourceRead<E2Flow>): E2Read {
+export function e2ReadOf(read: SourceRead<E2Flow>): E2Read {
   if (read.state !== "ok") return read.state;
   const flow = read.value;
+  if (flow.journal === "none") return "none";
   if (flow.journal !== "verified") return "invalid";
   const c = flow.counts;
   const blocked = c.denied + c.unsupported;
@@ -225,7 +237,7 @@ export function endedStatOf(
     allowed: pvBy("allowed"),
     sev,
     items,
-    e2: e2SumOf(flow),
+    e2: e2ReadOf(flow),
     pv: pv.state,
   };
 }
@@ -248,10 +260,19 @@ async function readEndedRun(row: URLRunSummary, owner: string | null, signal: Ab
 }
 
 /** 끝난 점검 표 '전송 기록' 칸: 감사 기록 검증 결과(기록이 없으면 —, 조회에 실패했으면 못 읽음) */
-function journalText(e2: E2Read): string {
+export function journalText(e2: E2Read): string {
   if (e2 === "absent") return "—";
+  if (e2 === "none") return "진단 요청 없음";
   if (e2 === "failed") return "못 읽음";
   return e2 === "invalid" ? "검증 실패" : "검증됨";
+}
+
+/** 진행 중 점검 줄의 전송 통제 글(기록이 없으면 null) */
+export function activeE2Text(e2: E2Read): string | null {
+  if (isE2Sum(e2)) return `허용 ${e2.allowed} · 막음 ${e2Blocked(e2)}`;
+  if (e2 === "none") return "진단 요청 전";
+  if (e2 === "invalid") return "전송 기록 검증 실패";
+  return e2 === "failed" ? "전송 기록 못 읽음" : null;
 }
 
 /** 진행 중 점검 하나: 상태 · 탐색 흐름(단계) · 승인 대기 · 전송 통제 */
@@ -263,27 +284,46 @@ export type ActiveInfo = {
   pending: RequestApproval[] | null;
   /** 사용자 승인 모드인데 승인 대기 조회에 실패함 */
   pendingFailed: boolean;
+  /** 탐색 흐름 조회 실패(범위 확인 대기인지 모른다) */
+  flowFailed: boolean;
   e2: E2Read;
 };
+
+/** 진행 중 점검 하나의 읽은 결과를 모은다(읽기는 readActive) */
+export function activeInfoOf(reads: {
+  status: SourceRead<URLDiagnosisJob>;
+  flow: SourceRead<WorkflowSnapshot | null>;
+  approvals: SourceRead<Pick<RequestApprovalState, "approvals">>;
+  e2: SourceRead<E2Flow>;
+}): ActiveInfo {
+  const { status, flow, approvals, e2 } = reads;
+  return {
+    job: status.state === "ok" ? status.value : null,
+    jobFailed: status.state === "failed",
+    flow: flow.state === "ok" ? flow.value : null,
+    pending:
+      approvals.state === "ok" && approvals.value.approvals
+        ? approvals.value.approvals.filter((a) => a.state === "pending")
+        : null,
+    pendingFailed: approvals.state === "failed",
+    flowFailed: flow.state === "failed",
+    e2: e2ReadOf(e2),
+  };
+}
 
 async function readActive(row: URLRunSummary, owner: string, signal: AbortSignal): Promise<ActiveInfo> {
   const status = await sourceOf(readURLStatus(row.id, owner, signal));
   const job = status.state === "ok" ? status.value : null;
   const task = row.task_id ?? job?.task_id ?? null;
   const none: SourceRead<never> = { state: "absent" };
-  const [flow, ap, e2] = await Promise.all([
-    job?.input.workflow_mode && job.started ? readWorkflow(job).catch(() => null) : Promise.resolve(null),
-    task && job?.input.workflow_mode === "user_approval_v1" ? sourceOf(fetchRequestApprovals(task)) : none,
+  const [flow, approvals, e2] = await Promise.all([
+    job?.input.workflow_mode && job.started ? sourceOf(readWorkflow(job)) : none,
+    task && job?.input.workflow_mode === "user_approval_v1"
+      ? sourceOf(fetchRequestApprovals(task), APPROVAL_ABSENT_STATUSES)
+      : none,
     task && job?.started ? sourceOf(getE2Flow(task, undefined, signal)) : none,
   ]);
-  return {
-    job,
-    jobFailed: status.state === "failed",
-    flow,
-    pending: ap.state === "ok" ? ap.value.approvals.filter((a) => a.state === "pending") : null,
-    pendingFailed: ap.state === "failed",
-    e2: e2SumOf(e2),
-  };
+  return activeInfoOf({ status, flow, approvals, e2 });
 }
 
 /**
@@ -803,19 +843,21 @@ export function partialNoteOf(groups: readonly TargetGroup[]): string | null {
 }
 
 /**
- * 끝난 점검의 전송 기록 집계. 분모(total)는 끝난 점검 수다. verified = 검증된 기록, invalid = 검증 실패, unread = 조회 실패
+ * 끝난 점검의 전송 기록 집계. 분모(total)는 끝난 점검 수다. verified = 검증된 기록, none = 저널 없음(진단 요청 없음 — 검증으로
+ * 세지 않음, #978 머지 뒤 이경준 리뷰 P2), invalid = 검증 실패, unread = 조회 실패
  * (결과를 통째로 못 읽은 점검 포함), absent = 기록이 없음(결과 없이 끝남 포함). loaded = 하나라도 읽었는지(#978 이경준 P2-3)
  */
 export type E2Tally = {
   total: number;
   verified: { row: URLRunSummary; e2: E2Sum }[];
+  none: number;
   invalid: number;
   unread: number;
   absent: number;
   loaded: boolean;
 };
 export function e2TallyOf(rows: readonly URLRunSummary[], runOf: (r: URLRunSummary) => EndedRun | undefined): E2Tally {
-  const tally: E2Tally = { total: rows.length, verified: [], invalid: 0, unread: 0, absent: 0, loaded: false };
+  const tally: E2Tally = { total: rows.length, verified: [], none: 0, invalid: 0, unread: 0, absent: 0, loaded: false };
   for (const row of rows) {
     const run = runOf(row);
     if (!run) continue;
@@ -823,13 +865,17 @@ export function e2TallyOf(rows: readonly URLRunSummary[], runOf: (r: URLRunSumma
     let e2: E2Read = run.stat === "error" ? "failed" : "absent";
     if (isStat(run.stat)) e2 = run.stat.e2;
     if (isE2Sum(e2)) tally.verified.push({ row, e2 });
+    else if (e2 === "none") tally.none += 1;
     else if (e2 === "invalid") tally.invalid += 1;
     else if (e2 === "failed") tally.unread += 1;
     else tally.absent += 1;
   }
   return tally;
 }
-/** 운영 상태의 전송 기록 칩. 끝난 점검을 모두 읽고 모두 검증됐을 때만 초록이다 */
+/**
+ * 운영 상태의 전송 기록 칩. 끝난 점검을 모두 읽고 모두 검증됐을 때만 초록이다. 저널 없음(진단 요청 없음)은 검증으로 세지 않는다 —
+ * 취득 기록이 생기기 전 판의 회차는 지워진 저널과 가르지 못한다(계약 workbench-live-data §4 한계)
+ */
 export function e2ChipOf(tally: E2Tally): { tone: "ok" | "warn" | "unk"; text: string } {
   if (!tally.loaded || !tally.total) return { tone: "unk", text: "전송 기록 읽기 전" };
   const base = tally.invalid
@@ -837,6 +883,7 @@ export function e2ChipOf(tally: E2Tally): { tone: "ok" | "warn" | "unk"; text: s
     : `전송 기록 검증 ${tally.verified.length} / ${tally.total}`;
   const text = [
     base,
+    tally.none ? `진단 요청 없음 ${tally.none}` : null,
     tally.unread ? `못 읽음 ${tally.unread}` : null,
     tally.absent ? `기록 없음 ${tally.absent}` : null,
   ]
@@ -844,6 +891,18 @@ export function e2ChipOf(tally: E2Tally): { tone: "ok" | "warn" | "unk"; text: s
     .join(" · ");
   if (tally.invalid) return { tone: "warn", text };
   return { tone: tally.verified.length === tally.total ? "ok" : "unk", text };
+}
+
+/** 전송 통제 카드 머리: 끝난 점검 수 중 검증된 수, 진단 요청 없음 · 검증 실패 · 못 읽음 수 */
+export function e2CardSubOf(tally: E2Tally): string {
+  return [
+    `진단 요청 · 끝난 점검 ${tally.total}건 중 ${tally.verified.length}건`,
+    tally.none ? `진단 요청 없음 ${tally.none}건` : null,
+    tally.invalid ? `검증 실패 ${tally.invalid}건 뺌` : null,
+    tally.unread ? `못 읽음 ${tally.unread}건 뺌` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /**
@@ -864,6 +923,11 @@ export function pendingTileOf(tally: PendingTally, loaded: boolean): { n: number
   return tally.pending.length
     ? { n: tally.pending.length, note: `못 읽은 점검 ${tally.unread}건` }
     : { n: null, note: `못 읽은 점검 ${tally.unread}건 · 승인 대기가 있을 수 있음` };
+}
+
+/** '범위 확인 대기'를 확인하지 못한 진행 중 점검 수(상태나 탐색 흐름을 못 읽음, #978 머지 뒤 이경준 리뷰 P3) */
+export function scopeUnreadOf(infos: readonly { info: ActiveInfo | undefined }[]): number {
+  return infos.filter(({ info }) => info?.jobFailed || info?.flowFailed).length;
 }
 
 /** 통합 대시보드. tabs = 머리 제목 옆 보기 전환(전체 · 점검별) */
@@ -924,7 +988,6 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
   // ── 전송 통제(최근 끝난 점검 전부 — 판정이 아니라 보낸 요청이라 겹쳐 세지 않음) ──
   const e2Tally = e2TallyOf(doneRows, runOf);
   const e2Ok = e2Tally.verified;
-  const e2Invalid = e2Tally.invalid;
   const e2Total = (k: keyof E2Sum) => e2Ok.reduce((n, x) => n + x.e2[k], 0);
   const e2All = E2_PARTS.reduce((n, [k]) => n + e2Total(k), 0);
 
@@ -953,8 +1016,8 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
   else if (pendingTile.note) pendingLead = null;
   const pendingSub = [pendingLead, pendingTile.note].filter(Boolean).join(" · ");
   const selecting = infos.filter(({ info }) => info?.flow?.stage === "awaiting_selection");
-  /** 상태를 못 읽어 단계 · 승인 만료를 확인하지 못한 진행 중 점검 수 */
-  const statusUnread = infos.filter(({ info }) => info?.jobFailed).length;
+  /** 상태나 탐색 흐름을 못 읽어 단계 · 승인 만료를 확인하지 못한 진행 중 점검 수 */
+  const statusUnread = scopeUnreadOf(infos);
   const approvalIssue = rows.filter(
     (r) =>
       r.action_required &&
@@ -1240,18 +1303,7 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
             </Card>
 
             {/* 전송 통제: 진단 요청의 허용 · 막음(E²) — 우리만 보이는 통제 지표 */}
-            <Card
-              id="ovE2H"
-              title="전송 통제"
-              sub={[
-                `진단 요청 · 끝난 점검 ${e2Tally.total}건 중 ${e2Ok.length}건`,
-                e2Invalid ? `검증 실패 ${e2Invalid}건 뺌` : null,
-                e2Tally.unread ? `못 읽음 ${e2Tally.unread}건 뺌` : null,
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-              wide="w5"
-            >
+            <Card id="ovE2H" title="전송 통제" sub={e2CardSubOf(e2Tally)} wide="w5">
               <div className={s["ov-hero"]}>
                 <span className={s["ov-hn"]}>{e2Ok.length ? e2All : "—"}</span>
                 <span className={s["ov-hl"]}>진단 요청</span>
@@ -1388,12 +1440,7 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
                           ))}
                         </span>
                         <span className={s["ov-mut"]}>
-                          {[
-                            el !== null ? `경과 ${fmtDur(el)}` : null,
-                            e2 && isE2Sum(e2) ? `허용 ${e2.allowed} · 막음 ${e2Blocked(e2)}` : null,
-                            e2 === "invalid" ? "전송 기록 검증 실패" : null,
-                            e2 === "failed" ? "전송 기록 못 읽음" : null,
-                          ]
+                          {[el !== null ? `경과 ${fmtDur(el)}` : null, e2 ? activeE2Text(e2) : null]
                             .filter(Boolean)
                             .join(" · ") || "—"}
                         </span>

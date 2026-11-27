@@ -15,20 +15,27 @@ import { resetUrlRuns } from "../live/urlRunList";
 import { type Shell, ShellContext } from "../shell";
 import {
   type ActiveInfo,
+  APPROVAL_ABSENT_STATUSES,
+  activeE2Text,
+  activeInfoOf,
   cutOf,
   E2_PARTS,
   type EndedRun,
   type EndedStat,
+  e2CardSubOf,
   e2ChipOf,
+  e2ReadOf,
   e2TallyOf,
   endedStatOf,
   groupTrend,
   hostParts,
+  journalText,
   mapLimit,
   needsRetry,
   partialNoteOf,
   pendingTallyOf,
   pendingTileOf,
+  scopeUnreadOf,
   sourceOf,
   ThinBar,
   TrendChart,
@@ -260,7 +267,7 @@ const e2Counts = (attempts: number, denied = 0) => ({
   withheld: 0,
   calls: attempts,
 });
-const flowOf = (journal: "verified" | "invalid", attempts = 0) =>
+const flowOf = (journal: "verified" | "invalid" | "none", attempts = 0) =>
   ({
     format: "abc2lab.e2-flow-view/v1",
     journal,
@@ -271,11 +278,15 @@ const flowOf = (journal: "verified" | "invalid", attempts = 0) =>
     calls: [],
   }) as never;
 
-it("출처 읽기: 미지원(403 · 404 · 409 · 501 · 503)은 '없음', 그 밖의 실패는 '조회 실패'로 가른다(이동찬 P2)", async () => {
+it("출처 읽기: 그 경로가 없는 서버(404)만 '없음', 503 · 409 등 나머지는 '조회 실패'로 가른다(이동찬 P2 · 이경준 #978 머지 뒤 P2)", async () => {
   expect(await sourceOf(Promise.resolve(7))).toEqual({ state: "ok", value: 7 });
-  for (const status of [403, 404, 409, 501, 503])
-    expect(await sourceOf(Promise.reject(new ApiError(status, "x")))).toEqual({ state: "absent" });
-  expect(await sourceOf(Promise.reject(new ApiError(500, "x")))).toEqual({ state: "failed" });
+  expect(await sourceOf(Promise.reject(new ApiError(404, "x")))).toEqual({ state: "absent" });
+  // 이 서버는 읽기 실패(DB · 봉인 확인 · 승인 기록 읽기)를 503 으로 답한다 — 경로 없음이 아니다
+  for (const status of [403, 409, 500, 501, 503])
+    expect(await sourceOf(Promise.reject(new ApiError(status, "x")))).toEqual({ state: "failed" });
+  // 승인 대기 목록은 실행 결속이 없는 점검(403)까지 '없음'이다
+  expect(await sourceOf(Promise.reject(new ApiError(403, "x")), APPROVAL_ABSENT_STATUSES)).toEqual({ state: "absent" });
+  expect(await sourceOf(Promise.reject(new ApiError(503, "x")), APPROVAL_ABSENT_STATUSES)).toEqual({ state: "failed" });
   expect(await sourceOf(Promise.reject(new TypeError("fetch failed")))).toEqual({ state: "failed" });
   expect(await sourceOf(Promise.reject(new Error("shape")))).toEqual({ state: "failed" });
   // 중단(다른 점검으로 바뀜)은 실패로 세지 않고 그대로 올린다
@@ -316,6 +327,7 @@ it("승인 대기 조회가 실패하면 '승인 대기 0'으로 보이지 않�
     flow: null,
     pending: null,
     pendingFailed: false,
+    flowFailed: false,
     e2: "absent",
     ...over,
   });
@@ -406,4 +418,123 @@ it("끝난 점검 읽기는 한 번에 정해진 수만 보낸다(이경준 P3)"
   });
   expect(out).toEqual([2, 4, 6, 8, 10, 12, 14, 16, 18]);
   expect(peak).toBe(3);
+});
+
+// ── 저널 없음(journal "none", #983): E②를 잡기 전이거나 잡지 않고 끝난 점검. 검증 실패가 아니라 진단 요청 없음이다 ──
+
+const endedWith = (journal: "verified" | "invalid" | "none", attempts = 0) =>
+  run(
+    endedStatOf(
+      { task_id: 1, entries: [] } as never,
+      { state: "absent" },
+      { state: "ok", value: flowOf(journal, attempts) },
+    ),
+  );
+
+it("끝난 점검의 저널 없음은 '진단 요청 없음'으로 따로 센다 — 검증으로 세지 않아 초록이 아니다(#978 머지 뒤 이경준 리뷰 P2)", () => {
+  const rows = [row("2", "completed", "2026-11-27T01:00:00Z"), row("1", "completed", "2026-11-26T01:00:00Z")];
+  const runs = new Map<string, EndedRun>([
+    ["2", endedWith("none")],
+    ["1", endedWith("verified", 3)],
+  ]);
+  const tally = e2TallyOf(rows, (r) => runs.get(r.id));
+  expect([tally.total, tally.verified.length, tally.none, tally.invalid]).toEqual([2, 1, 1, 0]);
+  // 취득 기록이 생기기 전 판의 회차는 지워진 저널과 none 을 가르지 못하므로(계약 §4 한계) '검증됨'으로 세지 않는다
+  expect(e2ChipOf(tally)).toEqual({ tone: "unk", text: "전송 기록 검증 1 / 2 · 진단 요청 없음 1" });
+  expect(e2CardSubOf(tally)).toBe("진단 요청 · 끝난 점검 2건 중 1건 · 진단 요청 없음 1건");
+  expect(journalText(e2ReadOf({ state: "ok", value: flowOf("none") }))).toBe("진단 요청 없음");
+});
+
+it("검증 실패는 저널이 검증되지 않은 것(invalid)만이다 — 저널 없음과 섞지 않는다", () => {
+  const rows = [row("2", "completed", "2026-11-27T01:00:00Z"), row("1", "completed", "2026-11-26T01:00:00Z")];
+  const runs = new Map<string, EndedRun>([
+    ["2", endedWith("none")],
+    ["1", endedWith("invalid")],
+  ]);
+  const tally = e2TallyOf(rows, (r) => runs.get(r.id));
+  expect([tally.verified.length, tally.none, tally.invalid]).toEqual([0, 1, 1]);
+  expect(e2ChipOf(tally)).toEqual({ tone: "warn", text: "전송 기록 검증 실패 1 / 2 · 진단 요청 없음 1" });
+  expect(journalText(e2ReadOf({ state: "ok", value: flowOf("invalid") }))).toBe("검증 실패");
+});
+
+it("전송 통제 카드 머리는 끝난 점검 수 · 검증된 수 · 진단 요청 없음 · 뺀 것을 적는다", () => {
+  const rows = ["5", "4", "3", "2", "1"].map((id) => row(id, "completed", `2026-11-2${id}T01:00:00Z`));
+  const runs = new Map<string, EndedRun>([
+    ["5", endedWith("verified", 1)],
+    ["4", endedWith("verified", 2)],
+    ["3", endedWith("verified", 3)],
+    ["2", endedWith("none")],
+    ["1", endedWith("none")],
+  ]);
+  expect(e2CardSubOf(e2TallyOf(rows, (r) => runs.get(r.id)))).toBe(
+    "진단 요청 · 끝난 점검 5건 중 3건 · 진단 요청 없음 2건",
+  );
+  runs.set("2", endedWith("invalid"));
+  runs.set("1", run("error"));
+  expect(e2CardSubOf(e2TallyOf(rows, (r) => runs.get(r.id)))).toBe(
+    "진단 요청 · 끝난 점검 5건 중 3건 · 검증 실패 1건 뺌 · 못 읽음 1건 뺌",
+  );
+});
+
+it("진행 중 점검의 저널 없음은 '진단 요청 전'이고 '검증 실패'가 보이지 않는다", () => {
+  const none = activeE2Text(e2ReadOf({ state: "ok", value: flowOf("none") }));
+  expect(none).toBe("진단 요청 전");
+  expect(none ?? "").not.toMatch(/검증 실패/);
+  // 검증 실패 · 검증된 기록은 지금처럼
+  expect(activeE2Text(e2ReadOf({ state: "ok", value: flowOf("invalid") }))).toBe("전송 기록 검증 실패");
+  expect(activeE2Text(e2ReadOf({ state: "ok", value: flowOf("verified", 2) }))).toBe("허용 2 · 막음 0");
+});
+
+// ── #978 머지 뒤 리뷰(이경준): 503 은 조회 실패 · 흐름을 못 읽은 점검 ──
+
+const absent = { state: "absent" } as const;
+const rejected = (status: number) => Promise.reject(new ApiError(status, "x"));
+
+it("제품 판정 목록이 503 이면 확정 0건이 아니라 부분 결과이고 다시 읽는다", async () => {
+  const pv = await sourceOf(rejected(503));
+  const st = endedStatOf({ task_id: 1, entries: [] } as never, pv, absent);
+  expect(st.pv).toBe("failed");
+  expect(needsRetry(run(st))).toBe(true);
+  const rows = [row("1", "completed", "2026-11-27T01:00:00Z")];
+  expect(partialNoteOf(targetGroupsOf(rows, () => run(st)).groups)).toBe(
+    "제품 판정을 못 읽은 대상 1곳 — 합계는 부분 결과",
+  );
+});
+
+it("승인 대기 목록이 503 이면 '승인 대기 0'으로 보이지 않는다 — 403(실행 결속 없음)은 대기가 없는 것이다", async () => {
+  const r1 = row("1", "running", "2026-11-27T01:00:00Z");
+  const failed = activeInfoOf({
+    status: absent,
+    flow: absent,
+    approvals: await sourceOf(rejected(503), APPROVAL_ABSENT_STATUSES),
+    e2: absent,
+  });
+  expect(failed.pendingFailed).toBe(true);
+  expect(pendingTileOf(pendingTallyOf([{ row: r1, info: failed }]), true)).toEqual({
+    n: null,
+    note: "못 읽은 점검 1건 · 승인 대기가 있을 수 있음",
+  });
+  const unbound = activeInfoOf({
+    status: absent,
+    flow: absent,
+    approvals: await sourceOf(rejected(403), APPROVAL_ABSENT_STATUSES),
+    e2: absent,
+  });
+  expect(unbound.pendingFailed).toBe(false);
+  expect(pendingTileOf(pendingTallyOf([{ row: r1, info: unbound }]), true)).toEqual({ n: 0, note: null });
+});
+
+it("탐색 흐름을 못 읽은 진행 중 점검은 '범위 확인 대기'를 확인하지 못한 점검으로 센다", async () => {
+  const failed = activeInfoOf({ status: absent, flow: await sourceOf(rejected(503)), approvals: absent, e2: absent });
+  expect(failed.flowFailed).toBe(true);
+  expect(scopeUnreadOf([{ info: failed }])).toBe(1);
+  // 흐름이 아직 시작 전(읽은 값이 null)인 점검은 못 읽은 것이 아니다
+  const notStarted = activeInfoOf({
+    status: absent,
+    flow: { state: "ok", value: null },
+    approvals: absent,
+    e2: absent,
+  });
+  expect(notStarted.flowFailed).toBe(false);
+  expect(scopeUnreadOf([{ info: notStarted }])).toBe(0);
 });
