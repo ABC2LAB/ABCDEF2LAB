@@ -386,3 +386,32 @@ it("보는 중에 회차가 끝나면 한 번 더 읽고 멈춘다", async () =>
   });
   expect(apiFetch).toHaveBeenCalledTimes(2);
 });
+
+it("끝난 회차의 검증된 저널은 끝 페이지까지 읽으면 다시 읽지 않는다(#994 윤재상 P3)", async () => {
+  vi.useFakeTimers();
+  useUrl.setState({ job: { task_id: "42", state: "completed" } as never });
+  vi.mocked(apiFetch).mockResolvedValue(e2Flow());
+  render(at());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(screen.getByText("a".repeat(32))).toBeInTheDocument();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30000);
+  });
+  expect(apiFetch).toHaveBeenCalledTimes(1);
+});
+
+it("진행 중 회차의 검증된 저널은 지금처럼 2초마다 다시 읽는다", async () => {
+  vi.useFakeTimers();
+  useUrl.setState({ job: { task_id: "42", state: "running" } as never });
+  vi.mocked(apiFetch).mockResolvedValue(e2Flow());
+  render(at());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  expect(apiFetch).toHaveBeenCalledTimes(2);
+});

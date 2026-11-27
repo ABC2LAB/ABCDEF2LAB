@@ -87,7 +87,8 @@ export function UrlE2FlowLive() {
         } else if (next.journal === "none") {
           // 저널 없음(진단 요청 전)은 404 대기와 같은 간격으로 다시 읽는다. 끝난 회차는 멈춘다
           if (!ended) timer = setTimeout(() => void poll(), PRE_DIAGNOSIS_RETRY_MS);
-        } else {
+        } else if (!(ended && next.journal === "verified")) {
+          // 끝난 회차의 검증된 저널은 더 늘지 않으므로 끝 페이지까지 읽으면 멈춘다(#994 윤재상 P3). invalid 는 지금처럼 다시 확인한다
           timer = setTimeout(() => void poll(), FLOW_RETRY_MS);
         }
       } catch (error) {
