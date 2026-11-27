@@ -228,12 +228,12 @@ func (r *productTargetRegistry) listAccounts(principal, id string) ([]diagnosisp
 	return out, nil
 }
 
-// 계정 API 응답 시점의 자격과 로그인 설정을 같은 잠금 안에서 읽는다.
+// 계정 API 응답 시점의 자격을 같은 잠금 안에서 읽는다. login_method_missing은 9칸-1부터 내지 않는다: 자격이 있으면 로그인
+// 방식(9칸)이 없어도 결속하고 모델이 직접 로그인하므로 "로그인 방식이 없어 익명으로 점검"이 맞지 않는다(계약
+// workbench-live-data §계정). 실제 로그인 결과는 회차의 account_auth다. 칸을 읽는 화면 정리는 9칸-2다.
 func (r *productTargetRegistry) accountResponse(rec productTargetRecord, st *productAccountState) diagnosisprep.ProductAccount {
 	view := diagnosisprep.ProductAccount{Label: st.label, RegisteredBy: st.registeredBy, RegisteredAt: st.registeredAt}
 	view.CredentialConfigured = r.credentialConfigured(rec.Target.ID, st)
-	_, hasLogin := r.logins[rec.Target.ID]
-	view.LoginMethodMissing = view.CredentialConfigured && !hasLogin
 	return view
 }
 

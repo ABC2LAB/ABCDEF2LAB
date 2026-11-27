@@ -203,7 +203,7 @@ func TestURLAuthRuleValid(t *testing.T) {
 }
 
 // 실행 고르기: 자격이 없는 계정은 고르지 않는다. 로그인 방식(9칸)이 없어도 자격이 있으면 결속하고(9칸-1, 계약
-// model-login-attempts §7) 로그인 방식 칸은 비운다. 로그인 방식을 넣으면 같은 계정이 로그인 방식과 함께 결속되고 요약이
+// model-login-attempts §7) 로그인 방식 칸은 비운다. 계정 응답은 login_method_missing을 싣지 않는다. 로그인 방식을 넣으면 같은 계정이 로그인 방식과 함께 결속되고 요약이
 // 바뀐다. 시험 표시는 보지 않는다(분류 없음, 2026-11-26). 자격을 바꾸면 요약이 바뀌고 결속한 실행은 멈춘다.
 func TestProductRunAccountsSelection(t *testing.T) {
 	r, _, target := accountTestTarget(t, true)
@@ -215,8 +215,11 @@ func TestProductRunAccountsSelection(t *testing.T) {
 	}
 	for _, label := range []string{"tester-a", "real-c"} {
 		account, err := r.setAccountCredential("ARTEX", target.ID, label, diagnosisprep.AccountCredential{Username: "u", Password: "p-" + label})
-		if err != nil || !account.CredentialConfigured || !account.LoginMethodMissing {
-			t.Fatal("자격 등록 응답에서 로그인 방식 미설정 상태 누락", err)
+		if err != nil || !account.CredentialConfigured || account.LoginMethodMissing {
+			t.Fatal("자격 등록 응답: 자격 있음 · 로그인 방식 미설정 칸 없음(9칸-1)", err)
+		}
+		if raw, _ := json.Marshal(account); strings.Contains(string(raw), "login_method_missing") {
+			t.Fatalf("자격 등록 응답에 login_method_missing: %s", raw)
 		}
 	}
 	// 시험 계정 표시 없이 목록이 자격 · 로그인 방식 상태를 그대로 보인다(계정 분류 폐지, 2026-11-26)
@@ -224,9 +227,11 @@ func TestProductRunAccountsSelection(t *testing.T) {
 	if err != nil || len(listed) != 3 {
 		t.Fatal("계정 목록 조회 실패", err)
 	}
+	// 로그인 방식 없이 자격만 있는 계정도 목록에 login_method_missing을 싣지 않는다(9칸-1: 결속해서 모델이 직접 로그인한다)
 	for _, account := range listed {
-		if account.LoginMethodMissing != (account.Label != "tester-b") {
-			t.Fatal("자격과 로그인 설정 상태 불일치", account.Label)
+		raw, _ := json.Marshal(account)
+		if account.LoginMethodMissing || strings.Contains(string(raw), "login_method_missing") || account.CredentialConfigured != (account.Label != "tester-b") {
+			t.Fatalf("자격 상태 불일치 또는 login_method_missing: %s", raw)
 		}
 	}
 	noLogin, noLoginDigest, err := r.runAccounts(rec)
