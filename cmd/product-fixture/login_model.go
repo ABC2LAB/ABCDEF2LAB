@@ -140,7 +140,9 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 			turn.explore++
 			switch turn.explore {
 			case 1, 4:
-				tool("mcp__explore_browser__browser_navigate", "wl-explore-page", map[string]any{"url": target + "/ui"})
+				// VAmPI's /ui redirects to its internal HTTP origin. Keep the
+				// browser on the approved HTTPS origin before relative fetches.
+				tool("mcp__explore_browser__browser_navigate", "wl-explore-page", map[string]any{"url": target + "/openapi.json"})
 			case 2, 5:
 				index := 0
 				if turn.explore == 5 {

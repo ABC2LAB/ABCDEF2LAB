@@ -110,7 +110,8 @@ func TestWorkflowExploreLoginModelUsesBrowserAndSwitch(t *testing.T) {
 		if name != expected {
 			t.Fatalf("step %d tool %q want %q", i, name, expected)
 		}
-		if i == 1 && (!strings.Contains(args, "user-a") || strings.Contains(args, "user-b")) ||
+		if (i == 0 || i == 3) && !strings.Contains(args, "https://vampi.test:9443/openapi.json") ||
+			i == 1 && (!strings.Contains(args, "user-a") || strings.Contains(args, "user-b")) ||
 			i == 2 && !strings.Contains(args, `"account":"tester-b"`) ||
 			i == 4 && (!strings.Contains(args, "user-b") || strings.Contains(args, "user-a")) {
 			t.Fatalf("step %d account sequence invalid", i)
