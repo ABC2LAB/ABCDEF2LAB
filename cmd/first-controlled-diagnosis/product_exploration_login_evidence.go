@@ -38,7 +38,7 @@ func (h *productExplorationHost) explorationLoginEvidence(ctx context.Context, b
 func buildExplorationLoginEvidence(b exploration.Binding, digest string, rows []loginattempt.Row, records []exploreboundary.Record,
 	read func(uint64) (diagnosisflow.ExplorationObservation, error)) (learnedlogin.ExplorationEvidence, error) {
 	e := learnedlogin.ExplorationEvidence{Schema: learnedlogin.ExplorationEvidenceSchema, RunRef: b.RunRef, SessionRef: b.SessionRef, JobID: b.JobID,
-		TargetRef: b.TargetRef, TargetRevision: b.TargetRevision, SourceDigest: digest, Sends: []learnedlogin.ExplorationSend{}}
+		TaskID: b.TaskID, TargetRef: b.TargetRef, TargetRevision: b.TargetRevision, SourceDigest: digest, Sends: []learnedlogin.ExplorationSend{}}
 	flow := diagnosisflow.ExplorationBinding{SessionRef: b.SessionRef, RunRef: b.RunRef, JobID: b.JobID, TaskID: b.TaskID, TargetRef: b.TargetRef, TargetRevision: b.TargetRevision, SourceDigest: digest}
 	bySeq := map[uint64]exploreboundary.Record{}
 	for _, rec := range records {

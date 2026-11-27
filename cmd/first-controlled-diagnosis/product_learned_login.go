@@ -38,8 +38,8 @@ func (ll *productLearnedLogin) verifySelection(label string, sel learnedlogin.Se
 	evidence, evidencePresent, evidenceErr := ll.explorationEvidence, ll.explorationEvidencePresent, ll.explorationEvidenceErr
 	ll.mu.Unlock()
 	provenance, reason := learnedlogin.Provenance(""), learnedlogin.Reason("")
-	if sel.Row.Stage == learnedlogin.StageExploration && (evidencePresent || evidenceErr != nil) {
-		if evidenceErr != nil || evidence == nil {
+	if sel.Row.Stage == learnedlogin.StageExploration && (ll.explorationEvidenceRequired || evidencePresent || evidenceErr != nil) {
+		if evidenceErr != nil || evidence == nil || ll.explorationEvidenceRequired && (evidence.Schema != learnedlogin.ExplorationEvidenceSchema || evidence.TaskID != strconv.FormatInt(ll.taskID, 10) || evidence.SourceDigest != ll.sourceDigest) {
 			reason = learnedlogin.ReasonTransportUnverified
 		} else {
 			provenance, reason = learnedlogin.VerifyExplorationEvidence(sel.Row, *evidence, ll.jobID, ll.targetID, ll.revision)
@@ -218,8 +218,10 @@ type productLearnedLogin struct {
 	jobID    string
 	targetID string
 	// revision은 회차를 시작할 때 결속한 대상 판이다.
-	revision uint64
-	runRef   string
+	revision     uint64
+	taskID       int64
+	sourceDigest string
+	runRef       string
 	// credentials는 실행 정책에 결속한 계정별 자격 판이다.
 	credentials map[string]string
 	selections  map[string]learnedlogin.Selection
@@ -238,12 +240,13 @@ type productLearnedLogin struct {
 	provenance map[string]learnedlogin.Provenance
 	// Boundary observations are handed over independently from login-attempt
 	// rows. A damaged present file blocks reuse; absent means a legacy run.
-	explorationEvidence        *learnedlogin.ExplorationEvidence
-	explorationEvidencePresent bool
-	explorationEvidenceErr     error
-	contrast                   *server.E2HTTPLoginContrastResult
-	attempts                   map[string]*productProgramLogin
-	identity                   map[string]e3contract.Observation
+	explorationEvidence         *learnedlogin.ExplorationEvidence
+	explorationEvidencePresent  bool
+	explorationEvidenceErr      error
+	explorationEvidenceRequired bool
+	contrast                    *server.E2HTTPLoginContrastResult
+	attempts                    map[string]*productProgramLogin
+	identity                    map[string]e3contract.Observation
 }
 
 // productProgramLogin은 확정 단계에서 계정 하나를 배운 방법으로 다시 로그인한 결과다.
@@ -288,6 +291,9 @@ func newProductLearnedLogin(registry *productTargetRegistry, runsDir, jobID stri
 func (ll *productLearnedLogin) plan(label string) (learnedlogin.Learned, string, learnedlogin.Reason) {
 	if ll.rowsErr != nil {
 		return learnedlogin.Learned{}, "", learnedlogin.ReasonRecordInvalid
+	}
+	if ll.explorationEvidenceRequired && (ll.explorationEvidenceErr != nil || !ll.explorationEvidencePresent || ll.explorationEvidence == nil || ll.explorationEvidence.Schema != learnedlogin.ExplorationEvidenceSchema || ll.explorationEvidence.TaskID != strconv.FormatInt(ll.taskID, 10) || ll.explorationEvidence.SourceDigest != ll.sourceDigest) {
+		return learnedlogin.Learned{}, "", learnedlogin.ReasonTransportUnverified
 	}
 	credential, bound := ll.credentials[label]
 	if !bound {

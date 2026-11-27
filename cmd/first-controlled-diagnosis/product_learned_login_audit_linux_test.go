@@ -111,7 +111,7 @@ func TestExplorationEvidenceControlsE3Reuse(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			runs, job := learnedRunDir(t, []learnedlogin.Row{row})
 			e := learnedlogin.ExplorationEvidence{Schema: learnedlogin.ExplorationEvidenceSchema, RunRef: "run-job1", SessionRef: "explore-job1",
-				JobID: job, TargetRef: rec.Target.ID, TargetRevision: rec.Target.Revision, SourceDigest: strings.Repeat("a", 64),
+				JobID: job, TaskID: "19", TargetRef: rec.Target.ID, TargetRevision: rec.Target.Revision, SourceDigest: strings.Repeat("a", 64),
 				Sends: []learnedlogin.ExplorationSend{{Seq: 17, Method: "POST", Path: "/login", Status: 302, BoundaryForwarded: true,
 					ApprovedTarget: true, ObservationForwarded: true, ResponseReceived: true}}}
 			if mutate != nil {
@@ -146,6 +146,56 @@ func TestExplorationEvidenceControlsE3Reuse(t *testing.T) {
 	ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
 	if _, _, reason := ll.plan("tester-a"); reason != learnedlogin.ReasonTransportUnverified {
 		t.Fatalf("손상된 근거 허용: %q", reason)
+	}
+}
+
+func TestRequiredExplorationEvidenceDoesNotFallBack(t *testing.T) {
+	r, _, rec := learnedAccountTarget(t)
+	creds := map[string]string{"tester-a": credentialOf(r, rec.Target.ID, "tester-a")}
+	row := modelSucceededRow("exploration-1", "tester-a", "/login")
+	row.Stage, row.TransportRef = learnedlogin.StageExploration, "17"
+	for name, rows := range map[string][]learnedlogin.Row{"missing evidence": {row}, "stored fallback": nil} {
+		t.Run(name, func(t *testing.T) {
+			runs, job := learnedRunDir(t, rows)
+			ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
+			ll.explorationEvidenceRequired, ll.taskID = true, 19
+			ll.stored = fakeStoredMethods{"tester-a": {}}
+			fake := &fakeLearnedAccounts{result: authenticatedResult()}
+			ll.relogin(t.Context(), "tester-a", fake, fake)
+			if _, _, reason := ll.plan("tester-a"); reason != learnedlogin.ReasonTransportUnverified || len(fake.requests) != 0 || len(fake.legacy) != 0 {
+				t.Fatalf("신규 회차 근거 유실 후 송신: %q, learned=%d legacy=%d", reason, len(fake.requests), len(fake.legacy))
+			}
+		})
+	}
+	for name, change := range map[string]func(*learnedlogin.ExplorationEvidence){
+		"matched":      nil,
+		"other task":   func(e *learnedlogin.ExplorationEvidence) { e.TaskID = "20" },
+		"other source": func(e *learnedlogin.ExplorationEvidence) { e.SourceDigest = strings.Repeat("b", 64) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			runs, job := learnedRunDir(t, []learnedlogin.Row{row})
+			e := learnedlogin.ExplorationEvidence{Schema: learnedlogin.ExplorationEvidenceSchema, RunRef: "run-job1", SessionRef: "explore-job1",
+				JobID: job, TaskID: "19", TargetRef: rec.Target.ID, TargetRevision: rec.Target.Revision, SourceDigest: strings.Repeat("a", 64),
+				Sends: []learnedlogin.ExplorationSend{{Seq: 17, Method: "POST", Path: "/login", Status: 302, BoundaryForwarded: true,
+					ApprovedTarget: true, ObservationForwarded: true, ResponseReceived: true}}}
+			if change != nil {
+				change(&e)
+			}
+			if err := learnedlogin.WriteExplorationEvidence(filepath.Join(runs, job, "state"), e); err != nil {
+				t.Fatal(err)
+			}
+			ll := newProductLearnedLogin(r, runs, job, rec, "run-job1", creds, "/api/me")
+			ll.explorationEvidenceRequired, ll.taskID, ll.sourceDigest = true, 19, strings.Repeat("a", 64)
+			fake := &fakeLearnedAccounts{result: authenticatedResult(), contrast: server.E2HTTPLoginContrastResult{Sent: true, Status: 401}}
+			ll.relogin(t.Context(), "tester-a", fake, fake)
+			want := learnedlogin.ReasonTransportUnverified
+			if change == nil {
+				want = ""
+			}
+			if _, _, reason := ll.plan("tester-a"); reason != want || len(fake.requests) != 1 && want == "" || len(fake.requests) != 0 && want != "" {
+				t.Fatalf("작업·원본 결속 실패: reason=%q, requests=%d", reason, len(fake.requests))
+			}
+		})
 	}
 }
 

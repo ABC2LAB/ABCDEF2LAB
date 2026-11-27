@@ -105,6 +105,7 @@ type runBinding struct {
 	root        *os.Root
 	dir         string
 	policy      server.E2HTTPFilePolicy
+	taskID      int64
 	fingerprint string
 }
 
@@ -145,7 +146,7 @@ func openRunBinding(runsDir, jobID string) (*runBinding, error) {
 			fingerprint = ""
 		}
 	}
-	return &runBinding{root: root, dir: filepath.Join(runsDir, jobID), policy: policy, fingerprint: fingerprint}, nil
+	return &runBinding{root: root, dir: filepath.Join(runsDir, jobID), policy: policy, taskID: approval.TaskID, fingerprint: fingerprint}, nil
 }
 
 func (b *runBinding) Close() error { return b.root.Close() }
