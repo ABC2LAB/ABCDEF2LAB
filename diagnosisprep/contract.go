@@ -165,8 +165,11 @@ type Job struct {
 	Started            bool           `json:"started"`
 	DrainComplete      bool           `json:"drain_complete"`
 	// 시각은 준비 서비스가 해당 사실의 최초 전환을 확인해 저장한다. 구 기록·미확인은 생략한다.
-	StartedAt   *time.Time  `json:"started_at,omitempty"`
-	FinishedAt  *time.Time  `json:"finished_at,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	// TimeLimit은 실행 backend가 실제로 집행하는 회차 시간 상한이다(docs/contracts/diagnosis-run-timing.md §시간 상한).
+	// backend가 상한을 정한 뒤 한 번 게시하고, 준비 서비스는 처음 받은 값을 바꾸지 않는다. 구 기록·상한 전은 생략한다.
+	TimeLimit   *TimeLimit  `json:"time_limit,omitempty"`
 	ResultReady bool        `json:"result_ready"`
 	ModelUsage  *ModelUsage `json:"model_usage,omitempty"`
 	// 실행 결과(docs/contracts/run-outcome-states.md §3.2). outcome·closing_reason은 completed에만,
@@ -270,6 +273,24 @@ type Update struct {
 	DiagnosticLogIncomplete bool
 	// AccountAuth는 시험 계정별 인증 상태다(running·stopping·completed·cancelled·failed에 싣는다, 인증 준비 전이면 nil).
 	AccountAuth map[string]string
+	// TimeLimit은 실행 backend가 정해 집행하는 시간 상한이다. 한 번 게시한 뒤에는 같은 값만 다시 보낸다(nil은 바꾸지 않음).
+	TimeLimit *TimeLimit
+}
+
+// TimeLimit은 한 회차의 시간 상한 집행 값이다. 시각은 실행 backend 프로세스 시계(UTC)이고, 다음 식이 정확히 성립한다:
+// ModelCloseAt + ModelDrainMS + ConfirmationReserveMS + ShutdownMarginMS = RunDeadlineAt.
+// 일시정지·재개·재연결은 이 값을 바꾸지 않는다(실행 시간 상한은 멈추지 않고 흐른다).
+type TimeLimit struct {
+	// RunDeadlineAt은 실행 시간 상한이다. 이 시각에 실행 문맥을 끊는다(마감 정리는 그 뒤 별도 유예로 한다).
+	RunDeadlineAt time.Time `json:"run_deadline_at"`
+	// ModelCloseAt은 모델 단계가 새 계획·새 intent를 멈추고 budget_limited 마감을 시작하는 시각이다.
+	ModelCloseAt time.Time `json:"model_close_at"`
+	// ModelDrainMS는 모델 단계 마감 시작 뒤 진행 중 작업을 마무리하게 두는 최대 시간이다(넘으면 멈춤).
+	ModelDrainMS int64 `json:"model_drain_ms"`
+	// ConfirmationReserveMS는 E③ 확정 단계에 남겨 둔 시간 몫이다. 확정 단계가 없는 회차는 0이다.
+	ConfirmationReserveMS int64 `json:"confirmation_reserve_ms"`
+	// ShutdownMarginMS는 실행 상한 안에서 마감 처리에 남겨 둔 여유다.
+	ShutdownMarginMS int64 `json:"shutdown_margin_ms"`
 }
 
 // Publish 실패는 실행 허가가 아니다. 신규 부작용을 중단하고 기존 실행은 취소·drain한다.

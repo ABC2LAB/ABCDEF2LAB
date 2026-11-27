@@ -1,5 +1,13 @@
 import { ApiError, apiFetch } from "./api";
-import { preservesURLRunTiming, sameURLRunTime, validURLRunTiming, validUTCInstant } from "./diagnosis-run-timing";
+import {
+  parseURLTimeLimit,
+  preservesURLRunTiming,
+  preservesURLTimeLimit,
+  sameURLRunTime,
+  type URLTimeLimit,
+  validURLRunTiming,
+  validUTCInstant,
+} from "./diagnosis-run-timing";
 import { validTaskID } from "./first-diagnosis";
 
 const base = "/api/diagnoses/v2";
@@ -125,6 +133,8 @@ export type URLDiagnosisJob = {
   /** 보호 준비 서비스가 최초 확인해 저장한 UTC 시각. 구 기록은 사실이 true여도 없을 수 있다. */
   started_at?: string;
   finished_at?: string;
+  /** 실행 backend가 집행하는 시간 상한(diagnosis-run-timing.md §시간 상한). 상한 전·구 기록은 없다. 한 번 정하면 바뀌지 않는다. */
+  time_limit?: URLTimeLimit;
   result_ready: boolean;
   model_usage?: URLDiagnosisUsage;
   /** 실행 결과(docs/contracts/run-outcome-states.md §3.2). completed에만 있다. 실행 마감은 취약점 없음이 아니다. */
@@ -480,9 +490,17 @@ export function parseURLCatalog(raw: unknown): URLDiagnosisCatalog {
   });
   return { ownerContext: String(e.owner_context), profiles };
 }
+/**
+ * 시간 상한이 있는 응답의 서버 응답 시각(RFC3339Nano UTC). 남은 시간은 run_deadline_at − server_time 으로 세고,
+ * 브라우저 시계와의 차이는 받은 순간의 (server_time − 브라우저 now)로 보정한다. 시간 상한이 없는 응답은 undefined.
+ */
+export function parseURLServerTime(raw: unknown, owner: string): string | undefined {
+  const job = parseURLJob(raw, owner);
+  return job.time_limit === undefined ? undefined : String((raw as Record<string, unknown>).server_time);
+}
 export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
   const e = envelope(raw, owner);
-  exact(e, ["version", "owner_context", "draft"]);
+  exact(e, ["version", "owner_context", "draft", "server_time"]);
   const d = e.draft;
   if (
     !object(d) ||
@@ -517,6 +535,7 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     "drain_complete",
     "started_at",
     "finished_at",
+    "time_limit",
     "result_ready",
     "model_usage",
     "outcome",
@@ -527,6 +546,15 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     "account_auth_updated_at",
   ]);
   if (!validURLRunTiming(d)) return invalid();
+  const timeLimit =
+    d.time_limit === undefined ? undefined : parseURLTimeLimit(d.time_limit, d.preparation_started === true);
+  if (d.time_limit !== undefined && timeLimit === undefined) return invalid();
+  // server_time은 시간 상한이 있는 응답에만, 그때는 반드시 있다(남은 시간 기준 시계).
+  if (
+    (timeLimit === undefined) !== (e.server_time === undefined) ||
+    (e.server_time !== undefined && !validUTCInstant(e.server_time))
+  )
+    return invalid();
   if (d.diagnostic_log_incomplete !== undefined && (d.diagnostic_log_incomplete !== true || d.state !== "completed"))
     return invalid();
   // §3.4·§3 "있는 state" 밖에서 오면 거부한다. 모드(워크플로·외부 API)로는 거부하지 않는다(계약 §3.2 account_auth 행).
@@ -585,6 +613,7 @@ export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
     drain_complete: d.drain_complete as boolean,
     ...(d.started_at === undefined ? {} : { started_at: String(d.started_at) }),
     ...(d.finished_at === undefined ? {} : { finished_at: String(d.finished_at) }),
+    ...(timeLimit ? { time_limit: timeLimit } : {}),
     result_ready: d.result_ready as boolean,
     ...(d.reason_code ? { reason_code: String(d.reason_code) } : {}),
     ...(approved ? { scope: approved } : {}),
@@ -752,9 +781,15 @@ const authorityRank = { not_issued: 0, issued: 1, consumed: 2, unknown: -1 };
 const phaseRank = Object.keys(urlPhaseLabels);
 type JobBinding = Pick<URLDiagnosisJob, "id" | "revision" | "source_digest" | "input"> & Partial<URLDiagnosisJob>;
 function sameURLJob(a: JobBinding, b: JobBinding): boolean {
-  const { started_at: aStart, finished_at: aFinish, ...aRest } = a;
-  const { started_at: bStart, finished_at: bFinish, ...bRest } = b;
-  return sameValue(aRest, bRest) && sameURLRunTime(aStart, bStart) && sameURLRunTime(aFinish, bFinish);
+  const { started_at: aStart, finished_at: aFinish, time_limit: _aLimit, ...aRest } = a;
+  const { started_at: bStart, finished_at: bFinish, time_limit: _bLimit, ...bRest } = b;
+  return (
+    sameValue(aRest, bRest) &&
+    sameURLRunTime(aStart, bStart) &&
+    sameURLRunTime(aFinish, bFinish) &&
+    preservesURLTimeLimit(a, b) &&
+    preservesURLTimeLimit(b, a)
+  );
 }
 /** 시작 시도 전 검증만 새 설치 범위를 표시할 수 있다. 실행 중인 결속은 절대 교체하지 않는다. */
 export function matchURLJob(
@@ -781,10 +816,11 @@ export function matchURLJob(
     if (current.state !== undefined && !sameURLJob(result, current)) return invalid();
     // 같은 revision에서 상태·known fact가 달라지면 뒤늦은 응답으로 제어권을 복원하지 않는다.
     for (const key of Object.keys(current) as (keyof URLDiagnosisJob)[]) {
-      const same =
-        key === "started_at" || key === "finished_at"
-          ? sameURLRunTime(result[key], current[key])
-          : sameValue(result[key], current[key]);
+      let same: boolean;
+      if (key === "started_at" || key === "finished_at") same = sameURLRunTime(result[key], current[key]);
+      else if (key === "time_limit")
+        same = preservesURLTimeLimit(result, current) && preservesURLTimeLimit(current, result);
+      else same = sameValue(result[key], current[key]);
       if (!same) return invalid();
     }
   }
@@ -801,6 +837,7 @@ export function matchURLJob(
     (current.drain_complete === true && !result.drain_complete) ||
     (current.result_ready === true && !result.result_ready) ||
     !preservesURLRunTiming(result, current) ||
+    !preservesURLTimeLimit(result, current) ||
     (current.phase !== undefined && phaseRank.indexOf(result.phase) < phaseRank.indexOf(current.phase)) ||
     (current.authority_state === "consumed" && result.authority_state !== "consumed") ||
     (current.authority_state === "unknown" && result.authority_state !== "unknown") ||

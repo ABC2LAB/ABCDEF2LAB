@@ -290,7 +290,7 @@ func validPhase(p Phase) bool {
 func terminal(s State) bool { return s == Completed || s == Cancelled || s == Failed }
 func active(s State) bool   { return s == Preparing || s == Running || s == Stopping }
 func validJob(j Job) bool {
-	if !validRunTiming(j.Started, j.DrainComplete, j.StartedAt, j.FinishedAt) {
+	if !validRunTiming(j.Started, j.DrainComplete, j.StartedAt, j.FinishedAt) || !validTimeLimit(j.TimeLimit, j.PreparationStarted) {
 		return false
 	}
 	if j.Scope != nil && j.Scope.ApprovalMode == "workbench_selective_v1" && j.Input.WorkflowMode != "user_approval_v1" {

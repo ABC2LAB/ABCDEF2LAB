@@ -26,6 +26,8 @@ type URLOptions struct {
 	Authenticate Authenticate
 	Endpoint     diagnosisprep.Endpoint
 	CallTimeout  time.Duration
+	// Now는 응답의 server_time 시계다(시험만 바꾼다). 준비 서비스와 같은 호스트 시계다.
+	Now func() time.Time
 }
 type URLHandler struct{ options URLOptions }
 
@@ -35,6 +37,9 @@ func NewURL(options URLOptions) (*URLHandler, error) {
 	}
 	if options.CallTimeout <= 0 || options.CallTimeout > managementCallTimeout {
 		options.CallTimeout = managementCallTimeout
+	}
+	if options.Now == nil {
+		options.Now = time.Now
 	}
 	return &URLHandler{options: options}, nil
 }
@@ -233,11 +238,19 @@ func (h *URLHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if created {
 		status = http.StatusCreated
 	}
+	// 시간 상한이 있는 회차는 응답 시각을 함께 준다. 화면은 브라우저 시계 대신 이 값과의 차이로 남은 시간을 센다
+	// (docs/contracts/diagnosis-run-timing.md §시간 상한).
+	var serverTime *time.Time
+	if response.Job != nil && response.Job.TimeLimit != nil {
+		now := h.options.Now().UTC()
+		serverTime = &now
+	}
 	writeJSON(w, status, struct {
 		Version      string             `json:"version"`
 		OwnerContext string             `json:"owner_context"`
 		Draft        *diagnosisprep.Job `json:"draft"`
-	}{URLVersion, urlOwnerContext(owner), response.Job})
+		ServerTime   *time.Time         `json:"server_time,omitempty"`
+	}{URLVersion, urlOwnerContext(owner), response.Job, serverTime})
 }
 
 func validURLInput(input diagnosisprep.Input) bool {

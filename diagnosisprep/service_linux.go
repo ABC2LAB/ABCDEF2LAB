@@ -723,6 +723,14 @@ func (s *Service) publish(id string, u Update) error {
 			}
 		}
 	}
+	// 시간 상한은 backend가 정한 값을 처음 한 번만 저장한다. 다른 값을 다시 보내면 집행 값이 바뀐 것이라 받지 않는다.
+	if u.TimeLimit != nil {
+		if old.Job.TimeLimit == nil {
+			next.Job.TimeLimit = copyTimeLimit(u.TimeLimit)
+		} else if !sameTimeLimit(old.Job.TimeLimit, u.TimeLimit) {
+			return ErrProtocol
+		}
+	}
 	next.Job.ModelUsage = u.ModelUsage
 	next.Job.Outcome, next.Job.ClosingReason, next.Job.IntentOutcomes = "", "", nil
 	next.Job.DiagnosticLogIncomplete = u.DiagnosticLogIncomplete

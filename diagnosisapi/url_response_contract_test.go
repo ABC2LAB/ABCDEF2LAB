@@ -31,6 +31,8 @@ func TestURLResponseFieldSetsRequireWebContractReview(t *testing.T) {
 			// 2026-11-25 #936: 실행 중 account_auth의 계정별 변경 시각. 웹 parseURLJob은 #937에서 받는다. 공유 예시에는 계정이
 			// 없어 이 칸이 나오지 않는다(omitempty).
 			"account_auth_updated_at",
+			// 2026-11-27 시간 상한(diagnosis-run-timing.md §시간 상한). 웹 parseURLJob이 같은 변경에서 받는다.
+			"time_limit",
 		}},
 		{"RunSummary", diagnosisprep.RunSummary{}, []string{
 			"id", "revision", "display_name", "state", "phase", "reason_code", "task_id", "started", "drain_complete",
@@ -141,12 +143,27 @@ func runTimingContractCases() []runTimingContractCase {
 	failed.ReasonCode, failed.PreparationStarted, failed.DrainComplete, failed.FinishedAt = "preparation_failed", true, true, &finished
 	legacy := completed
 	legacy.StartedAt, legacy.FinishedAt = nil, nil
+	// 시간 상한(§시간 상한): 실행 상한 01:12:00, 모델 마감 = 상한 − 유예 90초 − 확정 몫 120초 − 정리 여유 20초.
+	deadline := time.Date(2026, 11, 17, 1, 12, 0, 0, time.UTC)
+	limit := &diagnosisprep.TimeLimit{RunDeadlineAt: deadline, ModelCloseAt: deadline.Add(-230 * time.Second),
+		ModelDrainMS: 90_000, ConfirmationReserveMS: 120_000, ShutdownMarginMS: 20_000}
+	limited := running
+	limited.Revision, limited.TimeLimit = 6, limit
+	// 기한은 시작 확인보다 먼저 정한 600초 예산 안에 있어야 한다. 다른 예시의 60초 범위는 보존한다.
+	limitedScope := *running.Scope
+	limitedScope.Budget.DurationSeconds = 600
+	limited.Scope = &limitedScope
+	stopped := limited
+	stopped.Revision, stopped.State, stopped.Phase, stopped.ReasonCode = 9, diagnosisprep.Cancelled, diagnosisprep.Report, "stop_requested"
+	stopped.DrainComplete, stopped.FinishedAt, stopped.ResultReady = true, &finished, true
 	return []runTimingContractCase{
 		{"ready_without_times", ready, false},
 		{"running_with_start", running, true},
 		{"completed_with_times", completed, false},
 		{"failed_before_start_with_finish", failed, true},
 		{"legacy_completed_without_times", legacy, false},
+		{"running_with_time_limit", limited, true},
+		{"cancelled_keeps_time_limit", stopped, false},
 	}
 }
 
@@ -169,6 +186,10 @@ func TestURLRunTimingResponsesMatchSharedExamples(t *testing.T) {
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.job.TimeLimit != nil && tc.job.StartedAt != nil &&
+				tc.job.TimeLimit.RunDeadlineAt.Sub(*tc.job.StartedAt) > time.Duration(tc.job.Scope.Budget.DurationSeconds)*time.Second {
+				t.Fatal("시간 상한 예시가 실행 예산을 초과합니다")
+			}
 			example := examples.Cases[i]
 			if example.Name != tc.name {
 				t.Fatal("shared timing example name changed", example.Name)
@@ -200,6 +221,12 @@ func TestURLRunTimingResponsesMatchSharedExamples(t *testing.T) {
 				return response, nil
 			}}
 			handler := urlTestHandler(t, endpoint)
+			// server_time은 응답 시계다. 취소 응답은 마감 확인 시각 이후로 둔다.
+			minute := 5
+			if tc.name == "cancelled_keeps_time_limit" {
+				minute = 8
+			}
+			handler.options.Now = func() time.Time { return time.Date(2026, 11, 17, 10, minute, 3, 0, time.FixedZone("kst", 9*60*60)) }
 			for _, view := range []struct {
 				name, path string
 				want       []byte
