@@ -68,7 +68,18 @@ type evalCase struct {
 
 func loadEvalCases(t *testing.T) []evalCase {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Join("..", "scripts", "eval", "fixtures", "selected_candidate_structured_gold.json"))
+	return loadEvalCaseFile(t, "selected_candidate_structured_gold.json", 13)
+}
+
+// loadGateV2EvalCases는 v2 게이트 회귀 사례다. 기존 정답 20건과 따로 두고, v2 실행 전에 고정했다.
+func loadGateV2EvalCases(t *testing.T) []evalCase {
+	t.Helper()
+	return loadEvalCaseFile(t, "selected_candidate_gate_v2_gold.json", 12)
+}
+
+func loadEvalCaseFile(t *testing.T, name string, minCases int) []evalCase {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "scripts", "eval", "fixtures", name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +91,7 @@ func loadEvalCases(t *testing.T) []evalCase {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&file); err != nil || file.Version != "jindo.selected-structured-gold/v1" || len(file.Cases) < 13 {
+	if err := decoder.Decode(&file); err != nil || file.Version != "jindo.selected-structured-gold/v1" || len(file.Cases) < minCases {
 		t.Fatalf("invalid gold set: %v", err)
 	}
 	seen := map[string]bool{}
@@ -164,7 +175,7 @@ func evalRows(c evalCase, structured bool) (candidateverify.StoredObservationV2,
 	return original, followups
 }
 
-func evalContext(t *testing.T, c evalCase, structured bool) CandidateAssessmentContext {
+func evalContext(t *testing.T, c evalCase, structured bool, gate string) CandidateAssessmentContext {
 	t.Helper()
 	original, followups := evalRows(c, structured)
 	evidence, _ := json.Marshal(map[string]any{"tool_output": c.ToolOutput, "trusted": map[string]any{"classification": "completed",
@@ -194,7 +205,7 @@ func evalContext(t *testing.T, c evalCase, structured bool) CandidateAssessmentC
 		OriginalObservation: &original}, Plan: plan, Answers: answers,
 		Analysis: candidateAnalysisView{Proposal: CandidateAnalysisProposal{Version: "selected/analysis-v1", CandidateID: 1,
 			Claim: c.Candidate.Summary, NormalExplanation: "Not yet assessed.", Limitations: "Synthetic evaluation case."}},
-		Followup: followups}
+		Followup: followups, EvidenceGate: gate}
 }
 
 func evalLabel(verdict string) string {
@@ -399,23 +410,34 @@ type evalReport struct {
 	CostUSD float64                      `json:"cost_usd"`
 }
 
+// evalMode는 비교 코호트다: legacy(#950, 근거 없음), structured(#999 근거 + v1 게이트), gate_v2(근거 + v2 게이트).
+type evalMode struct {
+	prefix     string
+	structured bool
+	gate       string
+}
+
+var evalModes = []evalMode{{"legacy", false, ""}, {"structured", true, ""}, {"gate_v2", true, candidateEvidenceGateV2}}
+
 func runEval(t *testing.T, cases []evalCase, model evalModel) evalReport {
 	report := evalReport{Totals: map[string]evalCounts{}, Rows: map[string]map[string]string{}, Usage: map[string]evalUsage{}}
-	cohorts := map[string]map[string]string{"legacy_model_advice": {}, "legacy_product": {}, "rule_only": {}, "structured_model_advice": {}, "structured_product": {}}
+	cohorts := map[string]map[string]string{"rule_only": {}}
+	for _, mode := range evalModes {
+		cohorts[mode.prefix+"_model_advice"], cohorts[mode.prefix+"_product"] = map[string]string{}, map[string]string{}
+	}
 	for _, c := range cases {
-		for _, structured := range []bool{false, true} {
-			prefix, key := "legacy", "legacy"
-			if structured {
-				prefix, key = "structured", "structured"
-			}
-			ctx := evalContext(t, c, structured)
+		for _, mode := range evalModes {
+			prefix, key := mode.prefix, mode.prefix
+			ctx := evalContext(t, c, mode.structured, mode.gate)
 			request, err := BuildCandidateFinalRequest(ctx, candidateFinalMaxTokens)
 			if err != nil {
 				t.Fatalf("%s: model input: %v", c.ID, err)
 			}
 			text := request.Messages[0].Content[0].Text
-			for _, leaked := range []string{c.Expected, c.Category, `"expected"`} {
-				if strings.Contains(text, leaked) && leaked != "insufficient" {
+			// 정답 값이 JSON 문자열 값으로 새는지 본다. v2 사유 코드(예: generic_error_only)가 유형 이름(error_only)을 일부로 담는 것은
+			// 누출이 아니다.
+			for _, leaked := range []string{`"` + c.Expected + `"`, `"` + c.Category + `"`, `"expected"`, `"category"`} {
+				if strings.Contains(text, leaked) && leaked != `"insufficient"` {
 					t.Fatalf("%s: gold metadata reached the model input", c.ID)
 				}
 			}
@@ -429,8 +451,20 @@ func runEval(t *testing.T, cases []evalCase, model evalModel) evalReport {
 			cohorts[prefix+"_model_advice"][c.ID] = evalLabel(advice.Verdict)
 			if c.Tamper == "forged_source" && ok && len(advice.Sources) > 0 {
 				advice.Sources[len(advice.Sources)-1].CallRef = "forged-call"
-				raw, _ := json.Marshal(advice)
-				output = string(raw)
+			}
+			if c.Tamper == "cite_without_reproduction" && ok {
+				// 모델이 원본과 정상 대조만 인용한 출력이다(실제 재현 인용 누락).
+				var kept []candidateVerificationSourceRef
+				for _, ref := range advice.Sources {
+					reproduction := false
+					for _, row := range ctx.Followup {
+						reproduction = reproduction || sourceRefOf(row) == ref && followupRole(ctx, row) == responseevidence.RoleReproduction
+					}
+					if !reproduction {
+						kept = append(kept, ref)
+					}
+				}
+				advice.Sources = kept
 			}
 			product := "insufficient"
 			if ok {
@@ -439,9 +473,8 @@ func runEval(t *testing.T, cases []evalCase, model evalModel) evalReport {
 					product = evalLabel(parsed.Verdict)
 				}
 			}
-			_ = output
 			cohorts[prefix+"_product"][c.ID] = product
-			if structured {
+			if mode.structured && mode.gate == "" {
 				cohorts["rule_only"][c.ID] = ruleOnly(c, ctx)
 			}
 		}
@@ -505,6 +538,54 @@ func TestSelectedCandidateStructuredEvalMockGate(t *testing.T) {
 	if confirm.Totals["structured_product"].WrongDecisiveOnInsufficient >= confirm.Totals["legacy_product"].WrongDecisiveOnInsufficient {
 		t.Errorf("structured gate did not reduce wrong decisive verdicts on insufficient cases")
 	}
+	// v2 게이트는 v1이 막은 것을 계속 막고, 정당한 판정 범위를 줄이지 않아야 한다.
+	assertGateV2Keeps(t, confirm, negative, append(programInsufficient, "R14", "R16"),
+		[]string{"R01", "R02", "R03", "R13", "R17"}, []string{"R04", "R05", "R07", "R08", "R20"})
+	if confirm.Totals["gate_v2_product"].WrongDecisiveOnInsufficient >= confirm.Totals["structured_product"].WrongDecisiveOnInsufficient {
+		t.Errorf("gate v2 did not reduce wrong decisive verdicts on insufficient cases")
+	}
+}
+
+func assertGateV2Keeps(t *testing.T, confirm, negative evalReport, insufficient, supported, refuted []string) {
+	t.Helper()
+	for _, id := range insufficient {
+		if got := confirm.Rows["gate_v2_product"][id]; got != "insufficient" {
+			t.Errorf("%s: gate v2 allowed an unsupported confirmation: %s", id, got)
+		}
+	}
+	for _, id := range supported {
+		if got := confirm.Rows["gate_v2_product"][id]; got != "model_supported" {
+			t.Errorf("%s: gate v2 removed a supported decision: %s", id, got)
+		}
+	}
+	for _, id := range refuted {
+		if got := negative.Rows["gate_v2_product"][id]; got != "model_refuted" {
+			t.Errorf("%s: gate v2 removed a refutation: %s", id, got)
+		}
+	}
+}
+
+// TestSelectedCandidateGateV2RegressionEvalMock은 v2 회귀 사례(G01~G12)를 과신 모의 모델로 잰다(게이트 기능, 모델 품질 아님).
+func TestSelectedCandidateGateV2RegressionEvalMock(t *testing.T) {
+	cases := loadGateV2EvalCases(t)
+	confirm := runEval(t, cases, mockModel("confirmed"))
+	negative := runEval(t, cases, mockModel("negative"))
+	for _, r := range []*evalReport{&confirm, &negative} {
+		r.Mode, r.Note = "mock_overconfident", "Gate v2 regression cases with an overconfident mock model. Not LLM quality."
+	}
+	if path := os.Getenv("ARTEX_SELECTED_EVAL_V2_OUT"); path != "" {
+		raw, _ := json.MarshalIndent(map[string]evalReport{"always_confirmed": confirm, "always_negative": negative}, "", "  ")
+		if err := os.WriteFile(path, raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insufficient := []string{}
+	for _, c := range cases {
+		if c.Expected == "insufficient" {
+			insufficient = append(insufficient, c.ID)
+		}
+	}
+	assertGateV2Keeps(t, confirm, negative, insufficient, []string{"G01", "G02", "G05", "G10", "G12"}, []string{"G08", "G11"})
 }
 
 // TestSelectedCandidateStructuredEvalLocalModel은 승인된 로컬 모델이 있을 때만 실제 권고 품질을 잰다.

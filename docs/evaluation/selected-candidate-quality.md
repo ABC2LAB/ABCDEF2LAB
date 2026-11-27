@@ -42,3 +42,30 @@ ARTEX_SELECTED_EVAL_MODEL_URL=http://127.0.0.1:<port>/v1/chat/completions ARTEX_
 로컬 모드는 loopback `http`의 `/chat/completions`만 받고 프록시·리다이렉트를 쓰지 않는다. 위조 출처 사례는 모델 출력의 출처 하나를 하네스가 위조한 뒤 제품 판정에 넣는다(모델이 위조하게 만들 수 없으므로 제품 거부 경로를 재는 것).
 
 **2026-11-27 기록.** 로컬 모델이 없어 실제 모델 품질은 **미측정**이다. 모의 과신 모델(모든 출처를 정확히 인용하고 늘 같은 결정적 판정) 기능 측정 결과(모델 품질 아님): 근거 부족 정답 10건 중 잘못된 결정적 제품 판정은 `legacy_product` 7건 → `structured_product` 2건(R14 오류 응답만·R16 응답 속 지시문 — 의미 판단이 필요해 프로그램이 막지 않는 사례). 지지 정답 5건과 반박 정답 5건은 각각 `structured_product`에서 모두 결정 판정이 유지됐다. 이 수치는 게이트의 차단·보존 범위이며 실제 LLM의 판정 정확도나 탐지 성능을 뜻하지 않는다.
+
+## 판정 게이트 v2 평가 (2026-11-27)
+
+v2 게이트(`selected/evidence-gate-v2`, [계약](../contracts/selected-candidate-response-evidence.md#판정-게이트-v2-selectedevidence-gate-v2-2026-11-27))를 같은 하네스에 코호트로 더했다. 기존 20건 정답은 바꾸지 않았다.
+
+| 코호트 | 뜻 |
+|---|---|
+| `gate_v2_model_advice` | v2 입력(구조 근거 + 주장별 사실 검토 + v2 지시)에 대한 모델 원판정 |
+| `gate_v2_product` | 위 권고가 v2 게이트(주장별 사실 충분성·재현 인용)를 거친 최종 제품 판정 |
+
+새 회귀 사례 12건 `scripts/eval/fixtures/selected_candidate_gate_v2_gold.json`(G01~G12)은 v2 실행 전에 고정했다. 입력 대비로 지지되는 입력 처리(G01), SQL 오류 신호(G02), HTML·JSON 일반 오류만(G03·G06), HTML 속 지시문(G04), 지시문처럼 보이는 업무 데이터 + 운영자 진술(G05), 원본·정상 대조만 인용(G07, 하네스가 모델 출력에서 재현 인용을 뺌), 정상 대조가 있는 동적 정상 응답(G08), 쿠키 미관찰(G09), 무인증 설정 읽기(G10), 반박되는 입력 처리(G11), 노출 헤더(G12)를 담는다.
+
+```sh
+ARTEX_SELECTED_EVAL_OUT=/path/structured.json go test ./server -run TestSelectedCandidateStructuredEvalMockGate -v
+ARTEX_SELECTED_EVAL_V2_OUT=/path/regression.json go test ./server -run TestSelectedCandidateGateV2RegressionEvalMock -v
+```
+
+**2026-11-27 기록(모의 과신 모델, 모델 품질 아님).** 근거 부족 사례의 잘못된 결정적 제품 판정:
+
+| 사례 묶음 | 모의 모델 | `legacy_product` | `structured_product`(v1) | `gate_v2_product` |
+|---|---|---|---|---|
+| 기존 20건(근거 부족 10건) | 늘 확정 | 7 | 2 (R14·R16) | **0** |
+| 기존 20건 | 늘 반박 | 7 | 2 (R14·R16) | 1 (R16) |
+| 회귀 12건(근거 부족 5건) | 늘 확정 | 5 | 5 | **0** |
+| 회귀 12건 | 늘 반박 | 5 | 5 | 1 (G04) |
+
+정당한 판정 보존: 기존 지지 5건·반박 5건, 회귀 지지 5건(G01·G02·G05·G10·G12)·반박 2건(G08·G11)이 `gate_v2_product`에서 모두 결정 판정을 유지했다. 늘-확정 모의에서 정답 반박인 R05·R08의 잘못된 확정도 v2가 막았다(구체 신호·업무 진술 없음). 남은 2건(R16·G04)은 대상 응답 속 지시문에 끌린 **반박**이다. 데이터 노출의 반박은 업무 진술 없이도 가능해야 해서(예: R05 필드 부재) 프로그램이 막지 않는 의미 판단 몫이다. 실제 LLM 품질은 로컬 모델이 없어 **미측정**이다.
