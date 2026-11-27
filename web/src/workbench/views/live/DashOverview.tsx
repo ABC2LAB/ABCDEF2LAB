@@ -158,6 +158,15 @@ export function cutOf(state: URLRunSummary["state"]): Cut | null {
   return state === "cancelled" ? "stopped" : null;
 }
 const CUT_TEXT: Readonly<Record<Cut, string>> = { failed: "진단 실패", stopped: "중지" };
+/**
+ * '대상별' 줄에 판정이 없을 때 글. 모든 점검이 끝까지 못 갔으면(진단 실패 · 중지) 마지막 점검의 까닭, 아니면 결과 없음.
+ * 괄호 덧말('0으로 세지 않음')은 붙이지 않는다 — 0 대신 이 글이 보이는 것으로 충분하다(사용자 11/27)
+ */
+export function targetNoneText(cuts: readonly (Cut | null)[], lastCut: Cut | null): string {
+  if (cuts.length && cuts.every((c) => c !== null))
+    return `${lastCut === "stopped" ? "중지돼" : "진단 실패로"} 판정 없음`;
+  return "결과 있는 점검 없음";
+}
 const CUT_MARK: Readonly<Record<Cut, string>> = { failed: "✕", stopped: "■" };
 /**
  * 판정에 쓸 결과. 끝까지 못 간 점검(진단 실패 · 중지)인데 결과가 0건이면 '취약점 0'이 아니라 판정이 없는 것이라 결과로
@@ -1255,9 +1264,10 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
                     let basis: string | null = null;
                     if (lastCut && g.stat && g.latest === last) basis = `${CUT_TEXT[lastCut]} · 남은 결과만 셈`;
                     else if (lastCut && g.stat) basis = `판정은 ${monthDay(g.latest?.finished_at) ?? "이전"} 점검 기준`;
-                    let none = "결과 있는 점검 없음(0으로 세지 않음)";
-                    if (g.rows.every((r) => cutOf(r.state)))
-                      none = `${lastCut === "stopped" ? "중지돼" : "진단 실패로"} 판정 없음(0으로 세지 않음)`;
+                    const none = targetNoneText(
+                      g.rows.map((r) => cutOf(r.state)),
+                      lastCut,
+                    );
                     return (
                       <li key={g.key}>
                         <button

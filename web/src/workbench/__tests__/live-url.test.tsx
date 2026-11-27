@@ -486,6 +486,29 @@ describe("URL 진단 계산", () => {
 });
 
 describe("서버 방식 확인 (catalog)", () => {
+  it("'이 주소로 다시 점검'이 새 점검 화면을 열기 전에 넘긴 주소도 칸에 채우고 그 주소로 대상 승인을 묻는다 · 한 번만 쓴다(사용자 11/27)", async () => {
+    // 끝난 점검 오른쪽 패널의 [이 주소로 다시 점검]은 주소를 넘긴 뒤 새 점검 화면으로 간다 — 화면은 그 뒤에 열린다
+    act(() => useWb.getState().nPrefill("https://shop.example/app"));
+    mount("new");
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    await waitFor(() => expect(target).toHaveValue("https://shop.example/app"));
+    // 주소가 채워지면 대상 승인 칸이 그 주소로 서버에 묻는다(승인이 살아 있으면 URL 인증을 다시 하지 않는다)
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(teamApi.apiFetch)
+          .mock.calls.some(([path]) =>
+            String(path).includes(`targets/resolve?url=${encodeURIComponent("https://shop.example/app")}`),
+          ),
+      ).toBe(true),
+    );
+    // 받은 주소는 지운다 — 나중에 새 점검을 다시 열어도 옛 주소가 다시 들어가지 않는다
+    expect(useWb.getState().prefill).toBeNull();
+    cleanup();
+    mount("new");
+    expect(await screen.findByLabelText(/점검할 사이트 주소/)).toHaveValue("");
+  });
+
   it("catalog 가 오면 URL 진단 폼, 서버가 받지 않는 시안 칸은 '연결 전'이지만 고칠 수 있고 서버로 보내지 않는다", async () => {
     mount("new");
     const target = await screen.findByLabelText(/점검할 사이트 주소/);
