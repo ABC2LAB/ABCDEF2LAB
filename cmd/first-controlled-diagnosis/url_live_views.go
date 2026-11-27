@@ -253,6 +253,11 @@ type e2FlowView struct {
 // 기록이 틀리면 ok가 거짓이다(사건 없음). 실행이 E②를 잡은 적이 없어 저널이 아직 없으면 errRunNotBound다. E②를 잡은 기록은
 // 있는데 저널이 없으면 ok가 거짓이다(무효).
 func e2FlowEvents(r *http.Request, b *runBinding) ([]e2proxy.Event, bool, error) {
+	return runJournalEvents(r.Context(), b)
+}
+
+// runJournalEvents는 e2FlowEvents의 문맥 판이다(선택 후보 학습 로그인 출처 대조도 같은 검증으로 읽는다).
+func runJournalEvents(ctx context.Context, b *runBinding) ([]e2proxy.Event, bool, error) {
 	p := b.policy
 	if filepath.Clean(p.StateDir) != filepath.Join(b.dir, "state") || filepath.Base(p.AuditKey.File) != p.AuditKey.File {
 		return nil, false, nil
@@ -280,7 +285,7 @@ func e2FlowEvents(r *http.Request, b *runBinding) ([]e2proxy.Event, bool, error)
 	if hex.EncodeToString(sum[:]) != p.AuditKey.SHA256 {
 		return nil, false, nil
 	}
-	events, _, err := e2proxy.VerifyScreenJournalEvents(r.Context(), journal, key)
+	events, _, err := e2proxy.VerifyScreenJournalEvents(ctx, journal, key)
 	if err != nil {
 		return nil, false, nil
 	}

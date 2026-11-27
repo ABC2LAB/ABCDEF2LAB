@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"reflect"
 	"sort"
 	"strconv"
 	"time"
@@ -95,6 +96,8 @@ func (b *urlPreparationRuntime) scheduleCandidateLLMExecution(ctx context.Contex
 
 func (b *urlPreparationRuntime) executeCandidateLLMVerification(ctx context.Context, requestID int64, digest string) (resultErr error) {
 	phase := "context"
+	// failReason은 실패 사건의 고정 사유다(인증 준비 변경·실패처럼 원인을 아는 경우). 비면 기존 사유다.
+	failReason := ""
 	pool, err := b.candidateDatabase(ctx)
 	if err != nil {
 		return errPreparation
@@ -108,6 +111,9 @@ func (b *urlPreparationRuntime) executeCandidateLLMVerification(ctx context.Cont
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(b.ctx), 10*time.Second)
 		defer cancel()
 		state, reason := "failed", "candidate_execution_unavailable"
+		if failReason != "" {
+			reason = failReason
+		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			state, reason = "expired", "candidate_execution_timeout"
 		}
@@ -166,7 +172,13 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 	if err != nil || currentTarget == nil || !server.CandidateLLMPlanStillApproved(time.Now().UTC(), plan, ownerResp.Job.Input, *ownerResp.Job.Scope, *currentTarget) || l.current() != nil {
 		return errPreparation
 	}
-	if plan.AccountRef == "" {
+	if plan.AccountRef != "" && plan.AuthPreparation != nil && plan.AuthPreparation.Kind != "" {
+		// 학습 로그인 계획(v2): 지금 고른 학습 방법·출처 수준이 승인한 그대로일 때만 그 계정 하나를 싣는다. 9칸으로 대신하지 않는다.
+		if reason := b.bindCandidateLearnedAccount(l, plan); reason != "" {
+			failReason = reason
+			return errPreparation
+		}
+	} else if plan.AccountRef == "" {
 		if plan.AuthPreparation != nil {
 			return errPreparation
 		}
@@ -219,7 +231,7 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 			}
 		}
 		l.policy.Auth.Accounts = []server.E2HTTPFileAuthAccount{*selected}
-		l.policy.Auth.PasswordResponse = e2proxy.PasswordResponseMaskSpans
+		l.policy.Auth.PasswordResponse = candidateLLMPasswordResponse
 		l.productAccounts = []productRunAccount{*selectedRun}
 		l.policy.SelectedAccountRef = plan.AccountRef
 	}
@@ -235,13 +247,26 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 	}
 	count := len(plan.Actions)
 	if l.policy.Auth != nil {
-		login := l.policy.Auth.Login
+		path, method := l.policy.Auth.Login.Path, l.policy.Auth.Login.Method
+		learned := l.policy.Auth.LearnedMethod
+		if learned != nil {
+			path, method = learned.Path, "POST"
+		}
 		l.policy.Rules = append(l.policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: plan.Origin,
-			ConnectIP: l.productTarget.SelectedIP, PathPrefix: login.Path, PathScopeRef: "auth-login-path",
-			Methods: []string{login.Method}, Purpose: e2proxy.PurposeAuthPrep,
+			ConnectIP: l.productTarget.SelectedIP, PathPrefix: path, PathScopeRef: "auth-login-path",
+			Methods: []string{method}, Purpose: e2proxy.PurposeAuthPrep,
 			ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}},
 			TLSSPKISHA256:   l.productTarget.Target.TLSSPKISHA256})
 		count++
+		if learned != nil && learned.NeedsPrep() {
+			// 학습 방법의 준비 GET 하나(로그인 화면 또는 별도 CSRF 발급 경로). 승인 계획의 prep_path와 같다.
+			l.policy.Rules = append(l.policy.Rules, server.E2HTTPFileRule{Ref: "auth-login-prep", Origin: plan.Origin,
+				ConnectIP: l.productTarget.SelectedIP, PathPrefix: learned.PrepPath(), PathScopeRef: "auth-login-prep-path",
+				Methods: []string{"GET"}, Purpose: e2proxy.PurposeLoginPrep,
+				ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}},
+				TLSSPKISHA256:   l.productTarget.Target.TLSSPKISHA256})
+			count++
+		}
 	}
 	if count != plan.MaxRequests {
 		return errPreparation
@@ -336,7 +361,8 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 		runtimePool.Close()
 		return errPreparation
 	}
-	if (plan.AccountRef == "") != (issued.Auth == nil) {
+	if (plan.AccountRef == "") != (issued.Auth == nil) || issued.Auth != nil && plan.AuthPreparation != nil && plan.AuthPreparation.Kind != "" &&
+		(issued.Auth.LearnedMethod == nil || issued.Auth.LearnedMethod.Digest() != plan.AuthPreparation.LoginDigest) {
 		clear(rawPolicy)
 		runtimePool.Close()
 		return errPreparation
@@ -371,7 +397,13 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 		if err != nil || target == nil || !server.CandidateLLMPlanStillApproved(time.Now(), current, fresh.Job.Input, *fresh.Job.Scope, *target) {
 			return errPreparation
 		}
-		if current.AuthPreparation != nil {
+		if current.AuthPreparation != nil && current.AuthPreparation.Kind != "" {
+			// 송신 직전마다 학습 방법·출처 수준·준비 경로가 승인한 그대로인지 다시 본다(대상 재승인·자격 변경·방법 변경·
+			// 원본 회차 기록 유실이면 멈춤). 새 방법을 자동으로 골라 보내지 않는다.
+			if !b.candidateLearnedLoginCurrent(current) {
+				return errPreparation
+			}
+		} else if current.AuthPreparation != nil {
 			login, loginErr := b.product.targets.targetLogin("ARTEX", current.TargetID)
 			if loginErr != nil || login == nil || login.Method != current.AuthPreparation.Method || login.Path != current.AuthPreparation.ExactPath ||
 				server.CandidateLoginDigest(*login) != current.AuthPreparation.LoginDigest {
@@ -397,6 +429,7 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 	phase = "e2_execution"
 	observations, err := server.ExecuteSelectedCandidateActions(hard, manager, options, prepared.TaskID, runRef, plan)
 	if err != nil {
+		failReason = server.CandidateAuthFailureReason(err)
 		return errPreparation
 	}
 	finish, stop := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -550,4 +583,62 @@ LEFT JOIN tasks t ON t.id=x.followup_task_id AND t.deleted_at IS NULL
 		}
 	}
 	return nil
+}
+
+// candidateLLMPasswordResponse는 선택 후보 검증 실행의 비밀번호 응답 정책이다. 9칸 인증 준비와 학습 로그인이 같은 값을 쓴다.
+const candidateLLMPasswordResponse = e2proxy.PasswordResponseMaskSpans
+
+// candidateLearnedLoginCurrent는 승인한 학습 로그인 준비가 지금 고른 방법과 같은지다(값 없음, 원본 회차 기록 재대조 포함).
+func (b *urlPreparationRuntime) candidateLearnedLoginCurrent(plan server.CandidateLLMPlan) bool {
+	if b == nil || b.product == nil || plan.AuthPreparation == nil || plan.AccountRef == "" {
+		return false
+	}
+	choice := b.product.candidateLogin("ARTEX", plan.TargetID, plan.AccountRef)
+	if choice.Source != diagnosisprep.CandidateLoginLearned || choice.Method == nil {
+		return false
+	}
+	return reflect.DeepEqual(server.CandidateLearnedAuthPreparation(server.CandidateLearnedLogin{Method: *choice.Method, Trust: choice.Trust}), plan.AuthPreparation)
+}
+
+// bindCandidateLearnedAccount는 학습 로그인 계획의 계정 하나만 실행에 싣는다. 9칸이 없는 대상도 그 계정 자격 보호 파일을
+// 따로 읽는다. 다른 계정 자격 사본은 메모리에서 지운다. 실패면 고정 사유다.
+func (b *urlPreparationRuntime) bindCandidateLearnedAccount(l *urlLoadedProfile, plan server.CandidateLLMPlan) string {
+	if !b.candidateLearnedLoginCurrent(plan) {
+		return "candidate_auth_preparation_changed"
+	}
+	choice := b.product.candidateLogin("ARTEX", plan.TargetID, plan.AccountRef)
+	account, reason := b.product.targets.candidateAccount("ARTEX", plan.TargetID, plan.AccountRef)
+	if reason != "" || choice.Method == nil || server.CandidateAccountRevision(account.label, account.credential) != plan.AccountRef {
+		return "candidate_auth_preparation_changed"
+	}
+	raw, pin, err := account.material()
+	if err != nil {
+		return "candidate_auth_preparation_changed"
+	}
+	if l.policy.Auth != nil {
+		for _, other := range l.policy.Auth.Accounts {
+			if stale := l.materials[other.Credential.File]; stale != nil {
+				clear(stale)
+				delete(l.materials, other.Credential.File)
+			}
+		}
+	}
+	if l.materials == nil {
+		l.materials = map[string][]byte{}
+	}
+	if stale := l.materials[pin.File]; stale != nil {
+		clear(stale)
+	}
+	l.materials[pin.File] = raw
+	m := choice.Method.Clone()
+	auth := &server.E2HTTPFileAuth{RuleRef: "auth-login", LearnedMethod: &m, PasswordResponse: candidateLLMPasswordResponse,
+		Accounts: []server.E2HTTPFileAuthAccount{{Label: account.label, Credential: pin}}}
+	if m.NeedsPrep() {
+		auth.PrepRuleRef = "auth-login-prep"
+	}
+	l.policy.Auth = auth
+	l.policy.HeaderMode = e2proxy.HeaderTestAccountPassthrough
+	l.productAccounts = []productRunAccount{{Label: account.label, CredentialSHA256: account.credential, credentialPath: account.path}}
+	l.policy.SelectedAccountRef = plan.AccountRef
+	return ""
 }

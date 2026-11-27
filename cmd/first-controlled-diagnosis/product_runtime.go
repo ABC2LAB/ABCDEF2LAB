@@ -36,6 +36,8 @@ type productRuntime struct {
 	config          urlPreparationInstallation
 	installationPin urlInputPin
 	targets         *productTargetRegistry
+	// learnedMethods는 저장된 학습 로그인 방법 읽기 경계다(⑤-B). nil이면 대상 레지스트리의 구현을 쓴다(없으면 저장 방법 없음).
+	learnedMethods productLearnedMethodReader
 	// exploration은 설치 정책의 탐색 블록으로 만든 host다. 없으면 탐색은 NOT_RUN이다.
 	exploration *productExplorationHost
 	bindMu      sync.Mutex
@@ -734,6 +736,12 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 			}
 		case "target_login":
 			control.Login, err = p.targets.targetLogin(r.Principal, r.Product.TargetID)
+		case "target_login_candidate":
+			// 선택 후보 검증의 인증 준비 원천(값 없음). 대상 승인자 확인은 targetLogin과 같고, 학습 방법 출처는 다시 대조한다.
+			if _, err = p.targets.targetLogin(r.Principal, r.Product.TargetID); err == nil {
+				choice := p.candidateLogin(r.Principal, r.Product.TargetID, r.Product.AccountRef)
+				control.CandidateLogin = &choice
+			}
 		case "target_login_set":
 			control.Login, err = p.targets.setTargetLogin(r.Principal, r.Product.TargetID, *r.Product.Login)
 		case "account_credential_set":
