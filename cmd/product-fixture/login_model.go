@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 // 플래그로 받는다(소유 수용 전용, 제품 경로 아님).
 type workflowLoginConfig struct {
 	loginPath, identityPath, usernameField, passwordField, tokenField, header, prefix string
+	exploreOnly                                                                       bool
 }
 
 var (
@@ -130,6 +132,30 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 			tool("Bash", id, map[string]any{"command": command, "timeout_ms": 60000})
 		}
 		switch {
+		case names["mcp__explore_browser__browser_evaluate"] && cfg.exploreOnly:
+			// The owned fixture drives the real browser MCP and exploration
+			// boundary. The evaluated script returns status codes only; the
+			// registered synthetic credentials and issued session stay in the
+			// browser context.
+			turn.explore++
+			switch turn.explore {
+			case 1, 4:
+				// VAmPI's /ui redirects to its internal HTTP origin. Keep the
+				// browser on the approved HTTPS origin before relative fetches.
+				tool("mcp__explore_browser__browser_navigate", "wl-explore-page", map[string]any{"url": target + "/openapi.json"})
+			case 2, 5:
+				index := 0
+				if turn.explore == 5 {
+					index = 1
+				}
+				if index < len(accounts) {
+					tool("mcp__explore_browser__browser_evaluate", "wl-explore-login", map[string]any{"function": browserLoginScript(cfg, accounts[index])})
+				}
+			case 3:
+				if len(accounts) > 1 && names["switch_browser_account"] {
+					tool("switch_browser_account", "wl-explore-switch", map[string]any{"account": accounts[1].label})
+				}
+			}
 		case names["set_goals"] && !names["add_intent"] && !names["Bash"]:
 			goals.Add(1)
 			turn.goals++
@@ -170,6 +196,15 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 			}
 		case names["Bash"]:
 			worker.Add(1)
+			if cfg.exploreOnly {
+				if names["record_fact"] && !factCalled && intentID > 0 {
+					turn.factRecorded = true
+					tool("record_fact", "wl-explore-fact", map[string]any{"intent_id": intentID,
+						"summary": "Owned browser exploration fixture finished; login success is determined by recorded observations.",
+						"detail":  "synthetic fixture (not a model judgment)", "evidence": "synthetic fixture", "confidence": "observed"})
+				}
+				break
+			}
 			// Worker 대화의 도구 결과 수가 이 대화에서 낸 명령 수다. 단계: 0 세션 없는 신원 GET, 계정마다 로그인 POST·토큰 신원 GET.
 			step := len(toolResults)
 			if len(accounts) == 0 {
@@ -211,6 +246,23 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 	})
 }
 
+func browserLoginScript(cfg workflowLoginConfig, account fixtureAccount) string {
+	literal := func(value string) string {
+		encoded, _ := json.Marshal(value)
+		return string(encoded)
+	}
+	return fmt.Sprintf(`async () => {
+  const anonymous = await fetch(%s, {credentials: 'omit'});
+  const login = await fetch(%s, {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({[%s]: %s, [%s]: %s})});
+  const body = await login.json();
+  const identity = await fetch(%s, {headers: {[%s]: %s + body[%s]}});
+  return {anonymous: anonymous.status, login: login.status, identity: identity.status};
+}`, literal(cfg.identityPath), literal(cfg.loginPath), literal(cfg.usernameField), literal(account.username),
+		literal(cfg.passwordField), literal(account.password), literal(cfg.identityPath), literal(cfg.header),
+		literal(cfg.prefix), literal(cfg.tokenField))
+}
+
 // fixtureNodeID는 그래프 도구 결과(노드 배열 또는 {key: 노드 배열})에서 상태가 맞는 첫 노드 번호다. 상태가 비면 첫 노드다.
 // 도구 결과는 JSON 문자열로 실려 오므로 한 번 풀고 읽는다. 없으면 0이다.
 func fixtureNodeID(raw, key, state string) int64 {
@@ -241,6 +293,7 @@ func fixtureNodeID(raw, key, state string) int64 {
 // loginFixtureTurns는 대상별 진행 상태다(작업마다 목표 분해 첫 요청에서 새로 센다).
 type loginFixtureTurns struct {
 	goals, planner                                  int
+	explore                                         int
 	discoverySent, intentSent, factRecorded, proved bool
 	goalID                                          int64
 }
