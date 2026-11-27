@@ -69,3 +69,29 @@ ARTEX_SELECTED_EVAL_V2_OUT=/path/regression.json go test ./server -run TestSelec
 | 회귀 12건 | 늘 반박 | 5 | 5 | 1 (G04) |
 
 정당한 판정 보존: 기존 지지 5건·반박 5건, 회귀 지지 5건(G01·G02·G05·G10·G12)·반박 2건(G08·G11)이 `gate_v2_product`에서 모두 결정 판정을 유지했다. 늘-확정 모의에서 정답 반박인 R05·R08의 잘못된 확정도 v2가 막았다(구체 신호·업무 진술 없음). 남은 2건(R16·G04)은 대상 응답 속 지시문에 끌린 **반박**이다. 데이터 노출의 반박은 업무 진술 없이도 가능해야 해서(예: R05 필드 부재) 프로그램이 막지 않는 의미 판단 몫이다. 실제 LLM 품질은 로컬 모델이 없어 **미측정**이다.
+
+## 최초 분석 단계 평가 (2026-11-27)
+
+분석 입력의 구조 근거·관찰 선택([계약](../contracts/selected-candidate-llm-verification.md))은 두 층으로 잰다.
+
+1. **관찰 선택(프로그램, 오프라인·결정적)** — `TestSelectedCandidateAnalysisSelectionEval`: 고정 seed(20261127)로 만든 합성 문맥 200개(원본 + 같은 조건 독립 관찰 0~3개, 같은 시도 중복 행, 다른 기능 관찰 0~11개를 섞은 저장 순서). 기존 선택(저장 순서 앞에서부터 5개)과 관련성 선택을 비교한다.
+
+| 지표 | 기존 선택 | 관련성 선택 |
+|---|---|---|
+| 같은 조건 독립 관찰 포함(입력 6칸 안에 들 수 있는 수 275 중) | 198 | **275** |
+| 독립 관찰이 있는데 하나도 못 넣은 문맥 | 18 | **0** |
+| 같은 시도를 두 번 넣은 수(독립 근거 부풀림) | 43 | **0** |
+
+2. **분석 입력(실제 코드)** — `TestSelectedCandidateAnalysisInputsForGoldCases`: 구조 정답 20건 + v2 회귀 12건의 분석 입력을 만들어 상한·정답 누출·부족 사실을 확인한다. 최대 입력 6,047바이트(상한 48 KiB, 최대 합성 입력 22,969바이트). 부족 사실 예: R14·G03 `specific_error_signal`, R16·G04 `business_rule_statement`, G09 `issued_cookie`, R01·R03·G02는 없음.
+3. **분석 계획 품질(로컬 모델만)** — `TestSelectedCandidateAnalysisLocalModel`: 유효 제안 수, 제안 행동 수, 저장 관찰 평가 예정일 때 제안 행동 수(불필요 행동 근사), 정상 대조가 필요할 때 정상 대조 제안 수, 업무 진술이 빠졌을 때 업무 질문 수, 반복 행동 제거 수, 모델 호출·토큰·시간. **로컬 모델이 없어 미측정.**
+4. **전체 흐름(로컬 모델만)** — `TestSelectedCandidateFullFlowEvalLocalModel`: 구조 근거 분석 → 분석 제안을 담은 최종 입력 → v2 게이트(사례당 모델 2회, 대상 송신 0). 모의 모델로는 분석 제안이 최종 판정을 바꾸지 않아 `gate_v2_product`와 같으므로 따로 기록하지 않는다. **미측정.**
+
+```sh
+ARTEX_SELECTED_ANALYSIS_EVAL_OUT=/path/selection.json go test ./server -run TestSelectedCandidateAnalysisSelectionEval -v
+ARTEX_SELECTED_EVAL_MODEL_URL=http://127.0.0.1:<port>/v1/chat/completions ARTEX_SELECTED_EVAL_MODEL=<model> \
+  ARTEX_SELECTED_ANALYSIS_EVAL_OUT=/path/analysis.json go test ./server -run TestSelectedCandidateAnalysisLocalModel -v -timeout 2h
+ARTEX_SELECTED_EVAL_MODEL_URL=... ARTEX_SELECTED_EVAL_MODEL=... ARTEX_SELECTED_EVAL_OUT=/path/full.json \
+  go test ./server -run TestSelectedCandidateFullFlowEvalLocalModel -v -timeout 2h
+```
+
+비용: 분석·최종 모델 호출 수는 기존과 같다(분석 1회, 최종 1회). 입력은 관찰마다 구조 근거 최대 1 KiB가 늘 뿐 상한은 그대로다. 평가는 오프라인이라 대상 송신 0, 비용 0이다.

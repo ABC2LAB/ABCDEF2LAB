@@ -263,11 +263,11 @@ func TestSelectedCandidateAnalysisLocalModel(t *testing.T) {
 	}
 }
 
-// TestSelectedCandidateAnalysisInputsForGoldCases는 구조 정답 20건의 분석 입력을 실제 코드로 만들어 상한·누출·부족 사실을 본다.
+// TestSelectedCandidateAnalysisInputsForGoldCases는 구조 정답 20건과 v2 회귀 12건의 분석 입력을 실제 코드로 만들어 상한·누출·부족 사실을 본다.
 func TestSelectedCandidateAnalysisInputsForGoldCases(t *testing.T) {
 	largest := 0
 	missing := map[string][]string{}
-	for _, c := range loadEvalCases(t) {
+	for _, c := range append(loadEvalCases(t), loadGateV2EvalCases(t)...) {
 		for _, stored := range []bool{false, true} {
 			ctx := analysisEvalContext(t, c, stored)
 			request, err := BuildCandidateAnalysisRequest(ctx, 2048)
@@ -297,7 +297,8 @@ func TestSelectedCandidateAnalysisInputsForGoldCases(t *testing.T) {
 	}
 	t.Logf("largest analysis input: %d bytes", largest)
 	if strings.Join(missing["R14"], ",") != factSpecificError || strings.Join(missing["R16"], ",") != factBusinessRule ||
-		len(missing["R01"]) != 0 || len(missing["R03"]) != 0 {
+		len(missing["R01"]) != 0 || len(missing["R03"]) != 0 || strings.Join(missing["G03"], ",") != factSpecificError ||
+		strings.Join(missing["G04"], ",") != factBusinessRule || len(missing["G02"]) != 0 || strings.Join(missing["G09"], ",") != factIssuedCookie {
 		t.Fatalf("missing facts: R14=%v R16=%v R01=%v R03=%v", missing["R14"], missing["R16"], missing["R01"], missing["R03"])
 	}
 }
