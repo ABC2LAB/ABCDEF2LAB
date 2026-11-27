@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { ApiError } from "@/lib/diagnosis/api";
+import { endedURLRun } from "@/lib/diagnosis/diagnosis-runs";
 import {
   COUNT_LABEL,
   type DecisionClass,
@@ -35,9 +36,28 @@ const DECISIONS = { allowed: "허용", denied: "거부", unsupported: "미지원
 /** 첫 진단 의도 전에는 실행 저널이 없어 서버가 journal "none"(이전 서버는 404 "전송 통제 기록이 아직 없습니다")을 준다 — 실패가 아니라 대기 상태다. */
 const PRE_DIAGNOSIS_RETRY_MS = 10000;
 const FLOW_RETRY_MS = 2000;
+
+/** 기록이 없을 때 보이는 문장. 끝난 회차는 기록이 더 생기지 않으므로(확정 단계는 E②를 따로 잡지 않음, 계약 §4) 기다린다고 하지 않는다. */
+function noRecordText(ended: boolean, bound: boolean, flow: E2Flow | null): string {
+  if (!ended) return "진단 요청 전 · 아직 전송 통제 기록이 없습니다. 첫 진단 요청이 나가면 기록이 생깁니다.";
+  // 404 = 실행 결속 전(실행 디렉터리 · 정책 없음)에 끝난 회차
+  if (!bound) return "실행 결속 전에 끝나 전송 통제 기록이 없습니다.";
+  const t = flow?.target_requests;
+  const explored = t?.exploration_state === "closed" && t.exploration ? t.exploration : 0;
+  return [
+    "이 회차는 진단 요청 없이 끝나 전송 통제 기록이 없습니다. 진단을 하지 않았다는 뜻이고, 취약점이 없다는 뜻은 아닙니다.",
+    explored ? `탐색 요청 ${explored}건은 전송 통제 밖 탐색 경계로 나갔습니다.` : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 export function UrlE2FlowLive() {
   const { goTo, route } = useShell();
   const task = useUrl((st) => st.job?.task_id ?? null);
+  // 끝난 회차(completed · cancelled · failed)는 저널이 더 생기지 않는다. 기록 없음(none · 404)을 받으면 다시 읽지 않는다.
+  // 보는 중에 회차가 끝나면 effect 가 다시 돌아 한 번 더 읽고 멈춘다(그사이 저널이 생겼을 수 있다).
+  const ended = useUrl((st) => (st.job ? endedURLRun(st.job) : false));
   // 작업대는 모든 화면을 시작 때 숨긴 채 붙인다. 이 화면이 보일 때만 읽는다(1차 리허설 F5: 안 보이는데도 2초마다 불러
   // 첫 진단 의도 전 404가 수백 건 쌓였다)
   const visible = route === "e2flow";
@@ -64,16 +84,19 @@ export function UrlE2FlowLive() {
         // invalid 저널에서는 사건·커서를 지우고 첫 페이지부터 다시 확인한다.
         if (next.more) {
           void poll();
+        } else if (next.journal === "none") {
+          // 저널 없음(진단 요청 전)은 404 대기와 같은 간격으로 다시 읽는다. 끝난 회차는 멈춘다
+          if (!ended) timer = setTimeout(() => void poll(), PRE_DIAGNOSIS_RETRY_MS);
         } else {
-          // 저널 없음(진단 요청 전)은 404 대기와 같은 간격으로 다시 읽는다
-          timer = setTimeout(() => void poll(), next.journal === "none" ? PRE_DIAGNOSIS_RETRY_MS : FLOW_RETRY_MS);
+          timer = setTimeout(() => void poll(), FLOW_RETRY_MS);
         }
       } catch (error) {
         if (current) {
           flow = null;
           const waiting = error instanceof ApiError && error.status === 404;
           setState({ task, flow: null, failed: !waiting, waiting });
-          timer = setTimeout(() => void poll(), waiting ? PRE_DIAGNOSIS_RETRY_MS : FLOW_RETRY_MS);
+          if (!(waiting && ended))
+            timer = setTimeout(() => void poll(), waiting ? PRE_DIAGNOSIS_RETRY_MS : FLOW_RETRY_MS);
         }
       }
     };
@@ -83,7 +106,7 @@ export function UrlE2FlowLive() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [task, visible]);
+  }, [task, visible, ended]);
   const flow = state.task === task ? state.flow : null;
   const failed = state.task === task && state.failed;
   const waiting = state.task === task && state.waiting;
@@ -107,7 +130,7 @@ export function UrlE2FlowLive() {
           {task && !flow && !failed && !waiting ? <p className={s.empty}>불러오는 중…</p> : null}
           {waiting || flow?.journal === "none" ? (
             <p className={s.empty} role="status">
-              진단 요청 전 · 아직 전송 통제 기록이 없습니다. 첫 진단 요청이 나가면 기록이 생깁니다.
+              {noRecordText(ended, !waiting, flow)}
             </p>
           ) : null}
           {failed ? (
