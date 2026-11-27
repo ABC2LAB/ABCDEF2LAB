@@ -600,9 +600,9 @@ func authPrepOne(ctx context.Context, call *e2proxy.Call, execution *e2proxy.Exe
 		reason = "auth_credential_unavailable"
 		return E2HTTPAuthNotSent
 	}
-	// 비밀번호는 보내기 전에 이 실행의 보호 값으로 등록한다. 대상이 나중에 다른 응답에 비밀번호를 그대로 되돌려 주면 그
-	// 응답은 보류되고 출력에서도 가려진다(S09: 비밀번호는 모델 입력에 없다). 보호할 수 없는 비밀번호(너무 짧음 등)면
-	// 로그인하지 않는다.
+	// 비밀번호는 보내기 전에 이 실행에 등록한다. model_visible_v1(제품 진단·선택 후보 검증)은 받기만 하므로 짧은 비밀번호도
+	// 로그인한다(2026-11-26 DLP 폐기). 이전 정책(보류·mask_spans_v1)은 대상이 비밀번호를 되돌려 준 응답을 보류·구간 가림하고,
+	// 보호할 수 없는 비밀번호(너무 짧음 등)면 로그인하지 않는다.
 	if execution.AddProtectedPasswords([]byte(cred.Password)) != nil {
 		cred.Username, cred.Password = "", ""
 		reason = "auth_password_unprotectable"
