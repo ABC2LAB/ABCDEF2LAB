@@ -21,10 +21,180 @@ export type TargetAccount = {
   credentialConfigured: boolean;
   /** 등록 시각(서버 registered_at, ms). 서버 목록은 라벨순이라 등록 순서는 이 값으로만 안다. 형식 밖이면 null */
   registeredAt: number | null;
+  /**
+   * 모델이 배운 로그인 방법(서버 login_method, 계약 model-login-attempts §6-1-3). 칸이 없으면(그 칸을 싣기 전 서버) null —
+   * 화면은 '아직 없음'. 닫힌 칸 · 값 목록 밖이면 "invalid"(받지 않음, 화면은 '확인 못 함'). 값(아이디 · 비밀번호 · 세션)은 없다.
+   */
+  loginMethod: TargetLoginMethod | "invalid" | null;
+};
+
+/** 배운 로그인 방법 상태(§6-1-1): 쓸 수 있는 방법 없음 · 배움 · 검증됨 */
+export type TargetLoginMethodState = "none" | "learned" | "verified";
+
+/** 값 없는 방법 객체(§6-1-2 칸 그대로) */
+export type TargetLoginMethodObject = {
+  httpMethod: string;
+  path: string;
+  format: "form" | "json" | "multipart";
+  identifierField: string;
+  passwordField: string;
+  otherFields: string[];
+  fieldsFromResponse: string[];
+  sessionSource: "set_cookie" | "json_field" | "header" | "continued";
+  sessionNames: string[];
+  sessionSentAs: string;
+};
+
+export type TargetLoginMethod = {
+  state: TargetLoginMethodState;
+  /** state none 이고 예전 방법이 무효가 됐을 때만 */
+  clearedReason: "target_reapproved" | "credential_changed" | null;
+  /** learned · verified 일 때. at 은 ms */
+  learned: {
+    at: number;
+    runRef: string;
+    stage: "exploration" | "diagnosis";
+    attemptRef: string;
+    evidence: "observed_contrast" | "probe_contrast";
+  } | null;
+  /** verified 일 때만 */
+  verified: { at: number; runRef: string; attemptRef: string; evidence: "e3_relogin" } | null;
+  /** learned · verified 일 때 */
+  method: TargetLoginMethodObject | null;
 };
 
 /** 한 대상의 계정 목록. */
 export type TargetAccounts = { accounts: TargetAccount[] };
+
+// ---------- login_method 파서(§6-1-3) ----------
+
+const LOGIN_METHOD_STATES: readonly string[] = ["none", "learned", "verified"];
+const CLEARED_REASONS: readonly string[] = ["target_reapproved", "credential_changed"];
+const LEARNED_STAGES: readonly string[] = ["exploration", "diagnosis"];
+const LEARNED_EVIDENCE: readonly string[] = ["observed_contrast", "probe_contrast"];
+const METHOD_FORMATS: readonly string[] = ["form", "json", "multipart"];
+const SESSION_SOURCES: readonly string[] = ["set_cookie", "json_field", "header", "continued"];
+
+/** 칸이 keys 안에서만 왔는지(닫힌 칸) */
+const closedKeys = (v: Record<string, unknown>, keys: readonly string[]): boolean =>
+  Object.keys(v).every((k) => keys.includes(k));
+const nonEmpty = (v: unknown): v is string => typeof v === "string" && v !== "";
+const strList = (v: unknown): string[] | null =>
+  Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : null;
+const utcMs = (v: unknown): number | null => {
+  const at = typeof v === "string" ? Date.parse(v) : Number.NaN;
+  return Number.isFinite(at) ? at : null;
+};
+
+function loginMethodObject(v: unknown): TargetLoginMethodObject | null {
+  const keys = [
+    "http_method",
+    "path",
+    "format",
+    "identifier_field",
+    "password_field",
+    "other_fields",
+    "fields_from_response",
+    "session_source",
+    "session_names",
+    "session_sent_as",
+  ];
+  if (!isObj(v) || !closedKeys(v, keys)) return null;
+  const otherFields = strList(v.other_fields);
+  const fieldsFromResponse = strList(v.fields_from_response);
+  const sessionNames = strList(v.session_names);
+  if (
+    !nonEmpty(v.http_method) ||
+    !nonEmpty(v.path) ||
+    typeof v.format !== "string" ||
+    !METHOD_FORMATS.includes(v.format) ||
+    !nonEmpty(v.identifier_field) ||
+    !nonEmpty(v.password_field) ||
+    !otherFields ||
+    !fieldsFromResponse ||
+    typeof v.session_source !== "string" ||
+    !SESSION_SOURCES.includes(v.session_source) ||
+    !sessionNames ||
+    typeof v.session_sent_as !== "string"
+  ) {
+    return null;
+  }
+  return {
+    httpMethod: v.http_method,
+    path: v.path,
+    format: v.format as TargetLoginMethodObject["format"],
+    identifierField: v.identifier_field,
+    passwordField: v.password_field,
+    otherFields,
+    fieldsFromResponse,
+    sessionSource: v.session_source as TargetLoginMethodObject["sessionSource"],
+    sessionNames,
+    sessionSentAs: v.session_sent_as,
+  };
+}
+
+/**
+ * 계정 행의 login_method(§6-1-3). 칸이 없으면 null(그 칸을 싣기 전 서버). 닫힌 칸 밖 · 모르는 state · evidence · cleared_reason ·
+ * 상태와 맞지 않는 칸 묶음이면 "invalid"(계약: 모르는 값은 파서가 거부한다).
+ */
+export function parseLoginMethod(v: unknown): TargetLoginMethod | "invalid" | null {
+  if (v === undefined) return null;
+  if (!isObj(v) || !closedKeys(v, ["state", "cleared_reason", "learned", "verified", "method"])) return "invalid";
+  if (typeof v.state !== "string" || !LOGIN_METHOD_STATES.includes(v.state)) return "invalid";
+  const state = v.state as TargetLoginMethodState;
+  let clearedReason: TargetLoginMethod["clearedReason"] = null;
+  if (v.cleared_reason !== undefined) {
+    if (state !== "none" || typeof v.cleared_reason !== "string" || !CLEARED_REASONS.includes(v.cleared_reason)) {
+      return "invalid";
+    }
+    clearedReason = v.cleared_reason as TargetLoginMethod["clearedReason"];
+  }
+  if (state === "none") {
+    return v.learned === undefined && v.verified === undefined && v.method === undefined
+      ? { state, clearedReason, learned: null, verified: null, method: null }
+      : "invalid";
+  }
+  const l = v.learned;
+  if (!isObj(l) || !closedKeys(l, ["at", "run_ref", "stage", "attempt_ref", "evidence"])) return "invalid";
+  const learnedAt = utcMs(l.at);
+  if (
+    learnedAt === null ||
+    !nonEmpty(l.run_ref) ||
+    typeof l.stage !== "string" ||
+    !LEARNED_STAGES.includes(l.stage) ||
+    !nonEmpty(l.attempt_ref) ||
+    typeof l.evidence !== "string" ||
+    !LEARNED_EVIDENCE.includes(l.evidence)
+  ) {
+    return "invalid";
+  }
+  const method = loginMethodObject(v.method);
+  if (!method) return "invalid";
+  let verified: TargetLoginMethod["verified"] = null;
+  if (state === "verified") {
+    const p = v.verified;
+    if (!isObj(p) || !closedKeys(p, ["at", "run_ref", "attempt_ref", "evidence"])) return "invalid";
+    const at = utcMs(p.at);
+    if (at === null || !nonEmpty(p.run_ref) || !nonEmpty(p.attempt_ref) || p.evidence !== "e3_relogin")
+      return "invalid";
+    verified = { at, runRef: p.run_ref, attemptRef: p.attempt_ref, evidence: "e3_relogin" };
+  } else if (v.verified !== undefined) {
+    return "invalid";
+  }
+  return {
+    state,
+    clearedReason,
+    learned: {
+      at: learnedAt,
+      runRef: l.run_ref,
+      stage: l.stage as "exploration" | "diagnosis",
+      attemptRef: l.attempt_ref,
+      evidence: l.evidence as "observed_contrast" | "probe_contrast",
+    },
+    verified,
+    method,
+  };
+}
 
 // ---------- 실 API (읽기) ----------
 
@@ -76,6 +246,7 @@ export async function getAccounts(target: ProductTargetRef | null): Promise<Targ
       origin: target.origin,
       credentialConfigured: a.credential_configured === true,
       registeredAt: Number.isFinite(registeredAt) ? registeredAt : null,
+      loginMethod: parseLoginMethod(a.login_method),
     });
   }
   return { accounts };
