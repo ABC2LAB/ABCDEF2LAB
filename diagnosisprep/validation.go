@@ -402,9 +402,6 @@ func ValidateResponse(r Request, response Response) error {
 			len(response.Product.Accounts) > MaxTargetAccounts {
 			return ErrProtocol
 		}
-		if response.Product.AccountStatement != "" && (r.Product.Operation != "accounts" || !validText(response.Product.AccountStatement, 1024)) {
-			return ErrProtocol
-		}
 		consentOp := r.Product.Operation == "external_consent" || r.Product.Operation == "external_consent_record"
 		if response.Product.ExternalConsent != nil && (!consentOp || response.Product.Reason != "" || !validProductExternalConsent(*response.Product.ExternalConsent)) {
 			return ErrProtocol

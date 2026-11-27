@@ -344,7 +344,6 @@ export function UrlNewScanLive() {
     // 조회 중이라 떼지 못했으면(disconnectUrl 이 그냥 돌아옴) 다음 바뀜에 다시 본다
     freshOnEntry.current = endedJob && !!useUrl.getState().handle;
   }, [route, handle, job, endedJob, busy]);
-  const seenSeq = useRef(useWb.getState().prefill?.seq ?? 0);
   const seenReset = useRef(resetSeq);
 
   // '다른 진단 만들기' 뒤에는 폼을 비운다 (같은 입력으로 겹쳐 만들지 않게)
@@ -357,12 +356,14 @@ export function UrlNewScanLive() {
     setTouched(false);
   }, [resetSeq]);
 
-  // 다른 화면의 '이 주소로 다시 점검' (이어 보는 진단이 없을 때만)
+  // 다른 화면의 '이 주소로 다시 점검' (이어 보는 진단이 없을 때만). 그 버튼은 주소를 넘긴 뒤 이 화면을 여니 열릴 때 남아 있는
+  // 주소도 받는다 — 전에는 열릴 때의 값을 이미 본 것으로 쳐서 칸이 비었다(사용자 11/27). 받은 주소는 지워 한 번만 쓴다.
+  // 주소가 채워지면 대상 승인 칸이 그 주소로 서버에 물어, 승인이 살아 있으면 URL 인증을 다시 하지 않는다
   useEffect(() => {
-    if (!prefill || prefill.seq === seenSeq.current) return;
-    seenSeq.current = prefill.seq;
-    if (!useUrl.getState().handle) setTarget(prefill.url);
-  }, [prefill]);
+    if (!prefill || handle) return;
+    setTarget(prefill.url);
+    useWb.getState().nPrefillTaken(prefill.seq);
+  }, [prefill, handle]);
 
   // 조회 중인 진단이 있으면 그 입력을 보인다 (잠금)
   const shown = handle?.input;
