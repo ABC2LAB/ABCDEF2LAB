@@ -200,8 +200,8 @@ func TestProductE3ConfirmationCompletedRecordsResultAndWrites(t *testing.T) {
 	if owner != "tester-a" || cross != "tester-b" {
 		t.Fatalf("계정 배정: A=%s B=%s", owner, cross)
 	}
-	// 시간 몫(요청 8 × 10초)이 확정 단계 문맥의 시한이다.
-	if share := 8 * server.E3ConfirmationRequestTimeoutDefault; !timed.set || timed.deadline.Before(started.Add(share)) || timed.deadline.After(time.Now().Add(share)) {
+	// 시간 몫(요청 고정 7 + 종류 1×4 = 11 × 10초)이 확정 단계 문맥의 시한이다.
+	if share := time.Duration(server.E3ConfirmationFixedRequests+server.E3ConfirmationRequestsPerType) * server.E3ConfirmationRequestTimeoutDefault; !timed.set || timed.deadline.Before(started.Add(share)) || timed.deadline.After(time.Now().Add(share)) {
 		t.Fatalf("확정 단계 시한: set=%v deadline=%v", timed.set, timed.deadline)
 	}
 	marker, err := e3contract.NewMarker(bytes.NewReader(e3Seed()))

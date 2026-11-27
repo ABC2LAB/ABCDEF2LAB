@@ -852,6 +852,14 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 					return e2HTTPRefreshSession(ctx, execution, dir, origin, authPolicy, sessionStore.refreshes, programCalls, label, true)
 				})
 			}
+			// 확정 단계 학습 로그인 재사용(모델 로그인 계약 §6-2)도 같은 실행·같은 계정 줄·같은 실패·간격 상한·확정 몫을 쓴다.
+			// 허용은 Worker 승인 규칙이 정한다(E② PurposeLearnedLogin·PurposeLoginPrep).
+			sessionStore.learned = func(ctx context.Context, req E2HTTPLearnedLoginRequest) (E2HTTPLearnedLoginResult, http.Header) {
+				return e2HTTPLearnedLogin(ctx, execution, dir, origin, authPolicy, sessionStore.refreshes, programCalls, req)
+			}
+			sessionStore.contrast = func(ctx context.Context, path string) E2HTTPLoginContrastResult {
+				return e2HTTPLoginContrast(ctx, execution, origin, programCalls, path)
+			}
 		}
 		var verifySelected func(context.Context, e2host.ObservationRef) (e2host.Verification, error)
 		if hostRecorder != nil {
