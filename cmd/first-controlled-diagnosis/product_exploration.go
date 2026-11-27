@@ -85,9 +85,7 @@ func (b *urlPreparationRuntime) productExplorationOptions(l *urlLoadedProfile, e
 		if e.Job.Input.ExcludedPaths != "" {
 			excluded = strings.Split(e.Job.Input.ExcludedPaths, "\n")
 		}
-		// 탐색 기록 가림용 이 회차 시험 계정 비밀번호(메모리에만). 만들지 못하면 factory가 탐색을 열지 않는다.
-		passwords, _ := l.explorationPasswords()
-		options.OpenHost = host.factory(*l.productTarget, b.product.targets.current, e.Job.SourceDigest, excluded, limits.MaxResponseBytes, l.productConnection, passwords, productExplorationLogin(credentials))
+		options.OpenHost = host.factory(*l.productTarget, b.product.targets.current, e.Job.SourceDigest, excluded, limits.MaxResponseBytes, l.productConnection, productExplorationLogin(credentials))
 	}
 
 	return options, true
