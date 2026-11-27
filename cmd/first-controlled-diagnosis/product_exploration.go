@@ -151,7 +151,7 @@ var errExplorationLoginHandover = errors.New("first-diagnosis: exploration login
 // explorationLoginTracked는 이 회차 탐색이 제품 탐색 경계(로그인 시도 판정·기록)를 쓰는지다. 외부 호스트 탐색은 경계 기록이
 // 여기 없어 인계하지 않는다.
 func (b *urlPreparationRuntime) explorationLoginTracked() bool {
-	return b.product.exploration != nil && b.hostCapabilities.Exploration == nil
+	return b != nil && b.product != nil && b.product.exploration != nil && b.hostCapabilities.Exploration == nil
 }
 
 // recordExplorationLoginAttempts는 탐색 경계의 로그인 시도 행을 회차 상태 디렉터리 기록에 덧붙인다. 탐색이 경계를 열기 전에
@@ -171,7 +171,13 @@ func (b *urlPreparationRuntime) recordExplorationLoginAttempts(ctx context.Conte
 		labels = append(labels, c.Label)
 	}
 	if notRun {
-		handOverExplorationLogins(stateDir, read, labels)
+		handOverExplorationLogins(stateDir, read, labels, func([]loginattempt.Row) error {
+			return learnedlogin.WriteExplorationEvidence(stateDir, learnedlogin.ExplorationEvidence{
+				Schema: learnedlogin.ExplorationEvidenceSchema, RunRef: binding.RunRef, SessionRef: binding.SessionRef,
+				JobID: binding.JobID, TaskID: binding.TaskID, TargetRef: binding.TargetRef,
+				TargetRevision: binding.TargetRevision, SourceDigest: sourceDigest, Sends: []learnedlogin.ExplorationSend{},
+			})
+		})
 		return
 	}
 	handOverExplorationLogins(stateDir, read, labels, func(rows []loginattempt.Row) error {

@@ -1,15 +1,15 @@
 package learnedlogin
 
 import (
-	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 
+	"github.com/Autumn-27/artex/e2config"
 	"github.com/Autumn-27/artex/internal/privateinput"
 )
 
@@ -18,7 +18,8 @@ import (
 // bodies, cookies, or CSRF values. It is not an E② signed audit journal.
 const (
 	ExplorationEvidenceFile   = "exploration-login-evidence.json"
-	ExplorationEvidenceSchema = "jindo.exploration-login-evidence/v1"
+	ExplorationEvidenceSchema = "jindo.exploration-login-evidence/v2"
+	explorationEvidenceV1     = "jindo.exploration-login-evidence/v1"
 	maxExplorationSends       = 4096
 	maxExplorationFileBytes   = 4 << 20
 )
@@ -41,6 +42,7 @@ type ExplorationEvidence struct {
 	RunRef         string            `json:"run_ref"`
 	SessionRef     string            `json:"session_ref"`
 	JobID          string            `json:"job_id"`
+	TaskID         string            `json:"task_id,omitempty"`
 	TargetRef      string            `json:"target_ref"`
 	TargetRevision uint64            `json:"target_revision"`
 	SourceDigest   string            `json:"source_digest"`
@@ -48,7 +50,9 @@ type ExplorationEvidence struct {
 }
 
 func (e ExplorationEvidence) valid() bool {
-	if e.Schema != ExplorationEvidenceSchema || !validRef(e.RunRef) || !validRef(e.SessionRef) || !validRef(e.JobID) ||
+	if (e.Schema != ExplorationEvidenceSchema && e.Schema != explorationEvidenceV1) ||
+		(e.Schema == ExplorationEvidenceSchema && !validTaskID(e.TaskID)) || (e.Schema == explorationEvidenceV1 && e.TaskID != "") ||
+		!validRef(e.RunRef) || !validRef(e.SessionRef) || !validRef(e.JobID) ||
 		!validRef(e.TargetRef) || e.TargetRevision == 0 || len(e.Sends) > maxExplorationSends || len(e.SourceDigest) != 64 {
 		return false
 	}
@@ -63,6 +67,11 @@ func (e ExplorationEvidence) valid() bool {
 		seen[send.Seq] = true
 	}
 	return true
+}
+
+func validTaskID(value string) bool {
+	id, err := strconv.ParseInt(value, 10, 64)
+	return err == nil && id > 0 && strconv.FormatInt(id, 10) == value
 }
 
 // VerifyExplorationEvidence compares a learned row with a separate boundary
@@ -102,7 +111,13 @@ func WriteExplorationEvidence(stateDir string, e ExplorationEvidence) error {
 		return ErrExplorationEvidence
 	}
 	path := filepath.Join(stateDir, ExplorationEvidenceFile)
-	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Lstat(path); err == nil {
+		old, found, readErr := ReadExplorationEvidence(stateDir)
+		if readErr != nil || !found || !reflect.DeepEqual(old, e) {
+			return ErrExplorationEvidence
+		}
+		return syncExplorationEvidenceDir(stateDir)
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return ErrExplorationEvidence
 	}
 	f, err := os.CreateTemp(stateDir, ".exploration-login-evidence-*")
@@ -118,9 +133,19 @@ func WriteExplorationEvidence(stateDir string, e ExplorationEvidence) error {
 		f.Close()
 		return ErrExplorationEvidence
 	}
-	if err = f.Close(); err != nil || privateinput.CheckDirectory(stateDir, true) != nil || os.Rename(f.Name(), path) != nil {
+	if err = f.Close(); err != nil || privateinput.CheckDirectory(stateDir, true) != nil {
 		return ErrExplorationEvidence
 	}
+	if os.Link(f.Name(), path) != nil {
+		old, found, readErr := ReadExplorationEvidence(stateDir)
+		if readErr != nil || !found || !reflect.DeepEqual(old, e) {
+			return ErrExplorationEvidence
+		}
+	}
+	return syncExplorationEvidenceDir(stateDir)
+}
+
+func syncExplorationEvidenceDir(stateDir string) error {
 	dir, err := os.Open(stateDir)
 	if err != nil {
 		return ErrExplorationEvidence
@@ -149,11 +174,46 @@ func ReadExplorationEvidence(stateDir string) (ExplorationEvidence, bool, error)
 		return ExplorationEvidence{}, true, ErrExplorationEvidence
 	}
 	defer clear(raw)
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
 	var e ExplorationEvidence
-	if dec.Decode(&e) != nil || dec.Decode(new(any)) != io.EOF || !e.valid() {
+	if e2config.StrictJSON(raw, &e) != nil || !exactExplorationEvidenceFields(raw, e.Schema) || !e.valid() {
 		return ExplorationEvidence{}, true, ErrExplorationEvidence
 	}
 	return e, true, nil
+}
+
+func exactExplorationEvidenceFields(raw []byte, schema string) bool {
+	var document map[string]json.RawMessage
+	if json.Unmarshal(raw, &document) != nil {
+		return false
+	}
+	top := []string{"schema", "run_ref", "session_ref", "job_id", "target_ref", "target_revision", "source_digest", "sends"}
+	if schema == ExplorationEvidenceSchema {
+		top = append(top, "task_id")
+	}
+	if !exactExplorationKeys(document, top) {
+		return false
+	}
+	var sends []map[string]json.RawMessage
+	if json.Unmarshal(document["sends"], &sends) != nil {
+		return false
+	}
+	fields := []string{"seq", "method", "path", "status", "boundary_forwarded", "approved_target", "observation_forwarded", "response_received"}
+	for _, send := range sends {
+		if !exactExplorationKeys(send, fields) {
+			return false
+		}
+	}
+	return true
+}
+
+func exactExplorationKeys(document map[string]json.RawMessage, fields []string) bool {
+	if len(document) != len(fields) {
+		return false
+	}
+	for _, name := range fields {
+		if _, ok := document[name]; !ok {
+			return false
+		}
+	}
+	return true
 }
