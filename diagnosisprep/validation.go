@@ -412,6 +412,14 @@ func ValidateResponse(r Request, response Response) error {
 		if response.Product.Login != nil && !ValidTargetLogin(*response.Product.Login) {
 			return ErrProtocol
 		}
+		candidateLoginOp := r.Product.Operation == "target_login_candidate"
+		if response.Product.CandidateLogin != nil && (!candidateLoginOp || response.Product.Reason != "" || response.Product.Login != nil ||
+			!validProductCandidateLogin(*response.Product.CandidateLogin)) {
+			return ErrProtocol
+		}
+		if candidateLoginOp && response.Error == "" && response.Product.Reason == "" && response.Product.CandidateLogin == nil {
+			return ErrProtocol
+		}
 		declarationOp := r.Product.Operation == "declaration" || r.Product.Operation == "declaration_put"
 		if response.Product.Declaration != nil && (!declarationOp || response.Product.Reason != "" || !validProductDeclaration(*response.Product.Declaration)) {
 			return ErrProtocol

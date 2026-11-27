@@ -655,7 +655,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		var selectedSessionHeaders func() (http.Header, bool)
 		credentialHeader := ""
 		if policy.Auth != nil {
-			credentialHeader = policy.Auth.Login.Header
+			credentialHeader = e2HTTPAuthCredentialHeader(policy.Auth)
 			accountRefs := make(map[string]string, len(policy.Auth.Accounts))
 			for _, account := range policy.Auth.Accounts {
 				accountRefs[account.Label] = CandidateAccountRevision(account.Label, account.Credential.SHA256)
@@ -778,7 +778,12 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 				}
 			}
 			var authErr error
-			auth, authErr = e2HTTPAuthPrep(taskctx, execution, dir, origin, *policy.Auth)
+			if policy.Auth.LearnedMethod != nil {
+				// 선택 후보 검증의 학습 로그인(계획에 결속한 방법·계정 하나, 전용 규칙). 로그인 설정(9칸)을 쓰지 않는다.
+				auth, authErr = e2HTTPSelectedLearnedLogin(taskctx, execution, dir, origin, *policy.Auth)
+			} else {
+				auth, authErr = e2HTTPAuthPrep(taskctx, execution, dir, origin, *policy.Auth)
+			}
 			accountAuth = auth.AccountAuth
 			if authErr != nil || current(taskctx) != nil {
 				return failed(execution, runner)
@@ -831,7 +836,8 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			prober.execution, prober.tracker, prober.calls = execution, loginAttempts, programCalls
 			go prober.run(taskctx)
 		}
-		if policy.Auth != nil && policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && (len(credentials) > 0 || len(auth.Sessions) > 0) {
+		// 선택 후보 학습 로그인 실행에는 다시 로그인 경로가 없다(로그인 설정이 없고 E③ 확정 몫도 없음, 한 번만 로그인).
+		if policy.Auth != nil && policy.Auth.LearnedMethod == nil && policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && (len(credentials) > 0 || len(auth.Sessions) > 0) {
 			authPolicy, origin := *policy.Auth, ""
 			for _, rule := range policy.Rules {
 				if rule.Ref == authPolicy.RuleRef {

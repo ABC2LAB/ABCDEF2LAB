@@ -83,6 +83,10 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 	if !validE2HTTPLoginAttempts(policy) {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 	}
+	// 학습 로그인 칸은 선택 후보 검증 실행만 받는다(계정 하나·사전 승인 범위, 아래 검사).
+	if policy.Auth != nil && policy.Auth.LearnedMethod != nil && policy.SelectedAccountRef == "" {
+		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
+	}
 	if policy.SelectedAccountRef != "" && (!run || policy.Auth == nil || len(policy.Auth.Accounts) != 1 ||
 		policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough || policy.ApprovalMode != e2proxy.ApprovalPreauthorizedScope ||
 		CandidateAccountRevision(policy.Auth.Accounts[0].Label, policy.Auth.Accounts[0].Credential.SHA256) != policy.SelectedAccountRef) {

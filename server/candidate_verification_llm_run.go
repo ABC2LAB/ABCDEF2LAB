@@ -16,8 +16,8 @@ import (
 func ExecuteSelectedCandidateActions(ctx context.Context, manager *Manager, options FirstDiagnosisHTTPStartOptions,
 	taskID int64, runRef string, plan CandidateLLMPlan) ([]candidateverify.StoredObservationV2, error) {
 	if ctx == nil || ctx.Err() != nil || manager == nil || taskID <= 0 || runRef == "" ||
-		plan.Version != "candidate-llm-plan/v1" || len(plan.Actions) < 1 || len(plan.Actions) > 3 ||
-		plan.MaxRequests != len(plan.Actions)+boolInt(plan.AuthPreparation != nil) ||
+		plan.Version != candidateLLMPlanV1 && plan.Version != candidateLLMPlanV2 || len(plan.Actions) < 1 || len(plan.Actions) > 3 ||
+		plan.MaxRequests != len(plan.Actions)+CandidateLLMAuthRequests(plan.AuthPreparation) ||
 		(plan.AccountRef == "") != (plan.AuthPreparation == nil) || !candidateVerificationOrigin.MatchString(plan.Origin) {
 		return nil, ErrCandidateExecutionBinding
 	}
@@ -91,7 +91,7 @@ func ExecuteSelectedCandidateActions(ctx context.Context, manager *Manager, opti
 	if _, err := manager.StampTaskFirstRun(id); err != nil || manager.SetTaskPaused(id, false) != nil || manager.SetTaskStatus(id, "running") != nil {
 		return nil, ErrCandidateExecutionBinding
 	}
-	results, runErr := runtime.RunSelectedCandidateActions(ctx, intentID, plan.Origin, plan.Actions)
+	results, runErr := runtime.RunSelectedCandidateActions(ctx, intentID, plan.Origin, plan.Actions, plan.AccountRef != "")
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), options.CleanupTimeout)
 	defer cancel()
 	pauseErr := manager.SetTaskPaused(id, true)

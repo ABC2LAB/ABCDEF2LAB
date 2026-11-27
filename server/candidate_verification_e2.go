@@ -72,7 +72,7 @@ func (r *E2HTTPRuntime) runSelectedCandidateGET(ctx context.Context, task *Task,
 // Every curl call uses the same protected Runner and trusted-result observer as
 // ordinary model work. The model has no shell, browser or direct HTTP tool.
 func (r *E2HTTPRuntime) runSelectedCandidateActions(ctx context.Context, task *Task, intent *db.Node,
-	origin string, actions []CandidateLLMPlanAction) (results []e2runner.TrustedResult, resultErr error) {
+	origin string, actions []CandidateLLMPlanAction, accountBound bool) (results []e2runner.TrustedResult, resultErr error) {
 	if r == nil || task == nil || intent == nil || intent.Kind != db.KindIntent || len(actions) < 1 || len(actions) > 3 {
 		return nil, errCandidateE2Execution
 	}
@@ -102,6 +102,17 @@ func (r *E2HTTPRuntime) runSelectedCandidateActions(ctx context.Context, task *T
 	t.mu.Unlock()
 	if !valid {
 		return nil, errCandidateE2Execution
+	}
+	// 인증된 원본의 재현은 이 실행의 인증 준비(9칸 또는 학습 로그인)가 그 계정 하나를 인증했을 때만 보낸다. 실패·결과 불명·
+	// 미전송이면 재현 행동을 하나도 시도하지 않는다(다시 로그인하지 않음).
+	if accountBound {
+		result := ""
+		for _, value := range lease.AccountAuth {
+			result = value
+		}
+		if len(lease.AccountAuth) != 1 || result != E2HTTPAuthAuthenticated {
+			return nil, &CandidateAuthPreparationError{Result: result}
+		}
 	}
 	results = make([]e2runner.TrustedResult, 0, len(actions))
 	for _, action := range actions {
@@ -186,4 +197,25 @@ func selectedAuditTimeFollowsReceipt(journalAt, receiptAt time.Time) bool {
 	}
 	delta := journalAt.Sub(receiptAt)
 	return delta >= 0 && delta <= 15*time.Second
+}
+
+// CandidateAuthPreparationError는 선택 후보 실행의 인증 준비가 계정을 인증하지 못해 재현 행동을 보내지 않았다는 뜻이다.
+// Result는 인증 준비 고정 결과 코드다(값 없음).
+type CandidateAuthPreparationError struct{ Result string }
+
+func (e *CandidateAuthPreparationError) Error() string { return "candidate_auth_preparation_failed" }
+
+// CandidateAuthFailureReason은 선택 후보 실행 실패의 인증 고정 사유다. 인증 준비 실패가 아니면 빈 값이다.
+func CandidateAuthFailureReason(err error) string {
+	var auth *CandidateAuthPreparationError
+	if !errors.As(err, &auth) {
+		return ""
+	}
+	switch auth.Result {
+	case E2HTTPAuthResultUnknown:
+		return "candidate_auth_result_unknown"
+	case E2HTTPAuthLoginFailed, E2HTTPAuthSessionNotFound:
+		return "candidate_auth_failed"
+	}
+	return "candidate_auth_not_sent"
 }

@@ -8,12 +8,14 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"reflect"
 	"strconv"
 	"time"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisapi"
 	"github.com/Autumn-27/artex/diagnosisprep"
+	"github.com/Autumn-27/artex/learnedlogin"
 	"github.com/Autumn-27/artex/report"
 )
 
@@ -141,19 +143,27 @@ WHERE q.id=$1 AND q.task_id=$2 AND q.candidate_id=$3 AND q.method='llm/v1' FOR U
 		candidateVerificationError(w, 409, "candidate_original_observation_unavailable")
 		return
 	}
-	var login *diagnosisprep.TargetLogin
-	if originalContext.OriginalObservation != nil && originalContext.OriginalObservation.Source.Observation.RequestAccountRef != "" {
-		loginReq := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "candidate-llm-plan-login", Command: diagnosisprep.ProductControl,
-			Principal: owner, Product: &diagnosisprep.ProductRequest{Operation: "target_login", TargetID: ownerResp.Job.Scope.TargetRef}}
-		loginResp, loginErr := endpoint.Call(ctx, loginReq)
-		if loginErr != nil || diagnosisprep.ValidateResponse(loginReq, loginResp) != nil || loginResp.Error != "" ||
-			loginResp.Product == nil || loginResp.Product.Login == nil {
-			candidateVerificationError(w, 409, "candidate_auth_preparation_unavailable")
+	var auth *CandidatePlanAuth
+	if accountRef := originalContext.OriginalObservation.Source.Observation.RequestAccountRef; accountRef != "" {
+		// 선택 검증은 실행마다 로그인을 한 번만 보내고 다시 보내지 않는다. 같은 계정의 최근 선택 실행이 인증 실패·결과 불명으로
+		// 연달아 상한만큼 끝났으면 새 계획을 만들지 않는다(계정 잠금 방지, 모델 로그인 계약 §5의 연속 실패 상한과 같은 수).
+		failures, failureErr := candidateRecentAuthFailures(ctx, tx, ownerResp.Job.Scope.TargetRef, accountRef, candidateSelectedLoginMaxFailures)
+		if failureErr != nil {
+			candidateVerificationError(w, 503, "verification_storage_unavailable")
 			return
 		}
-		login = loginResp.Product.Login
+		if failures >= candidateSelectedLoginMaxFailures {
+			candidateAuthPreparationError(w, string(learnedlogin.ReasonAttemptsExhausted))
+			return
+		}
+		var reason string
+		auth, reason = readCandidatePlanAuth(ctx, endpoint, owner, ownerResp.Job.Scope.TargetRef, accountRef)
+		if auth == nil {
+			candidateAuthPreparationError(w, reason)
+			return
+		}
 	}
-	plan, digest, err := makeCandidateLLMPlan(time.Now().UTC(), candidate, originalContext.OriginalObservation, *analysis, ownerResp.Job.Input, *ownerResp.Job.Scope, *targetResp.Product.Target, login)
+	plan, digest, err := makeCandidateLLMPlan(time.Now().UTC(), candidate, originalContext.OriginalObservation, *analysis, ownerResp.Job.Input, *ownerResp.Job.Scope, *targetResp.Product.Target, auth)
 	if err != nil {
 		candidateVerificationError(w, 409, "candidate_action_plan_unavailable")
 		return
@@ -166,9 +176,9 @@ WHERE q.id=$1 AND q.task_id=$2 AND q.candidate_id=$3 AND q.method='llm/v1' FOR U
 			return
 		}
 		var prior CandidateLLMPlan
+		// 인증 준비 원천(9칸 digest·학습 방법 digest·준비 경로·출처 수준)이 승인 대기 중에 바뀌면 같은 계획으로 두지 않는다.
 		if strictJSON(stored, &prior) != nil || prior.AnalysisDigest != analysis.Digest || prior.AccountRef != plan.AccountRef ||
-			(prior.AuthPreparation != nil && (login == nil || prior.AuthPreparation.LoginDigest != candidateLoginDigest(*login))) ||
-			(prior.AuthPreparation == nil && login != nil) ||
+			prior.Version != plan.Version || !reflect.DeepEqual(prior.AuthPreparation, plan.AuthPreparation) ||
 			!candidateLLMPlanStillApproved(time.Now().UTC(), prior, ownerResp.Job.Input, *ownerResp.Job.Scope, *targetResp.Product.Target) {
 			// The stored plan is immutable. A changed target or policy needs a
 			// newly selected verification, never an in-place plan rewrite.
@@ -214,4 +224,76 @@ VALUES($1,4,'awaiting_approval','action_approval_required','[]'::json,$2,'select
 		return
 	}
 	writeJSON(w, 200, map[string]any{"request_id": strconv.FormatInt(requestID, 10), "process_state": "awaiting_approval", "plan": plan, "plan_digest": digest})
+}
+
+// readCandidatePlanAuth는 원본 계정의 인증 준비 원천을 보호 준비 서비스에서 읽는다(docs/contracts/selected-candidate-learned-login.md).
+// 출처를 확인한 학습 방법이 먼저이고, 학습 방법이 없을 때만 로그인 설정(9칸)이다. 학습 방법이 있는데 믿을 수 없으면 그 고정
+// 사유로 막는다(9칸으로 대신하지 않음). 실패면 nil과 응답 오류 사유다.
+func readCandidatePlanAuth(ctx context.Context, endpoint diagnosisprep.Endpoint, owner, targetID, accountRef string) (*CandidatePlanAuth, string) {
+	req := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "candidate-llm-plan-login", Command: diagnosisprep.ProductControl,
+		Principal: owner, Product: &diagnosisprep.ProductRequest{Operation: "target_login_candidate", TargetID: targetID, AccountRef: accountRef}}
+	resp, err := endpoint.Call(ctx, req)
+	if err != nil || diagnosisprep.ValidateResponse(req, resp) != nil || resp.Error != "" || resp.Product == nil || resp.Product.CandidateLogin == nil {
+		return nil, ""
+	}
+	choice := resp.Product.CandidateLogin
+	switch choice.Source {
+	case diagnosisprep.CandidateLoginLearned:
+		return &CandidatePlanAuth{Learned: &CandidateLearnedLogin{Method: choice.Method.Clone(), Trust: choice.Trust}}, ""
+	case diagnosisprep.CandidateLoginConfigured:
+		login := *choice.Login
+		login.Cookies = append([]string(nil), login.Cookies...)
+		return &CandidatePlanAuth{Configured: &login}, ""
+	}
+	return nil, choice.Reason
+}
+
+// candidateAuthPreparationError는 인증 준비를 계획할 수 없는 까닭이다. 쓸 방법이 아예 없으면 기존 사유, 학습 방법이 있지만
+// 쓸 수 없으면(출처·판본·인계·실패 상한) 그 고정 사유를 reason으로 같이 준다(값 없음).
+func candidateAuthPreparationError(w http.ResponseWriter, reason string) {
+	if reason == "" || reason == string(learnedlogin.ReasonNone) {
+		candidateVerificationError(w, 409, "candidate_auth_preparation_unavailable")
+		return
+	}
+	writeJSON(w, 409, map[string]string{"error": "candidate_learned_login_unusable", "reason": reason})
+}
+
+// candidateSelectedLoginMaxFailures는 같은 계정 선택 검증의 연속 인증 실패 상한이다(모델 로그인 계약 §5 기본 3과 같은 값,
+// 사용자 결정 2026-11-26).
+const candidateSelectedLoginMaxFailures = 3
+
+// candidateRecentAuthFailures는 그 대상·계정 참조의 가장 최근 선택 검증 실행부터 연달아 인증 실패·결과 불명으로 끝난 수다.
+func candidateRecentAuthFailures(ctx context.Context, tx *sql.Tx, targetID, accountRef string, limit int) (int, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT e.reason FROM diagnostic_candidate_verification_plans p
+JOIN diagnostic_candidate_verification_executions x ON x.request_id=p.request_id
+JOIN LATERAL (SELECT reason FROM diagnostic_candidate_verification_events WHERE request_id=p.request_id ORDER BY step DESC LIMIT 1) e ON true
+WHERE p.target_id=$1 AND p.plan->>'account_ref'=$2 ORDER BY p.request_id DESC LIMIT $3`, targetID, accountRef, limit)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var reasons []string
+	for rows.Next() {
+		var reason string
+		if err := rows.Scan(&reason); err != nil {
+			return 0, err
+		}
+		reasons = append(reasons, reason)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	return consecutiveCandidateAuthFailures(reasons), nil
+}
+
+// consecutiveCandidateAuthFailures는 최근 실행부터 연달아 인증 실패·결과 불명으로 끝난 수다(진행 중·성공·다른 실패에서 멈춤).
+func consecutiveCandidateAuthFailures(latestFirst []string) int {
+	count := 0
+	for _, reason := range latestFirst {
+		if reason != "candidate_auth_failed" && reason != "candidate_auth_result_unknown" {
+			break
+		}
+		count++
+	}
+	return count
 }
