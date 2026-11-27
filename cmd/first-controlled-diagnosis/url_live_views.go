@@ -30,6 +30,8 @@ import (
 const (
 	controlPolicyViewFormat = "abc2lab.control-policy-view/v1"
 	e2FlowViewFormat        = "abc2lab.e2-flow-view/v1"
+	// e2FlowJournalNone은 실행은 결속됐지만 E② 저널이 아직 없는 e2-flow의 저널 상태다(verified·invalid와 따로).
+	e2FlowJournalNone = "none"
 	// e2FlowTailCalls는 처음 조회(after 없음)에 주는 최근 호출 수, e2FlowPageEvents는 이어 받기 한 번의 사건 수다.
 	e2FlowTailCalls  = 200
 	e2FlowPageEvents = 1000
@@ -247,7 +249,8 @@ type e2FlowView struct {
 }
 
 // e2FlowEvents는 결속 디렉터리의 감사 기록을 실행 감사 키로 끝까지 검증하고 사건을 돌려준다. 키가 pin과 다르거나
-// 기록이 틀리면 ok가 거짓이다(사건 없음). 기록이 아직 없으면(실행 전) errRunNotBound다.
+// 기록이 틀리면 ok가 거짓이다(사건 없음). 실행이 E②를 잡은 적이 없어 저널이 아직 없으면 errRunNotBound다. E②를 잡은 기록은
+// 있는데 저널이 없으면 ok가 거짓이다(무효).
 func e2FlowEvents(r *http.Request, b *runBinding) ([]e2proxy.Event, bool, error) {
 	p := b.policy
 	if filepath.Clean(p.StateDir) != filepath.Join(b.dir, "state") || filepath.Base(p.AuditKey.File) != p.AuditKey.File {
@@ -255,7 +258,13 @@ func e2FlowEvents(r *http.Request, b *runBinding) ([]e2proxy.Event, bool, error)
 	}
 	journal, err := b.root.Open("state/events.jsonl")
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false, errRunNotBound
+		// 저널이 없다. 실행이 E②를 잡은 적이 없다고 확인될 때만(취득 기록 없음) '아직 없음'이다. 취득 기록은 저널보다 먼저
+		// 남기므로, 기록은 있는데 저널이 없으면 지워졌거나 만들지 못한 것이다 — 사건 없이 무효로 답한다(#983 리뷰 P1). 기록이
+		// 없다고 확인하지 못한 경우도 '아직 없음'으로 답하지 않는다.
+		if _, recordErr := b.root.Lstat("state/" + server.E2AcquireRecordFile); errors.Is(recordErr, fs.ErrNotExist) {
+			return nil, false, errRunNotBound
+		}
+		return nil, false, nil
 	}
 	if err != nil {
 		return nil, false, errPreparation
@@ -406,6 +415,25 @@ func e2FlowOf(events []e2proxy.Event, after *uint64) e2FlowView {
 	return view
 }
 
+// explorationRecordNow는 탐색 요청 기록의 지금 값이다(탐색 중이면 경계가 보고하는 수). 기록을 못 읽으면 모름이다.
+func explorationRecordNow(ctx context.Context, b *runBinding, jobID string, live liveExploration) explorationRequestsRecord {
+	exploration, err := readExplorationRequests(b)
+	if err != nil {
+		exploration = explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationUnknown}
+	}
+	return explorationNow(ctx, exploration, jobID, live)
+}
+
+// noJournalFlow는 E② 저널이 아직 없는 결속 실행의 e2-flow다: 저널 상태 none, 호출·누계 0, 대상 요청 내역은 탐색 수만(진단
+// 갈래는 0). 저널이 없다는 것은 E② 사건이 없다는 뜻이고(저널은 E② 실행을 잡을 때 만든다), 사건을 지어내지 않는다.
+func noJournalFlow(ctx context.Context, b *runBinding, jobID string, live liveExploration) e2FlowView {
+	view := e2FlowOf(nil, nil)
+	view.Journal = e2FlowJournalNone
+	requests := targetRequestsOf(nil, explorationRecordNow(ctx, b, jobID, live))
+	view.TargetRequests = &requests
+	return view
+}
+
 // serveLiveData는 작업 결속을 확인한 task의 실데이터 읽기 API다. 실행 결속 전이면 404, 정책 파일이 승인 해시와
 // 다르면 409다.
 func serveLiveData(w http.ResponseWriter, r *http.Request, runsDir, jobID, view string) {
@@ -448,8 +476,15 @@ func serveLiveDataWith(w http.ResponseWriter, r *http.Request, runsDir, jobID, v
 		events, ok, err := e2FlowEvents(r, b)
 		switch {
 		case errors.Is(err, errRunNotBound):
-			http.Error(w, "전송 통제 기록이 아직 없습니다", http.StatusNotFound)
-			return
+			// 실행은 결속됐지만 E② 저널이 아직 없다(첫 진단 작업이 E②를 잡기 전 — 탐색·계획 중, 또는 E②를 한 번도 잡지
+			// 않고 끝난 회차). 404 대신 저널 상태 none과 탐색 요청 수를 준다. 그래야 끝난 회차의 '보낸 요청'이 '읽기 실패'로
+			// 보이지 않는다(2026-11-27 사용자 결정 (가), 계약 workbench-live-data §4).
+			flow := noJournalFlow(r.Context(), b, jobID, live)
+			if r.Header.Get(server.E2ModelWritesHeader) == "1" {
+				writes := summarizeE2ModelWrites(nil)
+				flow.ModelWrites = &writes
+			}
+			out = flow
 		case err != nil:
 			http.Error(w, "전송 통제 기록을 읽지 못했습니다", http.StatusServiceUnavailable)
 			return
@@ -458,11 +493,7 @@ func serveLiveDataWith(w http.ResponseWriter, r *http.Request, runsDir, jobID, v
 		default:
 			flow := withAttemptPatterns(e2FlowOf(events, after), attemptPatterns(b))
 			// 세 내역(저널 두 갈래·탐색)은 이 응답 하나에서 같은 시점에 읽는다. 탐색 기록을 못 읽으면 탐색 수는 모름이다.
-			exploration, readErr := readExplorationRequests(b)
-			if readErr != nil {
-				exploration = explorationRequestsRecord{Format: explorationRequestsFormat, State: explorationUnknown}
-			}
-			requests := targetRequestsOf(events, explorationNow(r.Context(), exploration, jobID, live))
+			requests := targetRequestsOf(events, explorationRecordNow(r.Context(), b, jobID, live))
 			flow.TargetRequests = &requests
 			if r.Header.Get(server.E2ModelWritesHeader) == "1" {
 				writes := summarizeE2ModelWrites(events)

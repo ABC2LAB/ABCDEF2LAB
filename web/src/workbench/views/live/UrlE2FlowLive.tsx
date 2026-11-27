@@ -32,7 +32,7 @@ const COLORS: Record<DecisionClass, string> = {
   unknown: "var(--und)",
 };
 const DECISIONS = { allowed: "허용", denied: "거부", unsupported: "미지원", unknown: "불명" };
-/** 첫 진단 의도 전에는 실행 저널이 없어 서버가 404 "전송 통제 기록이 아직 없습니다"를 준다 — 실패가 아니라 대기 상태다. */
+/** 첫 진단 의도 전에는 실행 저널이 없어 서버가 journal "none"(이전 서버는 404 "전송 통제 기록이 아직 없습니다")을 준다 — 실패가 아니라 대기 상태다. */
 const PRE_DIAGNOSIS_RETRY_MS = 10000;
 const FLOW_RETRY_MS = 2000;
 export function UrlE2FlowLive() {
@@ -65,7 +65,8 @@ export function UrlE2FlowLive() {
         if (next.more) {
           void poll();
         } else {
-          timer = setTimeout(() => void poll(), FLOW_RETRY_MS);
+          // 저널 없음(진단 요청 전)은 404 대기와 같은 간격으로 다시 읽는다
+          timer = setTimeout(() => void poll(), next.journal === "none" ? PRE_DIAGNOSIS_RETRY_MS : FLOW_RETRY_MS);
         }
       } catch (error) {
         if (current) {
@@ -104,7 +105,7 @@ export function UrlE2FlowLive() {
           </p>
           {!task ? <p className={s.empty}>실제 진단 작업을 선택하세요.</p> : null}
           {task && !flow && !failed && !waiting ? <p className={s.empty}>불러오는 중…</p> : null}
-          {waiting ? (
+          {waiting || flow?.journal === "none" ? (
             <p className={s.empty} role="status">
               진단 요청 전 · 아직 전송 통제 기록이 없습니다. 첫 진단 요청이 나가면 기록이 생깁니다.
             </p>

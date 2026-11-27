@@ -13,6 +13,15 @@ import (
 // 화면은 그 시도의 path_pattern을 비운다. 평가 회차(Evaluation)에는 만들지 않는다(평가 경로 투영은 E2AttemptPathsFile).
 const E2AttemptPatternsFile = "attempt-patterns.jsonl"
 
+// E2AcquireRecordFile은 실행이 E②를 잡았다는 기록이다(계약 docs/contracts/workbench-live-data.md §4, 2026-11-27 결정). E②를
+// 잡을 때 화면용 저널(events.jsonl)보다 먼저 상태 디렉터리에 배타 생성·fsync하고, 남기지 못하면 E②를 잡지 않는다. 작업대
+// e2-flow는 이 기록이 없을 때만 '저널 없음(none)'으로 답하고, 기록은 있는데 저널이 없으면(지워졌거나 만들지 못함) 무효로
+// 본다. 감사 기록이 아니고 허용 판단·송신·계수에 영향이 없다.
+const E2AcquireRecordFile = "e2-acquire.json"
+
+// e2AcquireRecordVersion은 E2AcquireRecordFile의 형식이다.
+const e2AcquireRecordVersion = "e2-acquire/v1"
+
 // E2AttemptPatternRow는 E2AttemptPatternsFile 한 줄이다.
 type E2AttemptPatternRow struct {
 	AttemptID      string `json:"attempt_id"`

@@ -46,6 +46,16 @@ func e2HTTPCreatePrivateDirectory(path string) error {
 // Record run conditions before the first Bash call. O_EXCL refuses replacement
 // or reuse, and the file and directory must both reach durable storage.
 func e2HTTPRecordRuntimeConditions(dir string, data []byte) error {
+	return e2HTTPRecordStateFile(dir, "runtime-conditions.json", data)
+}
+
+// e2HTTPRecordAcquire는 E②를 잡았다는 기록(E2AcquireRecordFile)을 남긴다. 화면용 저널을 만들기 전에 부른다.
+func e2HTTPRecordAcquire(dir string, data []byte) error {
+	return e2HTTPRecordStateFile(dir, E2AcquireRecordFile, data)
+}
+
+// e2HTTPRecordStateFile은 보호 상태 디렉터리에 파일 하나를 배타 생성하고 파일과 디렉터리를 저장 장치까지 내린다.
+func e2HTTPRecordStateFile(dir, name string, data []byte) error {
 	if privateinput.CheckDirectory(dir, true) != nil {
 		return ErrE2HTTPHost
 	}
@@ -54,7 +64,7 @@ func e2HTTPRecordRuntimeConditions(dir string, data []byte) error {
 		return ErrE2HTTPHost
 	}
 	defer root.Close()
-	f, err := root.OpenFile("runtime-conditions.json", os.O_CREATE|os.O_EXCL|os.O_WRONLY|unix.O_NOFOLLOW, 0600)
+	f, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY|unix.O_NOFOLLOW, 0600)
 	if err != nil {
 		return ErrE2HTTPHost
 	}
