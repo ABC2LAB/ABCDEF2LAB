@@ -54,7 +54,8 @@ WHERE q.id=$1 AND q.task_id=$2 AND q.candidate_id=$3 AND q.original_evidence_dig
 	}
 	return CandidateAssessmentContext{Original: original, Analysis: *analysis, Answers: answers,
 		StoredOnly: true, FollowupTaskID: original.TaskID, FollowupRunRef: original.RunRef,
-		Followup: comparisons, EvidenceRefs: candidateVerificationSourceRefs(storedSources(comparisons))}, nil
+		Followup: comparisons, EvidenceRefs: candidateVerificationSourceRefs(storedSources(comparisons)),
+		EvidenceGate: candidateEvidenceGateLatest}, nil
 }
 
 func storedSources(rows []candidateverify.StoredObservationV2) []candidateverify.SourceV2 {

@@ -110,6 +110,8 @@ WHERE request_id=$1 AND step=7 AND process_state='evidence_ready'`, id).Scan(&ra
 	if strictJSON(raw, &verdict) != nil {
 		return nil, nil, ErrCandidateFinalVerdict
 	}
+	// 저장된 판정에 적힌 게이트 판본으로 다시 검사한다(없으면 v1 이전 의미). 새 정책이 옛 판정을 바꾸지 않는다.
+	context.EvidenceGate = verdict.EvidenceGate
 	parsed, err := ParseCandidateFinalVerdict(raw, context)
 	if err != nil || !reflect.DeepEqual(parsed, verdict) || verdict.Verdict != *row.Latest.Verdict ||
 		row.Latest.Reason != "model_evidence_checked" {

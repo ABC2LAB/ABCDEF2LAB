@@ -25,6 +25,9 @@ type CandidateAssessmentContext struct {
 	FollowupRunRef string
 	Followup       []candidateverify.StoredObservationV2
 	EvidenceRefs   []candidateVerificationSourceRef
+	// EvidenceGate는 이 판정에 적용하는 응답 근거 게이트 판본이다. 새 검증은 최신 판본, 재조회는 저장된 판정에 적힌 판본("" = v1 이전
+	// 의미)을 쓴다. 재조회가 새 정책으로 옛 판정 의미를 바꾸지 않게 한다.
+	EvidenceGate string
 }
 
 func ReadCandidateAssessmentContext(ctx context.Context, pool *sql.DB, requestID int64) (CandidateAssessmentContext, error) {
@@ -88,5 +91,6 @@ WHERE q.id=$1 AND q.method='llm/v1' AND q.task_id=$2 AND q.candidate_id=$3 AND q
 	if tx.Commit() != nil {
 		return CandidateAssessmentContext{}, ErrCandidateAssessmentContext
 	}
+	out.EvidenceGate = candidateEvidenceGateLatest
 	return out, nil
 }
