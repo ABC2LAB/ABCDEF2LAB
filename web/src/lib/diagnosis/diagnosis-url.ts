@@ -1034,6 +1034,25 @@ export const urlReasonLabels: Record<string, string> = {
   budget_exhausted: "승인된 실행·모델 예산이 소진됐어요.",
   unknown: "준비 또는 실행 결과를 확인하지 못했어요.",
 };
+/** 새 시작 거절 사유(서버 diagnosisprep/start_refusal.go와 같은 닫힌 목록). 문구는 화면이 정한다. */
+export const URL_BUSY_REASONS = [
+  "run_active",
+  "run_stopping",
+  "candidate_verification_active",
+  "closure_unconfirmed",
+  "release_available",
+  "release_pending_restart",
+  "recovery_unsupported",
+  "multiple_blockers",
+] as const;
+export type URLBusyReason = (typeof URL_BUSY_REASONS)[number];
+
+/** 409 busy 거절의 사유. 사유가 없거나(구 서버) 목록 밖이면 undefined — 그때는 기존 busy 안내를 쓴다. */
+export function urlBusyReason(cause: unknown): URLBusyReason | undefined {
+  if (!(cause instanceof ApiError) || cause.status !== 409 || cause.message !== "busy") return undefined;
+  return URL_BUSY_REASONS.find((reason) => reason === cause.busyReason);
+}
+
 export function urlDiagnosisError(cause: unknown): string {
   if (cause instanceof ApiError) {
     if (cause.status === 401) return "로그인이 만료됐어요. 다시 로그인한 뒤 같은 진단의 상태를 조회해 주세요.";

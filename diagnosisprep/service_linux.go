@@ -354,6 +354,15 @@ func (s *Service) save(r receipt) error {
 func responseError(r Request, code string) Response {
 	return Response{Version: Version, RequestID: r.RequestID, Error: code}
 }
+
+// busyResponse는 새 시작 거절(busy)에 고정 사유를 붙인다. 사유를 고르지 못하면 busy만 준다.
+func busyResponse(r Request, reason string) Response {
+	out := responseError(r, "busy")
+	if ValidBusyReason(reason) {
+		out.BusyReason = reason
+	}
+	return out
+}
 func responseJob(r Request, j Job) Response {
 	copy := cloneReceipt(receipt{Job: j}).Job
 	return Response{Version: Version, RequestID: r.RequestID, Job: &copy}
@@ -534,12 +543,13 @@ func (s *Service) Call(ctx context.Context, r Request) (Response, error) {
 		var used Budget
 		var runs int64
 		if len(s.candidateActive) != 0 {
-			return responseError(r, "busy"), nil
+			return busyResponse(r, BusyCandidateVerification), nil
 		}
 		for _, other := range s.jobs {
 			// 상태 게시와 실제 backend 반환은 별개다. 종료와 drain 증거를 모두 요구한다.
 			if blocksStart(other) {
-				return responseError(r, "busy"), nil
+				// 막는 까닭은 운영자 해제 판단과 같은 근거로 고른다. 사유를 붙여도 거절은 그대로다(잠금을 풀지 않음).
+				return busyResponse(r, busyReasonFor(s.releaseViewLocked())), nil
 			}
 			if other.StartKey != "" && other.Inspection.DelegationRef == inspect.DelegationRef {
 				runs++

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -361,5 +362,28 @@ func TestURLAPIExternalConsentOnlyOnStart(t *testing.T) {
 	response = urlTestRequest(urlTestHandler(t, endpoint), "POST", URLBasePath+"/drafts/job-1/validate", body, "")
 	if response.Code != 400 || len(endpoint.calls) != 0 {
 		t.Fatal("consent on non-Start accepted")
+	}
+}
+
+// 새 시작 거절은 409 busy 그대로이고, 준비 서비스가 준 사유만 busy_reason으로 더한다. 계약 밖 사유는 서비스 응답째 버린다.
+func TestURLAPIStartBusyCarriesFixedReason(t *testing.T) {
+	body := `{"version":"diagnosis-api.v2","expected_revision":1}`
+	for _, tc := range []struct {
+		reason string
+		code   int
+		want   string
+	}{
+		{diagnosisprep.BusyReleaseAvailable, 409, `{"busy_reason":"release_available","error":"busy","version":"diagnosis-api.v2"}`},
+		{"", 409, `{"error":"busy","version":"diagnosis-api.v2"}`},
+		{"job_running", 503, `{"error":"preparation_service_unavailable","version":"diagnosis-api.v2"}`},
+	} {
+		endpoint := &urlTestEndpoint{reply: func(req diagnosisprep.Request) (diagnosisprep.Response, error) {
+			return diagnosisprep.Response{Version: diagnosisprep.Version, RequestID: req.RequestID, Error: "busy", BusyReason: tc.reason}, nil
+		}}
+		response := urlTestRequest(urlTestHandler(t, endpoint), "POST", URLBasePath+"/drafts/job-1/start", body, "start-1")
+		var got, want any
+		if json.Unmarshal(response.Body.Bytes(), &got) != nil || json.Unmarshal([]byte(tc.want), &want) != nil || response.Code != tc.code || !reflect.DeepEqual(got, want) {
+			t.Fatalf("reason %q: %d %s", tc.reason, response.Code, response.Body.String())
+		}
 	}
 }

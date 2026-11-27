@@ -205,13 +205,15 @@ type Request struct {
 }
 
 type Response struct {
-	RunPage    *RunPage         `json:"run_page,omitempty"`
-	Version    string           `json:"version"`
-	RequestID  string           `json:"request_id"`
-	Profiles   []Profile        `json:"profiles,omitempty"`
-	Job        *Job             `json:"job,omitempty"`
-	Authorized *bool            `json:"authorized,omitempty"`
-	Error      string           `json:"error,omitempty"`
+	RunPage    *RunPage  `json:"run_page,omitempty"`
+	Version    string    `json:"version"`
+	RequestID  string    `json:"request_id"`
+	Profiles   []Profile `json:"profiles,omitempty"`
+	Job        *Job      `json:"job,omitempty"`
+	Authorized *bool     `json:"authorized,omitempty"`
+	Error      string    `json:"error,omitempty"`
+	// BusyReason은 Start의 "busy" 거절 사유다(start_refusal.go). 다른 오류·성공 응답에는 없다. 모르면 비운다.
+	BusyReason string           `json:"busy_reason,omitempty"`
 	Product    *ProductResponse `json:"product,omitempty"`
 	// Release는 멈춘 작업 해제 판단 근거와 감사 기록이다(release_status·release만).
 	Release *ReleaseView `json:"release,omitempty"`

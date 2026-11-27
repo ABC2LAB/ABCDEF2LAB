@@ -389,7 +389,14 @@ func ValidateResponse(r Request, response Response) error {
 		if !validError(response.Error) || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 {
 			return ErrProtocol
 		}
+		// 거절 사유는 Start의 busy에만, 닫힌 목록 값으로만 온다.
+		if response.BusyReason != "" && (response.Error != "busy" || r.Command != Start || !ValidBusyReason(response.BusyReason)) {
+			return ErrProtocol
+		}
 		return nil
+	}
+	if response.BusyReason != "" {
+		return ErrProtocol
 	}
 	switch r.Command {
 	case ListRuns:

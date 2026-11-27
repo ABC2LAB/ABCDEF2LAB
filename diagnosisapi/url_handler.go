@@ -209,6 +209,11 @@ func (h *URLHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			urlFail(w, 503, "preparation_service_unavailable")
 			return
 		}
+		if response.Error == "busy" && response.BusyReason != "" {
+			// 새 시작 거절 사유(docs/url-diagnosis-preparation.md '새 시작 거절 사유'). 오류 코드는 그대로 busy다.
+			writeJSON(w, status, map[string]string{"version": URLVersion, "error": response.Error, "busy_reason": response.BusyReason})
+			return
+		}
 		urlFail(w, status, response.Error)
 		return
 	}
