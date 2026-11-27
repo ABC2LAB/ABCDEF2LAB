@@ -29,6 +29,8 @@ type selectedLoginTarget struct {
 	n        int
 	drop     atomic.Bool
 	noField  atomic.Bool
+	// twoCookies면 로그인이 세션 쿠키 둘을 주고 /read는 둘 다 맞아야 연다(다중 쿠키 세션).
+	twoCookies atomic.Bool
 }
 
 func newSelectedLoginTarget() *selectedLoginTarget {
@@ -109,7 +111,11 @@ func (c *selectedLoginTarget) handler() http.HandlerFunc {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			http.SetCookie(w, &http.Cookie{Name: "sid", Value: c.newSession(), Path: "/"})
+			session := c.newSession()
+			http.SetCookie(w, &http.Cookie{Name: "sid", Value: session, Path: "/"})
+			if c.twoCookies.Load() {
+				http.SetCookie(w, &http.Cookie{Name: "aux", Value: "aux-" + session, Path: "/"})
+			}
 			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == "/api/token" && r.Method == http.MethodPost:
 			var in map[string]string
@@ -123,6 +129,9 @@ func (c *selectedLoginTarget) handler() http.HandlerFunc {
 			value := ""
 			if sid, err := r.Cookie("sid"); err == nil {
 				value = sid.Value
+			}
+			if aux, err := r.Cookie("aux"); c.twoCookies.Load() && (err != nil || aux.Value != "aux-"+value) {
+				value = ""
 			}
 			if bearer, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
 				value = bearer
@@ -383,5 +392,24 @@ func TestSelectedCandidateLearnedPolicyValidation(t *testing.T) {
 		if _, _, err := ValidateE2HTTPRunPolicyDocument(raw); err == nil {
 			t.Errorf("%s: 정책을 받음", name)
 		}
+	}
+}
+
+// AL08: 다중 쿠키 세션은 배운 쿠키 이름이 모두 새로 와야 인증이고, 재현 요청에는 그 계정의 쿠키 둘이 같이 실린다.
+func TestSelectedCandidateFactoryLearnedLoginMultiCookie(t *testing.T) {
+	target := newSelectedLoginTarget()
+	target.twoCookies.Store(true)
+	srv := httptest.NewServer(target.handler())
+	defer srv.Close()
+	m := selectedJSONCSRFMethod()
+	m.SessionNames = []string{"aux", "sid"}
+	cfg, policy := selectedLearnedPolicy(t, srv, m, "seeded-pass-88ff")
+	lease := acquireSelectedLearned(t, cfg, policy)
+	cookie := lease.Sessions["tester-a"].Get("Cookie")
+	if lease.AccountAuth["tester-a"] != E2HTTPAuthAuthenticated || !strings.Contains(cookie, "aux=aux-") || !strings.Contains(cookie, "sid=selected-session-") {
+		t.Fatalf("다중 쿠키 세션 결속: %v", lease.AccountAuth)
+	}
+	if receipt, err := selectedRead(t, lease, srv); err != nil || receipt.StatusCode != http.StatusOK {
+		t.Fatalf("다중 쿠키 세션으로 재현하지 못함: %+v %v", receipt, err)
 	}
 }

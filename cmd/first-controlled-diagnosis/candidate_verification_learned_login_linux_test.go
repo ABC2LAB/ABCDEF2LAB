@@ -274,3 +274,24 @@ func diagnosisLoginResult(status int) e2proxy.Event {
 	e.Scope.RunRef, e.StatusCode, e.AuditComplete = selectedSourceRunRef, status, true
 	return e
 }
+
+// AL10(단위): 로그인 설정 9칸이 없어 일반 결속에 계정이 없는 대상도, 학습 로그인 계획이면 그 계정 하나의 자격만 실어 실행한다.
+func TestSelectedCandidateLearnedBindingWithoutConfiguredLogin(t *testing.T) {
+	r, _, rec := learnedAccountTarget(t)
+	cred := credentialOf(r, rec.Target.ID, "tester-a")
+	ref := server.CandidateAccountRevision("tester-a", cred)
+	runs, stored := selectedSourceRun(t, r, rec, nil)
+	b := &urlPreparationRuntime{product: &productRuntime{targets: r, config: urlPreparationInstallation{RunsDir: runs},
+		learnedMethods: storedMethodReader{learned: map[string]learnedlogin.Learned{"tester-a": stored}}}}
+	if login, err := r.targetLogin("ARTEX", rec.Target.ID); err != nil || login != nil {
+		t.Fatal("9칸 없는 대상 준비 실패")
+	}
+	prep := server.CandidateLearnedAuthPreparation(server.CandidateLearnedLogin{Method: stored.Method, Trust: server.CandidateLoginTrustExplorationObserved})
+	l := &urlLoadedProfile{}
+	if reason := b.bindCandidateLearnedAccount(l, server.CandidateLLMPlan{TargetID: rec.Target.ID, AccountRef: ref, AuthPreparation: prep}); reason != "" {
+		t.Fatalf("9칸 없는 대상에서 학습 로그인 결속 실패: %s", reason)
+	}
+	if l.policy.Auth == nil || l.policy.Auth.LearnedMethod == nil || len(l.materials) != 1 || len(l.productAccounts) != 1 {
+		t.Fatal("계정 하나의 자격만 싣지 않음")
+	}
+}
