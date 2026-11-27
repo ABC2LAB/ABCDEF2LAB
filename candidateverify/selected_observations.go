@@ -1,13 +1,13 @@
 package candidateverify
 
 import (
-	"encoding/json"
 	"regexp"
 	"strconv"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e2runner"
+	"github.com/Autumn-27/artex/responseevidence"
 )
 
 var accountRevisionRef = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -46,17 +46,14 @@ func ProjectTrustedSelected(taskID int64, runRef string, calls []e2runner.Truste
 		}
 		row := StoredObservationV2{Revision: 2, Source: makeSource(call, obs), HeaderMode: call.Execution.HeaderMode,
 			SelectedProof: call.SelectedProof}
-		raw, err := json.Marshal(row)
-		if err == nil && len(raw) > 4096 && row.SelectedProof != nil {
-			// Preserve the original observation if a bounded Host checkpoint
-			// cannot fit the legacy row limit. That row cannot support a later
-			// stored-only confirmation, but remains reviewable.
-			row.SelectedProof = nil
-			raw, err = json.Marshal(row)
+		var evidence *responseevidence.Evidence
+		if ev, ok := callResponseEvidence(call, obs); ok {
+			evidence = &ev
 		}
-		if err != nil || len(raw) > 4096 {
-			// The observation store has a fixed per-row limit. Keep the run
-			// record available without persisting an incomplete large row.
+		// 행 상한(4096바이트) 안에서 응답 근거를 먼저 줄인다. Host 증빙이 혼자 상한을 넘으면 기존처럼 증빙 없는 관찰로 남기고
+		// (저장만으로는 확정 근거가 못 됨), 그래도 넘으면 이 행을 저장하지 않는다.
+		row, fitted := fitSelectedRow(row, evidence)
+		if !fitted {
 			continue
 		}
 		seenCalls[call.Call.CallRef], seenAttempts[obs.AttemptRef] = true, true
@@ -87,7 +84,7 @@ func ValidSelectedStoredObservation(taskID int64, runRef string, row StoredObser
 		(obs.ResponseMediaClass == "" || obs.ResponseMediaClass == "html" || obs.ResponseMediaClass == "json" ||
 			obs.ResponseMediaClass == "plain_text" || obs.ResponseMediaClass == "xml" || obs.ResponseMediaClass == "binary" ||
 			obs.ResponseMediaClass == "other" || obs.ResponseMediaClass == "unknown") &&
-		s.Digest == sourceDigest(obs) &&
+		s.Digest == sourceDigest(obs) && ValidResponseEvidence(row) &&
 		(row.HeaderMode == e2proxy.HeaderPreserve || row.HeaderMode == e2proxy.HeaderProtectedSessionProposal ||
 			row.HeaderMode == e2proxy.HeaderTestAccountPassthrough)
 }

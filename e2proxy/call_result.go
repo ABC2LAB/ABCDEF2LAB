@@ -17,5 +17,6 @@ func CloneCallResult(in CallResult) CallResult {
 	for i := range out.Observations {
 		out.Observations[i].Technologies = slices.Clone(in.Observations[i].Technologies)
 	}
+	out.ResponseEvidence = cloneResponseEvidence(in.ResponseEvidence)
 	return out
 }
