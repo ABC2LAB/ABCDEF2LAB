@@ -35,11 +35,11 @@
 
 | `trust` | 조건 | 확인하는 것 / 주장하지 않는 것 |
 |---|---|---|
-| `verified` | 같은 `method_sha256`의 `login_method_verified`가 지금 대상 판·지금 자격 판이고, 저장된 학습 시각 이후 | E③ 다시 로그인 성공(신원 열림·세션 없는 대조 막힘). 저장 경계가 "방법이 지금 것이 된 시각"을 주지 않아 학습 시각보다 앞선 검증은 보수적으로 인정하지 않는다. |
+| `verified` | 같은 `method_sha256`의 `login_method_verified`가 지금 대상 판·지금 자격 판이고, 저장된 학습 시각보다 늦음 | E③ 다시 로그인 성공(신원 열림·세션 없는 대조 막힘). 저장 경계가 "방법이 지금 것이 된 시각"을 주지 않아 학습 시각과 같은 시각 또는 그 전의 검증은 보수적으로 인정하지 않는다. |
 | `e2_audited` | 진단 단계 시도: 원본 회차 결속·인계 실패 표지 없음·`Select()` 같은 시도·같은 digest(아래와 같음)이고, 원본 회차 E② 감사 저널 사본(`state/events.jsonl`)을 실행 감사 키(pin)로 끝까지 검증해 같은 호출·시도 결과 사건과 `VerifyTransport`(같은 회차·모델 호출·메서드·허용·송신·응답 완료·상태·감사 완료)·`VerifyFieldSources`가 맞음 | 그 로그인 요청이 E② 승인 범위로 실제로 나가 응답을 끝까지 받았다. 경로·계정은 감사 사건에 없어 보호 기록 행의 고정 칸 대조까지만이다. 검증 키 없는 저널 절단(뒤 행 삭제)은 감지하지 못하지만 없는 송신을 만들어 내지는 못한다. |
 | `exploration_observed` | 원본 회차(`source.run_ref` = `run-<작업>`)의 결속 정책이 `exploration_login_evidence: required/v2`이고, 인계 실패 표지 없음, 보호 로그인 기록의 `Select()`가 같은 시도·같은 digest, 탐색 경계 근거 v2(작업 ID·원본 digest 일치)와 `VerifyExplorationEvidence`·`VerifyFieldSources` 통과, 원본 회차가 그 계정·자격 판을 결속 | 그 로그인 요청이 경계를 실제로 지났다. 계정 신원·응답 본문 완료·E② 감사는 주장하지 않는다. |
 
-쓰지 않는 것: 탐색 근거 정책이 없는 이전 회차(`exploration_unaudited`), 감사 저널이 없거나 검증되지 않는 진단 단계 출처, 원본 회차 결속·기록·근거 유실·손상(`learned_login_record_invalid`·`learned_login_transport_unverified`).
+원본 회차 재대조에서는 선택한 시도 참조·방법 digest와 함께 시도 시각도 저장 줄과 정확히 비교한다. 원본 실행 정책의 계정 자격 파일 이름에 현재 대상 ID가 결속됐는지, 로그인 규칙의 origin이 현재 승인 origin인지, 실행 시작 시각이 현재 대상 승인보다 이르지 않은지도 확인한다. 쓰지 않는 것: 탐색 근거 정책이 없는 이전 회차(`exploration_unaudited`), 감사 저널이 없거나 검증되지 않는 진단 단계 출처, 원본 회차 결속·기록·근거 유실·손상(`learned_login_record_invalid`·`learned_login_transport_unverified`).
 
 ⑤-B에 요청할 것(담당자 전달): (a) 저장 때 `ReadConfirmationHistory`(인계 실패 표지)·`VerifyTransport`/`VerifyExplorationEvidence`/`VerifyFieldSources`를 거친 시도만 남기고 그 출처 수준을 저장 줄에 남기기(#996 `5d3f7550`부터 인계 실패 표지는 막지만, 실제 송신 근거 대조 없이 `Select()` 결과를 `learned`로 남긴다 — 통합 시험 `TestLearnedStoreSkipsTransportProvenanceButSelectedRefuses`로 확인), (b) 읽기 경계가 방법이 지금 것이 된 시각(`since`)도 주기. 선택 검증의 재대조는 (a)가 들어와도 원본 기록 유실·변경을 보는 두 번째 확인으로 남긴다.
 
@@ -48,7 +48,7 @@
 - 승인 계획마다 새 task/run과 새 E② 권한을 발급한다(기존과 같음). 원본 회차 세션·권한·모델 예산은 쓰지 않는다.
 - 실행 정책 `auth`: `learned_method`(방법 객체), `rule_ref`(로그인 POST 전용 규칙, `purpose: auth_prep`, 방법의 정확한 경로·POST), `prep_rule_ref`(준비가 있을 때만, `purpose: login_prep`, 정확한 준비 경로·GET), 계정 하나, `login` 9칸은 비움, `model_login` 거짓, `selected_account_ref` 필수. 정책 검증이 이 모양만 받는다(`TestSelectedCandidateLearnedPolicyValidation`).
 - `login_prep` 규칙은 선택 실행(`SelectedAccountRef`)에만 실린다(E② `NewExecution`이 거부).
-- 송신 호출은 `BeginSelectedLoginCall` 하나다: 귀속은 인증 준비(`program: auth_prep`, 영수증·저널 어휘 그대로), `learned_login`(POST)·`login_prep`(GET) 목적만, **계획 전용 규칙만** 맞춘다. Worker 규칙(계획 행동), 확정 몫(E③), 모델·Worker·`refresh_session`·처음 인증 준비 호출은 이 규칙으로 보내지 못한다. E③ 다시 로그인(`BeginE3ReloginCall`)은 지금처럼 Worker 승인 규칙만 쓴다.
+- 송신 호출은 `BeginSelectedLoginCall` 하나다: 귀속은 인증 준비(`program: auth_prep`, 영수증·저널 어휘 그대로), `learned_login`(POST)·`login_prep`(GET) 목적만, **계획 전용 규칙만** 맞춘다. 선택 실행의 `auth_prep`·`login_prep` 규칙은 목적별로 각각 최대 하나다(학습 로그인 정책은 `auth_prep` 하나를 요구). Worker 규칙(계획 행동), 확정 몫(E③), 모델·Worker·`refresh_session`·처음 인증 준비 호출은 이 규칙으로 보내지 못한다. E③ 다시 로그인(`BeginE3ReloginCall`)은 지금처럼 Worker 승인 규칙만 쓴다.
 - 질의·조각·제외 경로·위험 동작 단어 경로는 보내지 않는다. 실행 예산(`max_requests` = 행동 + 준비 요청)을 쓰며 넘으면 `budget_exhausted`로 보내지 않는다.
 - 요청 재구성·CSRF·쿠키 경로·응답 판정·세션 추출은 `learnedlogin`(#974·#987)과 E③ 재사용 코드(`e2HTTPLearnedLoginVia`)를 그대로 쓴다. 로그인은 한 번, 자동 재시도 없음, 결과 불명은 다시 보내지 않는다.
 

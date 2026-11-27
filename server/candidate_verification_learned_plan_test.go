@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,9 +13,45 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/learnedlogin"
+	"github.com/Autumn-27/artex/report"
 )
+
+// 인증 준비 변경과 로그인 실패는 실행 사건으로 보존된다. 조회 검증기가 이 사유를 거부하면
+// 정상 기록된 선택 이력도 제품 API에서 503이 된다(S04 회귀).
+func TestSelectedCandidateHistoryAcceptsAuthFailureReasons(t *testing.T) {
+	now := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
+	plan, _, _, _ := learnedPlanFixture(now, CandidateLearnedAuthPreparation(CandidateLearnedLogin{
+		Method: selectedTokenMethod(), Trust: CandidateLoginTrustVerified,
+	}))
+	digest, err := candidateLLMPlanDigest(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := db.DiagnosticCandidate{ID: plan.CandidateID, TaskID: plan.TaskID, RunRef: plan.OriginalRunRef,
+		EvidenceVersion: 1, EvidenceDigest: plan.EvidenceDigest}
+	row := candidateVerificationAttempt{ID: "8", CandidateID: fmt.Sprint(candidate.ID), RequestKey: "learned-failure",
+		Method: "llm/v1", OriginalDigest: candidate.EvidenceDigest, OriginalVersion: candidate.EvidenceVersion,
+		OriginalRunRef: candidate.RunRef, RequestedAt: now.Add(-time.Second), LLMPlan: &plan, PlanDigest: digest,
+		Latest: candidateVerificationEvent{State: "failed", RuleVersion: diagnosisVerificationSelected, Sources: json.RawMessage(`[]`),
+			SourcesDigest: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945", At: now}}
+	binding := candidateVerificationBinding{Decision: sql.NullString{String: "approved", Valid: true},
+		DecisionDigest: sql.NullString{String: digest, Valid: true}}
+	for _, step := range []int{6, 7} {
+		for _, reason := range []string{"candidate_auth_preparation_changed", "candidate_auth_failed", "candidate_auth_result_unknown", "candidate_auth_not_sent"} {
+			row.Latest.Reason = reason
+			if err := validateCandidateVerificationAttempt(row, step, binding, candidate, report.CandidateAssessment{}); err != nil {
+				t.Errorf("step %d reason %s rejected: %v", step, reason, err)
+			}
+		}
+	}
+	row.Latest.Reason = "arbitrary_failure"
+	if validateCandidateVerificationAttempt(row, 6, binding, candidate, report.CandidateAssessment{}) == nil {
+		t.Fatal("unknown failure reason accepted")
+	}
+}
 
 func learnedPlanFixture(now time.Time, a *CandidateLLMAuthPreparation) (CandidateLLMPlan, diagnosisprep.Input, diagnosisprep.Scope, diagnosisprep.ProductTarget) {
 	approved := now.Add(-time.Minute)

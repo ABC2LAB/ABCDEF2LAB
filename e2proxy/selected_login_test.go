@@ -187,3 +187,33 @@ func TestSelectedLoginOnlyForSelectedRun(t *testing.T) {
 		t.Fatalf("대상에 닿음: %v", got)
 	}
 }
+
+func TestSelectedLoginRejectsAmbiguousPurposeRules(t *testing.T) {
+	for _, purpose := range []string{PurposeAuthPrep, PurposeLoginPrep} {
+		t.Run(purpose, func(t *testing.T) {
+			cfg := coreConfig(t, "https://selected.test", &coreRecorder{}, 5)
+			cfg.HeaderMode = HeaderTestAccountPassthrough
+			cfg.SelectedAccountRef = strings.Repeat("a", 64)
+			cfg.ResolveSentAccount = func(http.Header) string { return "" }
+			cfg.SelectedSessionHeaders = func() (http.Header, bool) { return nil, false }
+			cfg.Rules = append(cfg.Rules,
+				Rule{Ref: "login", Purpose: PurposeAuthPrep, Origin: "https://selected.test", ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/login", PathScopeRef: "login-path", Methods: []string{"POST"}},
+				Rule{Ref: "prep", Purpose: PurposeLoginPrep, Origin: "https://selected.test", ConnectIP: netip.MustParseAddr("127.0.0.1"), PathPrefix: "/csrf", PathScopeRef: "prep-path", Methods: []string{"GET"}})
+			if _, err := NewExecution(t.Context(), cfg); err != nil {
+				t.Fatalf("단일 목적 규칙 거부: %v", err)
+			}
+			extra := cfg.Rules[len(cfg.Rules)-1]
+			extra.Purpose = purpose
+			extra.Ref = "extra"
+			extra.PathPrefix = "/extra"
+			extra.Methods = []string{"GET"}
+			if purpose == PurposeAuthPrep {
+				extra.Methods = []string{"POST"}
+			}
+			cfg.Rules = append(cfg.Rules, extra)
+			if _, err := NewExecution(t.Context(), cfg); !errors.Is(err, ErrConfig) {
+				t.Fatalf("중복 목적 규칙을 받음: %v", err)
+			}
+		})
+	}
+}

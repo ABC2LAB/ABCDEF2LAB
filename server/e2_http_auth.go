@@ -141,8 +141,11 @@ func validE2HTTPLearnedAuth(a E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E
 		!diagnosisprep.ValidAccountLabel(a.Accounts[0].Label) || !e2HTTPHostRef.MatchString(a.Accounts[0].Credential.File) || !e2HTTPHash(a.Accounts[0].Credential.SHA256) {
 		return false
 	}
-	login, prep := false, false
+	login, prep, loginRules := false, false, 0
 	for _, r := range rules {
+		if r.Purpose == e2proxy.PurposeAuthPrep {
+			loginRules++
+		}
 		switch r.Ref {
 		case a.RuleRef:
 			login = r.Purpose == e2proxy.PurposeAuthPrep && r.PathPrefix == m.Path && len(r.Methods) == 1 && r.Methods[0] == http.MethodPost
@@ -150,6 +153,9 @@ func validE2HTTPLearnedAuth(a E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E
 			prep = a.PrepRuleRef != "" && r.Purpose == e2proxy.PurposeLoginPrep && r.PathPrefix == m.PrepPath() && len(r.Methods) == 1 &&
 				r.Methods[0] == http.MethodGet
 		}
+	}
+	if loginRules != 1 {
+		return false
 	}
 	if m.NeedsPrep() {
 		return login && prep && prepRules == 1

@@ -150,11 +150,20 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 		cfg.HeaderMode != HeaderTestAccountPassthrough || cfg.ApprovalMode != ApprovalPreauthorizedScope || cfg.ResolveSentAccount == nil) {
 		return nil, ErrConfig
 	}
-	// 준비 GET 전용 규칙은 선택 후보 검증 실행(계정 하나에 결속, 사전 승인 범위)에서만 받는다.
+	// 선택 실행의 학습 로그인 호출은 목적별 규칙을 찾는다. 목적 규칙이 둘 이상이면 승인한 정확한 경로 외에도
+	// 맞을 수 있으므로 실행 자체를 거부한다.
+	authPrepRules, loginPrepRules := 0, 0
 	for _, rule := range cfg.Rules {
-		if rule.Purpose == PurposeLoginPrep && cfg.SelectedAccountRef == "" {
-			return nil, ErrConfig
+		switch rule.Purpose {
+		case PurposeAuthPrep:
+			authPrepRules++
+		case PurposeLoginPrep:
+			loginPrepRules++
 		}
+	}
+	if cfg.SelectedAccountRef != "" && (authPrepRules > 1 || loginPrepRules > 1) ||
+		cfg.SelectedAccountRef == "" && loginPrepRules != 0 {
+		return nil, ErrConfig
 	}
 	if !validApprovalConfig(cfg) || parent == nil || cfg.Recorder == nil || cfg.IntentID <= 0 || !validRef(cfg.OwnerRef) || !validRef(cfg.PolicyRevision) ||
 		!validRef(cfg.AccountRef) || !validRef(cfg.SessionRef) || cfg.ExpiresAt.IsZero() || !time.Now().Before(cfg.ExpiresAt) {

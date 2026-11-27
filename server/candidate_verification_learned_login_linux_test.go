@@ -373,6 +373,11 @@ func TestSelectedCandidateLearnedPolicyValidation(t *testing.T) {
 			extra.Ref, extra.PathPrefix = "auth-login-prep-2", "/api/extra"
 			p.Rules = append(p.Rules, extra)
 		},
+		"extra login rule": func(p *E2HTTPFilePolicy) {
+			extra := p.Rules[1]
+			extra.Ref, extra.PathPrefix = "auth-login-2", "/api/extra"
+			p.Rules = append(p.Rules, extra)
+		},
 		"invalid method": func(p *E2HTTPFilePolicy) {
 			m := p.Auth.LearnedMethod.Clone()
 			m.Method = "PUT"

@@ -53,7 +53,12 @@ func selectedSourceRun(t *testing.T, r *productTargetRegistry, rec productTarget
 	}
 	runs, _ := liveRunFixtureWith(t, record, func(p *server.E2HTTPFilePolicy) {
 		p.RunRef = selectedSourceRunRef
-		p.Auth.Accounts = []server.E2HTTPFileAuthAccount{{Label: "tester-a", Credential: server.E2HTTPFilePin{File: "tester-a.json", SHA256: credentialOf(r, rec.Target.ID, "tester-a")}}}
+		credential := credentialOf(r, rec.Target.ID, "tester-a")
+		p.Auth.Accounts = []server.E2HTTPFileAuthAccount{{Label: "tester-a", Credential: server.E2HTTPFilePin{
+			File: bindingCredentialName(rec.Target.ID, "tester-a", credential), SHA256: credential}}}
+		for i := range p.Rules {
+			p.Rules[i].Origin = rec.Target.Origin
+		}
 		p.ExplorationLoginEvidence, p.ExplorationSourceDigest = "required/v2", strings.Repeat("a", 64)
 		if change != nil {
 			change(p, &row, &evidence)
@@ -123,11 +128,23 @@ func TestSelectedCandidateLearnedLoginTrust(t *testing.T) {
 		{name: "stored attempt differs", want: string(learnedlogin.ReasonRecordInvalid), after: func(_ *testing.T, _ string, stored *learnedlogin.Learned) {
 			stored.Source.AttemptRef = "exploration-2"
 		}},
+		{name: "stored source time differs", want: string(learnedlogin.ReasonRecordInvalid), after: func(_ *testing.T, _ string, stored *learnedlogin.Learned) {
+			stored.Source.At = stored.Source.At.Add(-time.Second)
+		}},
 		{name: "stored method digest differs", want: string(learnedlogin.ReasonRecordInvalid), after: func(_ *testing.T, _ string, stored *learnedlogin.Learned) {
 			stored.Method.SessionNames = []string{"other"}
 		}},
 		{name: "account not bound in source run", want: string(learnedlogin.ReasonCredentialChanged), change: func(p *server.E2HTTPFilePolicy, _ *learnedlogin.Row, _ *learnedlogin.ExplorationEvidence) {
 			p.Auth.Accounts[0].Credential.SHA256 = strings.Repeat("f", 64)
+		}},
+		{name: "source run belongs to other target", want: string(learnedlogin.ReasonCredentialChanged), change: func(p *server.E2HTTPFilePolicy, _ *learnedlogin.Row, _ *learnedlogin.ExplorationEvidence) {
+			p.Auth.Accounts[0].Credential.File = "account-other-target.json"
+		}},
+		{name: "source run predates target approval", want: string(learnedlogin.ReasonRecordInvalid), change: func(p *server.E2HTTPFilePolicy, _ *learnedlogin.Row, _ *learnedlogin.ExplorationEvidence) {
+			p.ValidFrom = rec.Target.ApprovedAt.Add(-time.Second)
+		}},
+		{name: "source login uses other origin", want: string(learnedlogin.ReasonRecordInvalid), change: func(p *server.E2HTTPFilePolicy, _ *learnedlogin.Row, _ *learnedlogin.ExplorationEvidence) {
+			p.Rules[1].Origin = "https://other.example.test"
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -165,6 +182,7 @@ func TestSelectedCandidateLearnedLoginVerifiedTrust(t *testing.T) {
 		{"no verified", "", 0, string(learnedlogin.ReasonRecordInvalid)},
 		{"other method verified", "/other", time.Hour, string(learnedlogin.ReasonRecordInvalid)},
 		{"verified before learned", "/login", -time.Hour, string(learnedlogin.ReasonRecordInvalid)},
+		{"verified at learned time", "/login", 0, string(learnedlogin.ReasonRecordInvalid)},
 		{"verified after learned", "/login", 2 * time.Hour, server.CandidateLoginTrustVerified},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -240,6 +258,7 @@ func TestSelectedCandidateLearnedAccountBinding(t *testing.T) {
 	pin := bindingCredentialName(rec.Target.ID, "tester-a", cred)
 	if l.policy.Auth.LearnedMethod == nil || l.policy.Auth.LearnedMethod.Digest() != stored.Method.Digest() || len(l.policy.Auth.Accounts) != 1 ||
 		l.policy.Auth.Accounts[0].Label != "tester-a" || l.policy.Auth.Accounts[0].Credential.File != pin || l.policy.Auth.PrepRuleRef != "auth-login-prep" ||
+		l.policy.Auth.PasswordResponse != e2proxy.PasswordResponseModelVisible ||
 		l.policy.SelectedAccountRef != ref || l.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough || len(l.productAccounts) != 1 {
 		t.Fatalf("결속 결과 %+v", l.policy.Auth)
 	}

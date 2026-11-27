@@ -140,25 +140,25 @@ WHERE id=$1 AND method='llm/v1'`, requestID).Scan(&originalTaskID, &evidenceDige
 	phase = "load"
 	l, err := b.load("ARTEX", ownerResp.Job.Input)
 	if err != nil || l == nil {
+		var loadCode urlPreparationError
+		if errors.As(err, &loadCode) {
+			log.Printf("[candidate-llm-execution] request %d load refused: %s", requestID, loadCode)
+		}
 		return errPreparation
 	}
 	defer l.clearMaterials()
 	if l.productTarget == nil || l.productRegistry == nil {
+		log.Printf("[candidate-llm-execution] request %d product binding missing: target=%t registry=%t", requestID,
+			l.productTarget != nil, l.productRegistry != nil)
 		return errPreparation
 	}
-	ledger, ok := b.endpoint.(interface {
-		ReserveCandidateBudget(context.Context, string, int64, string) error
-		FinishCandidateBudget(int64)
-	})
-	if !ok || ledger.ReserveCandidateBudget(ctx, ownerReq.TaskID, requestID, evidenceDigest) != nil {
-		return errPreparation
-	}
-	defer ledger.FinishCandidateBudget(requestID)
+	phase = "transaction"
 	tx, err := pool.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return errPreparation
 	}
 	defer tx.Rollback()
+	phase = "approval_event"
 	var approvalEventID int64
 	if tx.QueryRowContext(ctx, `SELECT e.id FROM diagnostic_candidate_verification_requests q
 JOIN diagnostic_candidate_verification_events e ON e.request_id=q.id AND e.step=5 AND e.process_state='approved'
@@ -202,6 +202,7 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 		if l.policy.Auth == nil || plan.AuthPreparation == nil || l.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough ||
 			l.policy.Auth.Login.Method != plan.AuthPreparation.Method || l.policy.Auth.Login.Path != plan.AuthPreparation.ExactPath ||
 			server.CandidateLoginDigest(l.policy.Auth.Login) != plan.AuthPreparation.LoginDigest {
+			failReason = "candidate_auth_preparation_changed"
 			return errPreparation
 		}
 		var selected *server.E2HTTPFileAuthAccount
@@ -210,6 +211,7 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 			account := &l.policy.Auth.Accounts[i]
 			if server.CandidateAccountRevision(account.Label, account.Credential.SHA256) == plan.AccountRef {
 				if selected != nil {
+					failReason = "candidate_auth_preparation_changed"
 					return errPreparation
 				}
 				selected = account
@@ -223,6 +225,7 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 		}
 		if selected == nil || selectedRun == nil || selected.Label != selectedRun.Label ||
 			selected.Credential.SHA256 != selectedRun.CredentialSHA256 {
+			failReason = "candidate_auth_preparation_changed"
 			return errPreparation
 		}
 		for _, account := range l.policy.Auth.Accounts {
@@ -272,6 +275,16 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 		}
 	}
 	phase = "budget"
+	// 승인 계획·계정 판본을 먼저 대조한다. 자격 변경 뒤 설치 digest가 바뀌면 기존 모델 예산 예약 재확인이
+	// 거부될 수 있으므로, 그 전에 인증 준비 변경 사유를 남긴다. 이 순서에서도 새 대상 송신은 없다.
+	ledger, ok := b.endpoint.(interface {
+		ReserveCandidateBudget(context.Context, string, int64, string) error
+		FinishCandidateBudget(int64)
+	})
+	if !ok || ledger.ReserveCandidateBudget(ctx, ownerReq.TaskID, requestID, evidenceDigest) != nil {
+		return errPreparation
+	}
+	defer ledger.FinishCandidateBudget(requestID)
 	if count != plan.MaxRequests {
 		return errPreparation
 	}
@@ -592,7 +605,7 @@ LEFT JOIN tasks t ON t.id=x.followup_task_id AND t.deleted_at IS NULL
 }
 
 // candidateLLMPasswordResponse는 선택 후보 검증 실행의 비밀번호 응답 정책이다. 9칸 인증 준비와 학습 로그인이 같은 값을 쓴다.
-const candidateLLMPasswordResponse = e2proxy.PasswordResponseMaskSpans
+const candidateLLMPasswordResponse = e2proxy.PasswordResponseModelVisible
 
 // candidateLearnedLoginCurrent는 승인한 학습 로그인 준비가 지금 고른 방법과 같은지다(값 없음, 원본 회차 기록 재대조 포함).
 func (b *urlPreparationRuntime) candidateLearnedLoginCurrent(plan server.CandidateLLMPlan) bool {

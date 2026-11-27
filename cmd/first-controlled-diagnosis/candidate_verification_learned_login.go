@@ -77,13 +77,13 @@ func (r *productTargetRegistry) loginMethodVerifiedSince(targetID, label, method
 		return false
 	}
 	v := loginMethodVerifiedFor(rec, st, methodSHA256, learnedAt)
-	return v != nil && v.targetRevision == revision && v.credentialSHA256 == credential
+	return v != nil && v.at.After(learnedAt) && v.targetRevision == revision && v.credentialSHA256 == credential
 }
 
 // verifySelectedLearnedSource는 저장된 학습 방법의 원본 시도를 원본 회차의 보호 기록으로 다시 대조하고 출처 수준을 준다.
 // 탐색 단계 시도는 탐색 경계 근거 v2(exploration_observed), 진단 단계 시도는 원본 회차 E② 감사 저널 사본을 실행 감사 키로
 // 끝까지 검증해 같은 호출·시도 결과와 대조한다(e2_audited). 실행 메모리의 감사 조회는 회차 뒤에 쓰지 않는다.
-func verifySelectedLearnedSource(ctx context.Context, runsDir string, learned learnedlogin.Learned, label, targetID string, revision uint64, credential string) (string, learnedlogin.Reason) {
+func verifySelectedLearnedSource(ctx context.Context, runsDir string, learned learnedlogin.Learned, label, targetID, origin string, revision uint64, approvedAt time.Time, credential string) (string, learnedlogin.Reason) {
 	jobID, ok := strings.CutPrefix(learned.Source.RunRef, productSelectedRunRefPrefix)
 	if !ok || runsDir == "" {
 		return "", learnedlogin.ReasonRecordInvalid
@@ -94,15 +94,23 @@ func verifySelectedLearnedSource(ctx context.Context, runsDir string, learned le
 	}
 	defer binding.Close()
 	policy, taskID := binding.policy, binding.taskID
-	if policy.RunRef != learned.Source.RunRef || policy.Auth == nil {
+	if policy.RunRef != learned.Source.RunRef || policy.Auth == nil || policy.ValidFrom.Before(approvedAt) {
 		return "", learnedlogin.ReasonRecordInvalid
 	}
 	bound := false
 	for _, account := range policy.Auth.Accounts {
-		bound = bound || account.Label == label && account.Credential.SHA256 == credential
+		bound = bound || account.Label == label && account.Credential.SHA256 == credential &&
+			account.Credential.File == bindingCredentialName(targetID, label, credential)
 	}
 	if !bound {
 		return "", learnedlogin.ReasonCredentialChanged
+	}
+	loginOrigin := false
+	for _, rule := range policy.Rules {
+		loginOrigin = loginOrigin || rule.Ref == policy.Auth.RuleRef && rule.Origin == origin
+	}
+	if !loginOrigin {
+		return "", learnedlogin.ReasonRecordInvalid
 	}
 	stateDir := filepath.Join(runsDir, jobID, "state")
 	// 인계 실패 표지가 있거나 기록이 손상됐으면 그 회차에서 배운 방법을 믿지 않는다(E③ 재사용 §6-3과 같은 판독기).
@@ -115,7 +123,8 @@ func verifySelectedLearnedSource(ctx context.Context, runsDir string, learned le
 		return "", learnedlogin.ReasonRecordInvalid
 	}
 	// 저장된 방법은 그 회차가 고른 바로 그 시도여야 한다(저장 줄과 회차 기록이 다른 방법을 가리키면 손상).
-	if sel.Learned.Source.AttemptRef != learned.Source.AttemptRef || sel.Learned.Method.Digest() != learned.Method.Digest() {
+	if sel.Learned.Source.AttemptRef != learned.Source.AttemptRef || !sel.Learned.Source.At.Equal(learned.Source.At) ||
+		sel.Learned.Method.Digest() != learned.Method.Digest() {
 		return "", learnedlogin.ReasonRecordInvalid
 	}
 	switch sel.Row.Stage {
@@ -214,7 +223,8 @@ func candidateLoginChoice(targets *productTargetRegistry, reader productLearnedM
 	trust := server.CandidateLoginTrustVerified
 	if !targets.loginMethodVerifiedSince(targetID, account.label, m.Digest(), account.rec.Target.Revision, account.credential, stored.Source.At) {
 		var reason learnedlogin.Reason
-		if trust, reason = verifySelectedLearnedSource(context.Background(), runsDir, stored, account.label, targetID, account.rec.Target.Revision, account.credential); reason != "" {
+		if trust, reason = verifySelectedLearnedSource(context.Background(), runsDir, stored, account.label, targetID, account.rec.Target.Origin,
+			account.rec.Target.Revision, account.rec.Target.ApprovedAt, account.credential); reason != "" {
 			return none(reason)
 		}
 	}
