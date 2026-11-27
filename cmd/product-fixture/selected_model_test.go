@@ -161,3 +161,26 @@ func TestSelectedNosniffFixtureRequiresIndependentMatchingHTML(t *testing.T) {
 		t.Fatal("normal header response was confirmed")
 	}
 }
+
+func TestSelectedControlOnlyFixtureCitesOriginalAndNormalControl(t *testing.T) {
+	observation := func(call, attempt, digest string) selectedFixtureObservation {
+		var row selectedFixtureObservation
+		row.Source.CallRef, row.Source.Observation.AttemptRef, row.Source.Digest = call, attempt, digest
+		return row
+	}
+	raw, _ := json.Marshal(map[string]any{"candidate_id": 23, "original_observation": observation("original", "attempt-1", "digest-1"),
+		"followup_observations": []any{observation("reproduction", "attempt-2", "digest-2"), observation("control", "attempt-3", "digest-3")}})
+	content, _ := json.Marshal(string(raw))
+	result := selectedControlOnlyVerdict(map[string]any{"verdict": "insufficient"}, []fixtureMessage{{Role: "user", Content: content}})
+	sources := result["sources"].([]any)
+	if result["verdict"] != "confirmed" || len(sources) != 2 || sources[0].(map[string]string)["call_ref"] != "original" ||
+		sources[1].(map[string]string)["call_ref"] != "control" {
+		t.Fatalf("control-only citation: %+v", result)
+	}
+	raw, _ = json.Marshal(map[string]any{"candidate_id": 23, "original_observation": observation("original", "attempt-1", "digest-1"),
+		"followup_observations": []any{observation("reproduction", "attempt-2", "digest-2")}})
+	content, _ = json.Marshal(string(raw))
+	if result := selectedControlOnlyVerdict(map[string]any{"verdict": "insufficient"}, []fixtureMessage{{Role: "user", Content: content}}); result["verdict"] != "insufficient" {
+		t.Fatal("control-only mode needs a normal control observation")
+	}
+}

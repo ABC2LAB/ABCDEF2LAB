@@ -158,7 +158,7 @@ def main():
     parser.add_argument("--model-stats-port", type=int, default=49582)
     parser.add_argument("--head", required=True, help="Full source commit used for the product image")
     parser.add_argument("--project", default="pr950-selected93", help="Owned Compose project name")
-    parser.add_argument("--scenario", choices=("S01", "S02", "S03", "S04", "S05", "S06", "S07", "S07B", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M"), default="S02")
+    parser.add_argument("--scenario", choices=("S01", "S02", "S03", "S04", "S05", "S06", "S07", "S07B", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M", "S10"), default="S02")
     parser.add_argument("--resume-task", type=int, help="Continue an owned fixture task after a harness failure")
     parser.add_argument("--reuse-target", action="store_true", help="Use the previously approved owned fixture target")
     args = parser.parse_args()
@@ -262,7 +262,7 @@ def main():
     pending_target = request(target_stats, "/stats")["allowed_received"]
     pending_model = request(model_stats, "/stats")["model_calls"]
     decision_status = None
-    if args.scenario in ("S02", "S03", "S04", "S05", "S06", "S07", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M"):
+    if args.scenario in ("S02", "S03", "S04", "S05", "S06", "S07", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M", "S10"):
         analysis = history["verifications"][0]["analysis"]
         plan_route = route + "/" + verification + "/plan"
         if args.scenario == "S06":
@@ -275,11 +275,11 @@ def main():
             plan_response = request(product, plan_route, token, body={"analysis_digest": analysis["digest"]})
         if args.scenario != "S06":
             plan = plan_response["plan"]
-        expected_actions = 0 if args.scenario == "S06" else 2 if args.scenario in ("S05", "S07R", "S09C", "S09R") else 1
-        expected_requests = 2 if args.scenario in ("S03", "S04", "S05", "S07R", "S09C", "S09R") else 1
+        expected_actions = 0 if args.scenario == "S06" else 2 if args.scenario in ("S05", "S07R", "S09C", "S09R", "S10") else 1
+        expected_requests = 2 if args.scenario in ("S03", "S04", "S05", "S07R", "S09C", "S09R", "S10") else 1
         if args.scenario != "S06" and (plan["max_requests"] != expected_requests or len(plan["actions"]) != expected_actions):
             raise RuntimeError("unreviewable_plan")
-        if args.scenario in ("S05", "S07R", "S09C", "S09R") and (plan["actions"][1].get("kind") != "normal_control" or
+        if args.scenario in ("S05", "S07R", "S09C", "S09R", "S10") and (plan["actions"][1].get("kind") != "normal_control" or
                                          plan["actions"][1].get("query") != {"view": "summary"} or
                                          plan["actions"][1].get("headers") != {"Accept-Language": "en-US"}):
             raise RuntimeError("structured_plan_not_bound")
@@ -421,7 +421,7 @@ def main():
         raise RuntimeError("candidate_missing_from_updated_report")
     if args.scenario in ("S01", "S02", "S03", "S05") and current_candidate.get("outcome") != "model_supported":
         raise RuntimeError("selected_verdict_missing_from_report")
-    if args.scenario in ("S04", "S06", "S07", "S07B", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M") and current_candidate.get("outcome") in ("model_supported", "model_refuted"):
+    if args.scenario in ("S04", "S06", "S07", "S07B", "S07P", "S07R", "S08", "S09", "S09C", "S09R", "S09M", "S10") and current_candidate.get("outcome") in ("model_supported", "model_refuted"):
         raise RuntimeError("unverified_candidate_promoted_in_report")
     if args.scenario in ("S07R", "S09C", "S09R", "S09M"):
         time.sleep(16)  # Let the deliberately held fixture response arrive; no late send may follow.
@@ -430,14 +430,20 @@ def main():
     after_authenticated_reads = request(target_stats, "/stats")["authenticated_reads"]
     after_structured_reads = request(target_stats, "/stats")["structured_reads"]
     after_model = request(model_stats, "/stats")["model_calls"]
-    expected_new_sends = 0 if args.scenario in ("S01", "S04", "S06", "S07", "S07B", "S07P", "S09") else 2 if args.scenario == "S05" else 1
+    expected_new_sends = 0 if args.scenario in ("S01", "S04", "S06", "S07", "S07B", "S07P", "S09") else 2 if args.scenario in ("S05", "S10") else 1
     if pending_target != after_diagnosis_target or after_target != pending_target + expected_new_sends:
         raise RuntimeError("unexpected_target_send_count")
     if args.scenario == "S03" and (after_diagnosis_logins - before_logins != 1 or
                                     after_logins - after_diagnosis_logins != 1 or after_authenticated_reads != after_target):
         raise RuntimeError("authenticated_send_binding_failed")
-    if args.scenario == "S05" and after_structured_reads != 1:
+    if args.scenario in ("S05", "S10") and after_structured_reads != 1:
         raise RuntimeError("structured_send_missing")
+    if args.scenario == "S10":
+        # 원본·정상 대조만 인용한 확정 주장은 게이트 v2가 판단 불가로 낮춰 저장해야 한다(재현 인용 누락).
+        final = request(product, route, token)["verifications"][0].get("final_verdict") or {}
+        if (latest.get("verdict") != "insufficient" or final.get("reason") != "reproduction_not_cited" or
+                final.get("evidence_gate") != "selected/evidence-gate-v2"):
+            raise RuntimeError("control_only_citation_not_blocked")
     if args.scenario == "S04" and (after_logins != after_diagnosis_logins or
                                     latest.get("verdict") in ("model_supported", "model_refuted")):
         raise RuntimeError("changed_account_gained_decisive_verdict")

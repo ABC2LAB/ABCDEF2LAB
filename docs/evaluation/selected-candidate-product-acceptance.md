@@ -31,6 +31,7 @@ HEAD `99536a7e`의 제품·fixture 이미지를 같은 SHA로 빌드하고, 독�
 | S07 | 계획 digest 불일치와 운영자 거부 | 제품 API 및 이력. S07B는 설치 회차 한도 소진, S07P는 계획 만료, S07R은 승인 후 철회로 남은 송신 차단. 요청·시간 상한은 실행기와 E② 회귀시험으로 별도 확인 |
 | S08 | 모델의 잘못된 근거 인용·근거 부족 오판 | S08 제품 시험과 합성 제공자 `TestCandidateFinalModelUsesPinnedSyntheticProviderPostgres`, 봉인·문맥 불일치 회귀시험을 구분해 기록 |
 | S09 | 중복 선택·승인 대기 중 재시작·취소 멱등성·실행 중단·결과 불명 | S09 제품 시험과 S09C(실행 중 취소), S09R(대상 응답 불명), S09M(모델 응답 불명)의 실제 대상 수신·모델 호출 수를 기록 |
+| S10 | 원본·정상 대조만 인용한 확정 주장(게이트 v2 재현 인용 반례) | 승인 후 GET 2건(재현·정상 대조), `completed`·`insufficient`, `final_verdict.reason=reproduction_not_cited`, `evidence_gate=selected/evidence-gate-v2`, 보고서 결정 판정 없음 |
 | S10 | 기존 E③·보고서·#918 회귀 | Go/DB/race/CI와 별도 제품 회귀 결과 |
 
 표의 수용 범위를 실행하지 않은 경우 PASS로 표시하지 않는다. 비 IDOR `model_supported`는 프로그램의 `confirmed`나 E③ IDOR 확정과 구별한다. 실제 로컬 LLM 품질 측정은 별도 평가 러너의 승인된 로컬 모델과 정답 사례가 있을 때 수행한다.

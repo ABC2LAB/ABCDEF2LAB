@@ -82,7 +82,7 @@ func main() {
 		}
 		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "explore_bash_seen": exploreBashSeen.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load(), "auth_logins": authLogins.Load(), "authenticated_reads": authenticatedReads.Load(), "structured_reads": structuredReads.Load(), "held_target_reads": heldTargetReads.Load(), "held_final_models": heldFinalModels.Load()})
 	})
-	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" || *mode == "selected-model-stored-nosniff" || *mode == "selected-model-auth-nosniff" || *mode == "selected-model-structured-nosniff" || *mode == "selected-model-overconfident-nosniff" || *mode == "selected-model-unsupported-write" || *mode == "workflow-login-model" {
+	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" || *mode == "selected-model-stored-nosniff" || *mode == "selected-model-auth-nosniff" || *mode == "selected-model-structured-nosniff" || *mode == "selected-model-overconfident-nosniff" || *mode == "selected-model-control-citation-nosniff" || *mode == "selected-model-unsupported-write" || *mode == "workflow-login-model" {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
 		mux.HandleFunc("POST /hold-next-final", func(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +111,9 @@ func main() {
 			handler = modelWithSelectionMode(*target, true, true, false, false, false, true, false)
 		} else if *mode == "selected-model-unsupported-write" {
 			handler = modelWithSelectionMode(*target, true, true, false, false, false, false, true)
+		} else if *mode == "selected-model-control-citation-nosniff" {
+			// 재현과 정상 대조를 실행한 뒤 최종 모델이 원본과 정상 대조만 인용해 확정을 주장한다(게이트 v2 재현 인용 반례).
+			handler = modelWithSelectionMode(*target, true, true, false, false, true, false, false, true)
 		}
 		mux.Handle("POST /v1/chat/completions", handler)
 		must(http.ListenAndServe(":8080", mux))
@@ -348,6 +351,32 @@ func selectedNosniffVerdict(candidateID int64, messages []fixtureMessage) any {
 	return result
 }
 
+// selectedControlOnlyVerdict는 원본과 두 번째 후속 관찰(승인 계획의 정상 대조)만 인용한 확정 주장이다. 실제 재현은 인용하지 않는다.
+func selectedControlOnlyVerdict(result map[string]any, messages []fixtureMessage) map[string]any {
+	var input struct {
+		Original *selectedFixtureObservation  `json:"original_observation"`
+		Followup []selectedFixtureObservation `json:"followup_observations"`
+	}
+	for _, message := range messages {
+		var text string
+		if message.Role == "user" && json.Unmarshal(message.Content, &text) == nil {
+			_ = json.Unmarshal([]byte(text), &input)
+		}
+	}
+	if input.Original == nil || len(input.Followup) != 2 {
+		result["reason"] = "synthetic_control_citation_unavailable"
+		return result
+	}
+	a, c := input.Original.Source, input.Followup[1].Source
+	result["verdict"] = "confirmed"
+	result["reason"] = "Synthetic model cites only the original and the normal control."
+	result["sources"] = []any{
+		map[string]string{"call_ref": a.CallRef, "attempt_ref": a.Observation.AttemptRef, "observation_digest": a.Digest},
+		map[string]string{"call_ref": c.CallRef, "attempt_ref": c.Observation.AttemptRef, "observation_digest": c.Digest},
+	}
+	return result
+}
+
 func model(target string) http.Handler {
 	return modelWithSelection(target, false)
 }
@@ -366,7 +395,8 @@ func modelWithSelection(target string, selected bool) http.Handler {
 	return modelWithSelectionMode(target, selected, false, false, false, false, false, false)
 }
 
-func modelWithSelectionMode(target string, selected, nosniff, stored, authenticated, structured, overconfident, unsupportedWrite bool) http.Handler {
+func modelWithSelectionMode(target string, selected, nosniff, stored, authenticated, structured, overconfident, unsupportedWrite bool, controlCitation ...bool) http.Handler {
+	citesControlOnly := len(controlCitation) == 1 && controlCitation[0]
 	var mu sync.Mutex
 	turns := map[string]*fixtureTurns{}
 	originPattern := regexp.MustCompile(`https://(?:juice-a|juice-b|juice|synthetic)\.test:9443`)
@@ -477,6 +507,9 @@ func modelWithSelectionMode(target string, selected, nosniff, stored, authentica
 					"verification_criteria": "Confirm the intended audience, then repeat the same approved read.", "sources": []any{}}
 				if nosniff {
 					result = selectedNosniffVerdict(candidateID, req.Messages)
+					if citesControlOnly {
+						result = selectedControlOnlyVerdict(result.(map[string]any), req.Messages)
+					}
 					if overconfident {
 						claim := result.(map[string]any)
 						claim["verdict"] = "confirmed"
