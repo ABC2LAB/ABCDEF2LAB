@@ -5789,10 +5789,11 @@ button.smm:hover {
   font-size: 12px;
   color: var(--rail-mut);
 }
-/* 레일 묶음 줄이 많을 때 마지막 '전체 n건' 줄: 목록 화면으로 가는 줄이라 흐리게 */
-.rs.rs-more .host {
-  font-weight: 400;
-  opacity: 0.75;
+/* 레일 묶음 줄이 많을 때 아래 '전체 보기' 줄: 묶음 머리(.rh)와 같은 글꼴, 화살표 · 수 없음(사용자 11/27). 이름은 머리
+   이름 · 점검 줄 주소와 같은 세로줄에 둔다(머리 왼쪽 여백 9px + 화살표 12px + 사이 8px) */
+.rh.rh-more {
+  margin-top: 2px;
+  padding-left: 29px;
 }
 /* 레일: 두 칸 스위치 (데이터 원천) */
 .swatches .sw-row.lv-two {

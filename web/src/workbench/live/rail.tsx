@@ -114,8 +114,8 @@ function RailSection({
 }
 
 const NO_RUNS: URLRunSummary[] = [];
-/** 레일 한 묶음에 줄을 몇 개까지 그리는가. 넘으면 마지막에 '전체 n건'(그 목록 화면으로) */
-const RAIL_MAX_ROWS = 6;
+/** 레일 한 묶음에 점검 줄을 몇 개까지 그리는가. 넘으면 그 아래에 '전체 보기'(그 목록 화면으로, 사용자 11/27) */
+const RAIL_MAX_ROWS = 5;
 
 /**
  * 끝난 점검 줄을 눌렀을 때 갈 화면(사용자 11/25: 끝난 점검 전체 목록 말고 그 점검 보고서). 결과가 저장된 점검은 보고서, 저장 전에
@@ -163,16 +163,18 @@ function ServerRunRow({ run, list }: { run: URLRunSummary; list: View }) {
   );
 }
 
-/** 묶음 안 줄들. RAIL_MAX_ROWS 를 넘으면 앞 줄만 두고 마지막에 '전체 n건'(그 목록 화면으로) */
+/**
+ * 묶음 안 줄들. RAIL_MAX_ROWS 를 넘으면 앞 줄만 두고 그 아래에 '전체 보기'(그 목록 화면으로). 묶음 머리('끝난 점검 n')와
+ * 같은 글꼴이고 화살표 · 수는 없다(수는 머리에 이미 있다) — 점검 줄처럼 흐리게 두면 있는 줄 몰랐다(사용자 11/27)
+ */
 function RailRows({ items, list }: { items: ReactNode[]; list: View }) {
   const { goTo } = useShell();
   if (items.length <= RAIL_MAX_ROWS) return <>{items}</>;
   return (
     <>
-      {items.slice(0, RAIL_MAX_ROWS - 1)}
-      <button className={cx(s.rs, s["rs-more"])} type="button" onClick={() => goTo(list)}>
-        <span className={s.mk} aria-hidden="true" />
-        <span className={s.host}>{`전체 ${items.length}건`}</span>
+      {items.slice(0, RAIL_MAX_ROWS)}
+      <button className={cx(s.rh, s["rh-more"])} type="button" onClick={() => goTo(list)}>
+        전체 보기
       </button>
     </>
   );

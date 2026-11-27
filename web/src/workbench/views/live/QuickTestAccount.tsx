@@ -14,6 +14,7 @@ import { type RefObject, useEffect, useId, useRef, useState } from "react";
 import { cx } from "../../lib/cx";
 import {
   accountWriteFailureText,
+  clearAccountCredential,
   getAccounts,
   isValidAccountLabel,
   MIN_USABLE_PASSWORD_BYTES,
@@ -175,6 +176,30 @@ export function QuickTestAccount({
       .finally(() => setBusy(false));
   }
 
+  // 줄 버튼: 그 계정만 자격 철회. 값은 보내지 않는다
+  function clearOne(label: string) {
+    if (busy || !rows || !targetId) return;
+    const id = targetId;
+    setError("");
+    setDone("");
+    setBusy(true);
+    clearAccountCredential(id, label)
+      .then((cleared) => {
+        if (!cleared) throw new Error("credential_not_cleared");
+        return getAccounts({ id, origin: "", state: "approved" });
+      })
+      .then((r) => {
+        if (current.current !== id) return;
+        setRows(r.accounts);
+        setDone("자격을 지웠습니다");
+        onAdded?.();
+      })
+      .catch((e: unknown) => {
+        if (current.current === id) setError(accountWriteFailureText(e));
+      })
+      .finally(() => setBusy(false));
+  }
+
   let blocked: string | null = null;
   if (!targetId) blocked = "대상이 승인되면 저장할 수 있습니다";
   else if (readFailed) blocked = "계정 정보를 읽지 못했습니다";
@@ -196,6 +221,17 @@ export function QuickTestAccount({
               {/* 내부 별칭(vampi-a 등)은 서버 · 정책 선언이 계정을 가리키는 이름이라 화면엔 안 보이고 마우스를 올리면만(사용자 11/24) */}
               <b title={`별칭 ${x.label}`}>{`계정 ${x.key}`}</b>
               <span className={cx(s.tag, state === "자격 등록됨" ? s.in : s.ex)}>{state}</span>
+              {/* 그 계정만 자격 철회(#982 이동찬 P2, 예전 '표시 해제'가 하던 일) */}
+              {state === "자격 등록됨" ? (
+                <button
+                  className={cx(s.btn, s.sm, s["acct-pair-act"])}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => clearOne(x.label)}
+                >
+                  자격 지우기
+                </button>
+              ) : null}
             </div>
             <div className={s["acct-pair-in"]}>
               <input
