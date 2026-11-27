@@ -78,6 +78,13 @@ type productAccountEvent struct {
 	CredentialSHA256 string                     `json:"credential_sha256,omitempty"`
 	// JobRef는 external_consent 줄의 진단 작업이다(그 실행에서 동의를 확인함).
 	JobRef string `json:"job_ref,omitempty"`
+	// login_method_verified 줄의 칸이다(모델 로그인 계약 §6-1-2, 값 없음). 이 줄의 CredentialSHA256은 그 회차에 결속된 자격
+	// 해시, TargetRevision은 그 회차의 대상 판이다.
+	MethodSHA256 string `json:"method_sha256,omitempty"`
+	RunRef       string `json:"run_ref,omitempty"`
+	Stage        string `json:"stage,omitempty"`
+	AttemptRef   string `json:"attempt_ref,omitempty"`
+	Evidence     string `json:"evidence,omitempty"`
 }
 
 const (
@@ -88,6 +95,8 @@ const (
 	accountCredential  = "credential"
 	// accountExternalConsent는 외부 API 실행의 시험 계정 동의다(감사만, 계정 상태는 바꾸지 않음).
 	accountExternalConsent = "external_consent"
+	// accountLoginMethodVerified는 배운 로그인 방법을 확정 단계 프로그램 로그인으로 검증한 줄이다(product_learned_login.go).
+	accountLoginMethodVerified = "login_method_verified"
 )
 
 type productAccountState struct {
@@ -101,12 +110,22 @@ type productAccountState struct {
 	unmarked       bool
 	// credentialSHA256은 마지막으로 쓴 자격 보호 파일의 해시다. 파일이 지금도 이 해시일 때만 자격이 있다고 본다.
 	credentialSHA256 string
+	// loginVerified는 방법 해시별 마지막 login_method_verified 줄이다. 지금 배운 방법(learned)·그 방법이 지금 것이 된 뒤·
+	// 대상 판·자격 판과 모두 같을 때만 상태에 반영한다(계약 §6-1-1·§6-1-2, loginMethodVerifiedFor). 다른 방법의 검증 줄이
+	// 지금 방법의 검증을 덮지 않게 방법마다 따로 둔다.
+	loginVerified map[string]*productLoginVerified
 }
 
 // replayAccount는 저널 한 줄을 상태에 반영한다. 대상 저널을 먼저 다 읽은 뒤에 부른다.
 func (r *productTargetRegistry) replayAccount(e productAccountEvent) error {
 	rec, ok := r.records[e.TargetID]
 	if !ok || e.Actor != rec.Principal || e.At.IsZero() || e.TargetRevision < 1 || e.TargetRevision > rec.Target.Revision {
+		return errPreparation
+	}
+	if e.Action == accountLoginMethodVerified {
+		return r.replayLoginMethodVerified(rec, e)
+	}
+	if e.MethodSHA256 != "" || e.RunRef != "" || e.Stage != "" || e.AttemptRef != "" || e.Evidence != "" {
 		return errPreparation
 	}
 	if e.Action == accountExternalConsent {

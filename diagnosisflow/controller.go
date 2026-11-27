@@ -219,6 +219,12 @@ func riskyRequest(method, path string, query url.Values) bool {
 	}
 	return false
 }
+
+// RiskyRequest는 진단 쓰기 정책의 위험 동작 단어 검사를 질의 없는 요청 하나에 적용한다. 확정 단계 학습 로그인 재사용(모델
+// 로그인 계약 §6-2)이 모델 단계와 같은 단어 목록으로 로그인·로그인 화면 요청을 거른다(탈퇴·해지 같은 쓰기를 로그인으로
+// 다시 보내지 않게).
+func RiskyRequest(method, path string) bool { return riskyRequest(method, path, nil) }
+
 func safePath(path string) string { return dlp.DiagnosticText(path) }
 
 // 객체 ID로 볼 조각의 종류다. 허용 판정에 쓰므로 경로 가림 규칙(pathmask, 애매하면 값으로 봄)보다 좁게 잡는다. 긴 이름·

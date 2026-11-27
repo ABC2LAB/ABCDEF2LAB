@@ -10,9 +10,14 @@ const (
 	// E3ConfirmationShareDivisor: 확정 몫은 요청·시간 모두 실행 상한의 1/4을 넘지 않는다. 넘치는 종류는 시험하지 않고
 	// UNDECIDABLE(예산)로 남는다.
 	E3ConfirmationShareDivisor = 4
-	// E3ConfirmationReloginRequests: 확정 단계 직전 다시 로그인(소유 계정·평가 계정 각 1건, 사용자 결정 2026-11-20 (가)).
-	// 모델 단계가 길어 대상 세션이 만료돼도 확정 단계가 새 세션으로 돌게 한다.
-	E3ConfirmationReloginRequests = 2
+	// E3ConfirmationLoginRequestsPerAccount: 계정 하나의 확정 단계 직전 다시 로그인 요청 상한(사용자 결정 2026-11-20 (가)).
+	// 학습 로그인 재사용(모델 로그인 계약 §6-2)은 로그인 화면 GET(CSRF·로그인 전 쿠키) 1 + 로그인 POST 1이다.
+	E3ConfirmationLoginRequestsPerAccount = 2
+	// E3ConfirmationLoginContrastRequests: 학습 로그인 성공을 검증하는 세션 없는 대조 GET(회차당 1, 계약 §4 프로그램 대조).
+	E3ConfirmationLoginContrastRequests = 1
+	// E3ConfirmationReloginRequests: 확정 단계 직전 다시 로그인 몫(소유 계정·평가 계정 + 대조 1). 모델 단계가 길어 대상
+	// 세션이 만료돼도 확정 단계가 새 세션으로 돌게 한다.
+	E3ConfirmationReloginRequests = 2*E3ConfirmationLoginRequestsPerAccount + E3ConfirmationLoginContrastRequests
 	// E3ConfirmationIdentityRequests: 신원 확인 요청(소유 계정·평가 계정 각 1건).
 	E3ConfirmationIdentityRequests = 2
 	// E3ConfirmationFixedRequests: 시험할 종류가 하나라도 있을 때만 드는 고정 몫(다시 로그인 + 신원 확인).
@@ -34,7 +39,7 @@ type E3ConfirmationShare struct {
 	BudgetSkipped int
 }
 
-// ComputeE3ConfirmationShare는 시험할 종류 수와 실행 상한(요청·시간)에서 몫을 정한다. 요청 몫 = 고정 4(다시 로그인 2 + 신원 2) + 종류×4,
+// ComputeE3ConfirmationShare는 시험할 종류 수와 실행 상한(요청·시간)에서 몫을 정한다. 요청 몫 = 고정 7(다시 로그인 5 + 신원 2) + 종류×4,
 // 시간 몫 = 요청 몫 × 확정 요청 시간 상한이고, 둘 다 실행 상한의 1/4 안에 드는 만큼만 종류를 받는다. 종류가 없거나
 // 하나도 들지 않으면 몫은 0이다(모델 단계 예산을 이유 없이 줄이지 않는다).
 func ComputeE3ConfirmationShare(types int, runRequests uint64, run, perRequest time.Duration) E3ConfirmationShare {
