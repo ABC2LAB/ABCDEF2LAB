@@ -1,12 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
 	"sort"
@@ -120,10 +122,57 @@ func approvalPreviewText(s string) string {
 	return fmt.Sprintf("%s…(뒤 %d바이트 잘림)", s[:cut], len(s)-cut)
 }
 
+// approvalField는 미리보기 칸 하나(표시 이름 앞 · 값)다.
+type approvalField struct{ name, value string }
+
+// approvalBodyFields는 JSON 객체 본문의 최상위 칸을 원문 순서대로 꺼낸다. 같은 이름이 여러 번 있으면 모두 남긴다 — map으로
+// 풀면 앞 칸이 사라져, 대상 파서에 따라 실제로 쓰일 수 있는 값이 승인 화면에서 숨는다(#990 이동찬 P1). 객체가 아니거나 형식이
+// 틀리면(뒤에 다른 값이 붙은 경우 포함) false다.
+func approvalBodyFields(body []byte) ([]approvalField, bool) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, false
+	}
+	var out []approvalField
+	for dec.More() {
+		tok, err := dec.Token()
+		name, ok := tok.(string)
+		if err != nil || !ok {
+			return nil, false
+		}
+		var raw json.RawMessage
+		if dec.Decode(&raw) != nil {
+			return nil, false
+		}
+		out = append(out, approvalField{"body." + name, string(raw)})
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return nil, false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, false
+	}
+	return out, true
+}
+
+// approvalPreviewKey는 표시 이름이 겹치지 않게 한다. 같은 이름이 여러 번 온 칸, 256바이트로 자른 뒤 · 가린 뒤 이름이 같아진
+// 칸은 ' (n번째)'를 붙여 따로 남긴다 — 한 칸이 다른 칸을 조용히 덮지 않게(#990 이동찬 P2). 칸 이름은 늘 'query' · 'body'로
+// 시작해 생략 칸 이름과는 겹치지 않는다.
+func approvalPreviewKey(preview map[string]string, key string) string {
+	candidate := key
+	for n := 2; ; n++ {
+		if _, taken := preview[candidate]; !taken {
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s (%d번째)", key, n)
+	}
+}
+
 // approvalPreview는 승인 화면 · 승인 기록에 남는 보낼 요청의 모습이다: 대상(scheme://host), 경로, 질의 칸마다 'query.<이름>',
-// JSON 객체 본문은 칸마다 'body.<이름>'(값은 JSON 그대로), 그 밖의 본문은 'body' 한 칸. 대상 값 · 시험 계정 자격은 가리지
-// 않는다(절대규칙 2, 2026-11-26 DLP 폐기 · 승인 미리보기 가림 걷기, 민준 결정 2026-11-27). 남는 가림은 실행의 저장 기록
-// 가림(RedactRecord: 우리 제어 비밀 · E③ 표식)이고 경로 · 질의 · 칸 이름 · 값 모두에 건다. 요청 헤더(E②가 붙이는 자격 ·
+// JSON 객체 본문은 칸마다 'body.<이름>'(값은 JSON 그대로, 원문 순서, 같은 이름도 모두), 그 밖의 본문은 'body' 한 칸. 질의를
+// 칸으로 풀지 못하면(형식이 틀린 쌍 · ';') 'query' 한 칸에 원문을 싣는다(풀린 칸만 보이고 나머지가 숨지 않게). 대상 값 · 시험
+// 계정 자격은 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기 · 승인 미리보기 가림 걷기, 민준 결정 2026-11-27). 남는 가림은 실행의
+// 저장 기록 가림(RedactRecord: 우리 제어 비밀 · E③ 표식)이고 경로 · 질의 · 칸 이름 · 값 모두에 건다. 요청 헤더(E②가 붙이는 자격 ·
 // 세션 헤더 포함)는 미리보기에 싣지 않는다(요청 지문에만 들어간다).
 func approvalPreview(p e2proxy.RequestApprovalProposal) (string, string, map[string]string, error) {
 	u, err := url.Parse(p.URL)
@@ -131,40 +180,35 @@ func approvalPreview(p e2proxy.RequestApprovalProposal) (string, string, map[str
 		return "", "", nil, errRequestApproval
 	}
 	redact := func(s string) string { return string(p.Redact([]byte(s))) }
-	type entry struct{ key, value string }
-	var entries []entry
-	query := u.Query()
-	keys := make([]string, 0, len(query))
-	for key := range query {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		v, _ := json.Marshal(query[key])
-		entries = append(entries, entry{"query." + key, string(v)})
+	var fields []approvalField
+	query, queryErr := url.ParseQuery(u.RawQuery)
+	if queryErr != nil {
+		fields = append(fields, approvalField{"query", u.RawQuery})
+	} else {
+		keys := make([]string, 0, len(query))
+		for key := range query {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			v, _ := json.Marshal(query[key])
+			fields = append(fields, approvalField{"query." + key, string(v)})
+		}
 	}
 	if len(p.Body) > 0 {
-		var body map[string]json.RawMessage
-		if json.Unmarshal(p.Body, &body) == nil && body != nil {
-			keys = keys[:0]
-			for key := range body {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-			for _, key := range keys {
-				entries = append(entries, entry{"body." + key, string(body[key])})
-			}
+		if body, ok := approvalBodyFields(p.Body); ok {
+			fields = append(fields, body...)
 		} else {
-			entries = append(entries, entry{"body", string(p.Body)})
+			fields = append(fields, approvalField{"body", string(p.Body)})
 		}
 	}
 	preview := map[string]string{}
-	for i, e := range entries {
+	for i, f := range fields {
 		if i == approvalPreviewEntries {
-			preview[approvalPreviewOmittedKey] = fmt.Sprintf("칸 %d개 더 있음", len(entries)-approvalPreviewEntries)
+			preview[approvalPreviewOmittedKey] = fmt.Sprintf("칸 %d개 더 있음", len(fields)-approvalPreviewEntries)
 			break
 		}
-		preview[approvalPreviewText(redact(e.key))] = approvalPreviewText(redact(e.value))
+		preview[approvalPreviewKey(preview, approvalPreviewText(redact(f.name)))] = approvalPreviewText(redact(f.value))
 	}
 	return u.Scheme + "://" + u.Host, redact(u.EscapedPath()), preview, nil
 }

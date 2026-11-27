@@ -105,3 +105,55 @@ func TestApprovalPreviewTruncatesWithoutDropping(t *testing.T) {
 		t.Fatalf("칸 상한: %d %q %v", len(preview), preview[approvalPreviewOmittedKey], err)
 	}
 }
+
+// 같은 이름의 최상위 칸이 여러 번 있으면 모두 원문 순서대로 남긴다. map으로 풀면 앞 칸이 사라져 대상 파서에 따라 실제로 쓰일
+// 값이 숨는다(#990 이동찬 P1).
+func TestApprovalPreviewKeepsDuplicateBodyNames(t *testing.T) {
+	_, _, preview, err := approvalPreview(approvalTestProposal("https://owned.test/transfer", []byte(`{"amount":100000,"to":"b","amount":1}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview["body.amount"] != "100000" || preview["body.amount (2번째)"] != "1" || preview["body.to"] != `"b"` || len(preview) != 3 {
+		t.Fatalf("같은 이름 칸: %q", preview)
+	}
+	// 객체 뒤에 다른 값이 붙었거나 객체가 아니면 본문 원문 한 칸이다(풀린 앞 객체만 보이지 않게).
+	for _, body := range []string{`{"a":1} {"a":2}`, `{"a":1`, `[1,2]`, `null`} {
+		_, _, preview, err := approvalPreview(approvalTestProposal("https://owned.test/x", []byte(body)))
+		if err != nil || preview["body"] != body || len(preview) != 1 {
+			t.Fatalf("%s → %q %v", body, preview, err)
+		}
+	}
+}
+
+// 256바이트로 자른 이름이나 가린 뒤 이름이 같아져도 한 칸이 다른 칸을 덮지 않는다(#990 이동찬 P2).
+func TestApprovalPreviewKeysStayDistinct(t *testing.T) {
+	prefix := strings.Repeat("p", approvalPreviewValueBytes+40)
+	_, _, preview, err := approvalPreview(approvalTestProposal("https://owned.test/q?"+prefix+"a=first&"+prefix+"b=second", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]bool{}
+	for _, v := range preview {
+		values[v] = true
+	}
+	if len(preview) != 2 || !values[`["first"]`] || !values[`["second"]`] {
+		t.Fatalf("잘린 이름이 겹쳐 칸이 줄어듦: %d칸", len(preview))
+	}
+	_, _, preview, err = approvalPreview(approvalTestProposal("https://owned.test/x", []byte(`{"synthetic-control-secret":1,"[REDACTED]":2}`)))
+	if err != nil || len(preview) != 2 || preview["body.[REDACTED]"] != "1" || preview["body.[REDACTED] (2번째)"] != "2" {
+		t.Fatalf("가린 뒤 이름이 겹쳐 칸이 줄어듦: %q %v", preview, err)
+	}
+	for k, v := range preview {
+		if strings.Contains(k+v, "synthetic-control-secret") {
+			t.Fatal("제어 비밀이 남음")
+		}
+	}
+}
+
+// 질의를 칸으로 풀지 못하면 풀린 칸만 보이지 않게 원문 한 칸으로 싣는다.
+func TestApprovalPreviewShowsUnparsableQueryWhole(t *testing.T) {
+	_, _, preview, err := approvalPreview(approvalTestProposal("https://owned.test/q?a=%zz&b=1", nil))
+	if err != nil || preview["query"] != "a=%zz&b=1" || len(preview) != 1 {
+		t.Fatalf("못 푸는 질의: %q %v", preview, err)
+	}
+}
