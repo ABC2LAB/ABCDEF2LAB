@@ -12,6 +12,7 @@
 //   표현/데이터 분리 — 파싱은 전부 여기(seam), 화면은 그리기만.
 
 import { apiFetch } from "@/lib/diagnosis/api";
+import { validUTCInstant } from "@/lib/diagnosis/diagnosis-run-timing";
 
 /** 대상에 등록된 계정 한 행. 자격 값은 응답에 없다 — 라벨 · 등록 여부만. */
 export type TargetAccount = {
@@ -81,10 +82,11 @@ const closedKeys = (v: Record<string, unknown>, keys: readonly string[]): boolea
 const nonEmpty = (v: unknown): v is string => typeof v === "string" && v !== "";
 const strList = (v: unknown): string[] | null =>
   Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : null;
-const utcMs = (v: unknown): number | null => {
-  const at = typeof v === "string" ? Date.parse(v) : Number.NaN;
-  return Number.isFinite(at) ? at : null;
-};
+// 서버 시각은 RFC3339 UTC 다(날짜만 있는 값 등 Date.parse 가 받는 다른 모양은 막는다, #996 경준 리뷰 P3).
+const utcMs = (v: unknown): number | null => (validUTCInstant(v) ? Date.parse(v) : null);
+// 세션 전달 방식: 쿠키 세션은 "cookie", 헤더 세션은 "헤더이름:접두"(learnedlogin SentAsHeader — 헤더 이름 토큰 · 접두 16자 이하
+// 출력 가능 ASCII), 아직 없으면 빈 값(계약 §3 · §6-1-2). 서버가 만들 수 없는 다른 모양은 막는다(#996 경준 리뷰 P3).
+const SESSION_SENT_AS = /^(?:cookie|[!#$%&'*+.^_`|~0-9A-Za-z-]+:[\x20-\x7e]{0,16})?$/;
 
 function loginMethodObject(v: unknown): TargetLoginMethodObject | null {
   const keys = [
@@ -104,18 +106,21 @@ function loginMethodObject(v: unknown): TargetLoginMethodObject | null {
   const fieldsFromResponse = strList(v.fields_from_response);
   const sessionNames = strList(v.session_names);
   if (
-    !nonEmpty(v.http_method) ||
+    // 서버(learnedlogin Method.Validate)는 POST 방법만 배운다(#996 경준 리뷰 P3)
+    v.http_method !== "POST" ||
     !nonEmpty(v.path) ||
     typeof v.format !== "string" ||
     !METHOD_FORMATS.includes(v.format) ||
-    !nonEmpty(v.identifier_field) ||
+    // 아이디 칸은 비어도 된다(비밀번호만 보내는 로그인 — 서버 Validate 가 허용, #996 경준 리뷰 P2)
+    typeof v.identifier_field !== "string" ||
     !nonEmpty(v.password_field) ||
     !otherFields ||
     !fieldsFromResponse ||
     typeof v.session_source !== "string" ||
     !SESSION_SOURCES.includes(v.session_source) ||
     !sessionNames ||
-    typeof v.session_sent_as !== "string"
+    typeof v.session_sent_as !== "string" ||
+    !SESSION_SENT_AS.test(v.session_sent_as)
   ) {
     return null;
   }

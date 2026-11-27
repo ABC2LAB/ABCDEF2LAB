@@ -224,8 +224,36 @@ describe("login_method 파서", () => {
       { state: "learned", learned, method: { ...method, password: "seeded" } },
       { state: "learned", learned: { ...learned, value: "x" }, method },
       { state: "none", extra: true },
+      // 서버가 만들 수 없는 값(#996 경준 리뷰 P3): POST 밖 메서드 · 날짜만 있는 시각 · 모양 밖 세션 전달 방식
+      { state: "learned", learned, method: { ...method, http_method: "GET" } },
+      { state: "learned", learned: { ...learned, at: "2026-11-27" }, method },
+      { state: "verified", learned, method, verified: { ...verified, at: "2026-11-27" } },
+      { state: "learned", learned, method: { ...method, session_sent_as: "somewhere" } },
+      { state: "learned", learned, method: { ...method, identifier_field: 7 } },
     ];
     for (const v of bad) expect(parseLoginMethod(v)).toBe("invalid");
+  });
+
+  it("서버가 정상으로 내는 값은 받는다 — 빈 아이디 칸(비밀번호만 보내는 로그인) · 헤더 세션 전달 · 빈 세션 전달 방식(#996 경준 리뷰 P2 · P3)", () => {
+    expect(parseLoginMethod({ state: "learned", learned, method: { ...method, identifier_field: "" } })).toMatchObject({
+      method: { identifierField: "" },
+    });
+    const header = {
+      ...method,
+      format: "json",
+      other_fields: [],
+      fields_from_response: [],
+      session_source: "json_field",
+      session_names: ["token"],
+      session_sent_as: "Authorization:Bearer ",
+    };
+    expect(parseLoginMethod({ state: "learned", learned, method: header })).toMatchObject({
+      method: { sessionSentAs: "Authorization:Bearer " },
+    });
+    // 세션 전달 방식이 아직 없으면 빈 값이다(계약 §3 · §6-1-2, #996 경준 리뷰 P3)
+    expect(parseLoginMethod({ state: "learned", learned, method: { ...method, session_sent_as: "" } })).toMatchObject({
+      method: { sessionSentAs: "" },
+    });
   });
 
   it("getAccounts 가 계정마다 login_method 를 싣는다(형식 밖이면 invalid, 계정 행은 그대로)", async () => {
