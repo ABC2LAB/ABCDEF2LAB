@@ -33,7 +33,6 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
-	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/exploration"
 	"github.com/Autumn-27/artex/exploreboundary"
 	"github.com/Autumn-27/artex/loginattempt"
@@ -178,23 +177,19 @@ func (f hostFixture) current(productTargetRecord) error {
 // 브라우저 MCP 정보를 결속대로 주고, 마감하면 새 요청을 받지 않는다.
 func TestProductExplorationHostDrivesRealBoundary(t *testing.T) {
 	f := newHostFixture(t)
-	host, err := f.host.factory(f.rec, f.current, f.digest, []string{"/read/admin"}, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, []string{"/read/admin"}, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if host.Reader == nil || host.Fetch == nil || host.Sequences == nil || host.Session.Boundary == nil || host.Session.StartBrowser == nil || host.Session.Redact == nil {
 		t.Fatal("host is missing a capability the pipeline requires")
 	}
-	// 도구 결과의 자격 형식은 모델·활동 기록으로 가기 전에 가린다(S09). 주소는 남긴다.
-	masked := string(host.Session.Redact([]byte("Set-Cookie: sid=synthetic-session-77aa\nAuthorization: Bearer synthetic-bearer-77aa\n" +
-		`{"password":"synthetic-pass-77aa"} next ` + f.target + "/read/item")))
-	for _, marker := range []string{"synthetic-session-77aa", "synthetic-bearer-77aa", "synthetic-pass-77aa"} {
-		if strings.Contains(masked, marker) {
-			t.Fatalf("exploration output kept credential marker %s: %q", marker, masked)
-		}
-	}
-	if !strings.Contains(masked, f.target+"/read/item") {
-		t.Fatalf("exploration output lost the page address: %q", masked)
+	// 도구 결과는 가리지 않고 모델·활동 기록으로 간다(절대규칙 2, 2026-11-26 DLP 폐기): 대상이 준 세션·응답과 시험 계정 자격이
+	// 그대로 남는다(탐색 모델이 직접 로그인한다).
+	toolResult := "Set-Cookie: sid=synthetic-session-77aa\nAuthorization: Bearer synthetic-bearer-77aa\n" +
+		`{"password":"synthetic-pass-77aa"} next ` + f.target + "/read/item"
+	if got := string(host.Session.Redact([]byte(toolResult))); got != toolResult {
+		t.Fatalf("exploration output changed: %q", got)
 	}
 	lease, err := host.Session.Boundary.Open(t.Context(), f.binding)
 	if err != nil {
@@ -242,7 +237,7 @@ func TestProductExplorationHostDrivesRealBoundary(t *testing.T) {
 func TestProductExplorationHostHonorsTargetApproval(t *testing.T) {
 	f := newHostFixture(t)
 	f.ended.Store(true)
-	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,7 +246,7 @@ func TestProductExplorationHostHonorsTargetApproval(t *testing.T) {
 	}
 	wrong := f.binding
 	wrong.TargetRevision = 3
-	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), wrong, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
+	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, productExplorationLogin(nil))(t.Context(), wrong, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
 		t.Fatal("host accepted another target revision")
 	}
 }
@@ -331,31 +326,34 @@ func TestProductExplorationOptionsUseInstalledHost(t *testing.T) {
 	}
 }
 
-// 탐색 host는 이 회차 비밀번호 목록으로 저장 기록 가림을 건다. 목록을 만들지 못한 실행(nil)은 탐색을 열지 않는다(#875 발견 3).
-func TestProductExplorationHostRecordRedaction(t *testing.T) {
+// 탐색 host는 도구 결과를 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기): 모델 입력(Redact)은 대상 응답·시험 계정 자격·
+// 대상이 발급한 세션 값을 그대로 두고, 저장 기록에 따로 거는 가림(RedactRecord)은 없다. 탐색 모델이 직접 로그인하므로
+// 로그인 응답의 토큰·쿠키를 읽을 수 있어야 한다.
+func TestProductExplorationHostDoesNotRedact(t *testing.T) {
 	f := newHostFixture(t)
 	connection := &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}
-	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, nil, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
-		t.Fatalf("host opened without a password list: %v", err)
-	}
-	passwords := &explorationPasswords{values: [][]byte{[]byte("tester-password")}}
-	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, passwords, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := []byte(`{"password":"tester-password"}`)
-	if host.Session.RedactRecord == nil || strings.Contains(string(host.Session.RedactRecord(record)), "tester-password") {
-		t.Fatal("record redaction not bound to the run password list")
+	if host.Session.RedactRecord != nil {
+		t.Fatal("탐색 저장 기록에 따로 가림이 걸려 있음")
 	}
-	// 모델 입력 가림(Redact)은 정확값 가림을 하지 않는다(11/23 규칙). 자격 꼴 가림만 있다.
-	if !strings.Contains(string(host.Session.Redact([]byte("tester-password"))), "tester-password") {
-		t.Fatal("model input redaction changed")
+	for _, result := range []string{
+		`{"password":"tester-password"}`,
+		"Set-Cookie: connect.sid=s%3Asynthetic-session-value; Path=/; HttpOnly",
+		`{"token":"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ0ZXN0ZXIifQ.c3ludGhldGljLXNpZ25hdHVyZQ"}`,
+		"Authorization: Bearer synthetic-bearer-token-value",
+	} {
+		if got := string(host.Session.Redact([]byte(result))); got != result {
+			t.Fatalf("탐색 도구 결과가 바뀜: %s", got)
+		}
 	}
 }
 
-// 실행 옵션이 이 실행의 결속 계정 자격(실행 자료)으로 만든 목록을 host의 기록 가림까지 잇고, 실행 끝(clearMaterials)에
-// 지운다(#875 발견 3, 2026-11-24 사용자 결정).
-func TestProductExplorationOptionsBindRunPasswords(t *testing.T) {
+// 실행 옵션은 이 실행의 결속 계정 자격(실행 자료)을 탐색 지침과 경계 로그인 판정 설정에 잇는다. 탐색 기록은 그 비밀번호를
+// 가리지 않고, 실행이 끝나도(clearMaterials) 도구 결과를 통째로 가리지 않는다.
+func TestProductExplorationOptionsBindRunCredentials(t *testing.T) {
 	runtime, loaded, execution, flow := productExplorationFixture(t, "target-owned", "7", 1)
 	f := newHostFixture(t)
 	runtime.product = &productRuntime{exploration: f.host, targets: &productTargetRegistry{}}
@@ -364,20 +362,25 @@ func TestProductExplorationOptionsBindRunPasswords(t *testing.T) {
 	loaded.productTarget = &rec
 	loaded.productConnection = &productTargetConnection{IP: rec.SelectedIP, SPKI: rec.Target.TLSSPKISHA256, jobID: execution.Job.ID}
 	loaded.policy.Auth = &server.E2HTTPFileAuth{Accounts: []server.E2HTTPFileAuthAccount{{Label: "a", Credential: server.E2HTTPFilePin{File: "cred-a.json"}}}}
-	loaded.materials = map[string][]byte{"cred-a.json": []byte(`{"username":"tester-a","password":"run-tester-password"}`)}
+	loaded.materials = map[string][]byte{"cred-a.json": []byte(`{"username":"tester-a","password":"12345"}`)}
 	options, ok := runtime.productExplorationOptions(loaded, execution, "7", flow)
 	if !ok || options.OpenHost == nil {
 		t.Fatal("installed exploration host not used")
+	}
+	// 짧은 비밀번호 계정도 탐색 지침에 들어간다(가림 때문에 빼던 #967 임시 규칙을 풂).
+	if len(options.Credentials) != 1 || options.Credentials[0].Label != "a" || options.Credentials[0].Username != "tester-a" || options.Credentials[0].Password != "12345" {
+		t.Fatalf("탐색 지침 자격: %d개", len(options.Credentials))
 	}
 	host, err := options.OpenHost(t.Context(), options.Binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(host.Session.RedactRecord([]byte(`{"password":"run-tester-password"}`))); strings.Contains(got, "run-tester-password") {
-		t.Fatalf("run password left in record: %s", got)
+	record := `{"password":"12345"}`
+	if host.Session.RedactRecord != nil || string(host.Session.Redact([]byte(record))) != record {
+		t.Fatal("탐색 기록에서 시험 계정 비밀번호를 가림")
 	}
 	loaded.clearMaterials()
-	if got := string(host.Session.RedactRecord([]byte("after run"))); got != dlp.Redacted {
+	if got := string(host.Session.Redact([]byte("after run"))); got != "after run" {
 		t.Fatalf("record after run end: %s", got)
 	}
 }
@@ -387,8 +390,7 @@ func TestProductExplorationOptionsBindRunPasswords(t *testing.T) {
 func TestProductExplorationHostRequiresLoginConfig(t *testing.T) {
 	f := newHostFixture(t)
 	connection := &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}
-	passwords := &explorationPasswords{values: [][]byte{[]byte("tester-password")}}
-	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, passwords, nil)(t.Context(), f.binding, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
+	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, connection, nil)(t.Context(), f.binding, &agent.Worker{}); !errors.Is(err, exploration.ErrBinding) {
 		t.Fatalf("판정 설정 없이 탐색을 엶: %v", err)
 	}
 	login := productExplorationLogin([]agent.E2HTTPAccountCredential{{Label: "tester-a", Username: "user1", Password: "alpha-pass-1"}})

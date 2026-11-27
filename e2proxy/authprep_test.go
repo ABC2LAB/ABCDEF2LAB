@@ -1,6 +1,7 @@
 package e2proxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -444,10 +445,11 @@ func TestDisableTestAccountPassthrough(t *testing.T) {
 	}
 }
 
-// 시험 계정 실행에서 대상이 새로 발급한 세션(Set-Cookie 회전, Authentication-Info)은 모델에 그대로 가지만 출력 가림 목록에
-// 들어가 기록·근거·활동에 남지 않는다. 8바이트보다 짧은 발급 값은 값으로 가릴 수 없어 그 응답을 보류한다(curl 쿠키 파일처럼
-// 헤더 줄이 아닌 모양으로 남을 수 있음). 빈 값(쿠키 지우기)은 보류하지 않는다. 가릴 자리가 모자라도 보류한다(#522 리뷰).
-func TestIssuedSessionsAreRedactedFromRecords(t *testing.T) {
+// 시험 계정 실행에서 대상이 새로 발급한 세션(Set-Cookie 회전, Authentication-Info)은 모델에 그대로 가고, 모델 출력·저장
+// 기록에서도 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기). 그래서 값으로 가릴 수 없던 짧은 발급 값(8바이트 미만)이나 가림
+// 자리 때문에 응답을 보류하지 않는다. 인증 준비가 넘긴 세션 값(AddRedactValues)도 가림 목록에 넣지 않는다. 시험 계정 실행이
+// 아닌(preserve) 실행은 지금처럼 자격 응답을 통째로 보류한다.
+func TestIssuedSessionsStayVisibleInTestAccountRuns(t *testing.T) {
 	var mode atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch mode.Load() {
@@ -460,9 +462,6 @@ func TestIssuedSessionsAreRedactedFromRecords(t *testing.T) {
 		case 3:
 			http.SetCookie(w, &http.Cookie{Name: "session", Value: "", MaxAge: -1})
 			io.WriteString(w, "logged out view")
-		case 4:
-			http.SetCookie(w, &http.Cookie{Name: "session", Value: "another-rotated-token-99dd"})
-			io.WriteString(w, "profile")
 		default:
 			http.SetCookie(w, &http.Cookie{Name: "session", Value: "rotated-session-token-77aa"})
 			w.Header().Set("Authentication-Info", "nextnonce=issued-nonce-value-88bb")
@@ -473,8 +472,9 @@ func TestIssuedSessionsAreRedactedFromRecords(t *testing.T) {
 	cfg := coreConfig(t, srv.URL, &coreRecorder{}, 10)
 	cfg.HeaderMode = HeaderTestAccountPassthrough
 	e, call := coreOpen(t, cfg)
-	if err := e.AddRedactValues([]byte("initial-session-value-11cc")); err != nil {
-		t.Fatal(err)
+	// 짧은 세션 값도 받는다(가리지 않으므로 길이 하한이 걸리지 않는다). 가림 목록은 그대로 비어 있다.
+	if err := e.AddRedactValues([]byte("initial-session-value-11cc"), []byte("s1")); err != nil || len(e.redactOnly) != 0 {
+		t.Fatalf("시험 계정 실행이 세션 값을 가림 목록에 넣음: %v %d", err, len(e.redactOnly))
 	}
 	req := coreRequest(t, "GET", srv.URL+"/allowed/me")
 	req.Header.Set("Cookie", "session=initial-session-value-11cc")
@@ -484,61 +484,27 @@ func TestIssuedSessionsAreRedactedFromRecords(t *testing.T) {
 	}
 	raw, _ := httputil.DumpResponse(resp, true)
 	resp.Body.Close()
-	if !strings.Contains(string(raw), "rotated-session-token-77aa") {
-		t.Fatal("model input lost the issued session")
-	}
-	out := string(e.RedactOutput(raw))
-	for _, secret := range []string{"rotated-session-token-77aa", "issued-nonce-value-88bb", "initial-session-value-11cc"} {
-		if strings.Contains(out, secret) {
-			t.Fatalf("issued session %q reached the record: %s", secret, out)
-		}
-	}
-	// curl 쿠키 파일 줄처럼 헤더 모양이 아닌 곳에 나와도 등록한 값은 가려진다.
 	jar := "#HttpOnly_owned.test\tFALSE\t/\tFALSE\t0\tsession\trotated-session-token-77aa"
-	if got := string(e.RedactOutput([]byte(jar))); strings.Contains(got, "rotated-session-token-77aa") {
-		t.Fatalf("cookie jar line kept the issued session: %q", got)
-	}
-	// 짧은 발급 값은 응답째 보류한다. 짧은 비자격 쿠키(lang=en)도 같다 — preserve 실행은 자격 응답을 늘 보류하므로 그보다
-	// 더 막지 않는다. 빈 값은 비밀이 없어 보낸다.
-	for _, m := range []int64{1, 2} {
-		mode.Store(m)
-		if _, r, err := call.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/me")); !errors.Is(err, ErrWithheld) || r.Reason != Withheld {
-			t.Fatalf("mode %d: short issued value delivered: %v %+v", m, err, r)
+	for name, redact := range map[string]func([]byte) []byte{"model output": e.RedactOutput, "record": e.RedactRecord} {
+		if got := redact(raw); !bytes.Equal(got, raw) {
+			t.Fatalf("%s: 발급 세션이 든 응답이 바뀜: %s", name, got)
+		}
+		for _, text := range []string{jar, "session=initial-session-value-11cc", "< Set-Cookie: sid=short1; Path=/\r\n", "Authentication-Info: nn=a1"} {
+			if got := string(redact([]byte(text))); got != text {
+				t.Fatalf("%s: 세션 값이 가려짐: %q", name, got)
+			}
 		}
 	}
-	mode.Store(3)
-	if resp, r, err := call.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/me")); err != nil || r.Reason != Complete {
-		t.Fatalf("cookie deletion withheld: %v %+v", err, r)
-	} else {
+	// 짧은 발급 값·짧은 비자격 쿠키·쿠키 지우기 모두 보류하지 않는다.
+	for _, m := range []int64{1, 2, 3} {
+		mode.Store(m)
+		resp, r, err := call.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/me"))
+		if err != nil || r.Reason != Complete {
+			t.Fatalf("mode %d: 발급 값 때문에 응답을 보류함: %v %+v", m, err, r)
+		}
 		resp.Body.Close()
 	}
-	// 헤더 줄 모양은 짧은 값도 구조로 가린다(보류 전 단계의 겹 방어). 시험 계정 실행이 아니면 구조 가림을 하지 않는다.
-	if got := string(e.RedactOutput([]byte("< Set-Cookie: sid=short1; Path=/\r\n"))); got != "< Set-Cookie: sid=[REDACTED]; Path=/\r\n" {
-		t.Fatalf("curl -v cookie line: %q", got)
-	}
-	if got := string(e.RedactOutput([]byte("Authentication-Info: nn=a1"))); got != "Authentication-Info: [REDACTED]" {
-		t.Fatalf("short Authentication-Info value: %q", got)
-	}
-	plainExec, _ := coreOpen(t, coreConfig(t, srv.URL, &coreRecorder{}, 1))
-	if got := string(plainExec.RedactOutput([]byte("Set-Cookie: sid=short1"))); got != "Set-Cookie: sid=short1" {
-		t.Fatalf("non test-account run masked structurally: %q", got)
-	}
-	// 가릴 자리가 모자라면 새 세션을 담은 응답은 보류한다. 이미 등록한 값만 다시 오면 자리를 더 쓰지 않아 그대로 보낸다.
-	// 발급 세션 칸은 계정 세션과 따로 센다. 칸을 다 채운 상태를 만든다.
-	e.mu.Lock()
-	e.issuedRedactions = maxIssuedRedactValues
-	e.mu.Unlock()
-	mode.Store(0)
-	if resp, r, err := call.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/me")); err != nil || r.Reason != Complete {
-		t.Fatalf("known issued session withheld at capacity: %v %+v", err, r)
-	} else {
-		resp.Body.Close()
-	}
-	mode.Store(4)
-	if _, r, err := call.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/me")); !errors.Is(err, ErrWithheld) || r.Reason != Withheld {
-		t.Fatalf("issued session beyond the redaction capacity delivered: %v %+v", err, r)
-	}
-	// preserve 실행은 자격 응답을 통째로 보류하므로 등록할 것이 없다.
+	// preserve 실행은 자격 응답을 통째로 보류하고 가림 목록도 그대로다.
 	mode.Store(0)
 	plain, plainCall := coreOpen(t, coreConfig(t, srv.URL, &coreRecorder{}, 2))
 	if _, r, err := plainCall.Do(context.Background(), coreRequest(t, "GET", srv.URL+"/allowed/me")); !errors.Is(err, ErrWithheld) || r.Reason != Withheld || len(plain.redactOnly) != 0 {

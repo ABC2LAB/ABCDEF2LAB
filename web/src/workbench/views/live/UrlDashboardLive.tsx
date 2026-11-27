@@ -7,9 +7,9 @@
 // 아님, 절대 규칙 5). 결과가 저장되기 전에는 비워 두고 "없음"이라고 말하지 않는다(절대 규칙 5).
 // 결정 대기(요청 승인 · 경로 선택)는 시안처럼 요약 칸과 점검 상세에서 보이고, 승인 요청은 상세에서 연다.
 
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
-import { activeURLRun, endedURLRun } from "@/lib/diagnosis/diagnosis-runs";
+import { activeURLRun, endedURLRun, type URLRunSummary } from "@/lib/diagnosis/diagnosis-runs";
 import { diagnosticOutcome } from "@/lib/diagnosis/diagnostic-results";
 import { type E2Counts, type E2Flow, getE2Flow } from "@/lib/diagnosis/e2flow";
 import type { RemediationEntry } from "@/lib/diagnosis/remediation";
@@ -20,9 +20,10 @@ import { SEVL, type SevKey } from "../../data/findings";
 import { cx } from "../../lib/cx";
 import { fetchRemediation } from "../../live/api";
 import { useHiddenRunIDs } from "../../live/hiddenRuns";
-import { fmtTokens, sevKey } from "../../live/map";
+import { dateTimeOf, fmtTokens, sevKey } from "../../live/map";
 import { LoadingRow, NotYet } from "../../live/parts";
-import { useUrl, useUrlGates } from "../../live/urlDiagnosis";
+import { useRunInput } from "../../live/runInput";
+import { selectUrlRun, useUrl, useUrlGates } from "../../live/urlDiagnosis";
 import { URL_ENDED_STATES, urlHost, urlStateText } from "../../live/urlMap";
 import { useUrlRuns } from "../../live/urlRunList";
 import { type Poll, usePoll } from "../../live/usePoll";
@@ -31,6 +32,7 @@ import { Icon } from "../../ui/icons";
 import { InspHead, InspOpenButton, Isec, PaneToggle, useScrollTopOnChange } from "../../ui/parts";
 import s from "../../workbench.module.css";
 import { ApprovalActions, ApprovalFacts, ApprovalRequestCode, useRequestApprovals } from "./approvals";
+import { DashOverview } from "./DashOverview";
 import { Ring, RingCard, type RingSeg } from "./dashRings";
 import { JobSummary, jobResult, pendingRows, useCoveragePct } from "./jobSummary";
 import { ReportReadError, RunListControls, RunListStatus, RunRow, SelectedRunStatus } from "./runRows";
@@ -331,7 +333,92 @@ export function dashFindings(entries: readonly RemediationEntry[]): RemediationE
     );
 }
 
-/** live 대시보드 (URL 진단 서버). */
+/**
+ * live 대시보드(2026-11-26). 보기 둘: 전체 = 최근 점검을 모은 통합 대시보드(DashOverview), 점검별 = 고른 점검 하나 기준의
+ * 대시보드(UrlDashboardSingle).
+ */
+/**
+ * 대시보드 보기(사용자 11/26): 전체(모든 점검을 모은 통합 대시보드) · 점검별(고른 점검 하나 — 예전 대시보드).
+ * 마지막으로 고른 보기는 이 브라우저에 기억한다(못 읽으면 전체).
+ */
+type DashMode = "all" | "run";
+const DASH_MODE_KEY = "abc2lab-dash-mode";
+const DASH_MODES: readonly [DashMode, string][] = [
+  ["all", "전체"],
+  ["run", "점검별"],
+];
+
+/** 기억한 보기. 읽기 전(null)에는 본문을 그리지 않는다 — 전체가 잠깐 그려졌다 바뀌며 깜빡이고 모든 점검 결과를 읽지 않게 */
+function useDashMode(): [DashMode | null, (m: DashMode) => void] {
+  const [mode, setMode] = useState<DashMode | null>(null);
+  useEffect(() => {
+    let saved: DashMode = "all";
+    try {
+      if (localStorage.getItem(DASH_MODE_KEY) === "run") saved = "run";
+    } catch {
+      // 저장소를 못 쓰면 전체로 연다
+    }
+    setMode(saved);
+  }, []);
+  const change = (m: DashMode) => {
+    setMode(m);
+    try {
+      localStorage.setItem(DASH_MODE_KEY, m);
+    } catch {
+      // 기억하지 못해도 지금 화면은 바뀐다
+    }
+  };
+  return [mode, change];
+}
+
+/** 점검 고르기 줄 하나: 번호 · 주소 · 상태 · 시각 */
+function RunOption({ row, owner }: { row: URLRunSummary; owner: string | null }) {
+  const info = useRunInput(row.id, owner);
+  const when = row.finished_at ?? row.started_at;
+  return (
+    <option value={row.id}>
+      {[
+        `${row.task_id ? `${row.task_id}. ` : ""}${info ? info.host : row.display_name?.trim() || row.id}`,
+        urlStateText(row.state),
+        when ? dateTimeOf(when).slice(5, 16).replace("-", "/") : null,
+      ]
+        .filter(Boolean)
+        .join(" · ")}
+    </option>
+  );
+}
+
+/** 점검별 보기에서 볼 점검 고르기(왼쪽 목록에서 고른 것과 같다 — 고르면 이어 보는 점검이 바뀐다) */
+function DashRunPicker() {
+  const page = useUrlRuns((st) => st.page);
+  const owner = useUrlRuns((st) => st.owner);
+  const hidden = useHiddenRunIDs(owner);
+  const current = useUrl((st) => st.handle?.id ?? null);
+  const rows = (page?.runs ?? []).filter((r) => !(endedURLRun(r) && hidden.includes(r.id)));
+  if (!rows.length) return null;
+  return (
+    <select
+      className={cx(s.inp, s["dash-pick"])}
+      aria-label="볼 점검"
+      value={current ?? ""}
+      onChange={(e) => {
+        const row = rows.find((r) => r.id === e.target.value);
+        if (row) void selectUrlRun(row);
+      }}
+    >
+      {current ? null : (
+        <option value="" disabled>
+          점검 고르기
+        </option>
+      )}
+      {current && !rows.some((r) => r.id === current) ? <option value={current}>지금 이어 보는 점검</option> : null}
+      {rows.map((r) => (
+        <RunOption key={r.id} row={r} owner={owner} />
+      ))}
+    </select>
+  );
+}
+
 /**
  * 점검 정보 '보낸 요청' 칸에 넘길 e2-flow. 재조회가 한 번 실패해도 같은 점검에서 마지막으로 받은 값은 그대로 넘긴다 — usePoll 은
  * 오류에도 data 를 지우지 않고, 점검(task)이 바뀌면 비운다. '읽기 실패'는 받은 값이 하나도 없을 때만이다(#976 이동찬 P2).
@@ -345,6 +432,26 @@ export function dashSentFlow(
 }
 
 export function UrlDashboardLive() {
+  const [mode, setMode] = useDashMode();
+  const tabs = (
+    <span className={s["dash-mode"]}>
+      <span className={s.seg} role="radiogroup" aria-label="대시보드 보기">
+        {DASH_MODES.map(([id, label]) => (
+          <label key={id}>
+            <input type="radio" name="dashMode" checked={mode === id} onChange={() => setMode(id)} />
+            <span>{label}</span>
+          </label>
+        ))}
+      </span>
+      {mode === "run" ? <DashRunPicker /> : null}
+    </span>
+  );
+  if (mode === null) return <UrlHead title="대시보드" crumb="대시보드" />;
+  return mode === "run" ? <UrlDashboardSingle tabs={tabs} /> : <DashOverview tabs={tabs} />;
+}
+
+/** 점검별 대시보드(이 브라우저가 이어 보는 점검 하나 기준, 예전 대시보드). */
+export function UrlDashboardSingle({ tabs }: { tabs?: ReactNode }) {
   const { route, openInsp } = useShell();
   const handle = useUrl((st) => st.handle);
   const page = useUrlRuns((st) => st.page);
@@ -539,6 +646,7 @@ export function UrlDashboardLive() {
       <UrlHead
         title="대시보드"
         crumb="대시보드"
+        pill={tabs}
         // [새로고침]은 뺐다(사용자 11/24) — 점검 목록 · 지금 점검 상태 · 승인 요청 · 탐색 흐름이 알아서 다시 읽힌다(UrlFeeds)
         acts={<InspOpenButton>상세</InspOpenButton>}
       />
@@ -565,7 +673,7 @@ export function UrlDashboardLive() {
             explore={
               flow && job?.input.workflow_mode ? { found: flow.counts.found, visited: flow.counts.visited } : null
             }
-            e2={e2Task && !e2.error && e2.data?.journal === "verified" ? e2.data.counts : null}
+            e2={e2Task && !e2.error && e2.data && e2.data.journal !== "invalid" ? e2.data.counts : null}
             e2Note={e2Note}
             approvals={pending ? pending.length : null}
             selecting={!!job && flow?.stage === "awaiting_selection"}

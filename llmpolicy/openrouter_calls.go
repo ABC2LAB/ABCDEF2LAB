@@ -1,6 +1,7 @@
 package llmpolicy
 
 import (
+	"context"
 	"encoding/json"
 	"regexp"
 	"time"
@@ -57,6 +58,22 @@ func openRouterGenerationID(data []byte) string {
 		return ""
 	}
 	return head.ID
+}
+
+// openRouterCallerStopped는 끝까지 받지 못한 호출을 이쪽(호출자)이 멈춘 것인지다: 요청 문맥이 끝났거나 문맥 기한이 지났다.
+// 호출 시간 상한(http.Client.Timeout)은 문맥 기한과 따로 도는 타이머로도 요청을 끊는다. 그 타이머가 먼저 끊으면 문맥이 아직
+// 끝나지 않았을 수 있어, 같은 시한 끊김의 끝 모양이 호출마다 '이쪽이 멈춤'과 '위쪽 끊김'으로 갈렸다. 평가 러너는 위쪽 끊김만
+// 제공자 장애로 세므로(runner_fault.py·runner_early_end.py) 한 값으로 남아야 한다(2026-11-27 사용자 결정): 기한이 지났으면
+// 이쪽이 멈춘 것이다.
+func openRouterCallerStopped(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	if ctx.Err() != nil {
+		return true
+	}
+	deadline, ok := ctx.Deadline()
+	return ok && !time.Now().Before(deadline)
 }
 
 // openRouterCallOutcome은 결정과 끝 모양을 게이트웨이와 같은 어휘로 정한다.

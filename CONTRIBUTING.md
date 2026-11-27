@@ -32,10 +32,10 @@ DB 관련 변경은 소유한 전용 시험 DB에서 검증합니다. `ARTEX_PG_
 
 PR과 `dev` push는 [CI](.github/workflows/ci.yml)가 자동으로 검사합니다.
 - Go: `go build`·`go vet`, darwin·windows 크로스빌드(`./...`·`./cmd/...`), PR이 바꾼 Go 파일의 `gofmt`와 `git diff --check`
-- 1회용 PostgreSQL 16으로 loopback만 있는 망에서 패키지마다 `go test -race`를 돌립니다. DB는 시험 DSN 변수마다 따로 두고 패키지마다 새로 만듭니다. 시험 단위 PASS/FAIL/SKIP 수와 SKIP 목록을 요약에 남깁니다.
+- 1회용 PostgreSQL 16으로 loopback만 있는 망에서 패키지마다 `go test -race`를 돌립니다. DB는 시험 DSN 변수마다 따로 두고 패키지마다 새로 만듭니다. 시험 단위 PASS/FAIL/SKIP 수와 SKIP 목록을 요약에 남깁니다. **DB 사유로 건너뛴 시험(SKIP 메시지가 PostgreSQL·DSN·database를 말함)이 하나라도 있으면 실패**입니다(`scripts/ci/go-test.sh`). 브라우저·Docker·root·실제 대상 같은 선택 실행 시험의 SKIP은 해당하지 않습니다. 선택 실행 시험의 SKIP 메시지에는 PostgreSQL·DSN·database 같은 낱말을 쓰지 말고 `NOT_RUN: ... opt-in 필요`처럼 씁니다(판별은 SKIP 직전 메시지로 합니다).
 - 평가 스크립트 unittest와 E② 배치 검사기(`deploy/e2-network-boundary`) unittest를 돌립니다. 배치 쪽은 합성 inspect·Compose 렌더링 시험만이고 SKIP은 실패로 봅니다. 실제 Docker를 띄우는 `*_docker.py`는 CI에서 돌지 않습니다.
 
-로컬에서는 `scripts/ci/pg-up.sh <빈 디렉터리>`로 같은 DB를 만들 수 있습니다. 출력 줄을 한 줄씩 `export`하세요. DSN에 `&`가 있어 `source`로 읽으면 값이 잘립니다. 웹 검사는 변경 범위에 따라 같은 CI의 Web job에서 수행하거나 명시적으로 생략합니다([Web CI 안내](docs/vercel-ci.md#actions-검증)). CI 성공은 실제 모델·대상 진단이나 UI 실연동 수용 완료가 아닙니다.
+로컬에서는 `scripts/ci/pg-up.sh <빈 디렉터리> > pg.env`로 같은 DB를 만들고, 시험은 `scripts/ci/pg-run.sh pg.env go test ...`(또는 `scripts/ci/pg-run.sh pg.env scripts/ci/go-test.sh ...`)로 돌립니다. `pg-run.sh`는 env 파일을 줄마다 그대로 `export`하고, 파일의 DSN이 모두 들어갔고 접속되는지 확인한 뒤에만 명령을 실행합니다. env 파일을 `source`·`.`로 읽지 마세요. DSN의 `&` 때문에 값이 잘려 PG 시험이 조용히 SKIP되고 통과처럼 보입니다. 웹 검사는 변경 범위에 따라 같은 CI의 Web job에서 수행하거나 명시적으로 생략합니다([Web CI 안내](docs/vercel-ci.md#actions-검증)). CI 성공은 실제 모델·대상 진단이나 UI 실연동 수용 완료가 아닙니다.
 
 프런트엔드 변경은 영향받은 테스트와 변경 파일의 Biome 검사, 정적 빌드·타입 검사를 수행합니다.
 

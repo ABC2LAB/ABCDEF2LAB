@@ -146,6 +146,8 @@ PR 순서: (a) E② 로그인 전용 규칙·`AuthPrep`·출력 가림 목록(E�
 
 ## JWT 세션 조각의 기록 가림 (VAmPI 24b 후속)
 
+> **2026-11-26 DLP 폐기로 없앰(이 절은 이전 기록이다).** 제품 기록은 내부 담당자만 보므로 대상이 발급한 세션 값을 가리지 않고, 모델 입력에도 넣을 수 있다(CLAUDE.md 절대규칙 2). 시험 계정 실행(`test_account_passthrough`)은 세션 값을 출력 가림 목록에 넣지 않고(`AddRedactValues`가 받기만 함), JWT 조각 등록·실행당 등록 칸(#840)·응답 발급 값 등록과 그 때문의 응답 보류·요청 자격 자리의 구조 가림도 없다. 저장 기록 가림(`RedactRecord`)은 E③ 표식과 우리 제어 비밀(설정한 보호 값)만 가린다. 시험 계정 실행이 아닌 실행의 출력 가림 전용 값(전체 값, 최대 64개)과 JSON 문자열 안 이스케이프 값 가림은 그대로다. 지금 규칙은 [비밀번호 응답 보호 계약](contracts/password-response-protection.md)에 있다.
+
 인증 준비·`refresh_session`·응답 세션 회전에서 **이미 대상 발급 세션으로 추출한 값**만 다룬다.
 `test_account_passthrough`에서 정규 base64url의 JSON 객체 머리·claims와 서명 구성을 확인한 JWT는 전체 값에 더해 payload·signature도 출력 가림 목록에 등록한다. 서명 없는 JWT는 `alg: none`과 빈 signature가 함께 있을 때만 형식으로 인정한다. 이 검사는 세션의 암호학적 진위·인가 판정이 아니다. opaque 세션은 전체 값만 가리고, 공통 머리·8바이트 미만 조각은 등록하지 않는다.
 

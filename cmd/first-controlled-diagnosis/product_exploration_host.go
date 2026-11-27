@@ -16,7 +16,6 @@ import (
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisflow"
-	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/exploration"
 	"github.com/Autumn-27/artex/exploreboundary"
 	"github.com/Autumn-27/artex/exploresandbox"
@@ -227,7 +226,8 @@ func exploreTargetOf(rec productTargetRecord, excluded []string) (exploreboundar
 		ExcludedPrefixes: append([]string(nil), excluded...)}, nil
 }
 
-func redactExplorationOutput(out []byte) []byte { return []byte(dlp.CredentialText(string(out))) }
+// redactExplorationOutput은 탐색 도구 결과를 그대로 둔다(DLP 폐기, 절대규칙 2). 탐색 실행기가 가림 함수를 요구해서 둔다.
+func redactExplorationOutput(out []byte) []byte { return out }
 
 // productMCPLease는 compose가 띄운 브라우저 샌드박스의 MCP를 가리킨다. MCP는 연결마다 새 브라우저 문맥을 만들고
 // (--isolated, CDP), 탐색 단계가 MCP 세션을 지우면 그 문맥이 닫힌다. 컨테이너 수명은 compose가 가진다.
@@ -238,7 +238,7 @@ func (l productMCPLease) Close(context.Context) error         { return nil }
 
 // factory는 한 실행의 결속(대상 기록·원본 digest·제외 경로)으로 탐색 host를 조립한다. 실제 연결·송신은 탐색 단계가
 // Boundary.Open·StartBrowser를 부를 때 시작한다. current는 대상 승인이 지금도 같은지 본다(철회·만료는 target_ended).
-func (h *productExplorationHost) factory(rec productTargetRecord, current func(productTargetRecord) error, digest string, excluded []string, maxBytes int64, connection *productTargetConnection, passwords *explorationPasswords, login *exploreboundary.WireLogin) server.ExplorationPipelineFactory {
+func (h *productExplorationHost) factory(rec productTargetRecord, current func(productTargetRecord) error, digest string, excluded []string, maxBytes int64, connection *productTargetConnection, login *exploreboundary.WireLogin) server.ExplorationPipelineFactory {
 	// 검증한 IP·SPKI를 값으로 복사하여 다음 실행의 증거가 섞이지 않게 한다.
 	var selected productTargetConnection
 	if connection != nil {
@@ -253,10 +253,6 @@ func (h *productExplorationHost) factory(rec productTargetRecord, current func(p
 			return server.ExplorationPipelineHost{}, exploration.ErrUnavailable
 		}
 		if connection == nil || selected.IP == "" || selected.jobID != b.JobID {
-			return server.ExplorationPipelineHost{}, exploration.ErrBinding
-		}
-		// 시험 계정 비밀번호 가림 목록을 만들지 못한 실행은 탐색 기록을 가릴 수 없으니 열지 않는다.
-		if passwords == nil {
 			return server.ExplorationPipelineHost{}, exploration.ErrBinding
 		}
 		networkTarget := productTargetCopy(rec)
@@ -295,12 +291,10 @@ func (h *productExplorationHost) factory(rec productTargetRecord, current func(p
 				}
 				return productMCPLease{info: browser}, nil
 			},
-			// 도구 결과(MCP 결과·오류)가 모델 입력·활동 기록으로 가기 전에 자격 형식(인증·쿠키 헤더, 비밀번호·토큰 값, Bearer,
-			// JWT, 개인키)을 가린다. 주소는 남긴다(모델이 다음 페이지를 고르는 데 필요).
-			Redact: redactExplorationOutput,
-			// 저장 기록(활동·감사 추적)에는 이 회차 시험 계정 비밀번호의 정확값 가림을 더한다(E② 저장 기록 가림과 같은 값·방식).
-			// 모델 입력은 위 Redact만 거친다(11/23 규칙).
-			RedactRecord: passwords.redact,
+			// 도구 결과(MCP 결과·오류)는 가리지 않고 모델 입력·활동 기록으로 간다. 모델 입력에는 대상 응답·시험 계정 자격·
+			// 대상이 발급한 세션 값을 넣을 수 있고, 제품 기록도 이를 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기). 탐색
+			// 모델이 직접 로그인하므로 로그인 응답의 토큰·쿠키를 읽어야 한다. 탐색에는 우리 제어 비밀이 없다.
+			Redact:       redactExplorationOutput,
 			CloseTimeout: explorationCloseTimeout, StatusInterval: explorationStatusInterval}
 		// 직접 Bash를 만들 수 없으면 그 회차는 Bash 없이 탐색한다(브라우저·정적 fetch는 그대로). 사유는 서버 로그에 남긴다.
 		if shell, err := h.sessionBash(); err != nil {

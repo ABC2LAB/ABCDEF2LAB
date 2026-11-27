@@ -4,8 +4,9 @@ import (
 	"bytes"
 )
 
-// AddProtectedPasswords는 인증 준비 호스트만 등록하는 비밀번호다. 출력 가림·세션 유출 검사는 항상 유지한다.
-// 명시적으로 결속한 mask_spans_v1에서만 응답 구간 가림을 쓰며 일반 보호 값의 보류 동작은 바꾸지 않는다.
+// AddProtectedPasswords는 인증 준비 호스트만 등록하는 비밀번호다. 이전 정책(보류·mask_spans_v1)에서는 응답 보류·구간
+// 가림·모델 출력 가림에 쓴다. model_visible_v1(제품)은 비밀번호를 모델에 주고 저장 기록에서도 가리지 않으므로(절대규칙 2,
+// 2026-11-26 DLP 폐기) 등록할 곳이 없다: 값을 받기만 하고 남기지 않는다(그래서 짧은 비밀번호 계정도 결속된다).
 func (e *Execution) AddProtectedPasswords(values ...[]byte) error {
 	if e == nil {
 		return ErrConfig
@@ -14,6 +15,9 @@ func (e *Execution) AddProtectedPasswords(values ...[]byte) error {
 	defer e.mu.Unlock()
 	if len(values) == 0 || len(values) > maxRedactValues {
 		return ErrConfig
+	}
+	if e.cfg.PasswordResponse == PasswordResponseModelVisible {
+		return nil
 	}
 	passwords := append([][]byte(nil), e.passwords...)
 

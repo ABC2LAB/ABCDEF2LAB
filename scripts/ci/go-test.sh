@@ -145,6 +145,44 @@ if len(targets) > max_tests:
 PY
 }
 
+# DB 사유로 건너뛴 시험(PostgreSQL·DSN·database를 말하는 SKIP 메시지)을 찾는다. 필요한 DB 시험의 SKIP은 통과가 아니고
+# (CONTRIBUTING.md), DSN이 빠지거나 깨진 환경에서 시험이 조용히 건너뛰어 통과처럼 보이는 것을 막는다(2026-11-27 사용자 결정,
+# 로컬 env 파일을 셸로 읽다 DSN이 빠져 PG 시험이 SKIP된 일). 브라우저·Docker·root·실제 대상 같은 선택 실행 시험의 SKIP은
+# 메시지가 DB를 말하지 않아 걸리지 않는다. 판별은 SKIP 직전 출력 줄(t.Skip 메시지)로 한다.
+db_skips() {
+	python3 -I - "$out" <<'PY'
+import json
+import re
+import sys
+from collections import defaultdict
+
+pattern = re.compile(r"postgres|\bdsn\b|_dsn\b|database|\bdb\b|데이터베이스", re.IGNORECASE)
+last = defaultdict(str)
+found = []
+with open(sys.argv[1], encoding="utf-8", errors="replace") as stream:
+    for line in stream:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        key = (event.get("Package", ""), event.get("Test") or "")
+        if not key[1]:
+            continue
+        action = event.get("Action")
+        if action == "output":
+            text = event.get("Output", "").strip()
+            if text and not text.startswith(("--- ", "=== ")):
+                last[key] = text
+        elif action == "skip" and pattern.search(last[key]):
+            found.append(f"{key[0]} {key[1]}: {last[key][:200]}")
+print("\n".join(found))
+PY
+}
+db_skipped=$(db_skips)
+if [ -n "$db_skipped" ]; then
+	status=1
+fi
+
 {
 	echo "### Go 시험 요약"
 	echo
@@ -158,6 +196,12 @@ PY
 		echo "**실패한 패키지**"
 		echo '```'
 		echo "$failed_packages"
+		echo '```'
+	fi
+	if [ -n "$db_skipped" ]; then
+		echo "**DB 사유로 건너뛴 시험** (실패로 봄: DSN·연결을 확인하세요)"
+		echo '```'
+		echo "$db_skipped" | head -n "$summary_limit"
 		echo '```'
 	fi
 	for action in fail skip; do

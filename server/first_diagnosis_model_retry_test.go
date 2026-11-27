@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/Autumn-27/artex/llmpolicy"
+	"slices"
 	"testing"
 	"time"
 
@@ -154,5 +155,69 @@ func TestFirstDiagnosisModelCallRequestRejected(t *testing.T) {
 		if got := tc.call.requestRejected(); got != tc.want {
 			t.Fatalf("%s: requestRejected=%v", name, got)
 		}
+	}
+}
+
+// 요청 한도 응답에 Retry-After가 있으면 간격표의 그 칸과 Retry-After 중 큰 쪽을 기다리되 요청 한도 간격표의 가장 긴 간격을
+// 넘지 않는다(사용자 결정 2026-11-27 (나)). 다시 보내기는 요청 한도에서 최대 5번이다(사용자 결정 2026-11-26).
+func TestFirstDiagnosisRetryModelCallHonorsRetryAfter(t *testing.T) {
+	transient := errors.New("synthetic failure")
+	short := []time.Duration{50 * time.Millisecond}
+	long := []time.Duration{time.Millisecond, time.Millisecond, 40 * time.Millisecond}
+	always := func() bool { return true }
+	for name, tc := range map[string]struct {
+		hint     time.Duration
+		has      bool
+		limited  bool
+		min, max time.Duration
+	}{
+		// 간격표만이면 1+1+40ms.
+		"no hint": {0, false, true, 40 * time.Millisecond, time.Second},
+		// 힌트 0은 간격표보다 짧게 기다리게 하지 않는다(1+1+40ms 그대로).
+		"zero hint": {0, true, true, 40 * time.Millisecond, time.Second},
+		// 간격표 칸보다 긴 힌트(20ms)는 따른다: 20+20+40ms(마지막 칸은 40ms가 더 큼).
+		"middle hint": {20 * time.Millisecond, true, true, 80 * time.Millisecond, time.Second},
+		// 아주 긴 힌트는 가장 긴 간격(40ms)으로 잘린다: 3번 × 40ms.
+		"long hint": {time.Hour, true, true, 120 * time.Millisecond, time.Second},
+		// 요청 한도가 아니면 힌트(0)를 보지 않고 일반 간격표(50ms)대로 기다린다.
+		"not limited": {0, true, false, 50 * time.Millisecond, time.Second},
+	} {
+		n := 0
+		once := func() (llm.Message, string, llm.Usage, error, error) {
+			n++
+			return llm.Message{}, "", llm.Usage{}, transient, ErrFirstDiagnosisModelBudget
+		}
+		limited := tc.limited
+		started := time.Now()
+		_, _, _, err := firstDiagnosisRetryModelCallAfter(t.Context(), short, long, func() bool { return limited }, func() (time.Duration, bool) { return tc.hint, tc.has }, once, always)
+		elapsed := time.Since(started)
+		want := len(long) + 1
+		if !tc.limited {
+			want = len(short) + 1
+		}
+		if err == nil || n != want || elapsed < tc.min || elapsed > tc.max {
+			t.Fatalf("%s: attempts=%d want %d elapsed=%v", name, n, want, elapsed)
+		}
+	}
+	// 기본 요청 한도 간격표는 다시 보내기 5번이고, 힌트가 모두 상한(가장 긴 간격)이어도 준비 단계 상한보다 짧다.
+	if len(firstDiagnosisRateLimitRetryDelays) != 5 || time.Duration(len(firstDiagnosisRateLimitRetryDelays))*slices.Max(firstDiagnosisRateLimitRetryDelays) >= FirstDiagnosisPreparationTimeout || slices.Max(firstDiagnosisRateLimitRetryDelays) != 30*time.Second {
+		t.Fatalf("요청 한도 간격표 %v", firstDiagnosisRateLimitRetryDelays)
+	}
+}
+
+// 호출 칸의 Retry-After는 transport가 남긴 값 그대로 읽는다.
+func TestFirstDiagnosisModelCallRetryAfter(t *testing.T) {
+	call := &firstDiagnosisModelCall{result: func() llmpolicy.OpenRouterCallResult {
+		return llmpolicy.OpenRouterCallResult{Reserved: true, NotBilled: true, RetryAfter: 3 * time.Second, HasRetryAfter: true}
+	}}
+	if d, ok := call.retryAfter(); !ok || d != 3*time.Second {
+		t.Fatal("Retry-After를 읽지 못함")
+	}
+	none := &firstDiagnosisModelCall{result: func() llmpolicy.OpenRouterCallResult { return llmpolicy.OpenRouterCallResult{NotBilled: true} }}
+	if _, ok := none.retryAfter(); ok {
+		t.Fatal("없는 Retry-After를 읽음")
+	}
+	if _, ok := (*firstDiagnosisModelCall)(nil).retryAfter(); ok {
+		t.Fatal("빈 호출")
 	}
 }

@@ -121,9 +121,9 @@ func BuildCandidateFinalRequest(c CandidateAssessmentContext, maxTokens int) (ll
 		BusinessAnswers    []candidateBusinessAnswer   `json:"business_answers"`
 		Actions            []CandidateLLMPlanAction    `json:"approved_actions"`
 		Followup           []candidateModelObservation `json:"followup_observations"`
-	}{VerificationMethod: method, CandidateID: c.Original.Candidate.ID, VulnClass: dlp.DiagnosticText(c.Original.Candidate.VulnClass),
-		Name: dlp.DiagnosticText(c.Original.Candidate.Name), Summary: dlp.DiagnosticText(c.Original.Candidate.Summary),
-		Evidence: dlp.DiagnosticText(c.Original.Candidate.Evidence), Analysis: c.Analysis.Proposal,
+	}{VerificationMethod: method, CandidateID: c.Original.Candidate.ID, VulnClass: c.Original.Candidate.VulnClass,
+		Name: c.Original.Candidate.Name, Summary: c.Original.Candidate.Summary,
+		Evidence: c.Original.Candidate.Evidence, Analysis: c.Analysis.Proposal,
 		BusinessAnswers: c.Answers, Actions: c.Plan.Actions}
 	for _, row := range c.Followup {
 		input.Followup = append(input.Followup, modelObservation(row))

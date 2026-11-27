@@ -3,6 +3,7 @@ package llmpolicy
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // OpenRouterCall은 호출 하나의 transport 결과 칸이다(P3 결정안 C28 결정 2). 모델 예산이 호출마다 만들어 요청
@@ -24,7 +25,10 @@ type OpenRouterCallResult struct {
 	NotBilled bool
 	// Rejected는 제공자가 요청 내용을 거부한 실패(400·413·422)다. 같은 요청을 다시 보내도 같은 결과라 다시 보내지 않는다.
 	// 청구는 확인하지 않았으므로 예약량을 쓴 것으로 둔다.
-	Rejected                                                      bool
+	Rejected bool
+	// RetryAfter는 요청 한도(429) 응답의 Retry-After 값이다(HasRetryAfter일 때만). 다시 보낼 때 기다릴 시간의 근거다.
+	RetryAfter                                                    time.Duration
+	HasRetryAfter                                                 bool
 	ReservedInputTokens, ReservedOutputTokens, ReservedCostMicros int64
 	InputTokens, OutputTokens, CostMicros                         int64
 }
@@ -85,6 +89,15 @@ func (c *OpenRouterCall) notBilled() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.result.NotBilled = true
+}
+
+func (c *OpenRouterCall) retryAfter(d time.Duration) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.result.RetryAfter, c.result.HasRetryAfter = d, true
 }
 
 func (c *OpenRouterCall) rejected() {
