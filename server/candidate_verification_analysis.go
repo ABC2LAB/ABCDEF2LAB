@@ -9,7 +9,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/candidateverify"
-	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/norma/llm"
 )
 
@@ -184,15 +183,6 @@ func ParseCandidateAnalysisProposal(raw []byte, c CandidateSelectedContext) (Can
 			return CandidateAnalysisProposal{}, ErrCandidateAnalysis
 		}
 	}
-	out.Claim = dlp.DiagnosticText(out.Claim)
-	out.NormalExplanation = dlp.DiagnosticText(out.NormalExplanation)
-	out.Limitations = dlp.DiagnosticText(out.Limitations)
-	for i := range out.BusinessQuestions {
-		out.BusinessQuestions[i] = dlp.DiagnosticText(out.BusinessQuestions[i])
-	}
-	for i := range out.Actions {
-		out.Actions[i].Purpose = dlp.DiagnosticText(out.Actions[i].Purpose)
-		out.Actions[i].PathHint = dlp.DiagnosticText(out.Actions[i].PathHint)
-	}
+	// 모델 제안 글(주장 · 설명 · 한계 · 업무 질문 · 행동)은 저장 기록 · 화면이라 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기).
 	return out, nil
 }

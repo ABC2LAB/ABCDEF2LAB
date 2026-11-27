@@ -135,11 +135,12 @@ func TestDiagnosticCandidateSeverityConservativeNormalization(t *testing.T) {
 		})
 	}
 
+	// 평가 근거 글은 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기). 우리 제어 비밀 · E③ 표식은 후보 저장 때 RedactRecord 가 맡는다.
 	c := good
 	c.SeverityRationale += " Authorization: Bearer synthetic-severity-secret"
 	n := c.NormalizedSeverity()
-	if strings.Contains(n.SeverityRationale, "synthetic-severity-secret") {
-		t.Fatal("평가 근거 자격정보 노출")
+	if !strings.Contains(n.SeverityRationale, "Authorization: Bearer synthetic-severity-secret") {
+		t.Fatal("평가 근거 대상 값을 가림")
 	}
 }
 
@@ -249,5 +250,16 @@ func TestDiagnosticCandidateSeverityPostgresIdempotencyLegacyAndStale(t *testing
 	rows, err = store.ListDiagnosticCandidates(task.ID, "", 10)
 	if err != nil || len(rows) != 1 || rows[0].SuggestedSeverity != "" {
 		t.Fatal("구버전 호환 실패", err)
+	}
+}
+
+// 위험도 근거는 모델이 쓴 저장 기록이라 자격 모양 글도 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기). 근거 형식 규칙(한국어 ·
+// 한 줄 · 길이)은 그대로다.
+func TestDiagnosticCandidateSeverityRationaleKeepsTargetValues(t *testing.T) {
+	c := observedSeverityCandidate(t, 1, 2)
+	c.SeverityRationale = "응답 본문에 password=synthetic-pass-77 이 그대로 보여 다른 계정 접근 영향이 큼"
+	n := c.NormalizedSeverity()
+	if n.SuggestedSeverity != "high" || n.SeverityRationale != c.SeverityRationale {
+		t.Fatalf("근거를 가림: %q", n.SeverityRationale)
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/candidateverify"
-	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/norma/llm"
 )
@@ -244,12 +243,7 @@ func ParseCandidateFinalVerdict(raw []byte, c CandidateAssessmentContext) (Candi
 			}
 		}
 	}
-	out.Claim = dlp.DiagnosticText(out.Claim)
-	out.NormalExplanation = dlp.DiagnosticText(out.NormalExplanation)
-	out.Reason = dlp.DiagnosticText(out.Reason)
-	out.Limitations = dlp.DiagnosticText(out.Limitations)
-	out.Remediation = dlp.DiagnosticText(out.Remediation)
-	out.VerificationCriteria = dlp.DiagnosticText(out.VerificationCriteria)
+	// 최종 판정 글은 저장 기록 · 화면이라 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기).
 	return out, nil
 }
 
