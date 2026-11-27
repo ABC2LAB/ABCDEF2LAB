@@ -116,8 +116,6 @@ type urlLoadedProfile struct {
 	productAccounts []productRunAccount
 	// externalTestAccounts는 외부 API 실행에 시험 계정을 결속했다는 뜻이다(초안 입력의 사전 공지·승인 진술, C14 결정 4).
 	externalTestAccounts bool
-	// runPasswords는 탐색 기록 가림용 이 회차 시험 계정 비밀번호다(메모리에만, clearMaterials가 지움).
-	runPasswords *explorationPasswords
 }
 
 func (*urlLoadedProfile) String() string { return "urlLoadedProfile[protected]" }
@@ -605,9 +603,6 @@ func urlLoadProfileForReport(c urlPreparationInstallation, installationPin urlIn
 func (l *urlLoadedProfile) clearMaterials() {
 	for _, raw := range l.materials {
 		clear(raw)
-	}
-	if l.runPasswords != nil {
-		l.runPasswords.clear()
 	}
 }
 func (l *urlLoadedProfile) current() error {

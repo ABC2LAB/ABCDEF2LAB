@@ -568,7 +568,21 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if hostRecorder != nil {
 			createLocal = e2proxy.CreateScreenJournal
 		}
-		journal, createErr := createLocal(policy.StateDir, "events.jsonl", auditKey)
+		// E②를 잡았다는 기록을 화면용 저널보다 먼저 남긴다(E2AcquireRecordFile, 계약 workbench-live-data §4). 작업대 e2-flow가
+		// '처음부터 E②를 잡지 않은 실행'과 '저널이 없어진 실행'을 이 기록으로 가른다. 남기지 못하면 저널을 만들지 않고 E②를
+		// 잡지 않는다(아래 실패 길과 같다).
+		var journal *e2proxy.Journal
+		acquireRecord, createErr := json.Marshal(struct {
+			Version        string         `json:"version"`
+			Scope          transmit.Scope `json:"scope"`
+			PolicyRevision string         `json:"policy_revision"`
+		}{e2AcquireRecordVersion, scope, policy.PolicyRevision})
+		if createErr == nil {
+			createErr = e2HTTPRecordAcquire(policy.StateDir, append(acquireRecord, '\n'))
+		}
+		if createErr == nil {
+			journal, createErr = createLocal(policy.StateDir, "events.jsonl", auditKey)
+		}
 		if createErr != nil {
 			if hostRecorder != nil {
 				// 아직 실행이나 송신자가 없다. 취소된 준비 문맥과 분리하여
@@ -702,10 +716,8 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		if hostRecorder != nil {
 			e3Verifier = e2HostE3Verifier{host: hostRecorder}
 		}
-		// 시험 계정 세션 가림 칸과 확정 단계 다시 로그인 몫(계정·로그인 방식·승인 구간·확정 몫으로 계산, e2HTTPSessionRedactLimits).
-		redactCapacity, redactReserve := e2HTTPSessionRedactLimits(policy.Auth, policy.ValidUntil.Sub(policy.ValidFrom), e3Requests)
 		execution, createErr := e2proxy.NewExecution(taskctx, e2proxy.Config{AuditVersion: auditVersion, E3Verifier: e3Verifier, E3ConfirmationRequests: e3Requests,
-			SessionRedactCapacity: redactCapacity, ConfirmationRedactReserve: redactReserve, E3WriteConsent: policy.E3WriteConsent, E3Resettable: policy.E3Resettable, RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, TargetCredentialHeader: credentialHeader, ResolveSentAccount: resolveSentAccount, SelectedSessionHeaders: selectedSessionHeaders, SelectedAccountRef: policy.SelectedAccountRef, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: scope, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
+			E3WriteConsent: policy.E3WriteConsent, E3Resettable: policy.E3Resettable, RequestBoundary: workflowBoundary(input.Workflow), CheckAuthority: transmissionCheck, ApprovalMode: policy.ApprovalMode, RequestApproval: gate, Evaluation: policy.Evaluation, HeaderMode: policy.HeaderMode, TargetCredentialHeader: credentialHeader, ResolveSentAccount: resolveSentAccount, SelectedSessionHeaders: selectedSessionHeaders, SelectedAccountRef: policy.SelectedAccountRef, PasswordResponse: e2HTTPPasswordResponse(policy.Auth), Scope: scope, IntentID: request.IntentID, OwnerRef: policy.OwnerRef, PolicyRevision: policy.PolicyRevision, AccountRef: policy.AccountRef, SessionRef: policy.SessionRef, ExpiresAt: policy.ValidUntil, Rules: rules, ExcludedPaths: policy.excludedPaths(), Budget: transmit.CumulativeBudget{Ledger: ledger, Key: grantKey, Binding: budgetBinding}, Recorder: recorder, RootCAs: upstreamRoots, Limits: limits, AttemptPathObserver: observer})
 		if createErr != nil {
 			return failed(nil, nil)
 		}

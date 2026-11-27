@@ -17,7 +17,6 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/diagnosisapi"
 	"github.com/Autumn-27/artex/diagnosisprep"
-	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/report"
 )
 
@@ -94,7 +93,8 @@ func candidateVerificationAnswerHTTP(w http.ResponseWriter, r *http.Request, poo
 		candidateVerificationError(w, 400, "invalid_verification_request")
 		return
 	}
-	answer := dlp.DiagnosticText(input.Answer)
+	// 운영자 답은 그대로 모델 입력·기록에 간다(절대규칙 2, 2026-11-26 DLP 폐기).
+	answer := input.Answer
 	if strings.TrimSpace(answer) == "" || len(answer) > 4096 {
 		candidateVerificationError(w, 400, "invalid_verification_request")
 		return

@@ -66,9 +66,9 @@ func BuildCandidateAnalysisRequest(c CandidateSelectedContext, maxTokens int) (l
 		expectedOriginal != nil && expectedOriginal != c.OriginalObservation {
 		return llm.CompletionRequest{}, ErrCandidateAnalysis
 	}
-	// Candidate evidence was redacted at capture. Apply the report DLP again
-	// before model transport and preserve a visible truncation marker.
-	evidence := dlp.DiagnosticText(c.Candidate.Evidence)
+	// 모델 입력에는 대상 응답·시험 계정 자격·세션 값을 넣을 수 있다(절대규칙 2, 2026-11-26 DLP 폐기). 후보 근거를 가리지
+	// 않고 주되 길이만 자르고 자른 표시를 남긴다.
+	evidence := c.Candidate.Evidence
 	truncated := len(evidence) > 12<<10
 	if truncated {
 		end := 12 << 10
@@ -106,8 +106,8 @@ func BuildCandidateAnalysisRequest(c CandidateSelectedContext, maxTokens int) (l
 		SourceUnavailable   bool                        `json:"source_unavailable"`
 		Observations        []candidateModelObservation `json:"observations"`
 		ObservationsOmitted bool                        `json:"observations_omitted"`
-	}{CandidateID: c.Candidate.ID, VulnClass: dlp.DiagnosticText(c.Candidate.VulnClass), Name: dlp.DiagnosticText(c.Candidate.Name),
-		Summary: dlp.DiagnosticText(c.Candidate.Summary), Evidence: evidence, EvidenceTruncated: truncated,
+	}{CandidateID: c.Candidate.ID, VulnClass: c.Candidate.VulnClass, Name: c.Candidate.Name,
+		Summary: c.Candidate.Summary, Evidence: evidence, EvidenceTruncated: truncated,
 		OriginalAvailable: original != nil, SourceUnavailable: c.SourceUnavailable, ObservationsOmitted: len(selected) != len(c.Observations)}
 	for _, row := range selected {
 		input.Observations = append(input.Observations, modelObservation(row))

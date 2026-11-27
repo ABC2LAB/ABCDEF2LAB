@@ -15,7 +15,6 @@ import (
 
 	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/e2runner"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 	actool "github.com/Autumn-27/norma/tool"
@@ -34,9 +33,10 @@ func (s *e2HTTPToolState) observeDiagnostic(execution E2HTTPScope, intentID int6
 		return
 	}
 	// 모델이 증거 본문/버전/실행 상태를 채우지 못하도록 실제 도구 반환 직전에 복사한다.
-	// 후보 근거는 저장 기록이라 모델에 준 비밀번호(model_visible_v1)까지 가린다.
-	safeCommand := dlp.DiagnosticText(string(execution.RedactRecord([]byte(command))))
-	result.ToolOutput = dlp.DiagnosticText(string(execution.RedactRecord([]byte(result.ToolOutput))))
+	// 후보 근거는 저장 기록이다. 제품 기록은 대상 응답·시험 계정 자격·세션 값을 가리지 않고(절대규칙 2, 2026-11-26 DLP
+	// 폐기), 뒤에 모델 입력(후보 검증)으로 다시 갈 수 있으므로 E③ 표식·제어 비밀만 가린다(RedactRecord).
+	safeCommand := string(execution.RedactRecord([]byte(command)))
+	result.ToolOutput = string(execution.RedactRecord([]byte(result.ToolOutput)))
 	// JSON escaping 팽창까지 계산한다. 원문 전체를 보존했다고 주장하지 않고
 	// 일부 관찰을 남겨 큰 출력만으로 후보가 사라지지 않게 한다.
 	captureTruncated := false
@@ -261,7 +261,7 @@ func newE2DiagnosticCandidateTool(store diagnosticCandidateStore, binding E2HTTP
 				}
 				observed.Evidence = string(combined)
 			}
-			redact := func(s string) string { return dlp.DiagnosticText(string(execution.RedactRecord([]byte(s)))) }
+			redact := func(s string) string { return string(execution.RedactRecord([]byte(s))) }
 			candidate := db.DiagnosticCandidate{
 				TaskID: binding.TaskID, IntentID: binding.IntentID, RunRef: binding.RunRef, CallRef: in.CallRef,
 				VulnClass: redact(in.VulnClass), VerificationClaim: in.VerificationClaim, Name: redact(in.Name), Summary: redact(in.Summary), Remediation: redact(in.Remediation),

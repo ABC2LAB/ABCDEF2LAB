@@ -269,3 +269,30 @@ it("404가 아닌 실패는 지금처럼 실패로 보인다", async () => {
   render(at());
   expect(await screen.findByRole("alert")).toHaveTextContent(/전송 통제 흐름을 확인하지 못했습니다/);
 });
+
+it("저널 없음(none) 응답도 '진단 요청 전'으로 보이고 10초 뒤 다시 본다", async () => {
+  vi.useFakeTimers();
+  const none = {
+    ...e2Flow(),
+    journal: "none",
+    last_index: 0,
+    calls: [],
+    counts: Object.fromEntries(Object.keys(e2Flow().counts).map((k) => [k, 0])),
+  };
+  vi.mocked(apiFetch).mockResolvedValueOnce(none).mockResolvedValue(e2Flow());
+  render(at());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(screen.getByRole("status")).toHaveTextContent(/진단 요청 전 · 아직 전송 통제 기록이 없습니다/);
+  expect(screen.queryByRole("alert")).toBeNull();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  expect(apiFetch).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(8000);
+  });
+  expect(apiFetch).toHaveBeenCalledTimes(2);
+  expect(screen.getByText("a".repeat(32))).toBeInTheDocument();
+});

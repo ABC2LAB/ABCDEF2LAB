@@ -264,8 +264,10 @@ func TestE2HTTPFactoryTestAccountModeFollowsAuthResult(t *testing.T) {
 				if err != nil || cookieHits.Load() != 1 || !strings.Contains(string(dump), "factory-rotated-session-55ee") {
 					t.Fatalf("인증된 시험 계정 실행이 모델 Cookie를 보내지 않거나 새 세션을 모델에 주지 않음: %+v %v", receipt, err)
 				}
-				if out := string(lease.Execution.RedactOutput(dump)); strings.Contains(out, "factory-rotated-session-55ee") || strings.Contains(out, "seeded-session-cookie-99aa") {
-					t.Fatal("새로 발급된 세션이 기록용 출력에 남음")
+				// 시험 계정 실행은 대상이 발급한 세션을 모델 출력·저장 기록에서 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기).
+				text := string(dump) + " seeded-session-cookie-99aa"
+				if string(lease.Execution.RedactOutput([]byte(text))) != text || string(lease.Execution.RedactRecord([]byte(text))) != text {
+					t.Fatal("시험 계정 실행이 발급 세션을 가림")
 				}
 				return
 			}
@@ -443,8 +445,9 @@ func TestE2HTTPFactoryRefreshSession(t *testing.T) {
 			if got, err := bindings.BoundSession(runRef, label, nowRef); err != nil || got.Get("Authorization") != header.Get("Authorization") {
 				t.Fatal("지금 결속 참조가 새 세션을 가리키지 않음", err)
 			}
-			if value := strings.TrimPrefix(header.Get("Authorization"), "Bearer "); value == "" || strings.Contains(string(lease.Execution.RedactOutput([]byte(value))), value) {
-				t.Fatal("new session missing or not redacted")
+			// 다시 로그인으로 받은 세션도 모델에 주고 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기).
+			if value := strings.TrimPrefix(header.Get("Authorization"), "Bearer "); value == "" || string(lease.Execution.RedactOutput([]byte(value))) != value || string(lease.Execution.RedactRecord([]byte(value))) != value {
+				t.Fatal("new session missing or redacted")
 			}
 			read(e2HTTPWorkerSessions(e2proxy.HeaderTestAccountPassthrough, &lease)[label], http.StatusOK)
 		}
@@ -793,6 +796,8 @@ func TestE2HTTPFactoryGivesCredentialsToModelWithoutLogin(t *testing.T) {
 	pin := authCredentialPin(t, filepath.Dir(cfg.PolicyFile), "account-tester-a.json", "tester@owned.test", "seeded-pass-88ff")
 	a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
 	a.ModelLogin = true
+	// 제품의 모델 로그인 회차는 비밀번호 응답 정책이 model_visible_v1이다(product_accounts.go).
+	a.PasswordResponse = e2proxy.PasswordResponseModelVisible
 	policy.LoginAttempts = &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
 	policy.Auth, policy.HeaderMode = &a, e2proxy.HeaderTestAccountPassthrough
 	raw, err := json.Marshal(policy)
@@ -822,14 +827,27 @@ func TestE2HTTPFactoryGivesCredentialsToModelWithoutLogin(t *testing.T) {
 	if got := e2HTTPWorkerCredentials(e2proxy.HeaderPreserve, &acquired); len(got) != 0 {
 		t.Fatal("자격 헤더 통과가 아닌 실행에 자격이 감")
 	}
-	if out := string(acquired.Execution.RedactRecord([]byte("pw seeded-pass-88ff"))); strings.Contains(out, "seeded-pass-88ff") {
-		t.Fatal("비밀번호가 저장 기록 가림 값으로 등록되지 않음")
+	// 모델에 준 시험 계정 비밀번호는 모델 출력에서도 저장 기록에서도 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기).
+	for name, redact := range map[string]func([]byte) []byte{"model output": acquired.Execution.RedactOutput, "record": acquired.Execution.RedactRecord} {
+		if out := string(redact([]byte("pw seeded-pass-88ff"))); out != "pw seeded-pass-88ff" {
+			t.Fatalf("%s: 모델에 준 비밀번호를 가림: %s", name, out)
+		}
 	}
 }
 
-// 저장 기록 가림 값으로 등록할 수 없는 짧은 비밀번호(1~5바이트, 제품 등록은 받음)의 계정은 모델 로그인 회차에서도 Worker에
-// 주지 않고 not_sent로 남긴다. 모델이 그 값을 다시 쓰면 저장 기록에 원문이 남기 때문이다(#967 동찬 리뷰 P1).
-func TestE2HTTPFactoryWithholdsUnmaskablePasswordFromModel(t *testing.T) {
+// 짧은 비밀번호(1~5바이트, 제품 등록은 받음)의 계정: 제품의 모델 로그인 회차(model_visible_v1)는 비밀번호를 가리지 않으므로
+// 등록 하한이 없어 Worker에 준다(#967의 임시 제외를 풂, 2026-11-26 DLP 폐기). 이전 비밀번호 정책 실행은 보호 값으로 등록하지
+// 못하는 값이라 지금처럼 주지 않고 not_sent로 남긴다(모델 출력 가림에 쓸 수 없다).
+func TestE2HTTPFactoryShortPasswordAccountFollowsPasswordPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		sent       bool
+	}{{"model visible", e2proxy.PasswordResponseModelVisible, true}, {"previous policy", "", false}} {
+		t.Run(tc.name, func(t *testing.T) { shortPasswordAccountCase(t, tc.mode, tc.sent) })
+	}
+}
+
+func shortPasswordAccountCase(t *testing.T, mode string, sent bool) {
 	login := &authLoginTarget{token: "seeded-factory-session-55ff"}
 	target := httptest.NewServer(login.handler(t))
 	defer target.Close()
@@ -844,6 +862,7 @@ func TestE2HTTPFactoryWithholdsUnmaskablePasswordFromModel(t *testing.T) {
 	short := authCredentialPin(t, dir, "account-tester-b.json", "short@owned.test", "ab12")
 	a := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: long}, E2HTTPFileAuthAccount{Label: "tester-b", Credential: short})
 	a.ModelLogin = true
+	a.PasswordResponse = mode
 	policy.LoginAttempts = &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
 	policy.Auth, policy.HeaderMode = &a, e2proxy.HeaderTestAccountPassthrough
 	raw, err := json.Marshal(policy)
@@ -861,11 +880,17 @@ func TestE2HTTPFactoryWithholdsUnmaskablePasswordFromModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer acquired.Release(context.Background())
-	if len(acquired.Credentials) != 1 || acquired.Credentials[0].Label != "tester-a" {
-		t.Fatalf("짧은 비밀번호 계정이 Worker 자격에 감: %d", len(acquired.Credentials))
-	}
-	if acquired.AccountAuth["tester-b"] != E2HTTPAuthNotSent || acquired.AccountAuth["tester-a"] != "" {
-		t.Fatalf("계정 상태: %v", acquired.AccountAuth)
+	if sent {
+		if len(acquired.Credentials) != 2 || acquired.Credentials[1].Label != "tester-b" || acquired.Credentials[1].Password != "ab12" || acquired.AccountAuth["tester-b"] != "" {
+			t.Fatalf("짧은 비밀번호 계정이 Worker 자격에 안 감: %d %v", len(acquired.Credentials), acquired.AccountAuth)
+		}
+	} else {
+		if len(acquired.Credentials) != 1 || acquired.Credentials[0].Label != "tester-a" {
+			t.Fatalf("짧은 비밀번호 계정이 Worker 자격에 감: %d", len(acquired.Credentials))
+		}
+		if acquired.AccountAuth["tester-b"] != E2HTTPAuthNotSent || acquired.AccountAuth["tester-a"] != "" {
+			t.Fatalf("계정 상태: %v", acquired.AccountAuth)
+		}
 	}
 	if login.posts.Load() != 0 {
 		t.Fatal("모델 로그인 회차에서 프로그램이 로그인함")
