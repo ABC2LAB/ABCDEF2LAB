@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -282,5 +283,58 @@ func TestSelectedCandidateLearnedLoginFixture(t *testing.T) {
 	stored, err := os.ReadFile(path)
 	if err != nil || string(stored) != string(raw) {
 		t.Fatal("계약 fixture가 실제 코드 값과 다름(ARTEX_UPDATE_CONTRACT_FIXTURE=1로 다시 만들기)")
+	}
+}
+
+// 계획 결속 트리거는 llm/v1 요청에 v1(9칸)과 v2(학습 로그인) 계획만 받는다. 다른 판본은 거부한다(제품 S11에서 v2가 막혔던
+// 결함의 회귀 시험).
+func TestCandidateLLMPlanBindAcceptsLearnedV2Postgres(t *testing.T) {
+	s, f, _ := trafficEvidenceServer(t)
+	stored, err := s.m.pg.GetFinding(f.FindingID)
+	if err != nil || stored.TaskID == nil {
+		t.Fatal(err)
+	}
+	taskID := *stored.TaskID
+	if err := saveDiagnosisSelectedVerificationPolicy(t.Context(), s.m.pg.DB, taskID, passiveRunRef); err != nil {
+		t.Fatal(err)
+	}
+	storePassiveCandidate(t, s, taskID, "", "", "")
+	rows, err := s.m.ResolveTask(fmt.Sprint(taskID)).Store.ListDiagnosticCandidates(taskID, passiveRunRef, 2)
+	if err != nil || len(rows) != 1 {
+		t.Fatal(err)
+	}
+	candidate := rows[0]
+	const empty = "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+	analysisDigest := strings.Repeat("b", 64)
+	var requestID int64
+	if err := s.m.pg.QueryRowContext(t.Context(), `INSERT INTO diagnostic_candidate_verification_requests(task_id,candidate_id,original_run_ref,original_evidence_version,original_evidence_digest,requester,request_key,method)
+VALUES($1,$2,$3,$4,$5,'ARTEX','synthetic-llm-plan-v2','llm/v1') RETURNING id`, taskID, candidate.ID, candidate.RunRef, candidate.EvidenceVersion, candidate.EvidenceDigest).Scan(&requestID); err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO diagnostic_candidate_verification_events(request_id,step,process_state,reason,sources_digest,rule_version) VALUES($1,1,'requested','selected_by_user',$2,'selected/llm-v1')`, []any{requestID, empty}},
+		{`INSERT INTO diagnostic_candidate_verification_events(request_id,step,process_state,reason,sources_digest,rule_version) VALUES($1,2,'checking_stored_evidence','analysis_started',$2,'selected/llm-v1')`, []any{requestID, empty}},
+		{`INSERT INTO diagnostic_candidate_verification_analyses(request_id,proposal,proposal_digest,profile_id,model_requests,input_tokens,output_tokens,cost_usd_micros) VALUES($1,'{}'::jsonb,$2,1,1,0,0,0)`, []any{requestID, analysisDigest}},
+		{`INSERT INTO diagnostic_candidate_verification_events(request_id,step,process_state,reason,sources_digest,rule_version) VALUES($1,3,'analysis_ready','analysis_available',$2,'selected/llm-v1')`, []any{requestID, empty}},
+	} {
+		if _, err := s.m.pg.ExecContext(t.Context(), step.sql, step.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert := func(version string) error {
+		plan, _ := json.Marshal(map[string]any{"version": version, "task_id": taskID, "candidate_id": candidate.ID, "evidence_digest": candidate.EvidenceDigest,
+			"original_run_ref": candidate.RunRef, "analysis_digest": analysisDigest, "target_id": "owned-target", "target_revision": 3})
+		_, err := s.m.pg.ExecContext(t.Context(), `INSERT INTO diagnostic_candidate_verification_plans(request_id,plan,plan_digest,target_id,target_revision,expires_at)
+VALUES($1,$2::jsonb,$3,'owned-target',3,$4)`, requestID, plan, strings.Repeat("c", 64), time.Now().Add(10*time.Minute))
+		return err
+	}
+	if err := insert("candidate-llm-plan/v9"); err == nil {
+		t.Fatal("알 수 없는 계획 판본을 받음")
+	}
+	if err := insert(candidateLLMPlanV2); err != nil {
+		t.Fatalf("학습 로그인 계획 v2를 거부: %v", err)
 	}
 }
