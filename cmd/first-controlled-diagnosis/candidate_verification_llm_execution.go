@@ -172,17 +172,9 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 		}
 		// The original was anonymous. Account material is unnecessary for a
 		// read-only follow-up and must not be copied into its authority root.
-		if l.policy.Auth != nil {
-			for _, account := range l.policy.Auth.Accounts {
-				if raw := l.materials[account.Credential.File]; raw != nil {
-					clear(raw)
-					delete(l.materials, account.Credential.File)
-				}
-			}
+		if _, err := l.detachAccounts(); err != nil {
+			return errPreparation
 		}
-		l.policy.Auth = nil
-		l.productAccounts = nil
-		l.policy.HeaderMode = e2proxy.HeaderPreserve
 	} else {
 		if l.policy.Auth == nil || l.policy.Auth.Login == nil || plan.AuthPreparation == nil || l.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough ||
 			l.policy.Auth.Login.Method != plan.AuthPreparation.Method || l.policy.Auth.Login.Path != plan.AuthPreparation.ExactPath ||

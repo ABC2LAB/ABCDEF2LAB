@@ -282,7 +282,13 @@ func (b *urlPreparationRuntime) executeCandidateVerification(ctx context.Context
 		return errPreparation
 	}
 	defer l.clearMaterials()
-	if l.productTarget == nil || l.productRegistry == nil || l.policy.Auth != nil || l.policy.HeaderMode != e2proxy.HeaderPreserve || len(l.productAccounts) != 0 || l.externalTestAccounts {
+	if l.productTarget == nil || l.productRegistry == nil {
+		return errPreparation
+	}
+	// 저장 후보 검증은 승인한 정확한 GET 하나를 익명으로 보낸다. 9칸-1부터 자격만 있어도 대상 계정을 결속하므로 계정이 있는
+	// 대상도 결속된 채로 읽힌다: 결속 계정을 떼고(#950 익명 분기와 같은 도우미), 떼지 못했거나 인증 상태가 남으면 시작하지 않는다.
+	detached, err := l.detachAccounts()
+	if err != nil || l.policy.Auth != nil || l.policy.HeaderMode != e2proxy.HeaderPreserve || len(l.productAccounts) != 0 || l.externalTestAccounts {
 		return errPreparation
 	}
 	// The existing issuance path can add E③ rules for active declarations.
@@ -388,7 +394,9 @@ VALUES($1,3,'running','execution_started',$2,$3,'candidate-active/v1',$4)`, requ
 	// issuance. A candidate run must have exactly the one planned GET rule.
 	rawPolicy, _, err := urlReadPin(launch.HTTP.PolicyFile, 256<<10, false)
 	var issued server.E2HTTPFilePolicy
-	if err != nil || e2config.StrictJSON(rawPolicy, &issued) != nil || len(issued.Rules) != 1 || issued.Rules[0].PathMatch != "exact" || issued.Rules[0].PathPrefix != plan.ExactPath || issued.CaseRef != requestedDigest || issued.Auth != nil {
+	// 뗀 계정의 자격 사본이 권한 디렉터리에 보이거나 외부 계정 동의가 켜졌으면 시작하지 않는다(닫힌 쪽).
+	if err != nil || e2config.StrictJSON(rawPolicy, &issued) != nil || len(issued.Rules) != 1 || issued.Rules[0].PathMatch != "exact" || issued.Rules[0].PathPrefix != plan.ExactPath || issued.CaseRef != requestedDigest || issued.Auth != nil ||
+		issued.HeaderMode != e2proxy.HeaderPreserve || !anonymousIssueClean(launch, detached) {
 		clear(rawPolicy)
 		runtimePool.Close()
 		return errPreparation

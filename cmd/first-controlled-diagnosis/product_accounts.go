@@ -584,5 +584,10 @@ func bindingCredentialName(targetID, label, sha string) string {
 }
 
 func bindingCredentialPrefix(targetID, label string) string {
-	return "account-" + targetID + "." + label + "."
+	return bindingCredentialTargetPrefix(targetID) + label + "."
+}
+
+// bindingCredentialTargetPrefix는 그 대상의 결속 자격 사본 이름 앞부분이다(계정 라벨 앞까지).
+func bindingCredentialTargetPrefix(targetID string) string {
+	return "account-" + targetID + "."
 }
