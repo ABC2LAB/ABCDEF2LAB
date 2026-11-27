@@ -116,7 +116,7 @@ func (e *Execution) SendE3Read(ctx context.Context, in E3ReadInput) (Event, erro
 	if err != nil || e3contract.ContainsMarker([]byte(request.URL.String()), in.Marker) {
 		return Event{}, ErrDenied
 	}
-	call, err := e.beginCall(ctx, 0, ProgramE3Read, "", false)
+	call, err := e.beginCall(ctx, 0, ProgramE3Read, "", false, false)
 	if err != nil {
 		return Event{}, err
 	}

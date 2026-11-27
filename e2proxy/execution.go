@@ -107,7 +107,10 @@ type Call struct {
 	intentID    int64
 	program     ProgramCallKind
 	// e3Share는 확정 단계가 연 다시 로그인 호출이다(BeginE3ReloginCall). E③ 프로그램 요청과 함께 떼어 둔 확정 몫을 쓴다.
-	e3Share       bool
+	e3Share bool
+	// selectedLogin은 선택 후보 검증 실행이 연 학습 로그인 호출이다(BeginSelectedLoginCall). 승인 계획에 결속한 전용
+	// 규칙(auth_prep POST·login_prep GET)만 쓰고 Worker 규칙·확정 몫은 쓰지 않는다.
+	selectedLogin bool
 	expires       time.Time
 	closing       bool
 	finalized     bool
@@ -146,6 +149,12 @@ func NewExecution(parent context.Context, cfg Config) (*Execution, error) {
 	if (cfg.SelectedSessionHeaders != nil || cfg.SelectedAccountRef != "") && (cfg.SelectedSessionHeaders == nil || cfg.SelectedAccountRef == "" ||
 		cfg.HeaderMode != HeaderTestAccountPassthrough || cfg.ApprovalMode != ApprovalPreauthorizedScope || cfg.ResolveSentAccount == nil) {
 		return nil, ErrConfig
+	}
+	// 준비 GET 전용 규칙은 선택 후보 검증 실행(계정 하나에 결속, 사전 승인 범위)에서만 받는다.
+	for _, rule := range cfg.Rules {
+		if rule.Purpose == PurposeLoginPrep && cfg.SelectedAccountRef == "" {
+			return nil, ErrConfig
+		}
 	}
 	if !validApprovalConfig(cfg) || parent == nil || cfg.Recorder == nil || cfg.IntentID <= 0 || !validRef(cfg.OwnerRef) || !validRef(cfg.PolicyRevision) ||
 		!validRef(cfg.AccountRef) || !validRef(cfg.SessionRef) || cfg.ExpiresAt.IsZero() || !time.Now().Before(cfg.ExpiresAt) {
@@ -228,6 +237,12 @@ func compileRules(rules []Rule) ([]compiledRule, error) {
 			switch r.Purpose {
 			case PurposeAuthPrep:
 				if !m["POST"] || r.PathPrefix == "/" || strings.HasSuffix(r.PathPrefix, "/") {
+					return nil, ErrConfig
+				}
+			case PurposeLoginPrep:
+				// 선택 후보 검증 학습 로그인의 준비 GET(로그인 화면·별도 CSRF 발급 경로) 하나다. 정확한 경로에서 GET만
+				// 받고, 선택 실행의 전용 로그인 호출(BeginSelectedLoginCall)만 쓴다(docs/contracts/selected-candidate-learned-login.md).
+				if !m["GET"] {
 					return nil, ErrConfig
 				}
 			case PurposeE3Identity, PurposeE3Create, PurposeE3Read:
@@ -409,7 +424,7 @@ func (e *Execution) BeginCallForIntent(parent context.Context, id int64, command
 	if e == nil || parent == nil || id <= 0 || !validRef(commandRef) {
 		return nil, ErrConfig
 	}
-	return e.beginCall(parent, id, "", commandRef, false)
+	return e.beginCall(parent, id, "", commandRef, false, false)
 }
 
 // BeginProgramCall은 실제 intent를 만들거나 빌리지 않는다. 실행 전체의 기존
@@ -425,7 +440,7 @@ func (e *Execution) BeginProgramCall(parent context.Context, program ProgramCall
 	if !program.Valid() {
 		return nil, ErrConfig
 	}
-	return e.beginCall(parent, 0, program, commandRef, false)
+	return e.beginCall(parent, 0, program, commandRef, false, false)
 }
 
 // BeginE3ReloginCall은 확정 단계 직전 다시 로그인(사용자 결정 2026-11-20 (가)) 호출을 연다. 경로·감사 행은 Worker의
@@ -435,7 +450,19 @@ func (e *Execution) BeginE3ReloginCall(parent context.Context, commandRef string
 	if e == nil || parent == nil || !validRef(commandRef) {
 		return nil, ErrConfig
 	}
-	return e.beginCall(parent, 0, ProgramRefreshSession, commandRef, true)
+	return e.beginCall(parent, 0, ProgramRefreshSession, commandRef, true, false)
+}
+
+// BeginSelectedLoginCall은 선택 후보 검증 실행(SelectedAccountRef가 있는 실행)의 학습 로그인 호출을 연다(계약
+// docs/contracts/selected-candidate-learned-login.md). 귀속은 인증 준비(ProgramAuthPrep)와 같아 감사·영수증 어휘는 그대로다.
+// 이 호출은 학습 로그인 목적(learned_login POST·login_prep GET)만 쓰고, 둘 다 운영자가 승인한 계획에 결속한 전용 규칙
+// (auth_prep POST·login_prep GET, 정확한 경로)으로만 나간다. 실행의 일반 예산을 쓰고 확정 몫(E③)은 쓰지 않는다. 선택
+// 실행이 아니면 열지 않는다(일반 진단·E③ 회차에서 이 경계로 보낼 수 없음).
+func (e *Execution) BeginSelectedLoginCall(parent context.Context, commandRef string) (*Call, error) {
+	if e == nil || parent == nil || !validRef(commandRef) || e.cfg.SelectedAccountRef == "" {
+		return nil, ErrConfig
+	}
+	return e.beginCall(parent, 0, ProgramAuthPrep, commandRef, false, true)
 }
 
 // confirmationCall은 확정 단계 호출(E③ 프로그램 요청·확정 단계가 연 다시 로그인)인지다. 확정 몫을 쓰고, 모델 단계가
@@ -474,7 +501,7 @@ func (e *Execution) ModelStageClosed() bool {
 	return e.modelClosed
 }
 
-func (e *Execution) beginCall(parent context.Context, id int64, program ProgramCallKind, commandRef string, e3Share bool) (*Call, error) {
+func (e *Execution) beginCall(parent context.Context, id int64, program ProgramCallKind, commandRef string, e3Share, selectedLogin bool) (*Call, error) {
 	if parent.Err() != nil {
 		return nil, ErrClosed
 	}
@@ -482,7 +509,7 @@ func (e *Execution) beginCall(parent context.Context, id int64, program ProgramC
 	if err != nil {
 		return nil, err
 	}
-	c := &Call{e: e, ref: ref, commandRef: commandRef, intentID: id, program: program, e3Share: e3Share, auditComplete: true, reason: Complete, idle: make(chan struct{}), closeGate: make(chan struct{}, 1)}
+	c := &Call{e: e, ref: ref, commandRef: commandRef, intentID: id, program: program, e3Share: e3Share, selectedLogin: selectedLogin, auditComplete: true, reason: Complete, idle: make(chan struct{}), closeGate: make(chan struct{}, 1)}
 	accepted := false
 	defer func() {
 		if !accepted {
@@ -1266,6 +1293,24 @@ func (e *Execution) matchLearnedLoginLocked(req *http.Request, purpose string) (
 	return e.matchLocked(req)
 }
 
+// matchSelectedLoginLocked는 선택 후보 검증 학습 로그인 요청을 승인 계획에 결속한 전용 규칙으로만 본다. 로그인 POST는
+// 인증 준비 규칙(auth_prep), 준비 GET은 login_prep 규칙과 정확히 같은 경로여야 한다. Worker 규칙(선택 실행에서는 계획의
+// 정확한 GET·HEAD 행동)으로는 보내지 않는다. 질의·조각이 있거나 운영자 제외 경로면 맞지 않는다.
+func (e *Execution) matchSelectedLoginLocked(req *http.Request, purpose string) (compiledRule, bool) {
+	if req == nil || req.URL == nil || req.URL.RawQuery != "" || req.URL.ForceQuery || req.URL.Fragment != "" {
+		return compiledRule{}, false
+	}
+	want, rulePurpose := http.MethodGet, PurposeLoginPrep
+	if purpose == PurposeLearnedLogin {
+		want, rulePurpose = http.MethodPost, PurposeAuthPrep
+	}
+	p, ok := requestPath(req.URL)
+	if req.Method != want || !ok || len(e.cfg.ExcludedPaths) > 0 && pathscope.ExcludedAny(p, e.cfg.ExcludedPaths) {
+		return compiledRule{}, false
+	}
+	return e.matchPurposeLocked(req, rulePurpose)
+}
+
 func matchE3ReadPath(template, actual string) bool {
 	want, got := strings.Split(template, "/"), strings.Split(actual, "/")
 	if len(want) != len(got) {
@@ -1381,10 +1426,10 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	// 규칙 하나뿐이다.
 	learned := learnedLoginPurpose(purpose)
 	if learned {
-		if c.program != ProgramRefreshSession || !c.e3Share {
+		if !(c.program == ProgramRefreshSession && c.e3Share || c.program == ProgramAuthPrep && c.selectedLogin) {
 			return nil, nil, Receipt{}, ErrConfig
 		}
-	} else if c.program == "" && purpose != "" ||
+	} else if c.selectedLogin || c.program == "" && purpose != "" ||
 		(c.program == ProgramAuthPrep || c.program == ProgramRefreshSession) && purpose != PurposeAuthPrep {
 		return nil, nil, Receipt{}, ErrConfig
 	}
@@ -1468,6 +1513,8 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	switch {
 	case purpose == "":
 		rule, ok = e.matchLocked(req)
+	case learned && c.selectedLogin:
+		rule, ok = e.matchSelectedLoginLocked(req, purpose)
 	case learned:
 		rule, ok = e.matchLearnedLoginLocked(req, purpose)
 	default:
