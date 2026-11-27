@@ -7,8 +7,6 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/Autumn-27/artex/dlp"
 )
 
 // Context is a caller-selected nonsensitive summary, never raw response/log text.
@@ -59,7 +57,7 @@ func reference(s string) string {
 	if s == "" {
 		return ""
 	}
-	if !referencePattern.MatchString(s) || instructionLike.MatchString(s) || dlp.DiagnosticText(s) != s {
+	if !referencePattern.MatchString(s) || instructionLike.MatchString(s) {
 		return "unknown"
 	}
 	return s
@@ -94,9 +92,8 @@ func safeData(s string) string {
 	if instructionLike.MatchString(s) || opaqueLike.MatchString(s) || strings.ContainsAny(s, "`\\") {
 		return UnknownContext
 	}
-	if dlp.DiagnosticText(s) != s {
-		return UnknownContext
-	}
+	// 대상 응답 · 시험 계정 자격 모양 글은 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기). 위의 지시문 차단은 프롬프트 주입
+	// 방어라 그대로다.
 	return s
 }
 func role(s string) string {

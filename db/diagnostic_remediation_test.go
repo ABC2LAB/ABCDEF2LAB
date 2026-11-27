@@ -219,13 +219,15 @@ func TestDiagnosticRemediationNormalizesBeforeStorage(t *testing.T) {
 	if err := d.QueryRow("SELECT payload::text FROM exploration_nodes WHERE id=$1", first).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{"raw-private-value", "raw-private-version", "execute-malicious-command"} {
-		if strings.Contains(raw, secret) {
-			t.Fatalf("raw technology retained: %s", secret)
+	// 기술 이름은 자격 모양 글이어도 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기). 형식에 안 맞는 판 · 확신도는 그대로 정규화한다.
+	for _, dropped := range []string{"raw-private-version", "execute-malicious-command"} {
+		if strings.Contains(raw, dropped) {
+			t.Fatalf("raw technology retained: %s", dropped)
 		}
 	}
 	record, err := GetDiagnosticRemediationRecord(context.Background(), d.DB, task.ID, entry)
-	if err != nil || record == nil || record.Stale || record.Bundle.Technologies[0].Name != "unknown" {
+	if err != nil || record == nil || record.Stale || record.Bundle.Technologies[0].Name != "Cookie: raw-private-value" ||
+		record.Bundle.Technologies[0].Version != "unknown" || record.Bundle.Technologies[0].Confidence != "unknown" {
 		t.Fatalf("normalized record invalid %v", err)
 	}
 	if _, err := d.Exec(`UPDATE exploration_nodes SET payload=jsonb_set(payload::jsonb,'{diagnostic_remediation_v1,bundle,remediation_version}',to_jsonb('old-generator'::text)) WHERE id=$1`, first); err != nil {
