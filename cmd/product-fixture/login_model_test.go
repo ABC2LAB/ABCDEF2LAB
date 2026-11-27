@@ -154,26 +154,18 @@ func TestWorkflowCSRFModelUsesSeparateJSONAndHTMLSources(t *testing.T) {
 		_ = json.Unmarshal([]byte(out.Choices[0].Message.ToolCalls[0].Function.Arguments), &args)
 		return args["command"]
 	}
-	csrfJSON := `{"csrfToken":"0123456789abcdef0123456789abcdef"}`
-	csrfHTML := `<input name="_csrf" value="fedcba9876543210fedcba9876543210">`
 	login := `{"auth_token":"eyJhbGciOiJIUzI1NiJ9.abcdefgh.ijk"}`
 	if got := command(); !strings.Contains(got, "/me") {
 		t.Fatal("anonymous read missing")
 	}
-	if got := command("anonymous=401"); !strings.Contains(got, "/api/csrf") || !strings.Contains(got, "--cookie-jar") {
-		t.Fatal("JSON source GET missing")
+	if got := command("anonymous=401"); !strings.Contains(got, "/api/csrf") || !strings.Contains(got, "--cookie-jar") || !strings.Contains(got, "--cookie") || !strings.Contains(got, "jq -er .csrfToken") || !strings.Contains(got, "application/json") {
+		t.Fatal("JSON source and login must share one Bash call")
 	}
-	if got := command("anonymous=401", csrfJSON); !strings.Contains(got, "0123456789abcdef0123456789abcdef") || !strings.Contains(got, "--cookie") || !strings.Contains(got, "application/json") {
-		t.Fatal("JSON CSRF login missing")
-	}
-	if got := command("anonymous=401", csrfJSON, login); !strings.Contains(got, "Authorization: Bearer") {
+	if got := command("anonymous=401", login); !strings.Contains(got, "Authorization: Bearer") {
 		t.Fatal("JSON login identity read missing")
 	}
-	if got := command("anonymous=401", csrfJSON, login, "identity-a"); !strings.Contains(got, "/csrf-form") {
-		t.Fatal("HTML source GET missing")
-	}
-	if got := command("anonymous=401", csrfJSON, login, "identity-a", csrfHTML); !strings.Contains(got, "fedcba9876543210fedcba9876543210") || !strings.Contains(got, "application/x-www-form-urlencoded") {
-		t.Fatal("HTML CSRF login missing")
+	if got := command("anonymous=401", login, "identity-a"); !strings.Contains(got, "/csrf-form") || !strings.Contains(got, "--cookie-jar") || !strings.Contains(got, "--cookie") || !strings.Contains(got, "--data-urlencode") {
+		t.Fatal("HTML source and login must share one Bash call")
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -52,7 +51,6 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 	var mu sync.Mutex
 	turns := map[string]*loginFixtureTurns{}
 	tokenPattern := regexp.MustCompile(regexp.QuoteMeta(cfg.tokenField) + `\\*"\s*:\s*\\*"([A-Za-z0-9._~+/=-]{16,})`)
-	csrfPattern := regexp.MustCompile(`(?:csrfToken|_csrf).{0,100}?([a-f0-9]{32})`)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Model string `json:"model"`
@@ -204,7 +202,7 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 					bash("wl-anonymous", "curl --silent --show-error --max-time 10 --output /dev/null --write-out 'anonymous=%{http_code}\\n' "+target+cfg.identityPath)
 					break
 				}
-				index, phase := (step-1)/3, (step-1)%3
+				index, phase := (step-1)/2, (step-1)%2
 				if index >= len(accounts) {
 					if names["record_fact"] && !factCalled && intentID > 0 {
 						turn.factRecorded = true
@@ -215,27 +213,13 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 					break
 				}
 				account := accounts[index]
-				jar := "/tmp/owned-csrf-" + account.label + ".jar"
 				switch phase {
 				case 0:
-					source := "/api/csrf"
-					if index%2 == 1 {
-						source = "/csrf-form"
-					}
-					bash("wl-csrf-source-"+account.label, "curl --silent --show-error --max-time 10 --cookie-jar "+shellQuote(jar)+" "+target+source)
+					// Each Bash call has its own sandbox. Fetch and use the
+					// issuance cookie inside one call, while E2 still observes
+					// two independent HTTP requests and their order.
+					bash("wl-csrf-login-"+account.label, csrfLoginCommand(cfg, account, index, target))
 				case 1:
-					match := csrfPattern.FindStringSubmatch(toolResults[len(toolResults)-1])
-					if match == nil {
-						break
-					}
-					if index%2 == 0 {
-						body, _ := json.Marshal(map[string]string{cfg.usernameField: account.username, cfg.passwordField: account.password, "_csrf": match[1]})
-						bash("wl-csrf-login-"+account.label, "curl --silent --show-error --max-time 10 --request POST --header 'Content-Type: application/json' --cookie "+shellQuote(jar)+" --data "+shellQuote(string(body))+" "+target+cfg.loginPath)
-					} else {
-						body := url.Values{cfg.usernameField: {account.username}, cfg.passwordField: {account.password}, "_csrf": {match[1]}}.Encode()
-						bash("wl-csrf-login-"+account.label, "curl --silent --show-error --max-time 10 --request POST --header 'Content-Type: application/x-www-form-urlencoded' --cookie "+shellQuote(jar)+" --data "+shellQuote(body)+" "+target+cfg.loginPath)
-					}
-				case 2:
 					match := tokenPattern.FindStringSubmatch(toolResults[len(toolResults)-1])
 					if match != nil {
 						bash("wl-csrf-read-"+account.label, "curl --silent --show-error --max-time 10 --header "+shellQuote(cfg.header+": "+cfg.prefix+match[1])+" "+target+cfg.identityPath)
@@ -291,6 +275,20 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"id": "owned-workflow-login-synthetic", "object": "chat.completion", "model": req.Model, "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}}, "usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20}})
 	})
+}
+
+func csrfLoginCommand(cfg workflowLoginConfig, account fixtureAccount, index int, target string) string {
+	jar := "/tmp/owned-csrf-" + account.label + ".jar"
+	login := shellQuote(target + cfg.loginPath)
+	if index%2 == 0 {
+		return "csrf=$(curl --silent --show-error --fail --max-time 10 --cookie-jar " + shellQuote(jar) + " " + shellQuote(target+"/api/csrf") +
+			" | jq -er .csrfToken); test ${#csrf} -eq 32 && curl --silent --show-error --max-time 10 --request POST --header 'Content-Type: application/json' --cookie " + shellQuote(jar) +
+			" --data \"$(jq -n --arg u " + shellQuote(account.username) + " --arg p " + shellQuote(account.password) + " --arg c \"$csrf\" '{username:$u,password:$p,_csrf:$c}')\" " + login
+	}
+	return "csrf=$(curl --silent --show-error --fail --max-time 10 --cookie-jar " + shellQuote(jar) + " " + shellQuote(target+"/csrf-form") +
+		" | sed -n 's/.*name=\"_csrf\" value=\"\\([^\"]*\\)\".*/\\1/p'); test ${#csrf} -eq 32 && curl --silent --show-error --max-time 10 --request POST --cookie " + shellQuote(jar) +
+		" --data-urlencode " + shellQuote(cfg.usernameField+"="+account.username) + " --data-urlencode " + shellQuote(cfg.passwordField+"="+account.password) +
+		" --data-urlencode \"_csrf=$csrf\" " + login
 }
 
 func browserLoginScript(cfg workflowLoginConfig, account fixtureAccount) string {
