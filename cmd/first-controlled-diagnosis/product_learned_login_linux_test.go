@@ -28,9 +28,6 @@ func learnedAccountTarget(t *testing.T) (*productTargetRegistry, string, product
 		if _, err := r.registerAccount("ARTEX", target.ID, label); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := r.markTestAccount("ARTEX", target.ID, label, true); err != nil {
-			t.Fatal(err)
-		}
 		cred := diagnosisprep.AccountCredential{Username: "learned-user-" + string(rune('a'+i)), Password: "learned-pass-" + string(rune('a'+i))}
 		if _, err := r.setAccountCredential("ARTEX", target.ID, label, cred); err != nil {
 			t.Fatal(err)
@@ -71,7 +68,7 @@ func verifiedOf(r *productTargetRegistry, id, label, path string, since ...time.
 
 // verified 줄(계약 §6-1-2)은 결속한 대상 판·자격 판이 지금도 같을 때만 쓰고, 같은 방법·판이면 다시 쓰지 않으며, 더 앞선
 // 시각의 결과로 되돌리지 않는다. 상태 반영은 지금 배운 방법의 해시·대상 판·자격 판이 모두 같을 때만이다. 재시작(저널 재생)
-// 뒤에도 같다. 자격 변경·표시 해제·대상 철회 뒤에는 반영하지 않는다.
+// 뒤에도 같다. 자격 변경·자격 철회·대상 철회 뒤에는 반영하지 않는다.
 func TestLoginMethodVerifiedJournal(t *testing.T) {
 	r, root, rec := learnedAccountTarget(t)
 	id, rev := rec.Target.ID, rec.Target.Revision
@@ -139,12 +136,12 @@ func TestLoginMethodVerifiedJournal(t *testing.T) {
 	if ok, _ := reopened.recordLoginMethodVerified(id, "tester-a", rev, credA2, digest, "run-job5", "confirmation-2", t0.Add(2*time.Hour)); !ok {
 		t.Fatal("새 자격 판의 verified를 남기지 못함")
 	}
-	// 표시 해제(자격 삭제) → 반영 안 함.
+	// 자격 철회 → 반영 안 함.
 	credB := credentialOf(reopened, id, "tester-b")
 	if ok, _ := reopened.recordLoginMethodVerified(id, "tester-b", rev, credB, digest, "run-job5", "confirmation-3", t0.Add(2*time.Hour)); !ok {
 		t.Fatal("B verified")
 	}
-	if _, err := reopened.unmarkAccount("ARTEX", id, "tester-b"); err != nil {
+	if _, err := reopened.clearAccountCredential("ARTEX", id, "tester-b"); err != nil {
 		t.Fatal(err)
 	}
 	if verifiedOf(reopened, id, "tester-b", "/login") != nil {
