@@ -16,10 +16,8 @@ import {
   accountWriteFailureText,
   getAccounts,
   isValidAccountLabel,
-  MIN_USABLE_PASSWORD_BYTES,
   NO_SPACE_USERNAME,
   type ProductTargetRef,
-  passwordTooShortForRun,
   registerAccount,
   setAccountCredential,
   type TargetAccount,
@@ -139,8 +137,6 @@ export function QuickTestAccount({
         return;
       }
     }
-    // 바이트 수만 본다(값은 보지 않음) — 실행 때 E② 보호 값 하한보다 짧으면 등록은 되지만 그 계정으로 로그인하지 않는다
-    const short = filled.filter((x) => passwordTooShortForRun(x.password)).map((x) => `계정 ${x.key}`);
     const id = targetId;
     setBusy(true);
     (async () => {
@@ -155,11 +151,7 @@ export function QuickTestAccount({
       .then((r) => {
         if (current.current !== id) return;
         setRows(r.accounts);
-        setDone(
-          short.length
-            ? `저장함 · ${short.join(" · ")}은 비밀번호가 ${MIN_USABLE_PASSWORD_BYTES}바이트보다 짧아 실행 때 로그인하지 않습니다`
-            : "저장함",
-        );
+        setDone("저장함");
         onAdded?.();
       })
       .catch((e: unknown) => {

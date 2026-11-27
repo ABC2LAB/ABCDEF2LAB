@@ -548,7 +548,7 @@ describe("TargetAccountsLive 로그인 방식 · 자격 입력", () => {
     for (const spy of logs) spy.mockRestore();
   });
 
-  it("6바이트보다 짧은 비밀번호는 등록 뒤 '실행 때 로그인하지 않음'을 따로 알린다(값 없음)", async () => {
+  it("짧은 비밀번호도 따로 안내하지 않고 등록한다(#984 뒤 짧은 비밀번호 계정도 실행에 결속, 값 없음)", async () => {
     serveLogin({ configuredAfterWrite: true });
     const { container } = render(withRoute("classify"));
     await pickTarget();
@@ -556,16 +556,9 @@ describe("TargetAccountsLive 로그인 방식 · 자격 입력", () => {
     fireEvent.change(within(row("legacy")).getByLabelText("사용자명"), { target: { value: USERNAME } });
     fireEvent.change(within(row("legacy")).getByLabelText("비밀번호"), { target: { value: "abcde" } });
     fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 등록" }));
-    expect(await screen.findByText(/legacy: 자격은 등록했지만 비밀번호가 6바이트보다 짧아/)).toBeInTheDocument();
-    expect(container.innerHTML).not.toContain("abcde");
-    // 6바이트면 안내하지 않는다.
-    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 다시 입력" }));
-    expect(screen.queryByText(/자격은 등록했지만/)).toBeNull();
-    fireEvent.change(within(row("legacy")).getByLabelText("사용자명"), { target: { value: USERNAME } });
-    fireEvent.change(within(row("legacy")).getByLabelText("비밀번호"), { target: { value: "abcdef" } });
-    fireEvent.click(within(row("legacy")).getByRole("button", { name: "자격 등록" }));
     await waitFor(() => expect(within(row("legacy")).queryByLabelText("비밀번호")).toBeNull());
-    expect(screen.queryByText(/자격은 등록했지만/)).toBeNull();
+    expect(screen.queryByText(/자격은 등록했지만|바이트보다 짧/)).toBeNull();
+    expect(container.innerHTML).not.toContain("abcde");
   });
 
   it("등록이 실패해도 칸은 비어 있고, 서버 사유를 그 계정 줄에 한국어로 보인다", async () => {
