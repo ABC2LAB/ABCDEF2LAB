@@ -211,6 +211,58 @@ describe("TargetAccountsLive (실 API 읽기·쓰기)", () => {
     expect(api).not.toHaveBeenCalledWith("/api/product/targets/t1/accounts/tester-a/credential", expect.anything());
   });
 
+  // #982 이동찬 P2: 표시 해제가 없어진 뒤에도 그 계정만 자격을 철회할 수 있다(A · B 상자와 다른 계정 줄 둘 다)
+  it("자격 지우기: 그 계정만 DELETE …/credential 을 보내고, 다시 읽어 '자격 없음'으로 보인다", async () => {
+    const configured = new Set(["owner", "legacy"]);
+    api.mockImplementation((path: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (path === "/api/product/targets")
+        return Promise.resolve({ targets: [{ id: "t1", origin: "https://a.example", state: "approved" }] }) as never;
+      if (path === "/api/product/targets/t1/accounts" && method === "GET")
+        return Promise.resolve({
+          accounts: ["owner", "peer", "legacy"].map((label) => ({
+            label,
+            credential_configured: configured.has(label),
+          })),
+        }) as never;
+      if (path === "/api/product/targets/t1/login" && method === "GET") return Promise.resolve({}) as never;
+      const m = path.match(/^\/api\/product\/targets\/t1\/accounts\/([a-z-]+)\/credential$/);
+      if (m && method === "DELETE") {
+        configured.delete(m[1]);
+        return Promise.resolve({ account: { label: m[1], credential_configured: false } }) as never;
+      }
+      return Promise.reject(new Error(`unexpected ${method} ${path}`)) as never;
+    });
+    render(withRoute("classify"));
+    await pickTarget();
+    // 다른 계정 줄(legacy)
+    const legacy = within(screen.getByLabelText("계정 목록")).getByText("legacy").closest("li") as HTMLElement;
+    fireEvent.click(within(legacy).getByRole("button", { name: "자격 지우기" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/api/product/targets/t1/accounts/legacy/credential",
+        expect.objectContaining({ method: "DELETE" }),
+      ),
+    );
+    expect(await within(legacy).findByText("자격 없음")).toBeInTheDocument();
+    // A · B 상자의 계정 A(owner)
+    const box = within(screen.getByRole("region", { name: "시험 계정" }));
+    const a = within(box.getByRole("group", { name: "계정 A" }));
+    fireEvent.click(await a.findByRole("button", { name: "자격 지우기" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith(
+        "/api/product/targets/t1/accounts/owner/credential",
+        expect.objectContaining({ method: "DELETE" }),
+      ),
+    );
+    expect(await a.findByText("자격 없음")).toBeInTheDocument();
+    // 자격이 없는 계정(peer = 계정 B)에는 버튼이 없고, 다른 계정 요청은 보내지 않는다
+    expect(
+      within(box.getByRole("group", { name: "계정 B" })).queryByRole("button", { name: "자격 지우기" }),
+    ).toBeNull();
+    expect(api).not.toHaveBeenCalledWith("/api/product/targets/t1/accounts/peer/credential", expect.anything());
+  });
+
   it("등록 안 된 줄(B)을 채워 저장하면 등록 뒤 자격을 보낸다", async () => {
     api.mockImplementation((path: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";

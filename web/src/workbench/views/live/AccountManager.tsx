@@ -6,13 +6,14 @@
 //   않는 경우도). URL · 브라우저 저장소 · 로그에 넣지 않고, 등록 여부는 서버 목록의 credential_configured 로만 보인다.
 //   비밀번호 관리자에 들어가지 않게 form 요소를 쓰지 않고 autoComplete="off" · 관리자 무시 표시를 단다(#842 경준 리뷰).
 // ※ 계정 분류 폐지(사용자 결정 2026-11-26): 시험 표시 · 해제 · 표시 진술은 없다. 서버는 자격이 저장된 등록 계정을 쓴다.
-// ※ 쓰기: 등록(label) · 자격 등록 · 로그인 방식 저장.
+// ※ 쓰기: 등록(label) · 자격 등록 · 자격 지우기(그 계정만 철회) · 로그인 방식 저장.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cx } from "../../lib/cx";
 import {
   accountWriteFailureText,
+  clearAccountCredential,
   getAccounts,
   MIN_USABLE_PASSWORD_BYTES,
   NO_SPACE_USERNAME,
@@ -238,6 +239,25 @@ export function AccountManager({
                         >
                           {a.credentialConfigured ? "자격 다시 입력" : "자격 입력"}
                         </button>
+                        {/* 그 계정만 자격 철회(#982 이동찬 P2): 다음 회차에 결속하지 않고, 그 계정을 결속한 실행은 멈춘다 */}
+                        {a.credentialConfigured ? (
+                          <button
+                            className={cx(s.btn, s.sm)}
+                            type="button"
+                            disabled={busy}
+                            onClick={() =>
+                              doWrite(
+                                (id, l) =>
+                                  clearAccountCredential(id, l).then((cleared) => {
+                                    if (!cleared) throw new Error("credential_not_cleared");
+                                  }),
+                                a.ref,
+                              )
+                            }
+                          >
+                            자격 지우기
+                          </button>
+                        ) : null}
                       </span>
                       {credentialFor === a.ref ? (
                         <div className={s.note}>

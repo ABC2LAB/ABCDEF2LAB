@@ -50,7 +50,7 @@ func TestProductAccountControlOverUnixTransport(t *testing.T) {
 		t.Fatalf("credential over IPC: %+v", got)
 	}
 	list := call(&diagnosisprep.ProductRequest{Operation: "accounts", TargetID: target.ID})
-	if len(list.Accounts) != 1 || !list.Accounts[0].CredentialConfigured || list.AccountStatement == "" {
+	if len(list.Accounts) != 1 || !list.Accounts[0].CredentialConfigured {
 		t.Fatalf("list over IPC: %+v", list)
 	}
 }
