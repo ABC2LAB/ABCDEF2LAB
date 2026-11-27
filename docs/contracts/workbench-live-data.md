@@ -205,6 +205,24 @@ e2-flow와 같은 결속·정책 확인을 지나, 검증한 E② 저널만 읽�
 
 탐색 단계 줄(탐색 경계를 지난 요청)은 E② 저널에 없다. 화면은 그 줄을 '탐색 단계 · 탐색 경계 통과 · 요청 원문 기록 없음'으로 보인다(상세를 열지 않는다).
 
+### 4.2 로그인 거절 상세 사유 (2026-11-27, `login_refusal`)
+
+모델 직접 로그인 회차의 진단 단계에서 로그인 시도 판정기([모델 로그인 시도 기록 계약](model-login-attempts.md) §5)가 보내기 전에 막은 로그인은 E② 사유 어휘를 늘리지 않고 `reason: "policy_denied"`로 남는다. 화면이 그 까닭을 구분하도록 e2-flow 시도 행(`calls[].attempts[]`)과 요청 상세에 선택 칸 `login_refusal`을 더한다. `reason`·`decision`과 집계는 바뀌지 않는다.
+
+| `login_refusal` | 뜻 |
+|---|---|
+| `login_attempts_exhausted` | 같은 아이디 연속 로그인 실패가 회차 상한(3번)에 닿음 |
+| `login_history_unavailable` | 앞 단계(탐색)의 로그인 기록 인계를 확인하지 못해 연속 실패 수를 알 수 없음 |
+| `login_verification_pending` | 쓰기 승인 없이 받는 로그인 예외에서, 같은 계정의 앞선 로그인 성공 여부를 아직 확인 중 |
+| `browser_account_in_use` | 같은 브라우저 문맥에 다른 등록 계정이 이미 로그인해 있음 |
+
+- 결속: 회차 상태 디렉터리의 `login-attempts.jsonl` 행 중 `stage: diagnosis`·`actor: model`·`method: POST`·이 회차 `run_ref`·`transport: not_sent`·`outcome: not_sent`이고 `transport_ref`가 그 시도의 `call_ref/attempt_id`와 **정확히 같은** 행이 하나일 때만 붙인다. 경로·시각으로 잇지 않는다. 같은 참조의 행이 둘 이상이면 붙이지 않는다.
+- E② 쪽도 다시 본다: 그 시도의 결과 행이 모델 호출(`program` 없음)의 `POST`이고 `decision: denied`·`reason: policy_denied`·`forward_attempted: false`일 때만이다. 서버는 검증된 E② 사건의 호출 종류까지 확인하고, 웹 파서는 응답에 있는 메서드·결정·사유·송신 여부를 다시 확인한다.
+- 기록 파일이 없거나 못 읽거나 맞는 행이 없으면 칸이 없다(사유를 만들지 않음). 화면은 기존 `policy_denied` 표시를 쓴다. 이전 회차·이전 서버 응답도 칸이 없다.
+- 판정기 밖의 거부(범위·메서드·예산 등 다른 경계가 막아 판정기가 not_sent로 남긴 행)는 여기 없다. 아이디·경로·비밀번호·세션 값은 싣지 않는다(고정 코드만).
+- 탐색 단계 로그인은 E②를 지나지 않아 e2-flow에 없다. 탐색 경계는 자기 기록에 고정 사유(`login_attempts_exhausted` 등)를 직접 남긴다(탐색 경계 계약).
+- 웹: `E2_LOGIN_REFUSALS`·`e2LoginRefusal()`, `E2Attempt.login_refusal`, `E2RequestDetail.login_refusal`. 목록 밖 값은 버린다. 문구는 화면이 정한다.
+
 ## 5. 커버리지 — 1단계는 기존 워크플로 snapshot
 
 `GET /api/product/workflows/{job}`의 snapshot `endpoints`(방문 `visited`·선택 `selected`·상태 `status`·관찰 오류 `observation_error`·발견 출처)와 `counts`로 그린다. 새 집계 API는 snapshot으로 그릴 수 없는 칸이 생기면 그때 이 문서에 더한다.

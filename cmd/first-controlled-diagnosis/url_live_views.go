@@ -207,6 +207,9 @@ type e2FlowAttempt struct {
 	StatusCode        int       `json:"status_code"`
 	ResponseTruncated bool      `json:"response_truncated"`
 	At                time.Time `json:"at"`
+	// LoginRefusal은 로그인 시도 판정기가 보내기 전에 막은 고정 사유다(policy_denied 결과 행만, 계약 §4.2). 결속을 확인하지
+	// 못하면 없다.
+	LoginRefusal string `json:"login_refusal,omitempty"`
 }
 
 type e2FlowCall struct {
@@ -491,7 +494,7 @@ func serveLiveDataWith(w http.ResponseWriter, r *http.Request, runsDir, jobID, v
 		case !ok:
 			out = e2FlowView{Format: e2FlowViewFormat, Journal: "invalid", Calls: []e2FlowCall{}}
 		default:
-			flow := withAttemptPatterns(e2FlowOf(events, after), attemptPatterns(b))
+			flow := withLoginRefusals(withAttemptPatterns(e2FlowOf(events, after), attemptPatterns(b)), loginRefusals(b, events))
 			// 세 내역(저널 두 갈래·탐색)은 이 응답 하나에서 같은 시점에 읽는다. 탐색 기록을 못 읽으면 탐색 수는 모름이다.
 			requests := targetRequestsOf(events, explorationRecordNow(r.Context(), b, jobID, live))
 			flow.TargetRequests = &requests
