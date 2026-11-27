@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"github.com/Autumn-27/artex/dlp"
 	"strconv"
 	"time"
 )
@@ -126,7 +125,8 @@ func (p Postgres) Display(ctx context.Context, owner, id string) ([]Plan, []Acti
 }
 
 func displayText(raw string, limit int) string {
-	r := []rune(dlp.DiagnosticText(raw))
+	// 활동 글은 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기). 길이 · JSON 크기 상한만 건다.
+	r := []rune(raw)
 	if len(r) > limit {
 		return string(r[:limit]) + "…"
 	}

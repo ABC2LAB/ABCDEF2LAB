@@ -127,7 +127,7 @@ func stripObservationDetail(e *Endpoint) {
 }
 
 // endpointFloorBytes는 끝점 하나를 compactProjection이 끝까지 덜어 낸 꼴로 직렬화한 크기다. 저장 기록 그대로와
-// 공개 투영(Project의 경로 가림) 중 큰 쪽이다.
+// 공개 투영(Project의 safePath — 2026-11-26 DLP 폐기 뒤로는 그대로) 중 큰 쪽이다.
 func endpointFloorBytes(e Endpoint) int {
 	stripObservationDetail(&e)
 	raw, _ := json.Marshal(e)
@@ -137,7 +137,7 @@ func endpointFloorBytes(e Endpoint) int {
 }
 
 // snapshotBaseFloorBytes는 끝점 목록을 빈 배열로 둔 압축 바닥 크기다(활동·계획·사건 없음). 저장 그대로와 공개 투영
-// (현재 경로 가림) 중 큰 쪽이다.
+// (safePath, 지금은 그대로) 중 큰 쪽이다.
 func snapshotBaseFloorBytes(s Snapshot) int {
 	s.Activity, s.Plan, s.Events, s.Endpoints = nil, nil, nil, []Endpoint{}
 	raw, _ := json.Marshal(s)

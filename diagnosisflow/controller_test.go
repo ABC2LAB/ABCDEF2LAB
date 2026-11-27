@@ -580,11 +580,13 @@ func TestPauseWaitAndFailedStorageDenyNewSideEffects(t *testing.T) {
 		t.Fatal("poisoned store retained automatic read exemption")
 	}
 }
-func TestWorkflowPublicProjectionNeverReturnsCredentialPath(t *testing.T) {
+
+// 공개 투영도 대상 경로를 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기).
+func TestWorkflowPublicProjectionKeepsTargetPath(t *testing.T) {
 	s := Project(Snapshot{Endpoints: []Endpoint{{Path: "/read/user@example.test", Request: "GET /read/user@example.test HTTP/1.1", From: "/read/user@example.test"}}})
-	raw, _ := json.Marshal(s)
-	if strings.Contains(string(raw), "user@example.test") {
-		t.Fatal("credential-like path exposed")
+	if len(s.Endpoints) != 1 || s.Endpoints[0].Path != "/read/user@example.test" || s.Endpoints[0].From != "/read/user@example.test" ||
+		!strings.Contains(s.Endpoints[0].Request, "/read/user@example.test") {
+		t.Fatalf("target path masked: %+v", s.Endpoints)
 	}
 }
 

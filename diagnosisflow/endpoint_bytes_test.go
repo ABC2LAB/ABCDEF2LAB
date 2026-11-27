@@ -241,19 +241,13 @@ func TestEndpointFromGrowthStaysWithinBytes(t *testing.T) {
 	}
 }
 
-// 바닥 크기는 저장 그대로와 공개 투영(경로 가림) 중 큰 쪽이다. 가림이 경로를 늘리는 경우(짧은 비밀 모양이
-// [REDACTED]로 바뀜)도 공개 투영 크기로 잰다.
-func TestEndpointFloorCountsMaskedProjection(t *testing.T) {
+// 바닥 크기는 저장 그대로와 공개 투영 중 큰 쪽이다. 경로 가림이 없어져(2026-11-26 DLP 폐기) 비밀 모양 경로도 공개
+// 투영이 저장 그대로와 같은 크기다.
+func TestEndpointFloorIsStoredSizeWithoutMasking(t *testing.T) {
 	e := Endpoint{ID: endpointID("https://owned.test", "GET", "/read/token=a"), Method: "GET", Path: "/read/token=a", From: "/read/token=a", Kind: "link", Source: "html_link"}
 	raw, _ := json.Marshal(e)
-	p := e
-	p.Path, p.From = safePath(p.Path), safePath(p.From)
-	projected, _ := json.Marshal(p)
-	if len(projected) <= len(raw) {
-		t.Fatalf("fixture: masking did not lengthen the path (%d <= %d)", len(projected), len(raw))
-	}
-	if endpointFloorBytes(e) != len(projected) {
-		t.Fatalf("floor %d, projected %d", endpointFloorBytes(e), len(projected))
+	if safePath(e.Path) != e.Path || endpointFloorBytes(e) != len(raw) {
+		t.Fatalf("floor %d, stored %d, projected path %q", endpointFloorBytes(e), len(raw), safePath(e.Path))
 	}
 }
 
@@ -289,16 +283,16 @@ func TestEndpointFromEscapeGrowthIsMeasured(t *testing.T) {
 	}
 }
 
-// 같은 길이 From이 가림으로 늘어나는 경우도 바닥 크기를 다시 잰다(`/read/token=ab` → `/read/[REDACTED]`).
-func TestEndpointFromMaskingGrowthUpdatesFloor(t *testing.T) {
+// From이 다시 발견돼 길어지면 바닥 크기를 다시 잰다(비밀 모양 From도 가리지 않고 그대로 잰다).
+func TestEndpointFromGrowthUpdatesFloor(t *testing.T) {
 	c, _ := flowFixture(t, Auto)
 	c.binding.Limits.MaxEndpoints = MaxWorkflowEndpoints
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	e := c.addLocked("GET", "/read/m", "form", "html_form", "/read/xxxxxxxx")
 	before := c.floorCache[e.ID]
-	c.addLocked("GET", "/read/m", "form", "html_form", "/read/token=ab")
-	if e.From != "/read/token=ab" || c.floorCache[e.ID] != endpointFloorBytes(*e) || c.floorCache[e.ID] <= before {
-		t.Fatalf("masked From growth not measured: before %d cached %d actual %d", before, c.floorCache[e.ID], endpointFloorBytes(*e))
+	c.addLocked("GET", "/read/m", "form", "html_form", "/read/token=abcdefgh")
+	if e.From != "/read/token=abcdefgh" || c.floorCache[e.ID] != endpointFloorBytes(*e) || c.floorCache[e.ID] <= before {
+		t.Fatalf("From growth not measured: before %d cached %d actual %d", before, c.floorCache[e.ID], endpointFloorBytes(*e))
 	}
 }
