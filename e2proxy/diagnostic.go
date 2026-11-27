@@ -11,8 +11,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/Autumn-27/artex/dlp"
 )
 
 // HTTPObservation은 실제 통제 경로의 제한된 비민감 projection이다. 본문·쿠키·계정 값은 없다.
@@ -97,7 +95,8 @@ func (c *Call) observeHTTP(req *http.Request, sentHeaders http.Header, resp *htt
 		if req.URL.Path != strings.TrimSuffix(prefix, "/") && req.URL.Path != prefix {
 			endpoint = strings.TrimSuffix(endpoint, "/") + "/{resource}"
 		}
-		if string(c.e.RedactRecord([]byte(endpoint))) != endpoint || dlp.DiagnosticText(endpoint) != endpoint {
+		// 우리 제어 비밀 · E③ 표식이 든 경로 틀만 숨긴다(RedactRecord). 대상 값 가림(DLP)은 걷었다(절대규칙 2, 2026-11-26).
+		if string(c.e.RedactRecord([]byte(endpoint))) != endpoint {
 			endpoint = "/{protected}"
 		}
 	}
@@ -143,7 +142,7 @@ func (c *Call) observeHTTP(req *http.Request, sentHeaders http.Header, resp *htt
 				continue
 			}
 			value := strings.TrimSpace(resp.Header.Get(header))
-			if string(c.e.RedactRecord([]byte(value))) != value || dlp.DiagnosticText(value) != value {
+			if string(c.e.RedactRecord([]byte(value))) != value {
 				continue
 			}
 			match := diagnosticProduct.FindStringSubmatch(value)

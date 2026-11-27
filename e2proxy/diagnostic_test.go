@@ -134,3 +134,40 @@ func TestHTTPObservationDoesNotChooseOneOfMultipleServerBanners(t *testing.T) {
 		t.Fatalf("ambiguous banner trusted: err=%v observations=%d", err, len(result.Observations))
 	}
 }
+
+// 관찰 투영은 구조로 줄인 값(경로 틀 · 제품 이름 · 판)만 남긴다. 자격 모양 글자 가림(DLP)은 걷었고(절대규칙 2, 2026-11-26 DLP
+// 폐기), 제품 이름 모양에 맞는 배너는 그대로 남는다. 우리 제어 비밀(설정한 보호 값)이 든 경로 틀은 계속 '/{protected}'다.
+func TestHTTPObservationKeepsBannerAndMasksControlSecret(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "eyJhbGci.eyJzdWIi.c2ln")
+		_, _ = w.Write([]byte("synthetic response"))
+	}))
+	defer target.Close()
+	_, call := coreOpen(t, coreConfig(t, target.URL, &coreRecorder{}, 2))
+	resp, _, err := call.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed/document"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	result, err := call.Close(context.Background())
+	if err != nil || len(result.Observations) != 1 || len(result.Observations[0].Technologies) != 1 || result.Observations[0].Technologies[0].Name != "eyJhbGci.eyJzdWIi.c2ln" {
+		t.Fatalf("제품 이름 모양 배너를 뺌: %+v %v", result.Observations, err)
+	}
+
+	// 우리 제어 비밀(보호 값)이 든 경로 틀은 저장 기록 가림에 걸려 '/{protected}'로 남는다.
+	e, call := coreOpen(t, coreConfig(t, target.URL, &coreRecorder{}, 2))
+	if err := e.AddProtectedValues([]byte("allowed")); err != nil {
+		t.Fatal(err)
+	}
+	resp, _, err = call.Do(context.Background(), coreRequest(t, "GET", target.URL+"/allowed/document"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	result, err = call.Close(context.Background())
+	if err != nil || len(result.Observations) != 1 || result.Observations[0].Endpoint != "/{protected}" {
+		t.Fatalf("제어 비밀이 든 경로 틀이 남음: %+v %v", result.Observations, err)
+	}
+}
