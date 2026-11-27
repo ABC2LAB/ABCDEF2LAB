@@ -4,7 +4,7 @@
 
 | 기능 | API | 새 칸 | 웹 파서 | 정본 계약 |
 |---|---|---|---|---|
-| 남은 시간 | `GET /api/diagnoses/v2/drafts/{id}/status`(그 밖의 초안 응답도) | `draft.time_limit`, 최상위 `server_time` | `parseURLJob`(→`job.time_limit`), `parseURLServerTime` | [점검 시각 §시간 상한](diagnosis-run-timing.md) |
+| 남은 시간 | `GET /api/diagnoses/v2/drafts/{id}/status`(그 밖의 초안 응답도) | `draft.time_limit`, 최상위 `server_time` | `job.time_limit`, `parseURLServerTime(raw, owner, "status")`(Status 외 응답은 세 번째 인자 생략) | [점검 시각 §시간 상한](diagnosis-run-timing.md) |
 | 새 시작 거절 안내 | `POST …/drafts/{id}/start`의 409 | `busy_reason` | `ApiError.busyReason`, `urlBusyReason()`, `URL_BUSY_REASONS` | [URL 진단 준비 '새 시작 거절 사유'](../url-diagnosis-preparation.md) |
 | 로그인 차단 안내 | `GET /api/tasks/{id}/e2-flow`, `GET …/e2-flow/requests/{call}/{attempt}` | 시도 행·상세의 `login_refusal` | `E2Attempt.login_refusal`, `E2RequestDetail.login_refusal`, `E2_LOGIN_REFUSALS` | [작업대 실데이터 §4.2](workbench-live-data.md) |
 | E③ 결과 상태 | `GET /api/diagnoses/v2/drafts/{id}/status`(제품 설치) | 최상위 `confirmation` | `parseURLConfirmation`, `URL_CONFIRMATION_STATUSES` | [제품 확정 단계 §7.4](e3-product-confirmation-interface.md) |

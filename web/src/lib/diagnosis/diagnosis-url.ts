@@ -525,25 +525,29 @@ function parseURLConfirmationValue(v: unknown): URLConfirmation {
   return { record: "recorded", status: v.status as URLConfirmationStatus, reason: v.reason as string | null };
 }
 
+function parseURLStatus(raw: unknown, owner: string) {
+  const { confirmation, ...response } = envelope(raw, owner);
+  const job = parseURLJob(response, owner);
+  return { job, confirmation: confirmation === undefined ? undefined : parseURLConfirmationValue(confirmation) };
+}
+
 /** 회차 상태(drafts/{id}/status) 응답의 확정 단계 결과. 제품 설치가 아니거나 이전 서버면 undefined(칸 없음). */
 export function parseURLConfirmation(raw: unknown, owner: string): URLConfirmation | undefined {
-  parseURLJob(raw, owner);
-  const value = (raw as Record<string, unknown>).confirmation;
-  return value === undefined ? undefined : parseURLConfirmationValue(value);
+  return parseURLStatus(raw, owner).confirmation;
 }
 
 /**
  * 시간 상한이 있는 응답의 서버 응답 시각(RFC3339Nano UTC). 남은 시간은 run_deadline_at − server_time 으로 세고,
  * 브라우저 시계와의 차이는 받은 순간의 (server_time − 브라우저 now)로 보정한다. 시간 상한이 없는 응답은 undefined.
+ * Status 응답에는 별도 확인 칸이 올 수 있어 source에 "status"를 넘긴다.
  */
-export function parseURLServerTime(raw: unknown, owner: string): string | undefined {
-  const job = parseURLJob(raw, owner);
+export function parseURLServerTime(raw: unknown, owner: string, source?: "status"): string | undefined {
+  const job = source === "status" ? parseURLStatus(raw, owner).job : parseURLJob(raw, owner);
   return job.time_limit === undefined ? undefined : String((raw as Record<string, unknown>).server_time);
 }
 export function parseURLJob(raw: unknown, owner: string): URLDiagnosisJob {
   const e = envelope(raw, owner);
-  exact(e, ["version", "owner_context", "draft", "server_time", "confirmation"]);
-  if (e.confirmation !== undefined) parseURLConfirmationValue(e.confirmation);
+  exact(e, ["version", "owner_context", "draft", "server_time"]);
   const d = e.draft;
   if (
     !object(d) ||
@@ -793,7 +797,7 @@ export async function readURLReceipt(key: string, owner: string): Promise<URLDia
 }
 export async function readURLStatus(id: string, owner: string, signal?: AbortSignal): Promise<URLDiagnosisJob> {
   if (!ref(id)) return invalid();
-  const result = parseURLJob(
+  const { job } = parseURLStatus(
     await apiFetch<unknown>(
       `${base}/drafts/${encodeURIComponent(id)}/status`,
       { cache: "no-store", redirect: "error", ...(signal ? { signal } : {}) },
@@ -801,8 +805,8 @@ export async function readURLStatus(id: string, owner: string, signal?: AbortSig
     ),
     owner,
   );
-  if (result.id !== id) return invalid();
-  return result;
+  if (job.id !== id) return invalid();
+  return job;
 }
 function sameValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;

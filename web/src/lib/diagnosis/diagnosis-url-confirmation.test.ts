@@ -1,8 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { parseURLConfirmation, parseURLJob, parseURLServerTime } from "./diagnosis-url";
+import { apiFetch } from "./api";
+import { parseURLConfirmation, parseURLServerTime, readURLReceipt, readURLStatus } from "./diagnosis-url";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+
+vi.mock("./api", async (original) => ({ ...(await original<typeof import("./api")>()), apiFetch: vi.fn() }));
 
 // 실제 Go handler가 내는 회차 상태 응답의 확정 단계 결과(e3-product-confirmation-interface.md '회차 상태 응답').
 type Example = {
@@ -14,7 +17,7 @@ const example = JSON.parse(
 ) as Example;
 
 describe("회차 상태의 확정 단계 결과", () => {
-  it("시간 상한과 확정 단계 상태를 한 회차 응답에서 함께 읽는다", () => {
+  it("시간 상한과 확정 단계 상태를 한 회차 응답에서 함께 읽는다", async () => {
     const timing = JSON.parse(
       readFileSync(resolve(process.cwd(), "../docs/contracts/diagnosis-run-timing.responses.example.json"), "utf8"),
     ) as { cases: { name: string; status: Record<string, unknown> & { owner_context: string } }[] };
@@ -22,8 +25,11 @@ describe("회차 상태의 확정 단계 결과", () => {
     const confirmation = example.cases.find(({ name }) => name === "running_not_recorded")?.status.confirmation;
     if (!limited || !confirmation) throw new Error("shared example missing");
     const status = { ...limited, confirmation };
-    expect(parseURLJob(status, status.owner_context).time_limit).toEqual((limited.draft as Record<string, unknown>).time_limit);
-    expect(parseURLServerTime(status, status.owner_context)).toBe(limited.server_time);
+    const draft = limited.draft as { id: string; time_limit: unknown };
+    vi.mocked(apiFetch).mockResolvedValueOnce(status);
+    const job = await readURLStatus(draft.id, status.owner_context);
+    expect(job.time_limit).toEqual(draft.time_limit);
+    expect(parseURLServerTime(status, status.owner_context, "status")).toBe(limited.server_time);
     expect(parseURLConfirmation(status, status.owner_context)).toEqual(confirmation);
   });
 
@@ -42,11 +48,21 @@ describe("회차 상태의 확정 단계 결과", () => {
   });
 
   it.each(example.cases)("공유 원문을 닫힌 파서로 읽는다: $name", ({ status }) => {
-    const job = parseURLJob(status, status.owner_context);
-    const confirmation = parseURLConfirmation(status, status.owner_context);
-    expect(confirmation).toEqual(status.confirmation);
-    // 회차 state(completed 등)와 확정 단계 status는 다른 칸이다.
+    expect(parseURLConfirmation(status, status.owner_context)).toEqual(status.confirmation);
+  });
+
+  it("상태 응답의 confirmation만 받고 초안 조회 응답에서는 거절한다", async () => {
+    const status = example.cases.find(({ name }) => name === "running_not_recorded")?.status;
+    if (!status) throw new Error("shared example missing");
+    const { id, state } = status.draft as { id: string; state: string };
+    vi.mocked(apiFetch).mockResolvedValueOnce(status).mockResolvedValueOnce(status);
+    const job = await readURLStatus(id, status.owner_context);
+    expect(job.state).toBe(state);
     expect(job).not.toHaveProperty("confirmation");
+    await expect(readURLReceipt("create-1", status.owner_context)).rejects.toMatchObject({
+      status: 422,
+      message: "invalid_contract",
+    });
   });
 
   const completed = example.cases.find(({ name }) => name === "completed");
@@ -62,6 +78,6 @@ describe("회차 상태의 확정 단계 결과", () => {
   ])("계약 밖이면 회차 상태째 받지 않는다: %s", (_name, confirmation) => {
     if (!completed) throw new Error("completed example missing");
     const raw = { ...completed.status, confirmation };
-    expect(() => parseURLJob(raw, completed.status.owner_context)).toThrow();
+    expect(() => parseURLConfirmation(raw, completed.status.owner_context)).toThrow();
   });
 });
