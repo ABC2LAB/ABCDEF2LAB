@@ -85,7 +85,7 @@ func cleanupFixture(t *testing.T, status int) (hostFixture, *mcpDeleteFixture) {
 // 이전 실행이 연 경계 세션과 MCP 세션이 남아 있으면, 정리는 경계 세션을 닫고(닫힘 확인) MCP 세션을 지운다.
 func TestCleanupStaleClosesBoundarySessionAndBrowserContext(t *testing.T) {
 	f, mcp := cleanupFixture(t, http.StatusOK)
-	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
+	host, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,11 +154,11 @@ func TestEnsureCleanBlocksExplorationUntilCleanup(t *testing.T) {
 	f, _ := cleanupFixture(t, http.StatusOK)
 	good := f.host.control
 	f.host.control.Path = f.host.control.Path + ".missing"
-	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{}); err == nil {
+	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{}); err == nil {
 		t.Fatal("정리 전에 탐색을 엶")
 	}
 	f.host.control = good
-	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, &explorationPasswords{}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{}); err != nil {
+	if _, err := f.host.factory(f.rec, f.current, f.digest, nil, 4096, &productTargetConnection{IP: f.rec.SelectedIP, SPKI: f.rec.Target.TLSSPKISHA256, jobID: f.binding.JobID}, productExplorationLogin(nil))(t.Context(), f.binding, &agent.Worker{}); err != nil {
 		t.Fatal("정리 뒤 탐색:", err)
 	}
 }

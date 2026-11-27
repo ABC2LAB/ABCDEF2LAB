@@ -118,10 +118,12 @@ func TestSelectedVerificationKeepsCandidateWithoutAutomaticVerdictPostgres(t *te
 	}
 	context.Candidate.Summary = "Observed concern; password=synthetic-model-secret"
 	modelRequest, err := BuildCandidateAnalysisRequest(context, 512)
+	// 후보 글은 가리지 않고 모델 입력으로 간다: 모델 입력에는 대상 응답·시험 계정 자격·세션 값을 넣을 수 있다(절대규칙 2,
+	// 2026-11-26 DLP 폐기). 우리 제어 비밀·E③ 표식은 후보를 저장할 때(RedactRecord) 이미 빠져 있다.
 	if err != nil || modelRequest.MaxTokens != 512 || len(modelRequest.Tools) != 0 || len(modelRequest.Messages) != 1 ||
-		strings.Contains(modelRequest.Messages[0].Text(), "synthetic-model-secret") ||
+		!strings.Contains(modelRequest.Messages[0].Text(), "password=synthetic-model-secret") ||
 		!strings.Contains(modelRequest.Messages[0].Text(), `"original_observation_available":false`) {
-		t.Fatal("selected model context has unsafe tools, missing provenance, or a synthetic secret")
+		t.Fatal("selected model context has unsafe tools, missing provenance, or a masked candidate text")
 	}
 	if _, err := BuildCandidateAnalysisRequest(context, 0); err == nil {
 		t.Fatal("model request without an installed output cap was accepted")

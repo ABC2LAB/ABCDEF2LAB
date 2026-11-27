@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -22,7 +23,10 @@ func syntheticAuthJWT(label string) string {
 	h.Write([]byte(plain))
 	return plain + "." + encode(h.Sum(nil))
 }
-func TestAuthJWTFragmentsFollowPrepAndRefresh(t *testing.T) {
+
+// 인증 준비·다시 로그인으로 받은 시험 계정 세션(JWT)은 모델에 그대로 가고, 모델 출력·저장 기록에서 전체 값도 조각도
+// 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기).
+func TestAuthJWTSessionsStayVisibleAfterPrepAndRefresh(t *testing.T) {
 	for _, cookie := range []bool{true, false} {
 		t.Run(fmt.Sprint(cookie), func(t *testing.T) {
 			first := syntheticAuthJWT("tester-a")
@@ -61,10 +65,10 @@ func TestAuthJWTFragmentsFollowPrepAndRefresh(t *testing.T) {
 				t.Fatal("다시 로그인 세션 교체 실패")
 			}
 			for _, token := range []string{first, next} {
-				for _, part := range strings.Split(token, ".")[1:] {
+				for _, part := range append([]string{token}, strings.Split(token, ".")[1:]...) {
 					detail, _ := json.Marshal(map[string]string{"command": "printf '" + part + " " + part + "'", "summary": "Observed request"})
-					if strings.Contains(string(e.RedactOutput(detail)), part) {
-						t.Fatal("인증 준비·갱신 JWT 조각이 기록에 남음")
+					if !bytes.Equal(e.RedactOutput(detail), detail) || !bytes.Equal(e.RedactRecord(detail), detail) {
+						t.Fatal("인증 준비·갱신 세션을 가림")
 					}
 				}
 			}
@@ -72,7 +76,9 @@ func TestAuthJWTFragmentsFollowPrepAndRefresh(t *testing.T) {
 	}
 }
 
-func TestAuthJWTCapacityDoesNotReleaseModelSession(t *testing.T) {
+// 시험 계정 실행에는 세션 가림 칸이 없다: 세션을 아무리 많이 받아도(다시 로그인 포함) 가림 자리 때문에 모델용 세션을
+// 보류하지 않는다(#840의 칸 상한을 걷음, 2026-11-26 DLP 폐기).
+func TestAuthSessionsAreNotLimitedByRedactionCapacity(t *testing.T) {
 	target := &authLoginTarget{token: syntheticAuthJWT("capacity-tester")}
 	receiver := httptest.NewServer(target.handler(t))
 	defer receiver.Close()
@@ -80,14 +86,13 @@ func TestAuthJWTCapacityDoesNotReleaseModelSession(t *testing.T) {
 	pin := authCredentialPin(t, dir, "test.json", "tester@owned.test", "seeded-pass-88ff")
 	auth := cookieAuth(E2HTTPFileAuthAccount{Label: "tester-a", Credential: pin})
 	execution := authTestExecution(t, receiver.URL, &authEventCounter{}, e2proxy.HeaderTestAccountPassthrough)
-	// 조각까지 합쳐 한도를 넘을 때 인증은 했어도 모델에 세션을 반환하지 않는다.
-	for i := 0; i < 62; i++ {
-		if err := execution.AddRedactValues([]byte(fmt.Sprintf("synthetic-opaque-session-%03d", i))); err != nil {
+	for i := 0; i < 5000; i++ {
+		if err := execution.AddRedactValues([]byte(fmt.Sprintf("synthetic-opaque-session-%04d", i))); err != nil {
 			t.Fatal(err)
 		}
 	}
 	result, err := e2HTTPAuthPrep(t.Context(), execution, dir, receiver.URL, auth)
-	if err != nil || result.AccountAuth["tester-a"] != E2HTTPAuthSessionNotFound || len(result.Sessions) != 0 || target.posts.Load() != 1 {
-		t.Fatal("가림 상한 초과 세션을 모델에 반환하거나 인증을 재시도함", err)
+	if err != nil || result.AccountAuth["tester-a"] != E2HTTPAuthAuthenticated || len(result.Sessions) != 1 || target.posts.Load() != 1 {
+		t.Fatal("세션 수 때문에 모델용 세션을 주지 않음", err)
 	}
 }

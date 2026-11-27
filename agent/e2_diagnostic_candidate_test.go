@@ -56,9 +56,14 @@ func TestE2DiagnosticCandidateUsesActualCall(t *testing.T) {
 		t.Fatal("actual observation rejected")
 	}
 	c := store.candidates[0]
+	// 후보 근거는 저장 기록이다. 설정한 보호 값(keep-secret)은 근거·요약 어디에도 남지 않고, 대상이 응답으로 준 세션 값은
+	// 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기).
 	if c.Validate() != nil || c.Verification != "manual_review_required" || c.Classification != "completed" ||
-		strings.Contains(c.Evidence, "keep-secret") || strings.Contains(c.Evidence, "unknown-response-secret") || strings.Contains(c.Evidence, "new-bearer-secret") || strings.Contains(c.Summary, "keep-secret") || !strings.Contains(c.Evidence, "printf synthetic") {
+		strings.Contains(c.Evidence, "keep-secret") || strings.Contains(c.Summary, "keep-secret") || !strings.Contains(c.Evidence, "printf synthetic") {
 		t.Fatalf("candidate provenance/redaction failed: %v", c.Validate())
+	}
+	if !strings.Contains(c.Evidence, "new-session=unknown-response-secret") || !strings.Contains(c.Evidence, "Bearer new-bearer-secret") {
+		t.Fatal("대상이 준 세션 값을 후보 근거에서 가림")
 	}
 	for _, extra := range []string{`"verification":"confirmed"`, `"evidence":"fabricated"`, `"task_id":999`, `"intent_id":999`, `"evidence_version":2`} {
 		if !call(`{"call_ref":"actual-call","vulnclass":"SQLi","name":"후보","summary":"관찰",` + extra + `}`) {
@@ -307,22 +312,28 @@ func TestDiagnosticActualHTTPContextPipeline(t *testing.T) {
 	}
 }
 
-func TestE2DiagnosticCommandAndRemediationDLP(t *testing.T) {
+// 후보의 명령·수정 권고는 저장 기록이다: 모델이 쓴 요청 자격(시험 계정 세션)은 가리지 않고(절대규칙 2, 2026-11-26 DLP 폐기),
+// 설정한 보호 값(keep-secret)은 명령·권고 어디에도 남지 않는다.
+func TestE2DiagnosticCommandAndRemediationKeepCredentialsMaskProtected(t *testing.T) {
 	execution, _, binding := e2WorkerFixture(t)
 	state := &e2HTTPToolState{}
 	state.observeDiagnostic(execution, 22, "printf synthetic\nAuthorization: Bearer command-fixture-private", e2runner.Result{Trusted: e2runner.TrustedResult{Execution: execution.SnapshotForIntent(22), Call: e2proxy.CallResult{IntentID: 22, CallRef: "actual"}, Classification: "completed"}})
-	if strings.Contains(state.observations["actual"].Evidence, "command-fixture-private") {
-		t.Fatal("command bypassed DLP")
+	if !strings.Contains(state.observations["actual"].Evidence, "Authorization: Bearer command-fixture-private") {
+		t.Fatal("명령의 요청 자격을 후보 근거에서 가림")
+	}
+	state.observeDiagnostic(execution, 22, "printf keep-secret", e2runner.Result{Trusted: e2runner.TrustedResult{Execution: execution.SnapshotForIntent(22), Call: e2proxy.CallResult{IntentID: 22, CallRef: "protected"}, Classification: "completed"}})
+	if evidence := state.observations["protected"].Evidence; strings.Contains(evidence, "keep-secret") || !strings.Contains(evidence, "[REDACTED]") {
+		t.Fatalf("보호 값이 후보 근거에 남음: %s", evidence)
 	}
 	store := &candidateMemoryStore{}
 	tool := newE2DiagnosticCandidateTool(store, binding, state)
-	input := `{"call_ref":"actual","vulnclass":"XSS","name":"후보","summary":"관찰","remediation":"Authorization: Bearer remedy-fixture-private"}`
+	input := `{"call_ref":"actual","vulnclass":"XSS","name":"후보","summary":"관찰","remediation":"Authorization: Bearer remedy-fixture-private, rotate keep-secret"}`
 	r, err := tool.Call(t.Context(), json.RawMessage(input), nil)
 	if err != nil || r.IsError || len(store.candidates) != 1 {
 		t.Fatal("candidate missing", err)
 	}
-	if strings.Contains(store.candidates[0].Remediation, "remedy-fixture-private") {
-		t.Fatal("remediation bypassed DLP")
+	if remediation := store.candidates[0].Remediation; !strings.Contains(remediation, "remedy-fixture-private") || strings.Contains(remediation, "keep-secret") {
+		t.Fatalf("수정 권고 가림 범위: %s", remediation)
 	}
 	for _, suffix := range []string{` {}`, ` null`, ` []`, ` true`} {
 		r, err := tool.Call(t.Context(), json.RawMessage(input+suffix), nil)
