@@ -20,7 +20,7 @@ import (
 	"github.com/Autumn-27/artex/server"
 )
 
-// learnedAccountTarget은 승인 대상에 시험 계정 둘(자격 있음)을 둔 레지스트리다.
+// learnedAccountTarget은 승인 대상에 계정 둘(자격 있음)을 둔 레지스트리다. 계정 분류는 없어서 등록 · 자격만 넣는다.
 func learnedAccountTarget(t *testing.T) (*productTargetRegistry, string, productTargetRecord) {
 	t.Helper()
 	r, root, target := accountTestTarget(t, true)
@@ -136,7 +136,7 @@ func TestLoginMethodVerifiedJournal(t *testing.T) {
 	if ok, _ := reopened.recordLoginMethodVerified(id, "tester-a", rev, credA2, digest, "run-job5", "confirmation-2", t0.Add(2*time.Hour)); !ok {
 		t.Fatal("새 자격 판의 verified를 남기지 못함")
 	}
-	// 자격 철회 → 반영 안 함.
+	// 계정 자격 철회(자격 삭제) → 반영 안 함.
 	credB := credentialOf(reopened, id, "tester-b")
 	if ok, _ := reopened.recordLoginMethodVerified(id, "tester-b", rev, credB, digest, "run-job5", "confirmation-3", t0.Add(2*time.Hour)); !ok {
 		t.Fatal("B verified")
@@ -145,7 +145,7 @@ func TestLoginMethodVerifiedJournal(t *testing.T) {
 		t.Fatal(err)
 	}
 	if verifiedOf(reopened, id, "tester-b", "/login") != nil {
-		t.Fatal("해제 뒤 verified가 남음")
+		t.Fatal("자격 철회 뒤 verified가 남음")
 	}
 	// 대상 철회(판 변경) → 반영 안 함.
 	if _, err := reopened.revoke("ARTEX", id); err != nil {
