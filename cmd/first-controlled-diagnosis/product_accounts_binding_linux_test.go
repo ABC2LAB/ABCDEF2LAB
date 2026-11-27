@@ -596,3 +596,29 @@ func TestExternalModelAccountWithoutLoginMethodNeedsConsent(t *testing.T) {
 		t.Fatalf("consented external run: auth=%+v accounts=%d external=%v", loaded.policy.Auth, len(loaded.productAccounts), loaded.externalTestAccounts)
 	}
 }
+
+// 9칸-1은 9칸을 계속 받는다: 저널의 login_config 줄은 레지스트리를 다시 열어도 읽히고, 결속에 로그인 방식으로 실린다.
+func TestJournalLoginConfigStillBinds(t *testing.T) {
+	r, root, target := accountTestTarget(t, true)
+	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: "u", Password: "seeded-pass-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.setTargetLogin("ARTEX", target.ID, cookieLogin()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	got, digest, err := reopened.runAccounts(reopened.approvals[target.ID])
+	if err != nil || digest == "" || got.Login == nil || got.Login.Path != cookieLogin().Path || len(got.Accounts) != 1 || got.Accounts[0].Label != "tester-a" {
+		t.Fatalf("replayed login_config not bound: %+v %q %v", got, digest, err)
+	}
+}
