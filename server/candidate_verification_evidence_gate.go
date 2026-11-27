@@ -313,8 +313,14 @@ func reviewCandidateEvidenceV2(c CandidateAssessmentContext) *CandidateEvidenceR
 	}
 	for _, r := range reproductions {
 		for _, n := range controls {
+			// 다른 기능의 정상 대조에서 나온 구조 차이는 입력 효과가 아니다.
+			// 계획은 정상 대조에 다른 경로도 허용하므로 여기서 다시 확인한다.
+			ro, no := r.Source.Observation, n.Source.Observation
+			if ro.Method != no.Method || ro.Endpoint == "" || ro.Endpoint != no.Endpoint {
+				continue
+			}
 			rev, nev := candidateverify.RowResponseEvidence(r), candidateverify.RowResponseEvidence(n)
-			same := r.Source.Observation.RequestQueryDigest == n.Source.Observation.RequestQueryDigest
+			same := ro.RequestQueryDigest == no.RequestQueryDigest
 			if inputContrastObserved(responseevidence.Compare(rev, nev, responseevidence.RoleReproduction, responseevidence.RoleNormalControl), rev, nev, same) {
 				common[factInputEffect] = true
 			}

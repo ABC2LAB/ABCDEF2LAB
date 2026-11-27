@@ -104,7 +104,7 @@ v1이 "구조가 있고 재현이 일관되는가"를 봤다면 v2는 **이 주�
 - `specific_error_signal`: 고정 오류 신호 중 `stack_trace`·`stack_trace_field`·`sql_error`·`debug_page`·`server_path`·`exception_name`. `server_error_text`("Internal Server Error" 같은 일반 문구)는 포함하지 않는다.
 - `structured_content`: 2xx이고 비어 있지 않은 본문 구조(JSON·HTML·텍스트), JSON 오류 구조(`error`/`errors`/…)가 아님.
 - `business_rule_statement`: 운영자가 업무 질문에 답함(문맥 사실). 대상 응답에 적힌 문장은 업무 규칙이 될 수 없다.
-- `input_contrast`: 입력(Query digest)이 다른 정상 대조와 재현이 둘 다 성공 응답이고, 그 비교에 상태·미디어·빈 응답·오류 신호·오류 구조·헤더 말고 구조 차이(필드·길이·폼·HTML 구조 등)가 있음. 정규화된 값 변화는 세지 않는다.
+- `input_contrast`: 같은 기능 경로·메서드에서 입력(Query digest)이 다른 정상 대조와 재현이 둘 다 성공 응답이고, 그 비교에 상태·미디어·빈 응답·오류 신호·오류 구조·헤더 말고 구조 차이(필드·길이·폼·HTML 구조 등)가 있음. 다른 기능의 정상 대조는 입력 효과로 세지 않는다. 정규화된 값 변화도 세지 않는다.
 
 관찰 사실은 원본과 **모든** 재현에 공통이어야 한다(재현 하나라도 없으면 재현되지 않은 사실). 4xx·5xx인데 구체적 신호가 없는 관찰은 `generic_error`로 따로 표시한다.
 

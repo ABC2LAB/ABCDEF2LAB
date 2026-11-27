@@ -102,6 +102,19 @@ func TestCandidateEvidenceGateV2InputEffectNeedsSuccessfulContrast(t *testing.T)
 	if got := gateVerdict(t, c, "confirmed"); got.Verdict != "confirmed" {
 		t.Fatalf("successful contrast with a different input must allow the model decision: %+v", got)
 	}
+	// 정상 대조가 다른 기능의 응답이면 구조가 달라도 입력 효과로 셀 수 없다.
+	c.Followup[1].Source.Observation.Endpoint = "/other-documents"
+	c.Plan.Actions[1].ExactPath = "/other-documents"
+	if got := gateVerdict(t, c, "confirmed"); got.Verdict != "insufficient" || got.Reason != evidenceReasonInputEffect {
+		t.Fatalf("different-function control is not an input contrast: %+v", got)
+	}
+	c.Followup[1].Source.Observation.Endpoint = c.Followup[0].Source.Observation.Endpoint
+	c.Plan.Actions[1].ExactPath = c.Plan.Actions[0].ExactPath
+	c.Followup[1].Source.Observation.Method = "HEAD"
+	c.Plan.Actions[1].Method = "HEAD"
+	if got := gateVerdict(t, c, "confirmed"); got.Verdict != "insufficient" || got.Reason != evidenceReasonInputEffect {
+		t.Fatalf("different-method control is not an input contrast: %+v", got)
+	}
 	// 대조 입력이 같으면 입력 효과가 아니다.
 	c = gateV2Context(t, "sql_injection", many, []v2Followup{{query: "q1", ev: many}, {kind: "normal_control", query: "q1", ev: one}})
 	c.Original.OriginalObservation.Source.Observation.RequestQueryDigest = "q1"
