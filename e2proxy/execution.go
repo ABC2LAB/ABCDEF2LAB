@@ -1528,8 +1528,8 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		// 승인 이력이 닫힌 까닭(closed_reason)을 가리는 근거다.
 		approvalCtx, cancelApproval := context.WithCancelCause(c.ctx)
 		stopApproval := context.AfterFunc(ctx, func() { cancelApproval(requestCancelCause(ctx)) })
-		// 승인 미리보기는 운영자 화면·승인 기록에 남는 저장 기록이다. model_visible_v1에서는 모델이 대상이 비춘 비밀번호를
-		// 요청 본문에 넣을 수 있으므로, 모델 단계·확정 단계 모두 비밀번호까지 가린 본문을 남긴다.
+		// 승인 미리보기는 운영자 화면 · 승인 기록에 남는 저장 기록이다. 대상 값 · 시험 계정 자격은 가리지 않고(절대규칙 2,
+		// 2026-11-26 DLP 폐기) 우리 제어 비밀 · E③ 표식만 가린다(RedactRecord). 경로 · 질의도 승인 소비자가 같은 가림을 건다.
 		previewBody := e.RedactRecord(body)
 		// 확정 요청은 요청 전용 시간 상한(ctx 기한, 제품 기본 10초) 안에 승인돼야 보낸다. 승인 기한을 그 기한에 맞춰, 운영자가
 		// 결정하지 않으면 승인 기록도 만료(expired)로 남게 한다(#836 이동찬 리뷰).
@@ -1540,7 +1540,7 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		proposal := RequestApprovalProposal{
 			Receipt: r, OwnerRef: e.cfg.OwnerRef, AccountRef: e.cfg.AccountRef, SessionRef: e.cfg.SessionRef,
 			ExpiresAt: approvalExpires, Method: method, URL: req.URL.String(), Host: requestHost,
-			Headers: requestHeaders.Clone(), Body: previewBody,
+			Headers: requestHeaders.Clone(), Body: previewBody, Redact: e.RedactRecord,
 		}
 		// 보호 자격 원문은 승인 소비자에게 전달하지 않는다. 참조만 결속한다.
 		var allowed bool
