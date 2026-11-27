@@ -151,9 +151,17 @@ func learnedLease(t *testing.T, target *httptest.Server, e3Requests uint64, meth
 	return lease, clock, ctx
 }
 
+func TestLearnedSessionValuesMultipleCookies(t *testing.T) {
+	session := http.Header{"Cookie": {"sid=synthetic-session-a; csrf=synthetic-session-b"}}
+	values := learnedSessionValues(csrfMethod(), session)
+	if len(values) != 2 || string(values[0]) != "synthetic-session-a" || string(values[1]) != "synthetic-session-b" {
+		t.Fatalf("다중 쿠키 세션 값 추출 개수 %d", len(values))
+	}
+}
+
 // 확정 단계 학습 로그인 재사용은 로그인 화면을 먼저 받아 새 CSRF·로그인 전 쿠키로 로그인하고, 배운 자리의 새 세션을 계정
-// 결속에 넣는다. 두 요청 모두 Worker 승인 범위 안 확정 몫으로 나가고 모델 단계 예산을 쓰지 않는다. 세션 값은 출력에서
-// 가린다. 세션 없는 대조 요청은 인증 헤더 없이 나가 막힘을 본다.
+// 결속에 넣는다. 두 요청 모두 Worker 승인 범위 안 확정 몫으로 나가고 모델 단계 예산을 쓰지 않는다.
+// 세션 없는 대조 요청은 인증 헤더 없이 나가 막힘을 본다.
 func TestE2HTTPFactoryLearnedReloginWithCSRF(t *testing.T) {
 	target := &csrfTarget{csrf: map[string]string{}, sessions: map[string]bool{}}
 	srv := httptest.NewServer(target.handler(t))
@@ -181,8 +189,9 @@ func TestE2HTTPFactoryLearnedReloginWithCSRF(t *testing.T) {
 		t.Fatalf("새 세션 결속 %v %v", session, err)
 	}
 	value := strings.TrimPrefix(session.Get("Cookie"), "sid=")
-	if strings.Contains(string(lease.Execution.RedactOutput([]byte("x "+value+" y"))), value) {
-		t.Fatal("새 세션 값을 출력에서 가리지 않음")
+	values := learnedSessionValues(csrfMethod(), session)
+	if len(values) != 1 || string(values[0]) != value {
+		t.Fatal("결속된 새 세션 값을 판정기에 전달하지 않음")
 	}
 	if after, err := lease.Execution.BudgetRemaining(); err != nil || after != modelBudget {
 		t.Fatalf("학습 로그인이 모델 단계 예산을 씀: %d → %d %v", modelBudget, after, err)
