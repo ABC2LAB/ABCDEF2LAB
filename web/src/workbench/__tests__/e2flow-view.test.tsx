@@ -296,3 +296,122 @@ it("저널 없음(none) 응답도 '진단 요청 전'으로 보이고 10초 뒤 
   expect(apiFetch).toHaveBeenCalledTimes(2);
   expect(screen.getByText("a".repeat(32))).toBeInTheDocument();
 });
+
+/** 저널 없음(none) 응답. explored 가 있으면 탐색 기록(closed)의 수를 싣는다. */
+function noneFlow(explored?: number) {
+  return {
+    ...e2Flow(),
+    journal: "none",
+    last_index: 0,
+    calls: [],
+    counts: Object.fromEntries(Object.keys(e2Flow().counts).map((k) => [k, 0])),
+    ...(explored === undefined
+      ? {}
+      : {
+          target_requests: {
+            model: 0,
+            login: 0,
+            confirmation: 0,
+            unclassified: 0,
+            exploration: explored,
+            exploration_state: "closed",
+            total: explored,
+          },
+        }),
+  };
+}
+
+it("끝난 회차의 저널 없음(none)은 진단 요청 없이 끝났다고 보이고 다시 읽지 않는다", async () => {
+  vi.useFakeTimers();
+  useUrl.setState({ job: { task_id: "42", state: "completed" } as never });
+  vi.mocked(apiFetch).mockResolvedValue(noneFlow(37));
+  render(at());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  const status = screen.getByRole("status");
+  expect(status).toHaveTextContent("이 회차는 진단 요청 없이 끝나 전송 통제 기록이 없습니다.");
+  expect(status).toHaveTextContent("취약점이 없다는 뜻은 아닙니다");
+  expect(status).toHaveTextContent("탐색 요청 37건은 전송 통제 밖 탐색 경계로 나갔습니다.");
+  expect(status).not.toHaveTextContent(/첫 진단 요청이 나가면/);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30000);
+  });
+  expect(apiFetch).toHaveBeenCalledTimes(1);
+});
+
+it("끝난 회차에서 탐색 수를 모르면 탐색 문장을 붙이지 않는다", async () => {
+  useUrl.setState({ job: { task_id: "42", state: "failed" } as never });
+  vi.mocked(apiFetch).mockResolvedValue(noneFlow());
+  render(at());
+  const status = await screen.findByRole("status");
+  expect(status).toHaveTextContent("이 회차는 진단 요청 없이 끝나");
+  expect(status).not.toHaveTextContent(/탐색 요청/);
+});
+
+it("끝난 회차의 404는 실행 결속 전에 끝났다고 보이고 다시 읽지 않는다", async () => {
+  vi.useFakeTimers();
+  useUrl.setState({ job: { task_id: "42", state: "cancelled" } as never });
+  vi.mocked(apiFetch).mockRejectedValue(new ApiError(404, "전송 통제 기록이 아직 없습니다"));
+  render(at());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(screen.getByRole("status")).toHaveTextContent("실행 결속 전에 끝나 전송 통제 기록이 없습니다.");
+  expect(screen.queryByRole("alert")).toBeNull();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30000);
+  });
+  expect(apiFetch).toHaveBeenCalledTimes(1);
+});
+
+it("보는 중에 회차가 끝나면 한 번 더 읽고 멈춘다", async () => {
+  vi.useFakeTimers();
+  useUrl.setState({ job: { task_id: "42", state: "running" } as never });
+  vi.mocked(apiFetch).mockResolvedValue(noneFlow(5));
+  render(at());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(screen.getByRole("status")).toHaveTextContent(/진단 요청 전 · 아직 전송 통제 기록이 없습니다/);
+  expect(apiFetch).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    useUrl.setState({ job: { task_id: "42", state: "completed" } as never });
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(apiFetch).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole("status")).toHaveTextContent("이 회차는 진단 요청 없이 끝나");
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30000);
+  });
+  expect(apiFetch).toHaveBeenCalledTimes(2);
+});
+
+it("끝난 회차의 검증된 저널은 끝 페이지까지 읽으면 다시 읽지 않는다(#994 윤재상 P3)", async () => {
+  vi.useFakeTimers();
+  useUrl.setState({ job: { task_id: "42", state: "completed" } as never });
+  vi.mocked(apiFetch).mockResolvedValue(e2Flow());
+  render(at());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(screen.getByText("a".repeat(32))).toBeInTheDocument();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(30000);
+  });
+  expect(apiFetch).toHaveBeenCalledTimes(1);
+});
+
+it("진행 중 회차의 검증된 저널은 지금처럼 2초마다 다시 읽는다", async () => {
+  vi.useFakeTimers();
+  useUrl.setState({ job: { task_id: "42", state: "running" } as never });
+  vi.mocked(apiFetch).mockResolvedValue(e2Flow());
+  render(at());
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  expect(apiFetch).toHaveBeenCalledTimes(2);
+});
