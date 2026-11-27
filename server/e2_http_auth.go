@@ -129,6 +129,18 @@ func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2H
 
 var errAuthLoginFailed = errors.New("auth_login_failed")
 
+// e2HTTPApprovedOrigin은 정책의 대상 승인 origin이다: 모델 요청 규칙(목적 없음)의 origin. 프로그램 로그인 · 대조 요청 · 로그인
+// 시도 판정이 같은 origin을 쓴다. 인증 준비 규칙에서 읽지 않는다: 로그인 방식(9칸) 없이 결속한 정책에는 그 규칙이 없다(9칸-1).
+// 제품 정책은 모든 규칙이 같은 origin · 연결 IP다(url_preparation_config 읽기 검사).
+func e2HTTPApprovedOrigin(policy E2HTTPFilePolicy) string {
+	for _, rule := range policy.Rules {
+		if rule.Purpose == "" {
+			return rule.Origin
+		}
+	}
+	return ""
+}
+
 // 계정 결속 참조(E③↔E② v3 계약 §2.2·§4, account_binding_ref). C14 인증에 성공한 세션마다 세션 저장소가 새 난수로
 // 발급한다. 실행(run_ref)·계정 라벨·세션 판에 결속하는 것은 이 저장소의 표이고, 참조 값에는 실행·라벨·자격·세션 값이 하나도
 // 들어가지 않는다(그래서 참조에서 아무것도 추정할 수 없다). 다시 로그인으로 세션이 바뀌면 참조도 새로 발급하고 옛 참조는

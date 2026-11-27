@@ -59,14 +59,8 @@ func newE2HTTPLoginAttempts(ctx context.Context, policy E2HTTPFilePolicy, creden
 	if !policy.LoginAttempts.valid() || store == nil {
 		return nil, errLoginAttempts
 	}
-	// 판정 기준 origin: 인증 칸이 있으면 그 로그인 규칙, 없으면 모델 요청 규칙(목적 없음)의 origin이다.
-	origin := ""
-	for _, rule := range policy.Rules {
-		if policy.Auth != nil && rule.Ref == policy.Auth.RuleRef || policy.Auth == nil && rule.Purpose == "" && origin == "" {
-			origin = rule.Origin
-		}
-	}
-	u, err := url.Parse(origin)
+	// 판정 기준 origin: 대상 승인 origin(모델 요청 규칙). 로그인 방식(9칸) 없이 결속한 정책에도 같다(9칸-1).
+	u, err := url.Parse(e2HTTPApprovedOrigin(policy))
 	if err != nil || u.Host == "" || prober == nil {
 		return nil, errLoginAttempts
 	}
