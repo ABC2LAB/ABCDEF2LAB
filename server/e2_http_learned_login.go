@@ -83,14 +83,12 @@ func (s *e2HTTPSessionStore) LearnedRelogin(ctx context.Context, req E2HTTPLearn
 	if s == nil || s.learned == nil {
 		return out
 	}
-	s.refresh(ctx, req.Label, func() (http.Header, string) {
+	_, _, ref := s.refreshWithBinding(ctx, req.Label, func() (http.Header, string) {
 		var session http.Header
 		out, session = s.learned(ctx, req)
 		return session, out.Result
 	})
-	if out.Result == E2HTTPAuthAuthenticated {
-		out.BindingRef, _ = s.AccountBindingRef(s.runRef, req.Label)
-	}
+	out.BindingRef = ref
 	return out
 }
 
@@ -308,9 +306,6 @@ func e2HTTPLearnedLogin(ctx context.Context, execution *e2proxy.Execution, dir, 
 	}
 	out.Transport = learnedlogin.TransportSent
 	if err := execution.AddRedactValues(learnedSessionValues(m, extracted)...); err != nil {
-		if errors.Is(err, e2proxy.ErrSessionRedactCapacity) {
-			log.Printf("[e2-http] 시험 계정 세션 가림 칸이 모자라 학습 로그인 세션을 받지 않음(누적 %d번)", execution.SessionRedactRefusals())
-		}
 		out.Result, out.Reason = E2HTTPAuthSessionNotFound, learnedlogin.ReasonSessionNotFound
 		return out, nil
 	}

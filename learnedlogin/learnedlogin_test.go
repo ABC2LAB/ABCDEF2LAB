@@ -78,7 +78,6 @@ func TestSelectExcludesIneligibleRows(t *testing.T) {
 		"no label":       func(r *Row) { r.AccountLabel = "" },
 		"wrong password": func(r *Row) { r.PasswordRegistered = false },
 		"no contrast":    func(r *Row) { r.Followup = "no_login_form" },
-		"no transport":   func(r *Row) { r.TransportRef = "" },
 		"4xx":            func(r *Row) { r.Status = 401 },
 		"login form":     func(r *Row) { r.LoginFormReturned = true },
 		"no session":     func(r *Row) { r.SessionSource = SourceNone },
@@ -93,6 +92,19 @@ func TestSelectExcludesIneligibleRows(t *testing.T) {
 		}
 		if got := Select(rows, run, []string{"acct-a"}); len(got) != 0 {
 			t.Errorf("%s: 적격이 아닌 기록을 배웠다: %+v", name, got)
+		}
+	}
+}
+
+func TestSelectRejectsSuccessWithoutTransportRef(t *testing.T) {
+	older := succeededRow("diagnosis-1", "acct-a")
+	latest := succeededRow("diagnosis-2", "acct-a")
+	for _, ref := range []string{"", "invalid ref"} {
+		latest.TransportRef = ref
+		for _, rows := range [][]Row{{latest}, {older, latest}} {
+			if got := Select(rows, run, []string{"acct-a"}); got["acct-a"].Reason != ReasonTransportUnverified {
+				t.Errorf("출처 참조 %q인 마지막 성공을 확인 불가로 처리하지 않음", ref)
+			}
 		}
 	}
 }
@@ -162,6 +174,11 @@ func TestParseRowsRejectsAmbiguousOrMalformedJSON(t *testing.T) {
 		"unicode alias": `{"ſtage":"confirmation",` + string(good[1:]),
 		"extra bracket": string(good) + "]",
 		"invalid UTF-8": strings.Replace(string(good), "/login", "/login\xff", 1),
+		"null run":      strings.Replace(string(good), `"run_ref":"run-job1"`, `"run_ref":null`, 1),
+		"empty stage":   strings.Replace(string(good), `"stage":"diagnosis"`, `"stage":""`, 1),
+		"unknown actor": strings.Replace(string(good), `"actor":"model"`, `"actor":"other"`, 1),
+		"null outcome":  strings.Replace(string(good), `"outcome":"succeeded"`, `"outcome":null`, 1),
+		"bad pair":      strings.Replace(string(good), `"transport":"sent"`, `"transport":"result_unknown"`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			raw := []byte(string(good) + "\n" + malformed + "\n")
@@ -573,5 +590,47 @@ func TestSessionCookieScope(t *testing.T) {
 	}
 	if defaultCookiePath("/a/b/c") != "/a/b" || defaultCookiePath("/login") != "/" || defaultCookiePath("") != "/" {
 		t.Fatal("기본 경로")
+	}
+}
+
+// transport_ref 대조: 진단 행은 같은 회차·같은 시도의 감사 완료 모델 송신 결과(메서드·상태 일치)가 있어야 하고, 탐색 행은
+// 경계 순번 형식만 본다(감사 근거 없음). 형식이 틀리거나 단계를 모르면 대조하지 못한다.
+func TestVerifyTransport(t *testing.T) {
+	row := succeededRow("diagnosis-1", "acct-a")
+	send := AuditedSend{CallRef: "call_a", AttemptID: "attempt_1", RunRef: run, ModelCall: true, Method: "POST", Allowed: true, RequestWritten: true,
+		ResponseReceived: true, ResponseComplete: true, StatusCode: 302, AuditComplete: true}
+	lookup := func(c, a string) (AuditedSend, bool) { return send, c == send.CallRef && a == send.AttemptID }
+	if p, reason := VerifyTransport(row, run, lookup); reason != "" || p != ProvenanceE2Audited {
+		t.Fatalf("감사된 행 %v %v", p, reason)
+	}
+	for name, change := range map[string]func(*Row){
+		"other ref":    func(r *Row) { r.TransportRef = "call_a/attempt_2" },
+		"bad ref":      func(r *Row) { r.TransportRef = "call_a" },
+		"extra slash":  func(r *Row) { r.TransportRef = "call_a/attempt_1/x" },
+		"row run":      func(r *Row) { r.RunRef = "run-other" },
+		"other status": func(r *Row) { r.Status = 200 },
+		"stage":        func(r *Row) { r.Stage = StageConfirmation },
+	} {
+		r := row
+		change(&r)
+		if _, reason := VerifyTransport(r, run, lookup); reason != ReasonTransportUnverified {
+			t.Errorf("%s 통과", name)
+		}
+	}
+	if _, reason := VerifyTransport(row, run, nil); reason != ReasonTransportUnverified {
+		t.Fatal("감사 조회 없이 진단 행 통과")
+	}
+	explore := row
+	explore.Stage = StageExploration
+	for ref, ok := range map[string]bool{"17": true, "0": false, "017": false, "x": false, "": false} {
+		explore.TransportRef = ref
+		p, reason := VerifyTransport(explore, run, nil)
+		if ok != (reason == "") || ok && p != ProvenanceExplorationUnaudited {
+			t.Errorf("탐색 순번 %q: %v %v", ref, p, reason)
+		}
+	}
+	explore.TransportRef = "17"
+	if _, reason := VerifyTransport(explore, "run-other", nil); reason != ReasonTransportUnverified {
+		t.Fatal("다른 회차의 탐색 행 통과")
 	}
 }

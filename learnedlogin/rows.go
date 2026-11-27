@@ -94,8 +94,7 @@ func ParseRows(raw []byte) ([]Row, int, error) {
 			continue
 		}
 		var row Row
-		if !utf8.Valid(line) || json.Unmarshal(line, &row) != nil || !unambiguousRowKeys(line) ||
-			row.Schema != RowSchema || !validRef(row.AttemptRef) {
+		if !utf8.Valid(line) || json.Unmarshal(line, &row) != nil || !unambiguousRowKeys(line) || !validHistoryRow(row) {
 			skipped++
 			continue
 		}
@@ -108,6 +107,30 @@ func ParseRows(raw []byte) ([]Row, int, error) {
 		return nil, skipped, ErrRecord
 	}
 	return rows, skipped, nil
+}
+
+// validHistoryRow는 상한 복원과 결과 불명 차단에 필요한 기록 칸을 확인한다.
+func validHistoryRow(row Row) bool {
+	if row.Schema != RowSchema || !validRef(row.AttemptRef) || !validRef(row.RunRef) || row.ConsecutiveFailures < 0 {
+		return false
+	}
+	switch row.Stage {
+	case StageExploration, StageDiagnosis, StageConfirmation:
+	default:
+		return false
+	}
+	if row.Actor != ActorModel && row.Actor != ActorProgram {
+		return false
+	}
+	switch row.Transport {
+	case TransportSent:
+		return row.Outcome == OutcomeSucceeded || row.Outcome == OutcomeUnconfirmed || row.Outcome == OutcomeFailed
+	case TransportNotSent:
+		return row.Outcome == OutcomeNotSent
+	case TransportUnknown:
+		return row.Outcome == OutcomeUnknown
+	}
+	return false
 }
 
 // unambiguousRowKeys는 JSON 해석 시 뒤의 값이 앞의 값을 덮는 행을 거부한다. 구조체 디코더가 같은 칸으로 보는
@@ -176,6 +199,8 @@ func attempts(rows []Row) []*attempt {
 type Selection struct {
 	Learned Learned
 	Reason  Reason
+	// Row는 고른 시도의 지금 행이다(출처 결속 검증용, transport_ref·상태·단계). Reason이 있으면 비어 있다.
+	Row Row
 }
 
 // Select는 이 회차(runRef)의 기록에서 결속된 계정 라벨마다 §6의 "account_label이 있고 outcome: succeeded인 마지막 시도"를
@@ -222,10 +247,12 @@ func Select(rows []Row, runRef string, labels []string) map[string]Selection {
 		m := Method{Method: r.Method, Path: r.Path, Format: r.Format, IdentifierField: r.IdentifierField, PasswordField: r.PasswordField,
 			OtherFields: r.OtherFields, FieldsFromResponse: r.FieldsFromResponse, SessionSource: r.SessionSource, SessionNames: r.SessionNames,
 			SessionSentAs: r.SessionSentAs}.Clone()
-		sel := Selection{Learned: Learned{Method: m, Source: Source{RunRef: r.RunRef, AttemptRef: r.AttemptRef, At: at.UTC()}}}
+		sel := Selection{Learned: Learned{Method: m, Source: Source{RunRef: r.RunRef, AttemptRef: r.AttemptRef, At: at.UTC()}}, Row: r}
 		switch {
 		case err != nil || at.IsZero():
 			sel = Selection{Reason: ReasonRecordInvalid}
+		case !validRef(r.TransportRef):
+			sel = Selection{Reason: ReasonTransportUnverified}
 		case len(r.QueryKeys) > 0:
 			// 질의 값은 기록에 없다(§3 query_keys는 이름뿐). 질의가 있던 로그인은 다시 만들 수 없다.
 			sel = Selection{Reason: ReasonInputUnavailable}
@@ -247,7 +274,7 @@ func Select(rows []Row, runRef string, labels []string) map[string]Selection {
 // eligible은 학습할 수 있는 성공 시도인지다(위 Select 설명).
 func eligible(r Row) bool {
 	return r.Actor == ActorModel && (r.Stage == StageExploration || r.Stage == StageDiagnosis) && r.Transport == TransportSent &&
-		r.Outcome == OutcomeSucceeded && r.Followup == FollowupContrast && r.PasswordRegistered && validRef(r.TransportRef) &&
+		r.Outcome == OutcomeSucceeded && r.Followup == FollowupContrast && r.PasswordRegistered &&
 		r.Status >= 100 && r.Status < 400 && !r.LoginFormReturned && r.SessionSource != "" && r.SessionSource != SourceNone
 }
 

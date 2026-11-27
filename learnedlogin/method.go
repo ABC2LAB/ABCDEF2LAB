@@ -94,6 +94,9 @@ const (
 	ReasonNotSent Reason = "learned_login_not_sent"
 	// ReasonCredentialUnavailable: 실행에 결속한 자격 파일을 읽지 못했거나 보호할 수 없는 비밀번호다.
 	ReasonCredentialUnavailable Reason = "learned_login_credential_unavailable"
+	// ReasonTransportUnverified: 진단 단계 성공 기록의 transport_ref가 이 실행의 감사 완료된 E② 송신 결과와 맞지 않거나
+	// 대조할 수 없다(없는 참조·다른 회차·다른 요청·보내지 않음·감사 미완료).
+	ReasonTransportUnverified Reason = "learned_login_transport_unverified"
 )
 
 // 기록·방법 칸 상한이다. 탐색 경계·E② 판정기(§3)가 남기는 상한과 맞춘다. 판정기는 32개를 넘는 칸 이름을 버리므로, 정확히

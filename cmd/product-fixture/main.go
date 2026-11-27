@@ -35,6 +35,15 @@ func main() {
 	// 인증서 이름과 DNS 응답은 대상 이름 목록에서 만든다. 기본값은 Juice Shop 수용시험의 이름이고, 연습 대상 회차는
 	// overlay가 바꾼다. 대상 이름이 제품 목표 문장으로 모델에 가므로 대상마다 맞춘다.
 	hostsFlag := flag.String("hosts", defaultFixtureHosts, "owned target names: name=ipv4,...")
+	// 로그인 합성 모델(workflow-login-model)의 대상 로그인 모양이다. 앱별 값은 시험 overlay가 준다.
+	login := workflowLoginConfig{}
+	flag.StringVar(&login.loginPath, "login-path", "", "owned target login API path")
+	flag.StringVar(&login.identityPath, "identity-path", "", "owned target identity path")
+	flag.StringVar(&login.usernameField, "username-field", "username", "login JSON username field")
+	flag.StringVar(&login.passwordField, "password-field", "password", "login JSON password field")
+	flag.StringVar(&login.tokenField, "token-field", "auth_token", "login response token field")
+	flag.StringVar(&login.header, "session-header", "Authorization", "session header")
+	flag.StringVar(&login.prefix, "session-prefix", "Bearer ", "session header value prefix")
 	flag.Parse()
 	hosts, e := parseFixtureHosts(*hostsFlag)
 	must(e)
@@ -73,7 +82,7 @@ func main() {
 		}
 		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "explore_bash_seen": exploreBashSeen.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load(), "auth_logins": authLogins.Load(), "authenticated_reads": authenticatedReads.Load(), "structured_reads": structuredReads.Load(), "held_target_reads": heldTargetReads.Load(), "held_final_models": heldFinalModels.Load()})
 	})
-	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" || *mode == "selected-model-stored-nosniff" || *mode == "selected-model-auth-nosniff" || *mode == "selected-model-structured-nosniff" || *mode == "selected-model-overconfident-nosniff" || *mode == "selected-model-unsupported-write" {
+	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" || *mode == "selected-model-stored-nosniff" || *mode == "selected-model-auth-nosniff" || *mode == "selected-model-structured-nosniff" || *mode == "selected-model-overconfident-nosniff" || *mode == "selected-model-unsupported-write" || *mode == "workflow-login-model" {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
 		mux.HandleFunc("POST /hold-next-final", func(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +92,11 @@ func main() {
 		handler := model(*target)
 		if *mode == "workflow-model" {
 			handler = workflowModel()
+		} else if *mode == "workflow-login-model" {
+			if login.loginPath == "" || login.identityPath == "" {
+				must(fmt.Errorf("login_fixture_paths_required"))
+			}
+			handler = workflowLoginModel(login)
 		} else if *mode == "selected-model" {
 			handler = selectedModel(*target)
 		} else if *mode == "selected-model-nosniff" {

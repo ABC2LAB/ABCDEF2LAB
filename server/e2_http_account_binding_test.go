@@ -215,6 +215,30 @@ func TestAccountBindingConcurrentRefresh(t *testing.T) {
 	wg.Wait()
 }
 
+func TestLearnedReloginBindsOnlyInstalledSession(t *testing.T) {
+	const label = "tester-a"
+	s := bindingStore(t, E2HTTPSessions{label: {"Cookie": {"sid=old"}}})
+	oldRef, _ := s.AccountBindingRef(s.runRef, label)
+	var session http.Header
+	s.learned = func(context.Context, E2HTTPLearnedLoginRequest) (E2HTTPLearnedLoginResult, http.Header) {
+		return E2HTTPLearnedLoginResult{Result: E2HTTPAuthAuthenticated}, session
+	}
+	req := E2HTTPLearnedLoginRequest{Label: label}
+	if got := s.LearnedRelogin(t.Context(), req); got.BindingRef != "" {
+		t.Fatal("새 세션 없이 기존 세션을 학습 재로그인 결과에 결속함")
+	}
+	session = http.Header{"Cookie": {"sid=learned"}}
+	got := s.LearnedRelogin(t.Context(), req)
+	bound, err := s.BoundSession(s.runRef, label, got.BindingRef)
+	if err != nil || got.BindingRef == oldRef || bound.Get("Cookie") != session.Get("Cookie") {
+		t.Fatal("설치한 학습 재로그인 세션의 참조를 받지 못함")
+	}
+	s.replace(label, http.Header{"Cookie": {"sid=replaced"}})
+	if _, err := s.BoundSession(s.runRef, label, got.BindingRef); !errors.Is(err, ErrE2HTTPAccountBinding) {
+		t.Fatal("학습 재로그인 참조가 후속 세션을 가리킴")
+	}
+}
+
 // 다시 로그인 경로가 없는 저장소(시험 계정 실행이 아님)는 확정 단계 다시 로그인을 보내지 않는다.
 func TestAccountReloginWithoutPathIsNotSent(t *testing.T) {
 	s := bindingStore(t, E2HTTPSessions{"tester-a": http.Header{"Cookie": {"sid=synthetic-a"}}})

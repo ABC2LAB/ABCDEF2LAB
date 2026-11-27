@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/learnedlogin"
 	"github.com/Autumn-27/artex/oracle"
@@ -27,6 +29,62 @@ import (
 //     실패하면 로그인 설정으로 대신하지 않는다.
 //   - 검증: 프로그램 로그인 세션으로 연 확정 단계 신원 응답이 열림이고 같은 경로의 세션 없는 대조 응답이 막힘이며, 두 계정의
 //     신원이 다르고, 그 사이 세션이 바뀌지 않았고, 확정 단계가 끝까지 돌았을 때만 succeeded이고 verified 줄을 남긴다.
+
+// verifySelection은 고른 이 회차 성공 행의 transport_ref를 감사 근거와 대조하고 출처 확인 수준을 남긴다. 감사 조회가
+// 연결되지 않았으면 진단 행은 대조할 수 없다.
+func (ll *productLearnedLogin) verifySelection(label string, sel learnedlogin.Selection) learnedlogin.Reason {
+	ll.mu.Lock()
+	audit := ll.audit
+	ll.mu.Unlock()
+	provenance, reason := learnedlogin.VerifyTransport(sel.Row, ll.runRef, audit)
+	ll.mu.Lock()
+	defer ll.mu.Unlock()
+	if ll.provenance == nil {
+		ll.provenance = map[string]learnedlogin.Provenance{}
+	}
+	if reason != "" {
+		delete(ll.provenance, label)
+		return reason
+	}
+	if ll.provenance[label] != provenance {
+		log.Printf("[e3-confirmation] 회차 %s 배운 방법 출처: %s", ll.jobID, provenance)
+	}
+	ll.provenance[label] = provenance
+	return ""
+}
+
+// setAudit은 이 실행의 E② 감사 결과 조회를 붙인다(확정 단계가 실행을 받은 뒤).
+func (ll *productLearnedLogin) setAudit(lookup func(callRef, attemptID string) (learnedlogin.AuditedSend, bool)) {
+	ll.mu.Lock()
+	defer ll.mu.Unlock()
+	ll.audit = lookup
+}
+
+// e2AuditLookup은 실행의 감사 완료 사건(기록기에 쓴 뒤에만 메모리 목록에 들어감)에서 시도 하나의 결과 사건을 찾는다.
+func e2AuditLookup(execution *e2proxy.Execution) func(callRef, attemptID string) (learnedlogin.AuditedSend, bool) {
+	return func(callRef, attemptID string) (learnedlogin.AuditedSend, bool) {
+		if execution == nil {
+			return learnedlogin.AuditedSend{}, false
+		}
+		var after uint64
+		for {
+			page := execution.Events(after, 0)
+			if len(page) == 0 {
+				return learnedlogin.AuditedSend{}, false
+			}
+			for _, ev := range page {
+				after = ev.Index
+				if ev.Stage != "result" || ev.CallRef != callRef || ev.AttemptID != attemptID {
+					continue
+				}
+				return learnedlogin.AuditedSend{CallRef: ev.CallRef, AttemptID: ev.AttemptID, RunRef: ev.Scope.RunRef,
+					ModelCall: ev.Program == "" && ev.E3Audit == nil && ev.IntentID > 0, Method: ev.Method, Allowed: ev.Decision == "allowed",
+					RequestWritten: ev.RequestWritten, ResponseReceived: ev.ResponseReceived, ResponseComplete: ev.ResponseComplete,
+					StatusCode: ev.StatusCode, AuditComplete: ev.AuditComplete}, true
+			}
+		}
+	}
+}
 
 // productLearnedLoginMaxFailures는 같은 아이디의 회차당 연속 실패 상한이다(계약 §5 기본 3, 사용자 결정 2026-11-26).
 const productLearnedLoginMaxFailures = 3
@@ -156,14 +214,19 @@ type productLearnedLogin struct {
 	rows        []learnedlogin.Row
 	rowsErr     error
 	failures    map[string]int
-	nextAttempt int
+	// failureGuard는 기록 집계가 바뀌어도 줄여서는 안 되는 재로그인 차단용 수다.
+	failureGuard map[string]int
+	nextAttempt  int
 	// identityPath는 동결 선언의 신원 경로다. 세션 없는 대조 요청을 이 경로로 한 번 보낸다.
 	identityPath string
 
-	mu       sync.Mutex
-	contrast *server.E2HTTPLoginContrastResult
-	attempts map[string]*productProgramLogin
-	identity map[string]e3contract.Observation
+	mu sync.Mutex
+	// audit은 이 실행의 E② 감사 결과 조회다(transport_ref 대조). provenance는 계정별 출처 확인 수준이다.
+	audit      func(callRef, attemptID string) (learnedlogin.AuditedSend, bool)
+	provenance map[string]learnedlogin.Provenance
+	contrast   *server.E2HTTPLoginContrastResult
+	attempts   map[string]*productProgramLogin
+	identity   map[string]e3contract.Observation
 }
 
 // productProgramLogin은 확정 단계에서 계정 하나를 배운 방법으로 다시 로그인한 결과다.
@@ -175,8 +238,8 @@ type productProgramLogin struct {
 	contrastProbes int
 }
 
-// newProductLearnedLogin은 회차 기록과 실행 정책에서 학습 로그인 재사용 입력을 모은다. 기록을 읽지 못하면 이 회차 방법은
-// 없다고 보고(사유 record_invalid) 저장된 방법만 쓴다.
+// newProductLearnedLogin은 회차 기록과 실행 정책에서 다시 로그인할 때 필요한 제한을 모은다.
+// 이력 오류나 인계 실패가 있으면 저장된 방법과 기존 로그인 설정을 모두 거부한다.
 func newProductLearnedLogin(registry *productTargetRegistry, runsDir, jobID string, target productTargetRecord, runRef string, credentials map[string]string, identityPath string) *productLearnedLogin {
 	ll := &productLearnedLogin{registry: registry, runsDir: runsDir, jobID: jobID, targetID: target.Target.ID, revision: target.Target.Revision,
 		runRef: runRef, credentials: credentials, identityPath: identityPath, attempts: map[string]*productProgramLogin{}, identity: map[string]e3contract.Observation{}}
@@ -188,28 +251,40 @@ func newProductLearnedLogin(registry *productTargetRegistry, runsDir, jobID stri
 		labels = append(labels, label)
 	}
 	var skipped int
-	ll.rows, skipped, ll.rowsErr = learnedlogin.ReadRows(filepath.Join(runsDir, jobID, "state"))
+	ll.rows, skipped, ll.rowsErr = learnedlogin.ReadConfirmationHistory(filepath.Join(runsDir, jobID, "state"))
 	if ll.rowsErr != nil {
 		log.Printf("[e3-confirmation] 회차 %s 로그인 시도 기록을 읽지 못함 (%s, 형식 오류 %d건)", jobID, learnedlogin.ReasonRecordInvalid, skipped)
-		ll.selections = map[string]learnedlogin.Selection{}
-		for _, label := range labels {
-			ll.selections[label] = learnedlogin.Selection{Reason: learnedlogin.ReasonRecordInvalid}
-		}
 	} else {
 		ll.selections = learnedlogin.Select(ll.rows, runRef, labels)
 	}
-	ll.failures = learnedlogin.FailureCounts(ll.rows, runRef)
+	ll.failures, ll.failureGuard = learnedlogin.ReplayFailureCounts(ll.rows, runRef, productLearnedLoginMaxFailures)
 	ll.nextAttempt = learnedlogin.NextAttemptNumber(ll.rows)
 	return ll
 }
 
 // plan은 계정의 확정 단계 로그인 방법이다: 이 회차 적격 성공 → 저장된 방법 → 없음(사유).
 func (ll *productLearnedLogin) plan(label string) (learnedlogin.Learned, string, learnedlogin.Reason) {
-	if sel, ok := ll.selections[label]; ok && sel.Reason == "" {
-		return sel.Learned, "current_run", ""
+	if ll.rowsErr != nil {
+		return learnedlogin.Learned{}, "", learnedlogin.ReasonRecordInvalid
 	}
 	credential, bound := ll.credentials[label]
-	if !bound || ll.stored == nil {
+	if !bound {
+		return learnedlogin.Learned{}, "", learnedlogin.ReasonCredentialUnavailable
+	}
+	if sel, ok := ll.selections[label]; ok {
+		if sel.Reason == "" {
+			// 이 회차 성공 행이 실제로 나간 요청인지 감사 근거와 대조한다(§6-2 출처 결속). 대조하지 못하면 그 방법을 쓰지 않고
+			// 저장 방법·로그인 설정으로 넘어가지도 않는다(신뢰할 수 없는 기록).
+			if reason := ll.verifySelection(label, sel); reason != "" {
+				return learnedlogin.Learned{}, "", reason
+			}
+			return sel.Learned, "current_run", ""
+		}
+		if sel.Reason != learnedlogin.ReasonNone {
+			return learnedlogin.Learned{}, "", sel.Reason
+		}
+	}
+	if ll.stored == nil {
 		return learnedlogin.Learned{}, "", learnedlogin.ReasonNone
 	}
 	stored, reason := ll.stored.learnedLoginMethod(ll.targetID, label, ll.revision, credential)
@@ -225,13 +300,17 @@ func (ll *productLearnedLogin) usable(label string) bool {
 	return reason == ""
 }
 
-// relogin은 확정 단계 직전 다시 로그인이다. 배운 방법이 있으면 그것으로만 로그인하고(실패해도 로그인 설정으로 대신하지
-// 않음), 없으면 legacy(로그인 설정 9칸 다시 로그인)를 부른다. 대상에 보낸 요청 수를 돌려준다.
+// relogin은 확정 단계 직전 다시 로그인이다. 이력이 불명확하면 차단하고 배운 방법이 없는 경우에만 기존 설정을 검토한다.
+// 대상에 보낸 요청 수를 돌려준다.
 func (ll *productLearnedLogin) relogin(ctx context.Context, label string, learned server.E2HTTPLearnedRelogin, legacy server.E2HTTPAccountRelogin) int {
 	plan, source, reason := ll.plan(label)
 	if reason != "" {
 		log.Printf("[e3-confirmation] 회차 %s 배운 로그인 방법 없음: %s", ll.jobID, reason)
-		if legacy == nil {
+		if reason != learnedlogin.ReasonNone || legacy == nil {
+			return 0
+		}
+		if refusal := ll.reloginRefusal(label, true); refusal != "" {
+			log.Printf("[e3-confirmation] 회차 %s 기존 설정으로 다시 로그인 차단: %s", ll.jobID, refusal)
 			return 0
 		}
 		result := legacy.Relogin(ctx, label)
@@ -239,6 +318,13 @@ func (ll *productLearnedLogin) relogin(ctx context.Context, label string, learne
 		if server.E2HTTPAuthSent(result) {
 			return 1
 		}
+		return 0
+	}
+	if learned == nil {
+		return 0
+	}
+	if refusal := ll.reloginRefusal(label, false); refusal != "" {
+		log.Printf("[e3-confirmation] 회차 %s 배운 방법으로 다시 로그인 차단: %s", ll.jobID, refusal)
 		return 0
 	}
 	requests, probes := 0, 0
@@ -255,7 +341,7 @@ func (ll *productLearnedLogin) relogin(ctx context.Context, label string, learne
 			probes++
 		}
 	}
-	res := learned.LearnedRelogin(ctx, server.E2HTTPLearnedLoginRequest{Label: label, Method: plan.Method, PriorFailures: ll.failuresCopy(),
+	res := learned.LearnedRelogin(ctx, server.E2HTTPLearnedLoginRequest{Label: label, Method: plan.Method, PriorFailures: ll.failureGuardCopy(),
 		MaxFailures: productLearnedLoginMaxFailures})
 	requests += res.Requests
 	log.Printf("[e3-confirmation] 회차 %s 확정 전 다시 로그인(배운 방법·%s): %s %s 요청 %d", ll.jobID, source, res.Result, res.Reason, res.Requests)
@@ -265,20 +351,41 @@ func (ll *productLearnedLogin) relogin(ctx context.Context, label string, learne
 	ll.attempts[label] = attempt
 	if attempt.row.Outcome == learnedlogin.OutcomeFailed && res.Identifier != "" {
 		ll.failures[res.Identifier]++
+		ll.failureGuard[res.Identifier]++
 	}
 	ll.mu.Unlock()
 	ll.appendRow(attempt.row)
 	return requests
 }
 
-func (ll *productLearnedLogin) failuresCopy() map[string]int {
+// reloginRefusal은 결과 불명 시도를 다시 보내지 않는다. 기존 설정 경로에는 아이디별 상한 전달 경계가
+// 없으므로 다른 아이디라고 확인할 수 없는 회차 차단도 풀지 않는다.
+func (ll *productLearnedLogin) reloginRefusal(label string, legacy bool) learnedlogin.Reason {
 	ll.mu.Lock()
 	defer ll.mu.Unlock()
-	out := make(map[string]int, len(ll.failures))
-	for k, v := range ll.failures {
-		out[k] = v
+	if legacy {
+		for _, count := range ll.failureGuard {
+			if count >= productLearnedLoginMaxFailures {
+				return learnedlogin.ReasonAttemptsExhausted
+			}
+		}
 	}
-	return out
+	for _, row := range ll.rows {
+		if row.RunRef == ll.runRef && (row.Outcome == learnedlogin.OutcomeUnknown || row.Transport == learnedlogin.TransportUnknown) &&
+			(legacy || row.AccountLabel == "" || row.AccountLabel == label) {
+			return learnedlogin.ReasonResultUnknown
+		}
+	}
+	if prior := ll.attempts[label]; prior != nil && prior.row.Outcome == learnedlogin.OutcomeUnknown {
+		return learnedlogin.ReasonResultUnknown
+	}
+	return ""
+}
+
+func (ll *productLearnedLogin) failureGuardCopy() map[string]int {
+	ll.mu.Lock()
+	defer ll.mu.Unlock()
+	return maps.Clone(ll.failureGuard)
 }
 
 // programRow는 확정 단계 프로그램 로그인 한 행이다(§3, actor program·stage confirmation). 로그인 응답만 본 결과이고,
