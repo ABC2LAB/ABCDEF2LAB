@@ -134,7 +134,7 @@ func runSelectedCandidateActionFixture(t *testing.T, action CandidateLLMPlanActi
 		policy.SelectedAccountRef = CandidateAccountRevision("tester-a", pin.SHA256)
 		policy.MaxRequests, policy.Limits.MaxAttempts, policy.Limits.MaxCalls = 2, 2, 2
 		plan.AccountRef, plan.MaxRequests = policy.SelectedAccountRef, 2
-		plan.AuthPreparation = &CandidateLLMAuthPreparation{Method: login.Method, ExactPath: login.Path, LoginDigest: CandidateLoginDigest(login)}
+		plan.AuthPreparation = &CandidateLLMAuthPreparation{Method: login.Method, ExactPath: login.Path, LoginDigest: CandidateLoginDigest(*login)}
 	}
 	policy.Limits.MaxConcurrent = 1
 	policy.Limits.CallTimeoutMS, policy.Limits.RequestTimeoutMS, policy.Proxy.RequestTimeoutMS = 20000, 15000, 15000

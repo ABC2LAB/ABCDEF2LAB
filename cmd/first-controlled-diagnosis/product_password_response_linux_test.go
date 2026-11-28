@@ -42,7 +42,7 @@ func TestPasswordResponseAccountBindingKeepsLegacyDigest(t *testing.T) {
 		digest, _ := runAccountsDigest(accounts)
 		dir := t.TempDir()
 		os.Chmod(dir, 0700)
-		policy := server.E2HTTPFilePolicy{Auth: &server.E2HTTPFileAuth{Login: login, PasswordResponse: accounts.PasswordResponse, Accounts: []server.E2HTTPFileAuthAccount{{Label: "tester-a", Credential: server.E2HTTPFilePin{File: "account.json", SHA256: strings.Repeat("a", 64)}}}}}
+		policy := server.E2HTTPFilePolicy{Auth: &server.E2HTTPFileAuth{Login: &login, PasswordResponse: accounts.PasswordResponse, Accounts: []server.E2HTTPFileAuthAccount{{Label: "tester-a", Credential: server.E2HTTPFilePin{File: "account.json", SHA256: strings.Repeat("a", 64)}}}}}
 		raw, _ := json.Marshal(policy)
 		if os.WriteFile(filepath.Join(dir, "policy.json"), raw, 0600) != nil {
 			t.Fatal("합성 결속 쓰기 실패")

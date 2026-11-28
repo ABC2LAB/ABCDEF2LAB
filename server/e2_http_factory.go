@@ -655,7 +655,9 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 		var selectedSessionHeaders func() (http.Header, bool)
 		credentialHeader := ""
 		if policy.Auth != nil {
-			credentialHeader = policy.Auth.Login.Header
+			if policy.Auth.Login != nil {
+				credentialHeader = policy.Auth.Login.Header
+			}
 			accountRefs := make(map[string]string, len(policy.Auth.Accounts))
 			for _, account := range policy.Auth.Accounts {
 				accountRefs[account.Label] = CandidateAccountRevision(account.Label, account.Credential.SHA256)
@@ -771,14 +773,8 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			// 인증 준비(C14): 프로그램이 계정마다 로그인 요청을 E② 인증 준비 규칙으로 한 번 보낸다. 모델 로그인을 켜지 않은
 			// 정책(이전 결속)과 선택 후보 검증 회차(#950, 모델이 없는 프로그램 회차)다. 세션 값은 출력 가림 전용 값으로 등록되고
 			// 실행 메모리에만 있다. 결과(값 없음)는 계정별로 실행 기록에 남긴다.
-			origin := ""
-			for _, rule := range policy.Rules {
-				if rule.Ref == policy.Auth.RuleRef {
-					origin = rule.Origin
-				}
-			}
 			var authErr error
-			auth, authErr = e2HTTPAuthPrep(taskctx, execution, dir, origin, *policy.Auth)
+			auth, authErr = e2HTTPAuthPrep(taskctx, execution, dir, e2HTTPApprovedOrigin(policy), *policy.Auth)
 			accountAuth = auth.AccountAuth
 			if authErr != nil || current(taskctx) != nil {
 				return failed(execution, runner)
@@ -832,12 +828,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			go prober.run(taskctx)
 		}
 		if policy.Auth != nil && policy.HeaderMode == e2proxy.HeaderTestAccountPassthrough && (len(credentials) > 0 || len(auth.Sessions) > 0) {
-			authPolicy, origin := *policy.Auth, ""
-			for _, rule := range policy.Rules {
-				if rule.Ref == authPolicy.RuleRef {
-					origin = rule.Origin
-				}
-			}
+			authPolicy, origin := *policy.Auth, e2HTTPApprovedOrigin(policy)
 			// 모델 회차에는 Worker의 refresh_session이 없다(모델이 직접 다시 로그인한다, 2026-11-26). 선택 후보 검증 회차(#950)는
 			// 프로그램이 같은 계정 세션을 다시 받아야 하므로(두 번째 재검증 등) 그 경로를 남긴다.
 			if len(auth.Sessions) > 0 {

@@ -16,6 +16,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/llmpolicy"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -24,8 +25,17 @@ import (
 // accountRunFixture는 실제 제품 설치·대상 등록·승인까지 마친 제품 실행 환경이다(DNS·TLS 확인은 가짜).
 func accountRunFixture(t *testing.T) (*productRuntime, urlPreparationInstallation, diagnosisprep.ProductTarget, diagnosisprep.Input) {
 	t.Helper()
+	return accountRunFixtureWith(t, nil)
+}
+
+// accountRunFixtureWith는 accountRunFixture와 같고, 제품 설치를 만들기 전에 설치 틀을 바꾼다(외부 모델 설치 등).
+func accountRunFixtureWith(t *testing.T, change func(*urlNegativeFixture)) (*productRuntime, urlPreparationInstallation, diagnosisprep.ProductTarget, diagnosisprep.Input) {
+	t.Helper()
 	f := newURLNegativeFixture(t)
 	completeProductTemplateForTest(f)
+	if change != nil {
+		change(f)
+	}
 	m := f.config.Profiles[0]
 	m.TargetRef, m.ScopeRef, m.AllowPrivateTarget, m.Attestation = "", "", false, urlNonmutatingAttestation{}
 	f.policy.Rules = f.policy.Rules[:0]
@@ -179,7 +189,7 @@ func TestProductRunBindsRegisteredAccountsAndStopsOnUnmark(t *testing.T) {
 
 // 인증 준비 규칙은 auth_prep·POST 하나·인증 칸이 가리키는 규칙·증명한 경로 접두 안이어야 결속을 읽는다.
 func TestURLAuthRuleValid(t *testing.T) {
-	policy := server.E2HTTPFilePolicy{Auth: &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: diagnosisprep.TargetLogin{Path: "/read/login"}}}
+	policy := server.E2HTTPFilePolicy{Auth: &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: &diagnosisprep.TargetLogin{Path: "/read/login"}}}
 	rule := server.E2HTTPFileRule{Ref: "auth-login", PathPrefix: "/read/login", Methods: []string{"POST"}, Purpose: e2proxy.PurposeAuthPrep}
 	if !urlAuthRuleValid(policy, rule, []string{"/read"}) {
 		t.Fatal("valid auth rule rejected")
@@ -202,8 +212,9 @@ func TestURLAuthRuleValid(t *testing.T) {
 	}
 }
 
-// 실행 고르기: 로그인 방식이 없거나 자격이 없는 계정은 고르지 않는다. 시험 표시는 보지 않는다(분류 없음, 2026-11-26).
-// 자격을 바꾸면 요약이 바뀌고 결속한 실행은 멈춘다.
+// 실행 고르기: 자격이 없는 계정은 고르지 않는다. 로그인 방식(9칸)이 없어도 자격이 있으면 결속하고(9칸-1, 계약
+// model-login-attempts §7) 로그인 방식 칸은 비운다. 계정 응답은 login_method_missing을 싣지 않는다. 로그인 방식을 넣으면 같은 계정이 로그인 방식과 함께 결속되고 요약이
+// 바뀐다. 시험 표시는 보지 않는다(분류 없음, 2026-11-26). 자격을 바꾸면 요약이 바뀌고 결속한 실행은 멈춘다.
 func TestProductRunAccountsSelection(t *testing.T) {
 	r, _, target := accountTestTarget(t, true)
 	rec := r.approvals[target.ID]
@@ -214,8 +225,11 @@ func TestProductRunAccountsSelection(t *testing.T) {
 	}
 	for _, label := range []string{"tester-a", "real-c"} {
 		account, err := r.setAccountCredential("ARTEX", target.ID, label, diagnosisprep.AccountCredential{Username: "u", Password: "p-" + label})
-		if err != nil || !account.CredentialConfigured || !account.LoginMethodMissing {
-			t.Fatal("자격 등록 응답에서 로그인 방식 미설정 상태 누락", err)
+		if err != nil || !account.CredentialConfigured || account.LoginMethodMissing {
+			t.Fatal("자격 등록 응답: 자격 있음 · 로그인 방식 미설정 칸 없음(9칸-1)", err)
+		}
+		if raw, _ := json.Marshal(account); strings.Contains(string(raw), "login_method_missing") {
+			t.Fatalf("자격 등록 응답에 login_method_missing: %s", raw)
 		}
 	}
 	// 시험 계정 표시 없이 목록이 자격 · 로그인 방식 상태를 그대로 보인다(계정 분류 폐지, 2026-11-26)
@@ -223,13 +237,17 @@ func TestProductRunAccountsSelection(t *testing.T) {
 	if err != nil || len(listed) != 3 {
 		t.Fatal("계정 목록 조회 실패", err)
 	}
+	// 로그인 방식 없이 자격만 있는 계정도 목록에 login_method_missing을 싣지 않는다(9칸-1: 결속해서 모델이 직접 로그인한다)
 	for _, account := range listed {
-		if account.LoginMethodMissing != (account.Label != "tester-b") {
-			t.Fatal("자격과 로그인 설정 상태 불일치", account.Label)
+		raw, _ := json.Marshal(account)
+		if account.LoginMethodMissing || strings.Contains(string(raw), "login_method_missing") || account.CredentialConfigured != (account.Label != "tester-b") {
+			t.Fatalf("자격 상태 불일치 또는 login_method_missing: %s", raw)
 		}
 	}
-	if got, digest, err := r.runAccounts(rec); err != nil || digest != "" || len(got.Accounts) != 0 {
-		t.Fatalf("selection without a login method: %+v %q %v", got, digest, err)
+	noLogin, noLoginDigest, err := r.runAccounts(rec)
+	if err != nil || noLoginDigest == "" || noLogin.Login != nil || len(noLogin.Accounts) != 2 ||
+		noLogin.Accounts[0].Label != "real-c" || noLogin.Accounts[1].Label != "tester-a" {
+		t.Fatalf("selection without a login method: %+v %q %v", noLogin, noLoginDigest, err)
 	}
 	if _, err := r.setTargetLogin("ARTEX", target.ID, cookieLogin()); err != nil {
 		t.Fatal(err)
@@ -244,8 +262,11 @@ func TestProductRunAccountsSelection(t *testing.T) {
 		}
 	}
 	got, digest, err := r.runAccounts(rec)
-	if err != nil || digest == "" || len(got.Accounts) != 2 || got.Accounts[0].Label != "real-c" || got.Accounts[1].Label != "tester-a" {
+	if err != nil || digest == "" || got.Login == nil || len(got.Accounts) != 2 || got.Accounts[0].Label != "real-c" || got.Accounts[1].Label != "tester-a" {
 		t.Fatalf("selection: %+v %v", got, err)
+	}
+	if digest == noLoginDigest {
+		t.Fatal("adding a login method kept the binding digest")
 	}
 	if r.accountsCurrent(rec, got.Accounts) != nil {
 		t.Fatal("fresh selection not current")
@@ -463,4 +484,141 @@ func TestRemoveRunCredentials(t *testing.T) {
 	}
 	removeRunCredentials(runs, "../escape", auth)
 	removeRunCredentials(runs, "job-1", nil)
+}
+
+// 9칸-1(계약 model-login-attempts §7): 로그인 방식 없이 자격만 등록한 계정도 실행에 결속한다. 정책 인증 칸에는 로그인 방식 ·
+// 규칙 참조가 없고 인증 준비 규칙도 없다(프로그램 로그인 없음, 모델이 직접 로그인). 시험 계정 헤더 모드로 묶인다.
+func TestProductBindsAccountWithoutLoginMethod(t *testing.T) {
+	runtime, _, target, input := accountRunFixture(t)
+	r := runtime.targets
+	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: "u", Password: "seeded-pass-a"}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.clearMaterials()
+	auth := loaded.policy.Auth
+	if auth == nil || auth.Login != nil || auth.RuleRef != "" || !auth.ModelLogin || len(auth.Accounts) != 1 || auth.Accounts[0].Label != "tester-a" ||
+		loaded.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough || len(loaded.productAccounts) != 1 {
+		t.Fatalf("binding without a login method: %+v header=%s accounts=%d", auth, loaded.policy.HeaderMode, len(loaded.productAccounts))
+	}
+	for _, rule := range loaded.policy.Rules {
+		if rule.Purpose == e2proxy.PurposeAuthPrep || rule.Ref == "auth-login" {
+			t.Fatalf("auth preparation rule without a login method: %+v", rule)
+		}
+	}
+	if loaded.materials[auth.Accounts[0].Credential.File] == nil {
+		t.Fatal("bound credential copy missing")
+	}
+}
+
+// 로그인 방식이 있는 결속의 요약은 9칸-1 전과 같은 값이다(이미 만든 결속 디렉터리 이름이 그대로 맞는다).
+func TestRunAccountsDigestKeepsLoginBindings(t *testing.T) {
+	login := diagnosisprep.TargetLogin{Method: "POST", Path: "/login", Format: "form", UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}
+	accounts := []productRunAccount{{Label: "tester-a", CredentialSHA256: strings.Repeat("a", 64)}}
+	got, err := runAccountsDigest(productRunAccounts{Login: &login, Accounts: accounts, PasswordResponse: e2proxy.PasswordResponseModelVisible})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := json.Marshal(struct {
+		Login            diagnosisprep.TargetLogin `json:"login"`
+		Accounts         []productRunAccount       `json:"accounts"`
+		PasswordResponse string                    `json:"password_response,omitempty"`
+	}{login, accounts, e2proxy.PasswordResponseModelVisible})
+	if got != urlSHA(before) {
+		t.Fatal("binding digest with a login method changed")
+	}
+	without, err := runAccountsDigest(productRunAccounts{Accounts: accounts, PasswordResponse: e2proxy.PasswordResponseModelVisible})
+	if err != nil || without == "" || without == got {
+		t.Fatalf("binding digest without a login method: %q %v", without, err)
+	}
+	if _, err := runAccountsDigest(productRunAccounts{Login: &login}); err == nil {
+		t.Fatal("digest without accounts")
+	}
+}
+
+// externalModelInstall은 설치 틀의 모델을 외부 API(OpenRouter) 모델로 바꾼다(TestURLPreparationOpenRouterInspectProtectedManifest와 같은 판).
+func externalModelInstall(f *urlNegativeFixture) {
+	f.launch.ModelExecutionMode = "openrouter"
+	f.launch.LocalLLMManifestPath = ""
+	f.launch.OpenRouterManifestPath = filepath.Join(filepath.Dir(f.path), "external.json")
+	f.launch.ModelBaseURL, f.launch.ModelRef = llmpolicy.OpenRouterBaseURL, llmpolicy.OpenRouterModel
+	p := &f.config.Profiles[0]
+	p.InputTokensPerCall = 262144
+	p.Budget.InputTokens = 524288
+	p.Budget.CostUSDMicros = 600000
+	p.AggregateBudget = p.Budget
+	f.write()
+	p.ManifestSHA256 = urlNegativeWrite(f.t, f.launch.OpenRouterManifestPath, map[string]any{
+		"version": 1, "profile_id": 1, "format": "openai", "base_url": llmpolicy.OpenRouterBaseURL, "model": llmpolicy.OpenRouterModel,
+		"provider_slug": "fixture/endpoint", "expected_provider_name": "Fixture", "approval_id": "url-inspect", "expires_at": time.Now().Add(time.Hour),
+		"strict_privacy_ack": true, "account_spend_cap_ack": true, "max_requests": 2, "max_input_tokens": 524288, "max_output_tokens": 2048, "max_cost_usd_micros": 600000,
+		"max_input_tokens_per_call": 262144, "max_output_tokens_per_call": 1024, "timeout_seconds": 2, "max_concurrent": 1,
+		"max_input_price_usd_micros_per_million": 1000000, "max_output_price_usd_micros_per_million": 1000000,
+	})
+	urlNegativeWrite(f.t, f.path, f.config)
+}
+
+// 외부 모델 동의 관문(9칸-1): 로그인 방식(9칸) 없이 자격만 있는 계정도 결속하므로 외부 모델로 가는 자격이 늘 수 있다. 그런
+// 계정도 같은 관문을 지난다 — 설치 단위 외부 전송 동의가 없으면 회차를 시작하지 않고(자격이 모델로 가지 않음), 동의가 있으면
+// 결속하고 그 동의를 launch로 넘긴다(서버가 외부 모델 회차의 인증 칸을 받음 · 시작 전에 감사 저널에 동의를 남김).
+func TestExternalModelAccountWithoutLoginMethodNeedsConsent(t *testing.T) {
+	runtime, _, target, input := accountRunFixtureWith(t, externalModelInstall)
+	r := runtime.targets
+	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: "u", Password: "seeded-pass-a"}); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := runtime.load("ARTEX", input, false, "")
+	var failure urlPreparationError
+	if err == nil || !errors.As(err, &failure) || failure != "external_transfer_consent_required" {
+		if loaded != nil {
+			loaded.clearMaterials()
+		}
+		t.Fatalf("external model run without consent: %v", err)
+	}
+	if _, err := writeProductExternalConsent(runtime.config.StateDir, productExternalConsentInstall, "ARTEX", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = runtime.load("ARTEX", input, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer loaded.clearMaterials()
+	if loaded.policy.Auth == nil || loaded.policy.Auth.Login != nil || len(loaded.productAccounts) != 1 || !loaded.externalTestAccounts {
+		t.Fatalf("consented external run: auth=%+v accounts=%d external=%v", loaded.policy.Auth, len(loaded.productAccounts), loaded.externalTestAccounts)
+	}
+}
+
+// 9칸-1은 9칸을 계속 받는다: 저널의 login_config 줄은 레지스트리를 다시 열어도 읽히고, 결속에 로그인 방식으로 실린다.
+func TestJournalLoginConfigStillBinds(t *testing.T) {
+	r, root, target := accountTestTarget(t, true)
+	if _, err := r.registerAccount("ARTEX", target.ID, "tester-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.setAccountCredential("ARTEX", target.ID, "tester-a", diagnosisprep.AccountCredential{Username: "u", Password: "seeded-pass-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.setTargetLogin("ARTEX", target.ID, cookieLogin()); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := newProductTargetRegistry(root, r.policy, func() error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	got, digest, err := reopened.runAccounts(reopened.approvals[target.ID])
+	if err != nil || digest == "" || got.Login == nil || got.Login.Path != cookieLogin().Path || len(got.Accounts) != 1 || got.Accounts[0].Label != "tester-a" {
+		t.Fatalf("replayed login_config not bound: %+v %q %v", got, digest, err)
+	}
 }

@@ -23,6 +23,26 @@ func TestPolicyTemplateStaticValidationDoesNotGrantExecution(t *testing.T) {
 	}
 }
 
+// 모델이 직접 로그인하는 결속은 프로그램 인증 준비 규칙이 없다. 대상 응답의 시험 계정 비밀번호는 계속 모델에 줄 수 있어야
+// 한다. 기존 mask_spans_v1은 인증 준비 규칙이 없는 정책에서 계속 거부한다.
+func TestPolicyTemplateModelVisibleWithoutAuthPrep(t *testing.T) {
+	cfg := policyTemplateFixture()
+	cfg.HeaderMode = HeaderTestAccountPassthrough
+	cfg.PasswordResponse = PasswordResponseModelVisible
+	if err := ValidatePolicyTemplate(cfg); err != nil {
+		t.Fatalf("모델 로그인 정책 거부: %v", err)
+	}
+	cfg.PasswordResponse = PasswordResponseMaskSpans
+	if err := ValidatePolicyTemplate(cfg); err == nil {
+		t.Fatal("인증 준비 규칙 없는 mask_spans 정책 수용")
+	}
+	cfg.PasswordResponse = PasswordResponseModelVisible
+	cfg.HeaderMode = HeaderPreserve
+	if err := ValidatePolicyTemplate(cfg); err == nil {
+		t.Fatal("시험 계정 헤더 모드 밖에서 model_visible 정책 수용")
+	}
+}
+
 func TestPolicyTemplateRejectsMalformedRulesLimitsAndHeaders(t *testing.T) {
 	cases := []struct {
 		name   string

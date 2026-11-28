@@ -282,7 +282,13 @@ func (b *urlPreparationRuntime) executeCandidateVerification(ctx context.Context
 		return errPreparation
 	}
 	defer l.clearMaterials()
-	if l.productTarget == nil || l.productRegistry == nil || l.policy.Auth != nil || l.policy.HeaderMode != e2proxy.HeaderPreserve || len(l.productAccounts) != 0 || l.externalTestAccounts {
+	if l.productTarget == nil || l.productRegistry == nil {
+		return errPreparation
+	}
+	// 저장 후보 검증은 승인한 정확한 GET 하나를 익명으로 보낸다. 9칸-1부터 자격만 있어도 대상 계정을 결속하므로 계정이 있는
+	// 대상도 결속된 채로 읽힌다: 결속 계정을 떼고(#950 익명 분기와 같은 도우미), 떼지 못했거나 인증 상태가 남으면 시작하지 않는다.
+	detached, err := l.detachAccounts()
+	if err != nil || l.policy.Auth != nil || l.policy.HeaderMode != e2proxy.HeaderPreserve || len(l.productAccounts) != 0 || l.externalTestAccounts {
 		return errPreparation
 	}
 	// The existing issuance path can add E③ rules for active declarations.
@@ -310,31 +316,7 @@ func (b *urlPreparationRuntime) executeCandidateVerification(ctx context.Context
 	if err != nil || currentTarget == nil || !server.CandidatePlanStillApproved(time.Now().UTC(), plan, ownerResp.Job.Input, *ownerResp.Job.Scope, *currentTarget) || l.current() != nil {
 		return errPreparation
 	}
-	// Collapse the frozen policy to exactly one approved, static GET. No
-	// credential, E③, model, query or general diagnosis rule is inherited.
-	l.policy.Workflow = nil
-	l.policy.Auth = nil
-	l.policy.E3WriteConsent, l.policy.E3Resettable = false, false
-	l.policy.HeaderMode = e2proxy.HeaderPreserve
-	l.policy.ApprovalMode = e2proxy.ApprovalPreauthorizedScope
-	l.policy.CaseRef = requestedDigest
-	l.policy.Rules = []server.E2HTTPFileRule{{Ref: "candidate-exact", Origin: plan.Origin, ConnectIP: l.productTarget.SelectedIP,
-		PathPrefix: plan.ExactPath, PathMatch: "exact", PathScopeRef: "candidate-exact", Methods: []string{"GET"}, TLSSPKISHA256: l.productTarget.Target.TLSSPKISHA256}}
-	l.policy.MaxRequests = 2
-	l.policy.Limits.MaxAttempts = 2
-	l.policy.Limits.MaxCalls = 2
-	l.policy.Limits.MaxConcurrent = 1
-	l.policy.Runtime.MaxToolCalls = 2
-	l.policy.Runtime.MaxIntentRuns = 1
-	l.profile.Budget.Requests = 2
-	l.profile.Budget.ModelRequests = 0
-	l.profile.Budget.InputTokens = 0
-	l.profile.Budget.OutputTokens = 0
-	l.profile.Budget.CostUSDMicros = 0
-	l.profile.Budget.DurationSeconds = 60
-	if l.profile.ValidUntil.After(plan.ExpiresAt) {
-		l.profile.ValidUntil = plan.ExpiresAt
-	}
+	shapeStoredCandidatePolicy(l, plan, requestedDigest)
 	jobID := fmt.Sprintf("candidate-%d-%s", requestID, requestedDigest[:16])
 	runRef := "run-" + jobID
 	hard, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -388,7 +370,9 @@ VALUES($1,3,'running','execution_started',$2,$3,'candidate-active/v1',$4)`, requ
 	// issuance. A candidate run must have exactly the one planned GET rule.
 	rawPolicy, _, err := urlReadPin(launch.HTTP.PolicyFile, 256<<10, false)
 	var issued server.E2HTTPFilePolicy
-	if err != nil || e2config.StrictJSON(rawPolicy, &issued) != nil || len(issued.Rules) != 1 || issued.Rules[0].PathMatch != "exact" || issued.Rules[0].PathPrefix != plan.ExactPath || issued.CaseRef != requestedDigest || issued.Auth != nil {
+	// 뗀 계정의 자격 사본이 권한 디렉터리에 보이거나 외부 계정 동의가 켜졌으면 시작하지 않는다(닫힌 쪽).
+	if err != nil || e2config.StrictJSON(rawPolicy, &issued) != nil || len(issued.Rules) != 1 || issued.Rules[0].PathMatch != "exact" || issued.Rules[0].PathPrefix != plan.ExactPath || issued.CaseRef != requestedDigest || issued.Auth != nil ||
+		issued.HeaderMode != e2proxy.HeaderPreserve || !anonymousIssueClean(launch, detached) {
 		clear(rawPolicy)
 		runtimePool.Close()
 		return errPreparation
@@ -433,4 +417,34 @@ VALUES($1,3,'running','execution_started',$2,$3,'candidate-active/v1',$4)`, requ
 		return errPreparation
 	}
 	return nil
+}
+
+// shapeStoredCandidatePolicy는 저장 후보 검증(active/v1)의 고정 정책을 승인한 정확한 GET 하나로 줄인다. 시험이 줄인 정책을
+// 발급 · Host 로딩까지 태우려고 뺐다(동작 그대로).
+func shapeStoredCandidatePolicy(l *urlLoadedProfile, plan server.CandidateActivePlan, requestedDigest string) {
+	// Collapse the frozen policy to exactly one approved, static GET. No
+	// credential, E③, model, query or general diagnosis rule is inherited.
+	l.policy.Workflow = nil
+	l.policy.Auth = nil
+	l.policy.E3WriteConsent, l.policy.E3Resettable = false, false
+	l.policy.HeaderMode = e2proxy.HeaderPreserve
+	l.policy.ApprovalMode = e2proxy.ApprovalPreauthorizedScope
+	l.policy.CaseRef = requestedDigest
+	l.policy.Rules = []server.E2HTTPFileRule{{Ref: "candidate-exact", Origin: plan.Origin, ConnectIP: l.productTarget.SelectedIP,
+		PathPrefix: plan.ExactPath, PathMatch: "exact", PathScopeRef: "candidate-exact", Methods: []string{"GET"}, TLSSPKISHA256: l.productTarget.Target.TLSSPKISHA256}}
+	l.policy.MaxRequests = 2
+	l.policy.Limits.MaxAttempts = 2
+	l.policy.Limits.MaxCalls = 2
+	l.policy.Limits.MaxConcurrent = 1
+	l.policy.Runtime.MaxToolCalls = 2
+	l.policy.Runtime.MaxIntentRuns = 1
+	l.profile.Budget.Requests = 2
+	l.profile.Budget.ModelRequests = 0
+	l.profile.Budget.InputTokens = 0
+	l.profile.Budget.OutputTokens = 0
+	l.profile.Budget.CostUSDMicros = 0
+	l.profile.Budget.DurationSeconds = 60
+	if l.profile.ValidUntil.After(plan.ExpiresAt) {
+		l.profile.ValidUntil = plan.ExpiresAt
+	}
 }

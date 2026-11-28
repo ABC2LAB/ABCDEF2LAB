@@ -133,6 +133,7 @@ func main() {
 	go func() {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
+		mux.Handle("GET /header-stats", fixtureHeaderStats())
 		mux.HandleFunc("POST /hold-next-read", func(w http.ResponseWriter, r *http.Request) {
 			holdNextTargetRead.Store(1)
 			w.WriteHeader(http.StatusNoContent)
@@ -143,6 +144,7 @@ func main() {
 		must(http.ListenAndServe(":9081", mux))
 	}()
 	server := &http.Server{Addr: ":9443", TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		countCredentialHeaders(r)
 		if *mode == "selected-target-auth-nosniff" && r.Method == "POST" && r.URL.Path == "/login" {
 			var input struct {
 				Username string `json:"username"`

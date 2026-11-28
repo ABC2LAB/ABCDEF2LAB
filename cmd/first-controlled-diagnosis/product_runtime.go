@@ -297,8 +297,11 @@ func accountsFromBinding(dir, suffix string) (productRunAccounts, string, error)
 	if decodeErr != nil || stored.Auth == nil {
 		return productRunAccounts{}, "", errPreparation
 	}
-	login := stored.Auth.Login
-	out := productRunAccounts{Login: &login, PasswordResponse: stored.Auth.PasswordResponse}
+	out := productRunAccounts{PasswordResponse: stored.Auth.PasswordResponse}
+	if stored.Auth.Login != nil {
+		login := *stored.Auth.Login
+		out.Login = &login
+	}
 	for _, a := range stored.Auth.Accounts {
 		out.Accounts = append(out.Accounts, productRunAccount{Label: a.Label, CredentialSHA256: a.Credential.SHA256})
 	}
@@ -440,11 +443,16 @@ func (p *productRuntime) loadBinding(principal string, input diagnosisprep.Input
 	// 없는 회차도 등록 밖 아이디(기본 계정 시험 등)의 로그인을 센다.
 	policy.LoginAttempts = &server.E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: productLoginConsecutiveFailures, MaxContrastProbes: productLoginContrastProbes, TokenMinBytes: productLoginTokenMinBytes}
 	if len(accounts.Accounts) > 0 {
-		// 로그인 경로 하나만 정확히 가리키는 인증 준비 규칙. 모델 요청은 이 규칙을 쓰지 못한다(E② Purpose).
-		policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: accounts.Login.Path, PathScopeRef: "auth-login-path",
-			Methods: []string{accounts.Login.Method}, Purpose: e2proxy.PurposeAuthPrep, ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
 		// 모델이 직접 로그인한다(사용자 결정 2026-11-26). 확정 단계 다시 로그인만 프로그램이 지금 로그인 방식으로 한다.
-		auth := &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: *accounts.Login, PasswordResponse: accounts.PasswordResponse, ModelLogin: true}
+		auth := &server.E2HTTPFileAuth{PasswordResponse: accounts.PasswordResponse, ModelLogin: true}
+		if accounts.Login != nil {
+			// 로그인 경로 하나만 정확히 가리키는 인증 준비 규칙. 모델 요청은 이 규칙을 쓰지 못한다(E② Purpose). 로그인 방식(9칸)이
+			// 없는 결속(9칸-1)은 이 규칙과 프로그램 로그인이 없다.
+			policy.Rules = append(policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: rec.Target.Origin, ConnectIP: rec.SelectedIP, PathPrefix: accounts.Login.Path, PathScopeRef: "auth-login-path",
+				Methods: []string{accounts.Login.Method}, Purpose: e2proxy.PurposeAuthPrep, ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}}, TLSSPKISHA256: rec.Target.TLSSPKISHA256})
+			login := *accounts.Login
+			auth.RuleRef, auth.Login = "auth-login", &login
+		}
 		for _, a := range accounts.Accounts {
 			auth.Accounts = append(auth.Accounts, server.E2HTTPFileAuthAccount{Label: a.Label, Credential: server.E2HTTPFilePin{File: bindingCredentialName(rec.Target.ID, a.Label, a.CredentialSHA256), SHA256: a.CredentialSHA256}})
 		}

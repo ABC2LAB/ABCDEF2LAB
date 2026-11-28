@@ -19,7 +19,7 @@ func candidateAccountProfile() (*urlLoadedProfile, map[string][]byte, diagnosisp
 		"cred-a.json": []byte(`{"username":"tester-a@owned.test","password":"abc12"}`),
 		"cred-b.json": []byte(`{"username":"tester-b@owned.test","password":"other-account-pass"}`),
 	}
-	auth := &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: login, PasswordResponse: e2proxy.PasswordResponseModelVisible, ModelLogin: true,
+	auth := &server.E2HTTPFileAuth{RuleRef: "auth-login", Login: &login, PasswordResponse: e2proxy.PasswordResponseModelVisible, ModelLogin: true,
 		Accounts: []server.E2HTTPFileAuthAccount{
 			{Label: "tester-a", Credential: server.E2HTTPFilePin{File: "cred-a.json", SHA256: shaA}},
 			{Label: "tester-b", Credential: server.E2HTTPFilePin{File: "cred-b.json", SHA256: shaB}},

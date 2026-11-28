@@ -176,7 +176,8 @@ type ProductAccount struct {
 	RegisteredAt time.Time `json:"registered_at"`
 	// CredentialConfigured는 보호 파일에 자격이 있다는 뜻이다. 값·해시는 내보내지 않는다.
 	CredentialConfigured bool `json:"credential_configured,omitempty"`
-	// LoginMethodMissing은 자격이 등록돼 있지만 대상의 로그인 방식이 설정되지 않은 경우다.
+	// LoginMethodMissing은 자격이 등록돼 있지만 대상의 로그인 방식이 설정되지 않은 경우였다. 9칸-1부터 서버는 내지 않는다(자격이
+	// 있으면 로그인 방식 없이도 결속한다). 칸은 9칸-2에서 걷는다.
 	LoginMethodMissing bool `json:"login_method_missing,omitempty"`
 	// LoginMethod는 모델이 배운 로그인 방법 상태다(docs/contracts/model-login-attempts.md §6-1-3). 목록·변경 응답에 늘 싣는다.
 	LoginMethod *ProductLoginMethod `json:"login_method,omitempty"`

@@ -28,10 +28,12 @@ import (
 // 계정마다 로그인 요청을 한 번 보낸다. 로그인 방식(앱별 설정)과 인증 준비 규칙 참조, 계정별 자격 보호 파일 pin만 담고
 // 자격 값은 담지 않는다. 자격 파일은 실행 결속 디렉터리 안에 있고 SHA-256으로 고정한다.
 type E2HTTPFileAuth struct {
-	PasswordResponse string                    `json:"password_response,omitempty"`
-	RuleRef          string                    `json:"rule_ref"`
-	Login            diagnosisprep.TargetLogin `json:"login"`
-	Accounts         []E2HTTPFileAuthAccount   `json:"accounts"`
+	PasswordResponse string `json:"password_response,omitempty"`
+	RuleRef          string `json:"rule_ref"`
+	// Login은 운영자가 넣은 대상 로그인 방식(9칸)이다. 없으면(9칸-1, 계약 model-login-attempts §7) 모델 직접 로그인 회차만
+	// 받고, 프로그램 로그인(인증 준비 · 다시 로그인)과 인증 준비 규칙이 없다. 있는 정책의 JSON은 바뀌지 않는다.
+	Login    *diagnosisprep.TargetLogin `json:"login,omitempty"`
+	Accounts []E2HTTPFileAuthAccount    `json:"accounts"`
 	// ModelLogin은 모델이 직접 로그인하는 회차다(사용자 결정 2026-11-26, docs/contracts/model-login-attempts.md). 켜면 실행을
 	// 잡을 때 프로그램이 로그인하지 않고 결속 계정의 자격을 Worker 지침으로 준다. 끈 정책(선택 후보 검증 회차·이전 결속)은
 	// 지금처럼 프로그램이 인증 준비로 로그인한다. 확정 단계 다시 로그인은 둘 다 프로그램이 한다.
@@ -88,17 +90,32 @@ func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2H
 		// 시험 계정 모드는 인증 준비 칸이 있는 정책에서만 받는다(C14 결정 6). 계정 없이 모델이 쓴 자격을 그대로 보내는 실행은 없다.
 		return mode != e2proxy.HeaderTestAccountPassthrough
 	}
-	if a.PasswordResponse != "" && (a.PasswordResponse != e2proxy.PasswordResponseMaskSpans && a.PasswordResponse != e2proxy.PasswordResponseModelVisible || mode != e2proxy.HeaderTestAccountPassthrough) || !diagnosisprep.ValidTargetLogin(a.Login) || len(a.Accounts) < 1 || len(a.Accounts) > diagnosisprep.MaxTargetAccounts {
+	if a.PasswordResponse != "" && (a.PasswordResponse != e2proxy.PasswordResponseMaskSpans && a.PasswordResponse != e2proxy.PasswordResponseModelVisible || mode != e2proxy.HeaderTestAccountPassthrough) || len(a.Accounts) < 1 || len(a.Accounts) > diagnosisprep.MaxTargetAccounts {
 		return false
 	}
-	found := false
-	for _, r := range rules {
-		if r.Ref == a.RuleRef {
-			found = r.Purpose == e2proxy.PurposeAuthPrep && r.PathPrefix == a.Login.Path && len(r.Methods) == 1 && r.Methods[0] == a.Login.Method
+	if a.Login == nil {
+		// 로그인 방식 없이 결속한 계정은 모델이 직접 로그인할 때만 쓴다. 프로그램이 보낼 인증 준비 규칙도 없어야 한다.
+		if !a.ModelLogin || a.RuleRef != "" {
+			return false
 		}
-	}
-	if !found {
-		return false
+		for _, r := range rules {
+			if r.Purpose == e2proxy.PurposeAuthPrep {
+				return false
+			}
+		}
+	} else {
+		if !diagnosisprep.ValidTargetLogin(*a.Login) {
+			return false
+		}
+		found := false
+		for _, r := range rules {
+			if r.Ref == a.RuleRef {
+				found = r.Purpose == e2proxy.PurposeAuthPrep && r.PathPrefix == a.Login.Path && len(r.Methods) == 1 && r.Methods[0] == a.Login.Method
+			}
+		}
+		if !found {
+			return false
+		}
 	}
 	seen := map[string]bool{}
 	for _, account := range a.Accounts {
@@ -111,6 +128,18 @@ func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2H
 }
 
 var errAuthLoginFailed = errors.New("auth_login_failed")
+
+// e2HTTPApprovedOrigin은 정책의 대상 승인 origin이다: 모델 요청 규칙(목적 없음)의 origin. 프로그램 로그인 · 대조 요청 · 로그인
+// 시도 판정이 같은 origin을 쓴다. 인증 준비 규칙에서 읽지 않는다: 로그인 방식(9칸) 없이 결속한 정책에는 그 규칙이 없다(9칸-1).
+// 제품 정책은 모든 규칙이 같은 origin · 연결 IP다(url_preparation_config 읽기 검사).
+func e2HTTPApprovedOrigin(policy E2HTTPFilePolicy) string {
+	for _, rule := range policy.Rules {
+		if rule.Purpose == "" {
+			return rule.Origin
+		}
+	}
+	return ""
+}
 
 // 계정 결속 참조(E③↔E② v3 계약 §2.2·§4, account_binding_ref). C14 인증에 성공한 세션마다 세션 저장소가 새 난수로
 // 발급한다. 실행(run_ref)·계정 라벨·세션 판에 결속하는 것은 이 저장소의 표이고, 참조 값에는 실행·라벨·자격·세션 값이 하나도
@@ -460,7 +489,8 @@ func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir
 			account = &auth.Accounts[i]
 		}
 	}
-	if execution == nil || ctx == nil || ctx.Err() != nil || account == nil || counter == nil {
+	// 로그인 방식(9칸)이 없는 결속은 프로그램이 다시 로그인하지 않는다(보내지 않음).
+	if execution == nil || ctx == nil || ctx.Err() != nil || account == nil || counter == nil || auth.Login == nil {
 		return nil, E2HTTPAuthNotSent
 	}
 	if status := counter.begin(label); status != "" {
@@ -487,7 +517,7 @@ func e2HTTPRefreshSession(ctx context.Context, execution *e2proxy.Execution, dir
 		}
 	}()
 	sessions := E2HTTPSessions{}
-	result = authPrepOne(ctx, call, execution, dir, origin, auth.Login, *account, sessions)
+	result = authPrepOne(ctx, call, execution, dir, origin, *auth.Login, *account, sessions)
 	return sessions[label], result
 }
 
@@ -557,6 +587,14 @@ func e2HTTPAuthPrep(ctx context.Context, execution *e2proxy.Execution, dir, orig
 	if execution == nil || ctx == nil {
 		return out, ErrE2HTTPHost
 	}
+	// 로그인 방식(9칸)이 없으면 프로그램 인증 준비를 보내지 않는다(검사 validE2HTTPFileAuth가 이런 정책을 막지만 한 번 더).
+	if auth.Login == nil {
+		for _, account := range auth.Accounts {
+			out.AccountAuth[account.Label] = E2HTTPAuthNotSent
+			logAccountAuthNotSent(ctx, account.Label)
+		}
+		return out, nil
+	}
 	call, err := execution.BeginProgramCall(ctx, e2proxy.ProgramAuthPrep, "auth-prep")
 	if err != nil {
 		for _, account := range auth.Accounts {
@@ -572,7 +610,7 @@ func e2HTTPAuthPrep(ctx context.Context, execution *e2proxy.Execution, dir, orig
 		}
 	}()
 	for _, account := range auth.Accounts {
-		out.AccountAuth[account.Label] = authPrepOne(ctx, call, execution, dir, origin, auth.Login, account, out.Sessions)
+		out.AccountAuth[account.Label] = authPrepOne(ctx, call, execution, dir, origin, *auth.Login, account, out.Sessions)
 	}
 	return out, nil
 }

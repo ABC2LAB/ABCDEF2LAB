@@ -239,12 +239,12 @@ func (r *productTargetRegistry) listAccounts(principal, id string) ([]diagnosisp
 	return out, nil
 }
 
-// 계정 API 응답 시점의 자격과 로그인 설정을 같은 잠금 안에서 읽는다.
+// 계정 API 응답 시점의 자격을 같은 잠금 안에서 읽는다. login_method_missing은 9칸-1부터 내지 않는다: 자격이 있으면 로그인
+// 방식(9칸)이 없어도 결속하고 모델이 직접 로그인하므로 "로그인 방식이 없어 익명으로 점검"이 맞지 않는다(계약
+// workbench-live-data §계정). 실제 로그인 결과는 회차의 account_auth다. 칸을 읽는 화면 정리는 9칸-2다.
 func (r *productTargetRegistry) accountResponse(rec productTargetRecord, st *productAccountState) diagnosisprep.ProductAccount {
 	view := diagnosisprep.ProductAccount{Label: st.label, RegisteredBy: st.registeredBy, RegisteredAt: st.registeredAt}
 	view.CredentialConfigured = r.credentialConfigured(rec.Target.ID, st)
-	_, hasLogin := r.logins[rec.Target.ID]
-	view.LoginMethodMissing = view.CredentialConfigured && !hasLogin
 	view.LoginMethod = loginMethodView(rec, st)
 	return view
 }
@@ -502,10 +502,11 @@ type productRunAccounts struct {
 	Accounts         []productRunAccount
 }
 
-// runAccounts는 실행에 결속할 계정을 고른다: 자격 파일이 저널 해시와 같은 등록 계정만, 로그인 방식이 있을 때만이다.
-// 계정을 시험·실계정으로 따로 분류하지 않는다(사용자 결정 2026-11-26, CLAUDE.md 절대규칙 2: 시험 계정만 등록하라는 공지는
-// 사용자 책임). 로그인 방식은 E③ 확정 단계 다시 로그인이 쓴다(모델 로그인 기록 재사용이 들어오기 전까지, 계약
-// docs/contracts/model-login-attempts.md §7). 두 번째 값은 결속 디렉터리 이름에 넣는 요약(없으면 빈 값)이다.
+// runAccounts는 실행에 결속할 계정을 고른다: 자격 파일이 저널 해시와 같은 등록 계정이다. 로그인 방식(9칸)이 없어도
+// 결속한다(9칸-1, 계약 docs/contracts/model-login-attempts.md §7): 모델이 Worker 지침의 자격으로 직접 로그인한다. 로그인
+// 방식이 있으면 같이 싣고, E③ 확정 단계의 프로그램 다시 로그인이 그것을 쓴다. 계정을 시험·실계정으로 따로 분류하지
+// 않는다(사용자 결정 2026-11-26, CLAUDE.md 절대규칙 2: 시험 계정만 등록하라는 공지는 사용자 책임). 두 번째 값은 결속
+// 디렉터리 이름에 넣는 요약(없으면 빈 값)이다.
 func (r *productTargetRegistry) runAccounts(rec productTargetRecord) (productRunAccounts, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -517,9 +518,6 @@ func (r *productTargetRegistry) runAccounts(rec productTargetRecord) (productRun
 		return productRunAccounts{}, "", errPreparation
 	}
 	login, hasLogin := r.logins[rec.Target.ID]
-	if !hasLogin {
-		return productRunAccounts{}, "", nil
-	}
 	labels := make([]string, 0, len(r.accounts[rec.Target.ID]))
 	for label := range r.accounts[rec.Target.ID] {
 		labels = append(labels, label)
@@ -536,8 +534,10 @@ func (r *productTargetRegistry) runAccounts(rec productTargetRecord) (productRun
 	if len(out.Accounts) == 0 {
 		return productRunAccounts{}, "", nil
 	}
-	login.Cookies = append([]string(nil), login.Cookies...)
-	out.Login = &login
+	if hasLogin {
+		login.Cookies = append([]string(nil), login.Cookies...)
+		out.Login = &login
+	}
 	// 대상이 응답으로 비춘 비밀번호는 모델에 주고 저장 기록에서만 가린다(사용자 결정 2026-11-23, 동의 문장으로 공지).
 	out.PasswordResponse = e2proxy.PasswordResponseModelVisible
 	digest, err := runAccountsDigest(out)
@@ -548,15 +548,16 @@ func (r *productTargetRegistry) runAccounts(rec productTargetRecord) (productRun
 }
 
 // runAccountsDigest는 결속 계정 요약이다(로그인 방식 + 라벨·자격 해시). 저장 보고서가 결속 정책에서 같은 값을 다시 만든다.
+// 로그인 방식이 있는 결속의 요약은 이 변경 전과 같다(칸이 있으면 같은 바이트). 없으면 login 칸 없이 센다.
 func runAccountsDigest(a productRunAccounts) (string, error) {
-	if a.Login == nil || a.PasswordResponse != "" && a.PasswordResponse != e2proxy.PasswordResponseMaskSpans && a.PasswordResponse != e2proxy.PasswordResponseModelVisible {
+	if len(a.Accounts) == 0 || a.PasswordResponse != "" && a.PasswordResponse != e2proxy.PasswordResponseMaskSpans && a.PasswordResponse != e2proxy.PasswordResponseModelVisible {
 		return "", errPreparation
 	}
 	raw, err := json.Marshal(struct {
-		Login            diagnosisprep.TargetLogin `json:"login"`
-		Accounts         []productRunAccount       `json:"accounts"`
-		PasswordResponse string                    `json:"password_response,omitempty"`
-	}{*a.Login, a.Accounts, a.PasswordResponse})
+		Login            *diagnosisprep.TargetLogin `json:"login,omitempty"`
+		Accounts         []productRunAccount        `json:"accounts"`
+		PasswordResponse string                     `json:"password_response,omitempty"`
+	}{a.Login, a.Accounts, a.PasswordResponse})
 	if err != nil {
 		return "", err
 	}
@@ -595,5 +596,10 @@ func bindingCredentialName(targetID, label, sha string) string {
 }
 
 func bindingCredentialPrefix(targetID, label string) string {
-	return "account-" + targetID + "." + label + "."
+	return bindingCredentialTargetPrefix(targetID) + label + "."
+}
+
+// bindingCredentialTargetPrefix는 그 대상의 결속 자격 사본 이름 앞부분이다(계정 라벨 앞까지).
+func bindingCredentialTargetPrefix(targetID string) string {
+	return "account-" + targetID + "."
 }

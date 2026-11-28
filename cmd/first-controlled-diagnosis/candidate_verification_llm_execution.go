@@ -169,49 +169,9 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 	if bindCandidateLLMAccount(l, plan) != nil {
 		return errPreparation
 	}
-	l.policy.Workflow = nil
-	l.policy.E3WriteConsent, l.policy.E3Resettable = false, false
-	l.policy.ApprovalMode = e2proxy.ApprovalPreauthorizedScope
-	l.policy.CaseRef = digest
-	l.policy.Rules = nil
-	for i, action := range plan.Actions {
-		ref := fmt.Sprintf("candidate-llm-%d", i+1)
-		l.policy.Rules = append(l.policy.Rules, candidateLLMReadRule(ref, plan.Origin, l.productTarget.SelectedIP,
-			l.productTarget.Target.TLSSPKISHA256, action))
-	}
-	count := len(plan.Actions)
-	if l.policy.Auth != nil {
-		login := l.policy.Auth.Login
-		l.policy.Rules = append(l.policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: plan.Origin,
-			ConnectIP: l.productTarget.SelectedIP, PathPrefix: login.Path, PathScopeRef: "auth-login-path",
-			Methods: []string{login.Method}, Purpose: e2proxy.PurposeAuthPrep,
-			ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}},
-			TLSSPKISHA256:   l.productTarget.Target.TLSSPKISHA256})
-		count++
-	}
-	if count != plan.MaxRequests {
+	runtimeSeconds, count, err := shapeCandidateLLMPolicy(l, plan, digest)
+	if err != nil {
 		return errPreparation
-	}
-	if l.profile.Budget.Requests < int64(count) || l.profile.Budget.DurationSeconds < 1 ||
-		l.policy.MaxRequests < uint64(count) || l.policy.Limits.MaxAttempts < uint64(count) ||
-		l.policy.Limits.MaxCalls < count || l.policy.Runtime.MaxToolCalls < count {
-		return errPreparation
-	}
-	runtimeSeconds := candidateLLMRuntimeSeconds(plan.DurationSeconds, l.profile.Budget.DurationSeconds, l.policy.Runtime.WorkerTimeoutMS)
-	if runtimeSeconds < 1 {
-		return errPreparation
-	}
-	l.policy.MaxRequests = uint64(count)
-	l.policy.Limits.MaxAttempts = uint64(count)
-	l.policy.Limits.MaxCalls = count
-	l.policy.Limits.MaxConcurrent = 1
-	l.policy.Runtime.MaxToolCalls = count
-	l.policy.Runtime.MaxIntentRuns = 1
-	l.profile.Budget.Requests = int64(count)
-	l.profile.Budget.ModelRequests, l.profile.Budget.InputTokens, l.profile.Budget.OutputTokens, l.profile.Budget.CostUSDMicros = 0, 0, 0, 0
-	l.profile.Budget.DurationSeconds = int64(runtimeSeconds)
-	if l.profile.ValidUntil.After(plan.ExpiresAt) {
-		l.profile.ValidUntil = plan.ExpiresAt
 	}
 	jobID := fmt.Sprintf("candidate-llm-%d-%s", requestID, digest[:16])
 	runRef := "run-" + jobID
@@ -335,11 +295,9 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 	if err != nil {
 		return errPreparation
 	}
-	options := server.FirstDiagnosisHTTPStartOptions{Host: server.FirstDiagnosisHTTPHostConfig{PolicyFile: launch.HTTP.PolicyFile,
-		AuthorityFile: launch.HTTP.AuthorityFile, AuthorityRoot: launch.HTTP.AuthorityRoot}, SkillDir: launch.SkillDir, DataDir: launch.DataDir, KeyDir: launch.KeyDir,
-		LocalLLMManifestPath: launch.LocalLLMManifestPath, ModelExecutionMode: launch.ModelExecutionMode, OpenRouterManifestPath: launch.OpenRouterManifestPath,
-		Supervisor: guard, Hooks: server.FirstDiagnosisHTTPHooks{HostSocket: launch.E2HostSocket, CheckAuthority: func() error { return checkCurrent(hard, plan) }},
-		CleanupTimeout: time.Duration(launch.ShutdownTimeoutSeconds) * time.Second}
+	options := candidateLLMStartOptions(launch)
+	options.Supervisor = guard
+	options.Hooks = server.FirstDiagnosisHTTPHooks{HostSocket: launch.E2HostSocket, CheckAuthority: func() error { return checkCurrent(hard, plan) }}
 	phase = "e2_execution"
 	observations, err := server.ExecuteSelectedCandidateActions(hard, manager, options, prepared.TaskID, runRef, plan)
 	if err != nil {
@@ -352,6 +310,28 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 		return errPreparation
 	}
 	return nil
+}
+
+// prepareAnonymousCandidate는 원래 관찰이 익명인 후보(계획에 계정 참조 없음)의 실행 준비다. 계정 준비 계획이 붙어 있으면
+// 거부하고, 결속 계정을 뗀다(detachAccounts — 자격 사본은 읽기 전용 후속 실행의 권한 디렉터리에 들어가면 안 된다). 계정이
+// 등록된 대상의 익명 후보도 이 길로 돈다(시연 경로: 외부 모델 설치에서도 인증 칸 없는 정책이라 호스트가 받는다).
+func (l *urlLoadedProfile) prepareAnonymousCandidate(plan server.CandidateLLMPlan) error {
+	if plan.AccountRef != "" || plan.AuthPreparation != nil {
+		return errPreparation
+	}
+	if _, err := l.detachAccounts(); err != nil {
+		return errPreparation
+	}
+	return nil
+}
+
+// candidateLLMStartOptions는 선택 검증(#950) 실행의 E② 호스트 시작 옵션이다(감독 · 훅은 부르는 쪽이 채운다). 시험 계정 동의
+// 칸(ExternalTestAccounts)은 싣지 않는다: 외부 모델 설치에서 계정 붙은 #950은 호스트가 받지 않는다(측정 뒤 동의 칸).
+func candidateLLMStartOptions(launch launchConfig) server.FirstDiagnosisHTTPStartOptions {
+	return server.FirstDiagnosisHTTPStartOptions{Host: server.FirstDiagnosisHTTPHostConfig{PolicyFile: launch.HTTP.PolicyFile,
+		AuthorityFile: launch.HTTP.AuthorityFile, AuthorityRoot: launch.HTTP.AuthorityRoot}, SkillDir: launch.SkillDir, DataDir: launch.DataDir, KeyDir: launch.KeyDir,
+		LocalLLMManifestPath: launch.LocalLLMManifestPath, ModelExecutionMode: launch.ModelExecutionMode, OpenRouterManifestPath: launch.OpenRouterManifestPath,
+		CleanupTimeout: time.Duration(launch.ShutdownTimeoutSeconds) * time.Second}
 }
 
 func candidateLLMTerminalEvent(ctx context.Context, pool *sql.DB, requestID int64, state, reason string) error {
@@ -498,68 +478,110 @@ LEFT JOIN tasks t ON t.id=x.followup_task_id AND t.deleted_at IS NULL
 	return nil
 }
 
-// bindCandidateLLMAccount는 승인 계획의 계정 결속대로 이 실행의 인증 자료를 좁힌다. 익명 계획이면 계정 자료를 모두 지우고
-// preserve로 묶는다. 계정 계획이면 계획의 계정 판본(라벨·자격 해시)과 정확히 같은 계정 하나만 남기고 다른 계정 자격 사본은
-// 메모리에서 지운다. 비밀번호 응답 정책은 일반 제품 진단과 같은 model_visible_v1이다(절대규칙 2, 2026-11-26 DLP 폐기):
+// bindCandidateLLMAccount는 승인 계획의 계정 결속대로 이 실행의 인증 자료를 좁힌다. 익명 계획이면 결속 계정을 떼고
+// preserve로 묶는다(prepareAnonymousCandidate — 외부 계정 동의도 끄고, 사본이 남으면 닫힌 쪽). 계정 계획이면 계획의 계정
+// 판본(라벨·자격 해시)과 정확히 같은 계정 하나만 남기고 다른 계정 자격 사본은 메모리에서 지운다.
+// 비밀번호 응답 정책은 일반 제품 진단과 같은 model_visible_v1이다(절대규칙 2, 2026-11-26 DLP 폐기):
 // 이전 mask_spans_v1은 짧은(6바이트 미만) 비밀번호 계정의 인증 준비를 막고, 비밀번호가 비친 응답이나 구간 가림이 다루지
 // 못하는 응답(압축·부분·지원하지 않는 형식)을 보류해 관찰을 잃게 했다. 우리 제어 비밀·E③ 표식 가림은 정책과 상관없다.
 func bindCandidateLLMAccount(l *urlLoadedProfile, plan server.CandidateLLMPlan) error {
 	if plan.AccountRef == "" {
-		if plan.AuthPreparation != nil {
-			return errPreparation
-		}
-		// The original was anonymous. Account material is unnecessary for a
-		// read-only follow-up and must not be copied into its authority root.
-		if l.policy.Auth != nil {
-			for _, account := range l.policy.Auth.Accounts {
-				if raw := l.materials[account.Credential.File]; raw != nil {
-					clear(raw)
-					delete(l.materials, account.Credential.File)
-				}
-			}
-		}
-		l.policy.Auth = nil
-		l.productAccounts = nil
-		l.policy.HeaderMode = e2proxy.HeaderPreserve
-	} else {
-		if l.policy.Auth == nil || plan.AuthPreparation == nil || l.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough ||
-			l.policy.Auth.Login.Method != plan.AuthPreparation.Method || l.policy.Auth.Login.Path != plan.AuthPreparation.ExactPath ||
-			server.CandidateLoginDigest(l.policy.Auth.Login) != plan.AuthPreparation.LoginDigest {
-			return errPreparation
-		}
-		var selected *server.E2HTTPFileAuthAccount
-		var selectedRun *productRunAccount
-		for i := range l.policy.Auth.Accounts {
-			account := &l.policy.Auth.Accounts[i]
-			if server.CandidateAccountRevision(account.Label, account.Credential.SHA256) == plan.AccountRef {
-				if selected != nil {
-					return errPreparation
-				}
-				selected = account
-			}
-		}
-		for i := range l.productAccounts {
-			account := &l.productAccounts[i]
-			if server.CandidateAccountRevision(account.Label, account.CredentialSHA256) == plan.AccountRef {
-				selectedRun = account
-			}
-		}
-		if selected == nil || selectedRun == nil || selected.Label != selectedRun.Label ||
-			selected.Credential.SHA256 != selectedRun.CredentialSHA256 {
-			return errPreparation
-		}
-		for _, account := range l.policy.Auth.Accounts {
-			if account.Label != selected.Label {
-				if raw := l.materials[account.Credential.File]; raw != nil {
-					clear(raw)
-					delete(l.materials, account.Credential.File)
-				}
-			}
-		}
-		l.policy.Auth.Accounts = []server.E2HTTPFileAuthAccount{*selected}
-		l.policy.Auth.PasswordResponse = e2proxy.PasswordResponseModelVisible
-		l.productAccounts = []productRunAccount{*selectedRun}
-		l.policy.SelectedAccountRef = plan.AccountRef
+		return l.prepareAnonymousCandidate(plan)
 	}
+	if l.policy.Auth == nil || l.policy.Auth.Login == nil || plan.AuthPreparation == nil || l.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough ||
+		l.policy.Auth.Login.Method != plan.AuthPreparation.Method || l.policy.Auth.Login.Path != plan.AuthPreparation.ExactPath ||
+		server.CandidateLoginDigest(*l.policy.Auth.Login) != plan.AuthPreparation.LoginDigest {
+		return errPreparation
+	}
+	var selected *server.E2HTTPFileAuthAccount
+	var selectedRun *productRunAccount
+	for i := range l.policy.Auth.Accounts {
+		account := &l.policy.Auth.Accounts[i]
+		if server.CandidateAccountRevision(account.Label, account.Credential.SHA256) == plan.AccountRef {
+			if selected != nil {
+				return errPreparation
+			}
+			selected = account
+		}
+	}
+	for i := range l.productAccounts {
+		account := &l.productAccounts[i]
+		if server.CandidateAccountRevision(account.Label, account.CredentialSHA256) == plan.AccountRef {
+			selectedRun = account
+		}
+	}
+	if selected == nil || selectedRun == nil || selected.Label != selectedRun.Label ||
+		selected.Credential.SHA256 != selectedRun.CredentialSHA256 {
+		return errPreparation
+	}
+	for _, account := range l.policy.Auth.Accounts {
+		if account.Label != selected.Label {
+			if raw := l.materials[account.Credential.File]; raw != nil {
+				clear(raw)
+				delete(l.materials, account.Credential.File)
+			}
+		}
+	}
+	l.policy.Auth.Accounts = []server.E2HTTPFileAuthAccount{*selected}
+	l.policy.Auth.PasswordResponse = e2proxy.PasswordResponseModelVisible
+	l.productAccounts = []productRunAccount{*selectedRun}
+	l.policy.SelectedAccountRef = plan.AccountRef
 	return nil
+}
+
+// shapeCandidateLLMPolicy는 승인 계획대로 #950 실행의 E② 정책 · 예산을 좁힌다: 승인한 읽기 행동 규칙(계정 계획이면 인증 준비
+// 규칙 하나 더), 요청 · 호출 상한 = 행동 수, 모델 예산 0, 실행 시간 · 유효 기한은 계획 안으로. 계획과 설치 상한이 맞지 않으면
+// errPreparation이다. 돌려주는 값은 실행 시간(초)과 규칙 수(발급 정책 대조용)다. 시험이 좁힌 정책을 발급 · Host 로딩까지
+// 태우려고 뺐다(동작 그대로).
+func shapeCandidateLLMPolicy(l *urlLoadedProfile, plan server.CandidateLLMPlan, digest string) (int, int, error) {
+	l.policy.Workflow = nil
+	l.policy.E3WriteConsent, l.policy.E3Resettable = false, false
+	l.policy.ApprovalMode = e2proxy.ApprovalPreauthorizedScope
+	l.policy.CaseRef = digest
+	l.policy.Rules = nil
+	for i, action := range plan.Actions {
+		ref := fmt.Sprintf("candidate-llm-%d", i+1)
+		l.policy.Rules = append(l.policy.Rules, candidateLLMReadRule(ref, plan.Origin, l.productTarget.SelectedIP,
+			l.productTarget.Target.TLSSPKISHA256, action))
+	}
+	count := len(plan.Actions)
+	if l.policy.Auth != nil {
+		// 계정 계획은 bindCandidateLLMAccount가 9칸 없는 인증 칸을 먼저 거부하지만, 그 분기가 바뀌어도(9칸-2) 역참조로 멈추지 않게
+		// 여기서도 닫힌 쪽으로 막는다.
+		if l.policy.Auth.Login == nil {
+			return 0, 0, errPreparation
+		}
+		login := *l.policy.Auth.Login
+		l.policy.Rules = append(l.policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: plan.Origin,
+			ConnectIP: l.productTarget.SelectedIP, PathPrefix: login.Path, PathScopeRef: "auth-login-path",
+			Methods: []string{login.Method}, Purpose: e2proxy.PurposeAuthPrep,
+			ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}},
+			TLSSPKISHA256:   l.productTarget.Target.TLSSPKISHA256})
+		count++
+	}
+	if count != plan.MaxRequests {
+		return 0, 0, errPreparation
+	}
+	if l.profile.Budget.Requests < int64(count) || l.profile.Budget.DurationSeconds < 1 ||
+		l.policy.MaxRequests < uint64(count) || l.policy.Limits.MaxAttempts < uint64(count) ||
+		l.policy.Limits.MaxCalls < count || l.policy.Runtime.MaxToolCalls < count {
+		return 0, 0, errPreparation
+	}
+	runtimeSeconds := candidateLLMRuntimeSeconds(plan.DurationSeconds, l.profile.Budget.DurationSeconds, l.policy.Runtime.WorkerTimeoutMS)
+	if runtimeSeconds < 1 {
+		return 0, 0, errPreparation
+	}
+	l.policy.MaxRequests = uint64(count)
+	l.policy.Limits.MaxAttempts = uint64(count)
+	l.policy.Limits.MaxCalls = count
+	l.policy.Limits.MaxConcurrent = 1
+	l.policy.Runtime.MaxToolCalls = count
+	l.policy.Runtime.MaxIntentRuns = 1
+	l.profile.Budget.Requests = int64(count)
+	l.profile.Budget.ModelRequests, l.profile.Budget.InputTokens, l.profile.Budget.OutputTokens, l.profile.Budget.CostUSDMicros = 0, 0, 0, 0
+	l.profile.Budget.DurationSeconds = int64(runtimeSeconds)
+	if l.profile.ValidUntil.After(plan.ExpiresAt) {
+		l.profile.ValidUntil = plan.ExpiresAt
+	}
+	return runtimeSeconds, count, nil
 }

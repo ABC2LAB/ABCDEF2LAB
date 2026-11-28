@@ -64,7 +64,7 @@ func (b *urlPreparationRuntime) issueSelectedCandidate(l *urlLoadedProfile, jobI
 			return launchConfig{}, errPreparation
 		}
 		if rule.Purpose == e2proxy.PurposeAuthPrep {
-			if l.policy.Auth == nil || rule.Ref != l.policy.Auth.RuleRef || rule.PathPrefix != l.policy.Auth.Login.Path ||
+			if l.policy.Auth == nil || l.policy.Auth.Login == nil || rule.Ref != l.policy.Auth.RuleRef || rule.PathPrefix != l.policy.Auth.Login.Path ||
 				rule.Methods[0] != l.policy.Auth.Login.Method || rule.PathMatch != "" {
 				return launchConfig{}, errPreparation
 			}

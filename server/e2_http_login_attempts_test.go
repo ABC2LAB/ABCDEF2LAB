@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/learnedlogin"
 	"github.com/Autumn-27/artex/loginattempt"
 )
@@ -81,6 +82,28 @@ func TestLoginHistoryUnavailableRefusesLogins(t *testing.T) {
 	}
 	if p := open(t, broken).Prepare(login, true); p.Refusal != loginattempt.RefusalHistoryUnavailable {
 		t.Fatalf("깨진 기록인데 로그인을 보냄: %+v", p)
+	}
+}
+
+// 로그인 시도 판정 · 프로그램 로그인 · 대조 요청의 origin은 대상 승인 origin(모델 요청 규칙)이다. 인증 준비 규칙에서 읽지 않아,
+// 로그인 방식(9칸) 없이 결속한 정책(규칙 참조 없음, 9칸-1)도 판정기를 연다.
+func TestLoginAttemptsOriginFromApprovedTarget(t *testing.T) {
+	limits := &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
+	withRule := E2HTTPFilePolicy{Rules: []E2HTTPFileRule{{Ref: "auth-login", Purpose: e2proxy.PurposeAuthPrep, Origin: "http://login.other.test"}, {Ref: "target-path-a", Origin: "http://target.test"}}}
+	if got := e2HTTPApprovedOrigin(withRule); got != "http://target.test" {
+		t.Fatalf("approved origin from the auth preparation rule: %q", got)
+	}
+	if got := e2HTTPApprovedOrigin(E2HTTPFilePolicy{Rules: []E2HTTPFileRule{{Ref: "auth-login", Purpose: e2proxy.PurposeAuthPrep, Origin: "http://target.test"}}}); got != "" {
+		t.Fatalf("approved origin without a model rule: %q", got)
+	}
+	policy := E2HTTPFilePolicy{RunRef: "run-1", StateDir: t.TempDir(), Rules: []E2HTTPFileRule{{Ref: "target-path-a", Origin: "http://target.test"}},
+		Auth: &E2HTTPFileAuth{ModelLogin: true}, LoginAttempts: limits}
+	prober := newLoginContrastProber(nil)
+	if _, err := newE2HTTPLoginAttempts(t.Context(), policy, nil, newE2HTTPSessionStore(nil, "run-1", nil), prober); err != nil {
+		t.Fatalf("login attempts without a login method: %v", err)
+	}
+	if prober.origin == nil || prober.origin.Host != "target.test" {
+		t.Fatalf("contrast origin: %v", prober.origin)
 	}
 }
 
