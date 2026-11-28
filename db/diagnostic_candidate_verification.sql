@@ -269,7 +269,8 @@ BEGIN
         SELECT 1 FROM diagnostic_candidate_verification_requests q
         WHERE q.id=NEW.request_id AND (
           q.method='active/v1' AND NEW.plan->>'version'='candidate-active/v1' OR
-          q.method='llm/v1' AND NEW.plan->>'version'='candidate-llm-plan/v1' AND
+          -- v2는 학습 로그인 인증 준비 계획이다(docs/contracts/selected-candidate-learned-login.md). v1 저장 계획은 그대로다.
+          q.method='llm/v1' AND NEW.plan->>'version' IN ('candidate-llm-plan/v1','candidate-llm-plan/v2') AND
             EXISTS (SELECT 1 FROM diagnostic_candidate_verification_analyses a
                 JOIN LATERAL (SELECT step,process_state FROM diagnostic_candidate_verification_events
                     WHERE request_id=q.id ORDER BY step DESC LIMIT 1) e ON true

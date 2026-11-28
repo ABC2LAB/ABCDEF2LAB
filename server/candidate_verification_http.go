@@ -687,6 +687,15 @@ func scanCandidateVerificationAttempt(scanner candidateVerificationScanner, extr
 	return row, step, binding, nil
 }
 
+func candidateLLMExecutionFailureReason(reason string) bool {
+	switch reason {
+	case "candidate_execution_unavailable", "candidate_auth_preparation_changed", "candidate_auth_failed", "candidate_auth_result_unknown", "candidate_auth_not_sent",
+		"candidate_login_in_progress", "candidate_login_unresolved":
+		return true
+	}
+	return false
+}
+
 func validateCandidateVerificationAttempt(row candidateVerificationAttempt, step int, binding candidateVerificationBinding, candidate db.DiagnosticCandidate, automatic report.CandidateAssessment) error {
 	if row.ID == "" || row.CandidateID != strconv.FormatInt(candidate.ID, 10) || !candidateVerificationKey.MatchString(row.RequestKey) || row.RequestedAt.IsZero() || row.Latest.At.IsZero() || row.Latest.At.Before(row.RequestedAt) ||
 		row.OriginalDigest != candidate.EvidenceDigest || row.OriginalVersion != candidate.EvidenceVersion || row.OriginalRunRef != candidate.RunRef || !candidateVerificationDigest.MatchString(row.Latest.SourcesDigest) || len(row.Latest.Sources) > 16<<10 {
@@ -720,11 +729,11 @@ func validateCandidateVerificationAttempt(row candidateVerificationAttempt, step
 				row.Latest.State == "failed" && (row.Latest.Reason == "final_model_unavailable" || row.Latest.Reason == "final_model_interrupted") ||
 				row.Latest.State == "completed" && row.Latest.Reason == "stored_model_evidence_checked")) ||
 			(step == 6 && !(row.Latest.State == "running" && row.Latest.Reason == "execution_started" ||
-				row.Latest.State == "failed" && row.Latest.Reason == "candidate_execution_unavailable" ||
+				row.Latest.State == "failed" && candidateLLMExecutionFailureReason(row.Latest.Reason) ||
 				row.Latest.State == "cancelled" && row.Latest.Reason == "candidate_execution_cancelled" ||
 				row.Latest.State == "expired" && row.Latest.Reason == "candidate_execution_timeout")) ||
 			(step == 7 && !(row.Latest.State == "evidence_ready" && row.Latest.Reason == "sealed_observations_available" ||
-				row.Latest.State == "failed" && row.Latest.Reason == "candidate_execution_unavailable" ||
+				row.Latest.State == "failed" && candidateLLMExecutionFailureReason(row.Latest.Reason) ||
 				row.Latest.State == "cancelled" && row.Latest.Reason == "candidate_execution_cancelled" ||
 				row.Latest.State == "expired" && row.Latest.Reason == "candidate_execution_timeout")) ||
 			(step == 8 && !(row.Latest.State == "assessing" && row.Latest.Reason == "final_model_started" ||

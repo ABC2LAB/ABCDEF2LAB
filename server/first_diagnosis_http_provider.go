@@ -84,6 +84,8 @@ type FirstDiagnosisHTTPHooks struct {
 	OnAcquire        func(context.Context, E2HTTPAcquired) error
 	// SealChecked는 E② Host 봉인 확인 결과 기록이다(StartFirstDiagnosisHTTP가 실행 역할 DB로 채운다).
 	SealChecked func(context.Context, E2HTTPSealCheck) error
+	// SelectedLogin은 선택 후보 학습 로그인 결과(값 없음)를 실행기에 준다(E2HTTPFileOptions.SelectedLogin).
+	SelectedLogin func(E2HTTPSelectedLoginOutcome)
 }
 
 func (FirstDiagnosisHTTPHooks) String() string   { return "server.FirstDiagnosisHTTPHooks[protected]" }
@@ -142,7 +144,8 @@ func NewFirstDiagnosisHTTPHost(ctx context.Context, cfg FirstDiagnosisHTTPHostCo
 	if len(hooks) == 1 {
 		hook = hooks[0]
 	}
-	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{HostSocket: hook.HostSocket, CaptureSelectedProof: cfg.CaptureSelectedProof, Workflow: hook.Workflow, RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire, PlannerLimits: cfg.PlannerLimits, WebSearch: cfg.WebSearch, SealChecked: hook.SealChecked})
+	options, err := LoadE2HTTPRuntimeOptions(ctx, E2HTTPFileOptions{HostSocket: hook.HostSocket, CaptureSelectedProof: cfg.CaptureSelectedProof, Workflow: hook.Workflow, RequestApprovals: hook.RequestApprovals, CheckAuthority: hook.CheckAuthority, PolicyFile: cfg.PolicyFile, Authority: authority, Supervisor: h, ObserveEvent: hook.ObserveEvent, ObserveResult: hook.ObserveResult, OnAcquire: hook.OnAcquire, PlannerLimits: cfg.PlannerLimits, WebSearch: cfg.WebSearch, SealChecked: hook.SealChecked,
+		SelectedLogin: hook.SelectedLogin})
 	if err != nil {
 		authority.revoke()
 		_ = authority.close()

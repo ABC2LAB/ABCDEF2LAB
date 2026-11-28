@@ -21,6 +21,7 @@ import (
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/e3contract"
+	"github.com/Autumn-27/artex/learnedlogin"
 	"github.com/Autumn-27/artex/server"
 )
 
@@ -43,7 +44,7 @@ func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual 
 func (b *urlPreparationRuntime) issueSelectedCandidate(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask) (launchConfig, error) {
 	if l == nil || l.productTarget == nil || l.productRegistry == nil || l.productConnection == nil ||
 		l.policy.Workflow != nil || l.policy.E3WriteConsent || l.policy.E3Resettable ||
-		len(l.policy.Rules) < 1 || len(l.policy.Rules) > 4 {
+		len(l.policy.Rules) < 1 || len(l.policy.Rules) > 5 {
 		return launchConfig{}, errPreparation
 	}
 	if l.policy.SelectedAccountRef == "" {
@@ -56,7 +57,19 @@ func (b *urlPreparationRuntime) issueSelectedCandidate(l *urlLoadedProfile, jobI
 		l.productAccounts[0].Label != l.policy.Auth.Accounts[0].Label || l.productAccounts[0].CredentialSHA256 != l.policy.Auth.Accounts[0].Credential.SHA256 {
 		return launchConfig{}, errPreparation
 	}
-	ordinary, loginRules := 0, 0
+	// 학습 로그인(선택 후보, docs/contracts/selected-candidate-learned-login.md)은 9칸 대신 학습 방법의 정확한 로그인 POST와
+	// (준비가 필요하면) 준비 GET 하나만 전용 규칙으로 싣는다.
+	var learned *learnedlogin.Method
+	if l.policy.Auth != nil {
+		learned = l.policy.Auth.LearnedMethod
+	}
+	loginPath, loginMethod := "", ""
+	if l.policy.Auth != nil && learned == nil {
+		loginPath, loginMethod = l.policy.Auth.Login.Path, l.policy.Auth.Login.Method
+	} else if learned != nil {
+		loginPath, loginMethod = learned.Path, "POST"
+	}
+	ordinary, loginRules, prepRules := 0, 0, 0
 	for _, rule := range l.policy.Rules {
 		if rule.Ref == "" || rule.PathScopeRef == "" || rule.Credentials != nil || len(rule.Methods) != 1 ||
 			rule.Origin != l.productTarget.Target.Origin || rule.ConnectIP != l.productConnection.IP ||
@@ -64,11 +77,17 @@ func (b *urlPreparationRuntime) issueSelectedCandidate(l *urlLoadedProfile, jobI
 			return launchConfig{}, errPreparation
 		}
 		if rule.Purpose == e2proxy.PurposeAuthPrep {
-			if l.policy.Auth == nil || rule.Ref != l.policy.Auth.RuleRef || rule.PathPrefix != l.policy.Auth.Login.Path ||
-				rule.Methods[0] != l.policy.Auth.Login.Method || rule.PathMatch != "" {
+			if l.policy.Auth == nil || rule.Ref != l.policy.Auth.RuleRef || rule.PathPrefix != loginPath ||
+				rule.Methods[0] != loginMethod || rule.PathMatch != "" {
 				return launchConfig{}, errPreparation
 			}
 			loginRules++
+		} else if rule.Purpose == e2proxy.PurposeLoginPrep {
+			if learned == nil || !learned.NeedsPrep() || rule.Ref != l.policy.Auth.PrepRuleRef || rule.PathPrefix != learned.PrepPath() ||
+				rule.Methods[0] != "GET" || rule.PathMatch != "" {
+				return launchConfig{}, errPreparation
+			}
+			prepRules++
 		} else if rule.Purpose == "" && rule.PathMatch == "exact" &&
 			(rule.Methods[0] == "GET" || rule.Methods[0] == "HEAD") {
 			ordinary++
@@ -76,7 +95,8 @@ func (b *urlPreparationRuntime) issueSelectedCandidate(l *urlLoadedProfile, jobI
 			return launchConfig{}, errPreparation
 		}
 	}
-	if ordinary < 1 || ordinary > 3 || (l.policy.Auth == nil && loginRules != 0) || (l.policy.Auth != nil && loginRules != 1) {
+	if ordinary < 1 || ordinary > 3 || (l.policy.Auth == nil && loginRules != 0) || (l.policy.Auth != nil && loginRules != 1) ||
+		prepRules != boolCount(learned != nil && learned.NeedsPrep()) {
 		return launchConfig{}, errPreparation
 	}
 	return b.issueForPurpose(l, jobID, actual, true, "")
@@ -428,4 +448,11 @@ func urlAuthorityUntil(now time.Time, runSeconds, shutdownSeconds int64, delegat
 		until = delegationUntil
 	}
 	return until, until.After(now) && until.Sub(now) <= server.MaxFirstDiagnosisHTTPAuthority
+}
+
+func boolCount(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }

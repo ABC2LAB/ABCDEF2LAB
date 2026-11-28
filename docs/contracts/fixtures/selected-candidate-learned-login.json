@@ -1,0 +1,88 @@
+{
+  "auth_preparation_examples": {
+    "configured_login_v1": {
+      "method": "POST",
+      "exact_path": "/login",
+      "login_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    "learned_login_v1_token": {
+      "method": "POST",
+      "exact_path": "/api/token",
+      "login_digest": "cd2fb18c653b4731da3268972d784aac33a0e05db01f3774338589ecb9981357",
+      "kind": "learned_login/v1",
+      "requests": 1,
+      "trust": "verified",
+      "verified_ref": "7777777777777777777777777777777777777777777777777777777777777777"
+    },
+    "learned_login_v2_separate_csrf": {
+      "method": "POST",
+      "exact_path": "/api/login",
+      "login_digest": "864c15700657af893075c8e81a3a8891f0e7fff549a01e8a7a2598c29a67d4d8",
+      "kind": "learned_login/v2",
+      "prep_method": "GET",
+      "prep_path": "/api/csrf",
+      "requests": 2,
+      "trust": "verified",
+      "verified_ref": "7777777777777777777777777777777777777777777777777777777777777777"
+    }
+  },
+  "execution_failure_reasons": [
+    "candidate_auth_preparation_changed",
+    "candidate_auth_failed",
+    "candidate_auth_result_unknown",
+    "candidate_auth_not_sent"
+  ],
+  "note": "합성 예시다. 값(아이디·비밀번호·세션·CSRF)은 계획·이력·모델 입력에 없다.",
+  "plan_digest": "09084aa3c7b22d7e0818575d1882e3e65c283b900de84c845813775b7cd26b08",
+  "plan_errors": [
+    {
+      "error": "candidate_auth_preparation_unavailable"
+    },
+    {
+      "error": "candidate_learned_login_unusable",
+      "reason": "learned_login_transport_unverified"
+    },
+    {
+      "error": "candidate_learned_login_unusable",
+      "reason": "login_attempts_exhausted"
+    },
+    {
+      "error": "verification_plan_changed"
+    }
+  ],
+  "plan_v2": {
+    "version": "candidate-llm-plan/v2",
+    "task_id": 1,
+    "candidate_id": 5,
+    "evidence_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "original_run_ref": "original-run",
+    "analysis_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "account_ref": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "auth_preparation": {
+      "method": "POST",
+      "exact_path": "/api/login",
+      "login_digest": "864c15700657af893075c8e81a3a8891f0e7fff549a01e8a7a2598c29a67d4d8",
+      "kind": "learned_login/v2",
+      "prep_method": "GET",
+      "prep_path": "/api/csrf",
+      "requests": 2,
+      "trust": "verified",
+      "verified_ref": "7777777777777777777777777777777777777777777777777777777777777777"
+    },
+    "target_id": "owned-target",
+    "target_revision": 3,
+    "origin": "https://synthetic.test:9443",
+    "actions": [
+      {
+        "purpose": "Repeat authenticated read",
+        "method": "GET",
+        "exact_path": "/rest/items"
+      }
+    ],
+    "max_requests": 3,
+    "duration_seconds": 90,
+    "target_approved_at": "2026-11-27T08:59:00Z",
+    "expires_at": "2026-11-27T09:10:00Z"
+  },
+  "schema": "jindo.selected-candidate-learned-login.fixture/v1"
+}

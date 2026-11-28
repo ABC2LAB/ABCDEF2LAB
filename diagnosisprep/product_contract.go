@@ -9,6 +9,7 @@ import (
 
 	"github.com/Autumn-27/artex/diagnosisflow"
 	"github.com/Autumn-27/artex/internal/pathscope"
+	"github.com/Autumn-27/artex/learnedlogin"
 )
 
 // MaxTargetRequests는 대상 하나·회차 하나에 승인할 수 있는 E② 요청 수의 코드 상한이다. 설치 정책(target_policy.max_requests)·
@@ -49,6 +50,44 @@ type ProductRequest struct {
 	Reset *ResetRequest `json:"reset,omitempty"`
 	// ExternalConsent는 외부 전송 동의 기록(external_consent_record)의 입력이다. 동의는 설치 단위로 한 번이다.
 	ExternalConsent *ExternalConsentRequest `json:"external_consent,omitempty"`
+	// AccountRef는 선택 후보 인증 준비 조회(target_login_candidate)의 원본 관찰 계정 참조(라벨·자격 판의 비밀 없는
+	// digest)다. 다른 조작에서는 비어 있다.
+	AccountRef string `json:"account_ref,omitempty"`
+}
+
+// 선택 후보 인증 준비 원천(target_login_candidate 응답 source).
+const (
+	CandidateLoginLearned    = "learned"
+	CandidateLoginConfigured = "configured"
+	CandidateLoginNone       = "none"
+)
+
+// ProductCandidateLogin은 선택 후보 검증이 원본 계정으로 다시 로그인할 방법이다(docs/contracts/selected-candidate-learned-login.md).
+// 값(아이디·비밀번호·세션·CSRF)은 없다. learned는 출처를 확인한 학습 방법과 그 수준, configured는 로그인 설정(9칸, 학습 방법이
+// 없을 때만), none은 쓸 방법이 없거나 학습 방법을 믿을 수 없다는 고정 사유다.
+// learned는 verified 방법뿐이고(2026-11-27 팀 결정) VerifiedRef는 그 검증 사건(E③ login_method_verified 줄)의 비밀 없는 참조다.
+type ProductCandidateLogin struct {
+	Source      string               `json:"source"`
+	Reason      string               `json:"reason,omitempty"`
+	Trust       string               `json:"trust,omitempty"`
+	VerifiedRef string               `json:"verified_ref,omitempty"`
+	Method      *learnedlogin.Method `json:"method,omitempty"`
+	Login       *TargetLogin         `json:"login,omitempty"`
+}
+
+var candidateLoginReason = regexp.MustCompile(`^[a-z][a-z0-9_]{2,63}$`)
+
+func validProductCandidateLogin(c ProductCandidateLogin) bool {
+	switch c.Source {
+	case CandidateLoginLearned:
+		return c.Reason == "" && c.Login == nil && c.Method != nil && c.Method.Validate() == "" && c.Trust == "verified" &&
+			candidateControlDigest.MatchString(c.VerifiedRef)
+	case CandidateLoginConfigured:
+		return c.Reason == "" && c.Trust == "" && c.VerifiedRef == "" && c.Method == nil && c.Login != nil && ValidTargetLogin(*c.Login)
+	case CandidateLoginNone:
+		return candidateLoginReason.MatchString(c.Reason) && c.Trust == "" && c.VerifiedRef == "" && c.Method == nil && c.Login == nil
+	}
+	return false
 }
 
 // ExternalConsentRequest는 관리자가 화면의 외부 전송 동의 문장에 동의했다는 진술이다(설치 입력으로 동의하지 않은 기존
@@ -240,6 +279,8 @@ type ProductResponse struct {
 	PolicySource *ProductPolicySource `json:"policy_source,omitempty"`
 	// Confirmation은 policy_source의 결과로 같이 주는 확정 단계 결과 상태다(제품 판정 목록 결정 3).
 	Confirmation *ProductConfirmationState `json:"confirmation,omitempty"`
+	// CandidateLogin은 target_login_candidate의 결과다.
+	CandidateLogin *ProductCandidateLogin `json:"candidate_login,omitempty"`
 }
 
 func validProductAccount(a ProductAccount) bool {
@@ -251,6 +292,9 @@ func validProductRequest(r *ProductRequest) bool {
 		return false
 	}
 	if r.Operation != "resolve" && r.TargetURL != "" {
+		return false
+	}
+	if (r.Operation == "target_login_candidate") != (r.AccountRef != "") || r.AccountRef != "" && !candidateControlDigest.MatchString(r.AccountRef) {
 		return false
 	}
 	// 외부 전송 동의는 설치 단위라 대상·작업·모델 칸이 없다.
@@ -327,7 +371,7 @@ func validProductRequest(r *ProductRequest) bool {
 			return false
 		}
 		switch r.Operation {
-		case "target_login":
+		case "target_login", "target_login_candidate":
 			return r.Login == nil
 		case "target_login_set":
 			return r.Login != nil && ValidTargetLogin(*r.Login)

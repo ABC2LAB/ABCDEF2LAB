@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -22,16 +23,24 @@ import (
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
+	"github.com/Autumn-27/artex/learnedlogin"
 )
 
 // E2HTTPFileAuth는 실행 정책의 인증 준비 칸이다(C14 구현 설계 2·4, docs/account-login-decision.md). 실행 시작 때 서버가
 // 계정마다 로그인 요청을 한 번 보낸다. 로그인 방식(앱별 설정)과 인증 준비 규칙 참조, 계정별 자격 보호 파일 pin만 담고
 // 자격 값은 담지 않는다. 자격 파일은 실행 결속 디렉터리 안에 있고 SHA-256으로 고정한다.
 type E2HTTPFileAuth struct {
-	PasswordResponse string                    `json:"password_response,omitempty"`
-	RuleRef          string                    `json:"rule_ref"`
-	Login            diagnosisprep.TargetLogin `json:"login"`
-	Accounts         []E2HTTPFileAuthAccount   `json:"accounts"`
+	PasswordResponse string `json:"password_response,omitempty"`
+	RuleRef          string `json:"rule_ref"`
+	// PrepRuleRef는 선택 후보 학습 로그인의 준비 GET 전용 규칙(e2proxy.PurposeLoginPrep)이다. 준비가 필요 없는 방법이나
+	// 로그인 설정(9칸) 인증 준비에서는 비운다.
+	PrepRuleRef string                    `json:"prep_rule_ref,omitempty"`
+	Login       diagnosisprep.TargetLogin `json:"login"`
+	// LearnedMethod는 선택 후보 검증 실행의 학습 로그인 방법이다(docs/contracts/selected-candidate-learned-login.md). 있으면
+	// Login(9칸)은 비어 있어야 하고, 계정 하나·선택 실행(SelectedAccountRef)에서만 받는다. 방법에는 값이 없다(칸 이름·경로·
+	// 세션 자리만). 자격 값은 계정 pin 파일에서만 읽는다.
+	LearnedMethod *learnedlogin.Method    `json:"learned_method,omitempty"`
+	Accounts      []E2HTTPFileAuthAccount `json:"accounts"`
 	// ModelLogin은 모델이 직접 로그인하는 회차다(사용자 결정 2026-11-26, docs/contracts/model-login-attempts.md). 켜면 실행을
 	// 잡을 때 프로그램이 로그인하지 않고 결속 계정의 자격을 Worker 지침으로 준다. 끈 정책(선택 후보 검증 회차·이전 결속)은
 	// 지금처럼 프로그램이 인증 준비로 로그인한다. 확정 단계 다시 로그인은 둘 다 프로그램이 한다.
@@ -84,6 +93,18 @@ type E2HTTPAuthResult struct {
 }
 
 func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2HTTPFileRule) bool {
+	prepRules := 0
+	for _, r := range rules {
+		if r.Purpose == e2proxy.PurposeLoginPrep {
+			prepRules++
+		}
+	}
+	if a != nil && a.LearnedMethod != nil {
+		return validE2HTTPLearnedAuth(*a, mode, rules, prepRules)
+	}
+	if prepRules != 0 || a != nil && a.PrepRuleRef != "" {
+		return false
+	}
 	if a == nil {
 		// 시험 계정 모드는 인증 준비 칸이 있는 정책에서만 받는다(C14 결정 6). 계정 없이 모델이 쓴 자격을 그대로 보내는 실행은 없다.
 		return mode != e2proxy.HeaderTestAccountPassthrough
@@ -108,6 +129,54 @@ func validE2HTTPFileAuth(a *E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2H
 		seen[account.Label] = true
 	}
 	return true
+}
+
+// validE2HTTPLearnedAuth는 선택 후보 학습 로그인 칸이다. 계정 하나, 모델 로그인 아님, 9칸 비움, 방법이 재현 가능하고, 로그인
+// POST 규칙(auth_prep)·준비 GET 규칙(login_prep, 준비가 필요할 때만 하나)이 방법의 정확한 경로·메서드와 같아야 한다.
+func validE2HTTPLearnedAuth(a E2HTTPFileAuth, mode e2proxy.HeaderMode, rules []E2HTTPFileRule, prepRules int) bool {
+	m := *a.LearnedMethod
+	if mode != e2proxy.HeaderTestAccountPassthrough || a.ModelLogin || !reflect.DeepEqual(a.Login, diagnosisprep.TargetLogin{}) || len(a.Accounts) != 1 ||
+		m.Validate() != "" || m.Method != http.MethodPost ||
+		a.PasswordResponse != "" && a.PasswordResponse != e2proxy.PasswordResponseMaskSpans && a.PasswordResponse != e2proxy.PasswordResponseModelVisible ||
+		!diagnosisprep.ValidAccountLabel(a.Accounts[0].Label) || !e2HTTPHostRef.MatchString(a.Accounts[0].Credential.File) || !e2HTTPHash(a.Accounts[0].Credential.SHA256) {
+		return false
+	}
+	login, prep, loginRules := false, false, 0
+	for _, r := range rules {
+		if r.Purpose == e2proxy.PurposeAuthPrep {
+			loginRules++
+		}
+		switch r.Ref {
+		case a.RuleRef:
+			login = r.Purpose == e2proxy.PurposeAuthPrep && r.PathPrefix == m.Path && len(r.Methods) == 1 && r.Methods[0] == http.MethodPost
+		case a.PrepRuleRef:
+			prep = a.PrepRuleRef != "" && r.Purpose == e2proxy.PurposeLoginPrep && r.PathPrefix == m.PrepPath() && len(r.Methods) == 1 &&
+				r.Methods[0] == http.MethodGet
+		}
+	}
+	if loginRules != 1 {
+		return false
+	}
+	if m.NeedsPrep() {
+		return login && prep && prepRules == 1
+	}
+	return login && a.PrepRuleRef == "" && prepRules == 0
+}
+
+// e2HTTPAuthCredentialHeader는 세션 귀속을 볼 대상 고유 자격 헤더다. 학습 방법은 배운 세션 전달 자리(헤더 이름)에서,
+// 로그인 설정은 9칸의 헤더 칸에서 온다. Authorization·Cookie는 늘 보므로 빈 값이다.
+func e2HTTPAuthCredentialHeader(a *E2HTTPFileAuth) string {
+	if a == nil {
+		return ""
+	}
+	if a.LearnedMethod == nil {
+		return a.Login.Header
+	}
+	name, _, ok := learnedlogin.SentAsHeader(a.LearnedMethod.SessionSentAs)
+	if !ok || name == "Authorization" {
+		return ""
+	}
+	return name
 }
 
 var errAuthLoginFailed = errors.New("auth_login_failed")
@@ -628,11 +697,13 @@ func authPrepOne(ctx context.Context, call *e2proxy.Call, execution *e2proxy.Exe
 		return E2HTTPAuthNotSent
 	}
 	req.Header.Set("Content-Type", contentType)
-	session, receipt, err := call.AuthPrep(ctx, req, authExtractor(login))
+	softFail := false
+	session, receipt, err := call.AuthPrep(ctx, req, authExtractor(login, &softFail))
 	switch {
 	case err == nil:
 	case errors.Is(err, e2proxy.ErrAuthSession):
-		if receipt.StatusCode >= http.StatusBadRequest {
+		// 400 이상 또는 400 미만이어도 로그인 화면을 다시 준 응답(soft fail)은 분명한 로그인 실패다.
+		if receipt.StatusCode >= http.StatusBadRequest || softFail {
 			reason = "auth_login_rejected"
 			return E2HTTPAuthLoginFailed
 		}
@@ -673,10 +744,18 @@ func authPrepBody(login diagnosisprep.TargetLogin, username, password string) ([
 	return bytes.TrimSpace(b.Bytes()), "application/json"
 }
 
-// authExtractor는 로그인 방식의 세션 위치에서 보낼 헤더를 뽑는다. 4xx·5xx는 로그인 실패다.
-func authExtractor(login diagnosisprep.TargetLogin) e2proxy.AuthExtractor {
+// authExtractor는 로그인 방식의 세션 위치에서 보낼 헤더를 뽑는다. 4xx·5xx는 로그인 실패다. 400 미만이어도 로그인 화면을
+// 다시 준 응답(HTML 비밀번호 칸, 같은 origin 로그인 경로로의 리다이렉트)은 세션 쿠키가 와도 실패다(soft fail, 2026-11-27 팀
+// 결정: 실패해도 200 + 로그인 화면 + 세션 쿠키를 주는 앱). 그때 softFail을 켠다. 판정은 학습 로그인과 같은 판독기를 쓴다.
+func authExtractor(login diagnosisprep.TargetLogin, softFail *bool) e2proxy.AuthExtractor {
 	return func(resp *http.Response, body []byte) (http.Header, error) {
 		if resp.StatusCode >= http.StatusBadRequest {
+			return nil, errAuthLoginFailed
+		}
+		if authLoginScreenReturned(login, resp, body) {
+			if softFail != nil {
+				*softFail = true
+			}
 			return nil, errAuthLoginFailed
 		}
 		if len(login.Cookies) > 0 {
@@ -742,4 +821,20 @@ func e2HTTPPasswordResponse(auth *E2HTTPFileAuth) string {
 		return ""
 	}
 	return auth.PasswordResponse
+}
+
+// authLoginScreenReturned는 로그인 응답이 로그인 화면을 다시 줬는지다: HTML 응답의 비밀번호 칸, 또는 같은 origin의 로그인
+// 경로로 가는 리다이렉트다(learnedlogin.CheckLogin과 같은 실패 신호).
+func authLoginScreenReturned(login diagnosisprep.TargetLogin, resp *http.Response, body []byte) bool {
+	copied := learnedResponse(resp, body)
+	defer clear(copied.Body)
+	if learnedlogin.HasPasswordInput(copied) {
+		return true
+	}
+	if resp.Request == nil || resp.Request.URL == nil {
+		return false
+	}
+	origin := &url.URL{Scheme: resp.Request.URL.Scheme, Host: resp.Request.URL.Host}
+	redirect := learnedlogin.RedirectPath(origin, copied)
+	return redirect != "" && redirect == login.Path
 }

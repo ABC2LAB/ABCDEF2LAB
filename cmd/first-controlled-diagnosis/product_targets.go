@@ -85,6 +85,9 @@ type productTargetRegistry struct {
 	accountJournal productContactJournal
 	accountDir     string
 	accounts       map[string]map[string]*productAccountState
+	// candidateActive는 이 프로세스가 잡은 선택 후보 학습 로그인 예약이다(대상·라벨 → 예약 참조,
+	// candidate_login_reservation.go). 저널에 열려 있지만 여기 없는 예약은 재시작 뒤 남은 결과 불명 예약이다.
+	candidateActive map[string]string
 	// declarationJournal은 대상 정책 선언 저널이다(product_declarations.go). declarations는 대상별 마지막 선언이다.
 	declarationJournal productContactJournal
 	declarations       map[string]*productDeclarationState

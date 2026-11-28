@@ -123,8 +123,10 @@ type Rule struct {
 // PurposeAuthPrep은 인증 준비(로그인) 전용 규칙 표시다.
 const PurposeAuthPrep = "auth_prep"
 
-// 확정 단계 학습 로그인 재사용(docs/contracts/model-login-attempts.md §6-2)의 송신 목적이다. 규칙에 적는 표시가 아니라
-// 호출 때만 쓰는 목적이고, 확정 단계 다시 로그인 호출(BeginE3ReloginCall)만 쓸 수 있다. 전용 규칙 대신 그 실행의 Worker
+// 학습 로그인 재사용의 송신 목적이다. 확정 단계(docs/contracts/model-login-attempts.md §6-2)에서는 규칙에 적는 표시가
+// 아니라 호출 때만 쓰는 목적이고, 확정 단계 다시 로그인 호출(BeginE3ReloginCall)만 쓸 수 있다. 선택 후보 검증 실행은
+// 전용 호출(BeginSelectedLoginCall)로 같은 목적을 쓰되 계획에 결속한 전용 규칙(auth_prep POST·login_prep GET 규칙)만 맞춘다
+// (docs/contracts/selected-candidate-learned-login.md). 전용 규칙 대신 그 실행의 Worker
 // 승인 규칙(대상 승인 경로·메서드 = 쓰기 승인 범위)과 운영자 제외 경로를 그대로 적용한다(§2-2: 확정 단계 로그인은 예외 없이
 // 쓰기 승인 범위를 따른다). 응답은 도구·모델로 가지 않고 호출자의 판정 함수만 본다.
 const (

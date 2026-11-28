@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
@@ -57,6 +58,9 @@ type E2HTTPLearnedLoginResult struct {
 	LoginPaths []string
 	// BindingRef는 성공했을 때 새 세션에 발급한 계정 결속 참조다. 확정 단계 신원 요청이 이 세션으로 나갔는지 보는 데 쓴다.
 	BindingRef string
+	// LoginForwardAttempted는 로그인 POST를 E②가 대상으로 전달하기 시작했다는 영수증 칸이다. Transport가 not_sent여도(감사
+	// 실패 등 기본 분기) 이 값이 참이면 대상이 받았을 수 있다. 선택 후보 verified 해제 판단이 쓴다.
+	LoginForwardAttempted bool
 }
 
 // E2HTTPLoginContrastResult는 세션 없는 대조 GET 하나의 결과다(§4 프로그램 대조 요청).
@@ -120,6 +124,26 @@ func learnedResponse(resp *http.Response, body []byte) learnedlogin.Response {
 // 세션 출력 가림 등록. 어느 단계든 값을 지어내지 않고, 결과 불명 로그인은 다시 보내지 않는다. 쿠키는 이 계정 이번 로그인
 // 전용 문맥에만 담는다.
 func e2HTTPLearnedLogin(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth, counter *e2HTTPRefreshCounter, program *e2HTTPProgramCalls, req E2HTTPLearnedLoginRequest) (out E2HTTPLearnedLoginResult, session http.Header) {
+	return e2HTTPLearnedLoginVia(ctx, execution, dir, origin, auth, counter, program, req, e2HTTPLearnedLoginConfirmation)
+}
+
+// e2HTTPLearnedLoginRoute는 학습 로그인을 어느 E② 호출로 보내는지다. 확정 단계는 확정 몫 다시 로그인 호출(Worker 승인
+// 규칙), 선택 후보 검증 실행은 계획에 결속한 전용 규칙만 쓰는 호출이다. 요청 재구성·판정·세션 처리는 같다.
+type e2HTTPLearnedLoginRoute struct {
+	begin func(context.Context, *e2proxy.Execution) (*e2proxy.Call, error)
+	stage string
+}
+
+var (
+	e2HTTPLearnedLoginConfirmation = e2HTTPLearnedLoginRoute{stage: "e3_confirmation", begin: func(ctx context.Context, e *e2proxy.Execution) (*e2proxy.Call, error) {
+		return e.BeginE3ReloginCall(ctx, "e3-learned-login")
+	}}
+	e2HTTPLearnedLoginSelected = e2HTTPLearnedLoginRoute{stage: "execution", begin: func(ctx context.Context, e *e2proxy.Execution) (*e2proxy.Call, error) {
+		return e.BeginSelectedLoginCall(ctx, "selected-learned-login")
+	}}
+)
+
+func e2HTTPLearnedLoginVia(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth, counter *e2HTTPRefreshCounter, program *e2HTTPProgramCalls, req E2HTTPLearnedLoginRequest, route e2HTTPLearnedLoginRoute) (out E2HTTPLearnedLoginResult, session http.Header) {
 	out = E2HTTPLearnedLoginResult{Result: E2HTTPAuthNotSent, Reason: learnedlogin.ReasonNotSent, Transport: learnedlogin.TransportNotSent}
 	m := req.Method.Clone()
 	out.LoginPaths = []string{m.Path}
@@ -133,7 +157,7 @@ func e2HTTPLearnedLogin(ctx context.Context, execution *e2proxy.Execution, dir, 
 	if execution == nil || ctx == nil || ctx.Err() != nil || account == nil || counter == nil || parseErr != nil || originURL.Host == "" {
 		return out, nil
 	}
-	defer func() { logLearnedLogin(ctx, req.Label, out) }()
+	defer func() { logLearnedLogin(ctx, route.stage, req.Label, out) }()
 	if reason := m.Validate(); reason != "" {
 		out.Reason = reason
 		return out, nil
@@ -180,7 +204,10 @@ func e2HTTPLearnedLogin(ctx context.Context, execution *e2proxy.Execution, dir, 
 		out.Reason = learnedlogin.ReasonCredentialUnavailable
 		return out, nil
 	}
-	call, err := execution.BeginE3ReloginCall(ctx, "e3-learned-login")
+	if route.begin == nil {
+		return out, nil
+	}
+	call, err := route.begin(ctx, execution)
 	if err != nil {
 		return out, nil
 	}
@@ -278,6 +305,7 @@ func e2HTTPLearnedLogin(ctx context.Context, execution *e2proxy.Execution, dir, 
 	if receipt.ForwardAttempted {
 		out.Requests++
 	}
+	out.LoginForwardAttempted = receipt.ForwardAttempted || receipt.RequestWritten
 	out.Status, out.RedirectPath, out.LoginFormReturned = receipt.StatusCode, checked.RedirectPath, checked.LoginFormReturned
 	switch {
 	case loginErr == nil:
@@ -394,7 +422,7 @@ func contrastStatus(out E2HTTPLoginContrastResult) string {
 }
 
 // logLearnedLogin은 계정별 학습 로그인 결과를 고정 코드로 남긴다(값 없음).
-func logLearnedLogin(ctx context.Context, label string, out E2HTTPLearnedLoginResult) {
+func logLearnedLogin(ctx context.Context, stage, label string, out E2HTTPLearnedLoginResult) {
 	status := "failed"
 	switch out.Result {
 	case E2HTTPAuthAuthenticated:
@@ -404,7 +432,7 @@ func logLearnedLogin(ctx context.Context, label string, out E2HTTPLearnedLoginRe
 	case E2HTTPAuthNotSent, E2HTTPRefreshLimit, E2HTTPRefreshCooldown:
 		status = "not_sent"
 	}
-	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "account_auth_checked", Stage: "e3_confirmation",
+	_ = diagnosticlog.Emit(ctx, diagnosticlog.Event{Component: "server", Event: "account_auth_checked", Stage: stage,
 		Status: status, ReasonCode: learnedLogReason(out.Reason), AccountLabel: label})
 }
 
@@ -415,4 +443,49 @@ func learnedLogReason(reason learnedlogin.Reason) string {
 		return "learned_login_attempts_exhausted"
 	}
 	return string(reason)
+}
+
+// e2HTTPSelectedLearnedLogin은 선택 후보 검증 실행의 인증 준비다(docs/contracts/selected-candidate-learned-login.md). 계획에
+// 결속한 계정 하나를 학습 방법으로 한 번 로그인한다. 준비 GET(필요하면 하나)과 로그인 POST는 전용 규칙만 쓰는 호출로 나가고
+// 실행 예산을 쓴다. 다시 보내지 않으며(결과 불명 포함), 성공해도 E③ verified가 아니다(세션을 받았다는 뜻뿐). 세션은 실행
+// 메모리의 보호 세션 저장소에만 둔다.
+func e2HTTPSelectedLearnedLogin(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth, report func(E2HTTPSelectedLoginOutcome)) (E2HTTPAuthResult, error) {
+	out := E2HTTPAuthResult{AccountAuth: map[string]string{}, Sessions: E2HTTPSessions{}}
+	if execution == nil || ctx == nil || auth.LearnedMethod == nil || len(auth.Accounts) != 1 {
+		return out, ErrE2HTTPHost
+	}
+	label := auth.Accounts[0].Label
+	program := newE2HTTPProgramCalls()
+	result, session := e2HTTPLearnedLoginVia(ctx, execution, dir, origin, auth, &e2HTTPRefreshCounter{}, program,
+		E2HTTPLearnedLoginRequest{Label: label, Method: auth.LearnedMethod.Clone()}, e2HTTPLearnedLoginSelected)
+	out.AccountAuth[label] = result.Result
+	if result.Result == E2HTTPAuthAuthenticated && len(session) > 0 {
+		out.Sessions[label] = session
+	} else if result.Result == E2HTTPAuthAuthenticated {
+		out.AccountAuth[label] = E2HTTPAuthSessionNotFound
+	}
+	if report != nil {
+		report(E2HTTPSelectedLoginOutcome{Label: label, Result: out.AccountAuth[label], Transport: result.Transport,
+			LoginForwardAttempted: result.LoginForwardAttempted})
+	}
+	for ref := range program.snapshot() {
+		out.CallRefs = append(out.CallRefs, ref)
+	}
+	sort.Strings(out.CallRefs)
+	return out, nil
+}
+
+// E2HTTPSelectedLoginOutcome은 선택 후보 학습 로그인 한 번의 결과다(값 없음). 실행기는 이것으로 verified 유지·해제를 정한다
+// (docs/contracts/selected-candidate-learned-login.md §5). Result는 인증 준비 고정 결과, Transport는 로그인 POST 기록 칸
+// (sent·not_sent·result_unknown), LoginForwardAttempted는 E② 영수증의 전달 시작 여부다.
+type E2HTTPSelectedLoginOutcome struct {
+	Label                 string
+	Result                string
+	Transport             string
+	LoginForwardAttempted bool
+}
+
+// LoginPossiblySent는 로그인 POST가 대상에 닿았을 수 있는지다. 기록이 not_sent이고 전달을 시작하지 않았을 때만 아니다.
+func (o E2HTTPSelectedLoginOutcome) LoginPossiblySent() bool {
+	return o.Transport != learnedlogin.TransportNotSent || o.LoginForwardAttempted
 }

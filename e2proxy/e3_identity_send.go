@@ -136,7 +136,7 @@ func (e *Execution) SendE3Identity(ctx context.Context, in E3IdentityInput) (Eve
 	if err != nil || e3contract.ContainsMarker([]byte(request.URL.String()), in.Marker) {
 		return Event{}, ErrConfig
 	}
-	call, err := e.beginCall(ctx, 0, ProgramE3Identity, "", false)
+	call, err := e.beginCall(ctx, 0, ProgramE3Identity, "", false, false)
 	if err != nil {
 		return Event{}, err
 	}

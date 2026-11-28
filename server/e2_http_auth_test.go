@@ -261,22 +261,22 @@ func TestE2HTTPAuthExtractor(t *testing.T) {
 	cookies := cookieAuth().Login
 	cookies.Cookies = []string{"a", "b"}
 	resp := &http.Response{StatusCode: 200, Header: http.Header{"Set-Cookie": {"a=one-value-123"}}}
-	if _, err := authExtractor(cookies)(resp, nil); err == nil {
+	if _, err := authExtractor(cookies, nil)(resp, nil); err == nil {
 		t.Fatal("partial cookie set accepted")
 	}
 	resp.Header.Add("Set-Cookie", "b=two-value-456")
-	if h, err := authExtractor(cookies)(resp, nil); err != nil || h.Get("Cookie") != "a=one-value-123; b=two-value-456" {
+	if h, err := authExtractor(cookies, nil)(resp, nil); err != nil || h.Get("Cookie") != "a=one-value-123; b=two-value-456" {
 		t.Fatalf("cookies: %v %v", h, err)
 	}
 	token := cookieAuth().Login
 	token.Cookies, token.JSONField, token.Header, token.Prefix = nil, "data.token", "Authorization", "Bearer "
 	for body, ok := range map[string]bool{`{"data":{"token":"tok-123456"}}`: true, `{"data":{"token":5}}`: false, `{"data":"x"}`: false, `{"data":{"token":""}}`: false, `not json`: false} {
-		_, err := authExtractor(token)(&http.Response{StatusCode: 200, Header: http.Header{}}, []byte(body))
+		_, err := authExtractor(token, nil)(&http.Response{StatusCode: 200, Header: http.Header{}}, []byte(body))
 		if (err == nil) != ok {
 			t.Errorf("%s: %v", body, err)
 		}
 	}
-	if _, err := authExtractor(token)(&http.Response{StatusCode: 401, Header: http.Header{}}, []byte(`{"data":{"token":"tok-123456"}}`)); err == nil {
+	if _, err := authExtractor(token, nil)(&http.Response{StatusCode: 401, Header: http.Header{}}, []byte(`{"data":{"token":"tok-123456"}}`)); err == nil {
 		t.Fatal("401 treated as a session")
 	}
 }

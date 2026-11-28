@@ -102,7 +102,7 @@ JOIN tasks t ON t.id=x.followup_task_id WHERE q.id=$1`, s.requestID).Scan(&origi
 	var plan CandidateLLMPlan
 	if strictJSON(planJSON, &plan) != nil || plan.TaskID != originalTask || plan.CandidateID != candidateID ||
 		plan.EvidenceDigest != originalDigest || plan.OriginalRunRef != originalRun ||
-		plan.MaxRequests != len(plan.Actions)+boolInt(plan.AuthPreparation != nil) {
+		plan.MaxRequests != len(plan.Actions)+CandidateLLMAuthRequests(plan.AuthPreparation) {
 		return ErrCandidateExecutionBinding
 	}
 	digest, err := candidateLLMPlanDigest(plan)

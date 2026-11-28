@@ -209,7 +209,7 @@ func (r *FirstDiagnosisHTTPRuntime) RunSelectedCandidateGET(ctx context.Context,
 }
 
 func (r *FirstDiagnosisHTTPRuntime) RunSelectedCandidateActions(ctx context.Context, intentID int64, origin string,
-	actions []CandidateLLMPlanAction) ([]e2runner.TrustedResult, error) {
+	actions []CandidateLLMPlanAction, accountBound bool) ([]e2runner.TrustedResult, error) {
 	if r == nil || r.server == nil || r.server.m == nil || r.host == nil || r.closing.Load() || r.closed.Load() ||
 		intentID <= 0 || r.host.CheckRoot(ctx) != nil {
 		return nil, ErrCandidateExecutionBinding
@@ -222,7 +222,7 @@ func (r *FirstDiagnosisHTTPRuntime) RunSelectedCandidateActions(ctx context.Cont
 	if err != nil || intent == nil || intent.Kind != db.KindIntent {
 		return nil, ErrCandidateExecutionBinding
 	}
-	return r.host.runtime.runSelectedCandidateActions(ctx, task, intent, origin, actions)
+	return r.host.runtime.runSelectedCandidateActions(ctx, task, intent, origin, actions, accountBound)
 }
 
 func (r *FirstDiagnosisHTTPRuntime) SelectedCandidateResults() []e2runner.TrustedResult {
