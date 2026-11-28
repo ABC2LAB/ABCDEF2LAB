@@ -7,14 +7,14 @@
         "comparisons": [
           {
             "left": {
-              "call_ref": "g05-call-0",
-              "attempt_ref": "g05-attempt-0",
-              "observation_digest": "255c5b5e10228b49c23f86235e04fbb98dfef61f41f9ee2f98924d03c286da02"
+              "call_ref": "eval-call-0",
+              "attempt_ref": "eval-attempt-0",
+              "observation_digest": "3ed222dc2ad474ada66176404b9a38a84e3839da71aff583bc675091a66bed8f"
             },
             "right": {
-              "call_ref": "g05-call-1",
-              "attempt_ref": "g05-attempt-1",
-              "observation_digest": "90ba25f721542f33ef6d70a2fb69b3fb0d069a661f2628325965cf4040b01539"
+              "call_ref": "eval-call-1",
+              "attempt_ref": "eval-attempt-1",
+              "observation_digest": "bd44b1fabd77b22020eeebe763c81f7b2a5463c94a0cfe9fc9c9b72f4c600f01"
             },
             "comparison": {
               "schema": "jindo.candidate-response-comparison/v1",
@@ -72,14 +72,14 @@
         "verification_criteria": "The field is absent.",
         "sources": [
           {
-            "call_ref": "g05-call-0",
-            "attempt_ref": "g05-attempt-0",
-            "observation_digest": "255c5b5e10228b49c23f86235e04fbb98dfef61f41f9ee2f98924d03c286da02"
+            "call_ref": "eval-call-0",
+            "attempt_ref": "eval-attempt-0",
+            "observation_digest": "3ed222dc2ad474ada66176404b9a38a84e3839da71aff583bc675091a66bed8f"
           },
           {
-            "call_ref": "g05-call-1",
-            "attempt_ref": "g05-attempt-1",
-            "observation_digest": "90ba25f721542f33ef6d70a2fb69b3fb0d069a661f2628325965cf4040b01539"
+            "call_ref": "eval-call-1",
+            "attempt_ref": "eval-attempt-1",
+            "observation_digest": "bd44b1fabd77b22020eeebe763c81f7b2a5463c94a0cfe9fc9c9b72f4c600f01"
           }
         ],
         "evidence_gate": "selected/evidence-gate-v2"
@@ -92,14 +92,14 @@
         "comparisons": [
           {
             "left": {
-              "call_ref": "g05-call-0",
-              "attempt_ref": "g05-attempt-0",
-              "observation_digest": "255c5b5e10228b49c23f86235e04fbb98dfef61f41f9ee2f98924d03c286da02"
+              "call_ref": "eval-call-0",
+              "attempt_ref": "eval-attempt-0",
+              "observation_digest": "3ed222dc2ad474ada66176404b9a38a84e3839da71aff583bc675091a66bed8f"
             },
             "right": {
-              "call_ref": "g05-call-1",
-              "attempt_ref": "g05-attempt-1",
-              "observation_digest": "90ba25f721542f33ef6d70a2fb69b3fb0d069a661f2628325965cf4040b01539"
+              "call_ref": "eval-call-1",
+              "attempt_ref": "eval-attempt-1",
+              "observation_digest": "bd44b1fabd77b22020eeebe763c81f7b2a5463c94a0cfe9fc9c9b72f4c600f01"
             },
             "comparison": {
               "schema": "jindo.candidate-response-comparison/v1",
@@ -156,14 +156,14 @@
         "verification_criteria": "The field is absent.",
         "sources": [
           {
-            "call_ref": "g05-call-0",
-            "attempt_ref": "g05-attempt-0",
-            "observation_digest": "255c5b5e10228b49c23f86235e04fbb98dfef61f41f9ee2f98924d03c286da02"
+            "call_ref": "eval-call-0",
+            "attempt_ref": "eval-attempt-0",
+            "observation_digest": "3ed222dc2ad474ada66176404b9a38a84e3839da71aff583bc675091a66bed8f"
           },
           {
-            "call_ref": "g05-call-1",
-            "attempt_ref": "g05-attempt-1",
-            "observation_digest": "90ba25f721542f33ef6d70a2fb69b3fb0d069a661f2628325965cf4040b01539"
+            "call_ref": "eval-call-1",
+            "attempt_ref": "eval-attempt-1",
+            "observation_digest": "bd44b1fabd77b22020eeebe763c81f7b2a5463c94a0cfe9fc9c9b72f4c600f01"
           }
         ],
         "evidence_gate": "selected/evidence-gate-v2"
