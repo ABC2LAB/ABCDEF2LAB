@@ -30,6 +30,7 @@ MODES = {
     "S09C": "selected-model-structured-nosniff",
     "S09R": "selected-model-structured-nosniff",
     "S09M": "selected-model-nosniff",
+    "S10": "selected-model-control-citation-nosniff",
 }
 
 

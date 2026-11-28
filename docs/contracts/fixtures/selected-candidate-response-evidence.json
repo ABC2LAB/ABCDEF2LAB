@@ -1,4 +1,176 @@
 {
+  "gate_v2_example": {
+    "allowed": {
+      "evidence_review": {
+        "version": "selected/evidence-gate-v2",
+        "requirement": "response_structure",
+        "comparisons": [
+          {
+            "left": {
+              "call_ref": "eval-call-0",
+              "attempt_ref": "eval-attempt-0",
+              "observation_digest": "3ed222dc2ad474ada66176404b9a38a84e3839da71aff583bc675091a66bed8f"
+            },
+            "right": {
+              "call_ref": "eval-call-1",
+              "attempt_ref": "eval-attempt-1",
+              "observation_digest": "bd44b1fabd77b22020eeebe763c81f7b2a5463c94a0cfe9fc9c9b72f4c600f01"
+            },
+            "comparison": {
+              "schema": "jindo.candidate-response-comparison/v1",
+              "left": "original",
+              "right": "reproduction",
+              "relation": "equivalent",
+              "not_compared": [
+                "credential_value"
+              ],
+              "similarity": 100,
+              "body_bytes": [
+                139,
+                139
+              ]
+            }
+          }
+        ],
+        "confirm_allowed": true,
+        "negative_allowed": true,
+        "claim": {
+          "claim_category": "data_exposure",
+          "confirm_needs_any_of": [
+            [
+              "specific_error_signal"
+            ],
+            [
+              "disclosure_header"
+            ],
+            [
+              "structured_content",
+              "business_rule_statement"
+            ]
+          ],
+          "normal_control": "useful",
+          "observed_facts": [
+            "business_rule_statement",
+            "response_headers",
+            "structured_content"
+          ],
+          "satisfied_by": [
+            "structured_content",
+            "business_rule_statement"
+          ]
+        }
+      },
+      "final_verdict": {
+        "version": "selected/final-v1",
+        "candidate_id": 1,
+        "verdict": "confirmed",
+        "claim": "Password hashes are returned to an ordinary user.",
+        "normal_explanation": "None found.",
+        "reason": "Both audited reads carry data[].password.",
+        "limitations": "Read only.",
+        "remediation": "Remove the field.",
+        "verification_criteria": "The field is absent.",
+        "sources": [
+          {
+            "call_ref": "eval-call-0",
+            "attempt_ref": "eval-attempt-0",
+            "observation_digest": "3ed222dc2ad474ada66176404b9a38a84e3839da71aff583bc675091a66bed8f"
+          },
+          {
+            "call_ref": "eval-call-1",
+            "attempt_ref": "eval-attempt-1",
+            "observation_digest": "bd44b1fabd77b22020eeebe763c81f7b2a5463c94a0cfe9fc9c9b72f4c600f01"
+          }
+        ],
+        "evidence_gate": "selected/evidence-gate-v2"
+      }
+    },
+    "blocked": {
+      "evidence_review": {
+        "version": "selected/evidence-gate-v2",
+        "requirement": "response_structure",
+        "comparisons": [
+          {
+            "left": {
+              "call_ref": "eval-call-0",
+              "attempt_ref": "eval-attempt-0",
+              "observation_digest": "3ed222dc2ad474ada66176404b9a38a84e3839da71aff583bc675091a66bed8f"
+            },
+            "right": {
+              "call_ref": "eval-call-1",
+              "attempt_ref": "eval-attempt-1",
+              "observation_digest": "bd44b1fabd77b22020eeebe763c81f7b2a5463c94a0cfe9fc9c9b72f4c600f01"
+            },
+            "comparison": {
+              "schema": "jindo.candidate-response-comparison/v1",
+              "left": "original",
+              "right": "reproduction",
+              "relation": "equivalent",
+              "not_compared": [
+                "credential_value"
+              ],
+              "similarity": 100,
+              "body_bytes": [
+                139,
+                139
+              ]
+            }
+          }
+        ],
+        "confirm_allowed": false,
+        "negative_allowed": true,
+        "confirm_blocked_reason": "business_rule_unstated",
+        "claim": {
+          "claim_category": "data_exposure",
+          "confirm_needs_any_of": [
+            [
+              "specific_error_signal"
+            ],
+            [
+              "disclosure_header"
+            ],
+            [
+              "structured_content",
+              "business_rule_statement"
+            ]
+          ],
+          "normal_control": "useful",
+          "observed_facts": [
+            "response_headers",
+            "structured_content"
+          ],
+          "missing_facts": [
+            "business_rule_statement"
+          ]
+        }
+      },
+      "final_verdict": {
+        "version": "selected/final-v1",
+        "candidate_id": 1,
+        "verdict": "insufficient",
+        "claim": "Password hashes are returned to an ordinary user.",
+        "normal_explanation": "None found.",
+        "reason": "business_rule_unstated",
+        "limitations": "Read only.",
+        "remediation": "Remove the field.",
+        "verification_criteria": "The field is absent.",
+        "sources": [
+          {
+            "call_ref": "eval-call-0",
+            "attempt_ref": "eval-attempt-0",
+            "observation_digest": "3ed222dc2ad474ada66176404b9a38a84e3839da71aff583bc675091a66bed8f"
+          },
+          {
+            "call_ref": "eval-call-1",
+            "attempt_ref": "eval-attempt-1",
+            "observation_digest": "bd44b1fabd77b22020eeebe763c81f7b2a5463c94a0cfe9fc9c9b72f4c600f01"
+          }
+        ],
+        "evidence_gate": "selected/evidence-gate-v2"
+      }
+    },
+    "note": "Synthetic case G05. Gate v2 with an operator business statement (allowed) and the same observations without one (blocked)."
+  },
   "note": "Synthetic partial response. evidence_review appears on a completed llm/v1 verification whose stored observations carry response_evidence; it is omitted for older runs.",
   "stored_observation_response_evidence_example": {
     "attempt_ref": "r13-attempt-1",
