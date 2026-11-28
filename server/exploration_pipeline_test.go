@@ -27,6 +27,42 @@ type pipelineMemoryStore struct {
 	row diagnosisflow.Record
 }
 
+type pipelineResetLease struct{ resets int }
+
+func (*pipelineResetLease) Status(context.Context) (exploration.State, error) {
+	return exploration.State{}, nil
+}
+func (*pipelineResetLease) Close(context.Context, exploration.Reason) (exploration.State, error) {
+	return exploration.State{}, nil
+}
+func (l *pipelineResetLease) ResetBrowserContext(context.Context) error {
+	l.resets++
+	return nil
+}
+
+type pipelineNoResetLease struct{}
+
+func (pipelineNoResetLease) Status(context.Context) (exploration.State, error) {
+	return exploration.State{}, nil
+}
+func (pipelineNoResetLease) Close(context.Context, exploration.Reason) (exploration.State, error) {
+	return exploration.State{}, nil
+}
+
+// 제품 파이프라인이 경계를 계수 래퍼로 감싼 뒤에도 계정 전환 알림을 실제 경계로 전달한다.
+// 전달할 수 없으면 새 문맥의 로그인을 허용하지 않는다.
+func TestChargeRecordingLeaseForwardsBrowserContextReset(t *testing.T) {
+	inner := &pipelineResetLease{}
+	lease := &chargeRecordingLease{inner: inner}
+	if err := lease.ResetBrowserContext(t.Context()); err != nil || inner.resets != 1 {
+		t.Fatalf("reset not forwarded: resets=%d err=%v", inner.resets, err)
+	}
+	lease.inner = pipelineNoResetLease{}
+	if err := lease.ResetBrowserContext(t.Context()); !errors.Is(err, exploration.ErrUnavailable) {
+		t.Fatalf("unsupported reset should fail closed: %v", err)
+	}
+}
+
 func clonePipelineRecord(row diagnosisflow.Record) diagnosisflow.Record {
 	raw, _ := json.Marshal(row)
 	var out diagnosisflow.Record

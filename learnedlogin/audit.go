@@ -31,6 +31,10 @@ type Provenance string
 const (
 	// ProvenanceE2Audited: 진단 단계 행이 같은 실행의 감사 완료된 E② 모델 송신 결과와 맞는다.
 	ProvenanceE2Audited Provenance = "e2_audited"
+	// ProvenanceExplorationObserved means a separate exploration boundary record
+	// and private observation matched the attempt. It does not assert E② audit,
+	// account identity, or response body completion.
+	ProvenanceExplorationObserved Provenance = "exploration_observed"
 	// ProvenanceExplorationUnaudited: 탐색 단계 행이다. 제품 회차의 탐색 경계 기록은 감사 근거로 남지 않아(경계 원자료는
 	// 평가·수용 회차 전용) 대조하지 못한다. 형식만 확인했다.
 	ProvenanceExplorationUnaudited Provenance = "exploration_unaudited"

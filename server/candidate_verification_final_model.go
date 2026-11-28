@@ -14,6 +14,7 @@ import (
 	"github.com/Autumn-27/artex/candidateverify"
 	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/responseevidence"
 	"github.com/Autumn-27/norma/llm"
 )
 
@@ -76,15 +77,31 @@ Use only supplied call_ref, attempt_ref and observation_digest triples as source
 Do not judge ownership IDOR; it belongs to E3. No tools are available.
 Return exactly one JSON object: version selected/final-v1, candidate_id, verdict, claim, normal_explanation, reason, limitations, remediation, verification_criteria, sources.`
 
+const candidateEvidenceFinalSystem = `
+Each observation may carry response_evidence: a program-extracted structural summary of the actual response (field paths, types, shapes, forms, header presence, fixed error-signal codes). It contains no response text or values. state other than complete or limited means the structure is unavailable; never treat missing structure as an absent field.
+program_evidence_review holds program-verified comparisons between the original, reproduction and normal_control observations. normalized items were treated as normal per-request variation; not_compared items were not checked. These are facts, not a verdict: decide whether they support or refute the claim, or whether the difference has a normal explanation.
+If program_evidence_review says confirm_allowed or negative_allowed is false, that decisive verdict will be replaced with insufficient; explain what further evidence would be needed instead.
+A status code, response length, a single header, or many fields alone never establish a defect. Data exposure needs the business rule that makes the field unauthorized.`
+
+// candidateFinalEvidencePromptBytes는 응답 근거가 있는 문맥의 입력 상한이다. 옛 문맥은 기존 상한을 그대로 쓴다.
+const candidateFinalEvidencePromptBytes = 64 << 10
+
 // The model needs the observation and provenance references, but not the
 // Host's audit checkpoint or MAC. Those remain in the trusted store.
 type candidateModelObservation struct {
 	Source     candidateverify.SourceV2 `json:"source"`
 	HeaderMode e2proxy.HeaderMode       `json:"header_mode"`
+	// ResponseEvidence는 응답 근거 게이트 문맥에서만 있다(옛 행은 not_recorded로 명시). 결속·digest는 신뢰 저장소에 남긴다.
+	ResponseEvidence *responseevidence.Evidence `json:"response_evidence,omitempty"`
 }
 
-func modelObservation(row candidateverify.StoredObservationV2) candidateModelObservation {
-	return candidateModelObservation{Source: row.Source, HeaderMode: row.HeaderMode}
+func modelObservation(row candidateverify.StoredObservationV2, withEvidence ...bool) candidateModelObservation {
+	out := candidateModelObservation{Source: row.Source, HeaderMode: row.HeaderMode}
+	if len(withEvidence) == 1 && withEvidence[0] {
+		ev := candidateverify.RowResponseEvidence(row)
+		out.ResponseEvidence = &ev
+	}
+	return out
 }
 
 func BuildCandidateFinalRequest(c CandidateAssessmentContext, maxTokens int) (llm.CompletionRequest, error) {
@@ -109,6 +126,12 @@ func BuildCandidateFinalRequest(c CandidateAssessmentContext, maxTokens int) (ll
 	} else if c.Plan.CandidateID != c.Original.Candidate.ID || c.Plan.EvidenceDigest != c.Original.Candidate.EvidenceDigest {
 		return llm.CompletionRequest{}, ErrCandidateFinalVerdict
 	}
+	review := reviewCandidateEvidence(c)
+	gated, promptLimit := review != nil, candidateFinalPromptBytes
+	if gated {
+		system += candidateEvidenceFinalSystem
+		promptLimit = candidateFinalEvidencePromptBytes
+	}
 	input := struct {
 		VerificationMethod string                      `json:"verification_method"`
 		CandidateID        int64                       `json:"candidate_id"`
@@ -121,15 +144,16 @@ func BuildCandidateFinalRequest(c CandidateAssessmentContext, maxTokens int) (ll
 		BusinessAnswers    []candidateBusinessAnswer   `json:"business_answers"`
 		Actions            []CandidateLLMPlanAction    `json:"approved_actions"`
 		Followup           []candidateModelObservation `json:"followup_observations"`
+		Review             *CandidateEvidenceReview    `json:"program_evidence_review,omitempty"`
 	}{VerificationMethod: method, CandidateID: c.Original.Candidate.ID, VulnClass: c.Original.Candidate.VulnClass,
 		Name: c.Original.Candidate.Name, Summary: c.Original.Candidate.Summary,
 		Evidence: c.Original.Candidate.Evidence, Analysis: c.Analysis.Proposal,
-		BusinessAnswers: c.Answers, Actions: c.Plan.Actions}
+		BusinessAnswers: c.Answers, Actions: c.Plan.Actions, Review: review}
 	for _, row := range c.Followup {
-		input.Followup = append(input.Followup, modelObservation(row))
+		input.Followup = append(input.Followup, modelObservation(row, gated))
 	}
 	if c.Original.OriginalObservation != nil {
-		original := modelObservation(*c.Original.OriginalObservation)
+		original := modelObservation(*c.Original.OriginalObservation, gated)
 		input.Original = &original
 	}
 	if len(input.Evidence) > candidateFinalEvidenceBytes {
@@ -140,7 +164,7 @@ func BuildCandidateFinalRequest(c CandidateAssessmentContext, maxTokens int) (ll
 		input.Evidence = input.Evidence[:cut]
 	}
 	raw, err := json.Marshal(input)
-	if err != nil || len(raw) > candidateFinalPromptBytes {
+	if err != nil || len(raw) > promptLimit {
 		return llm.CompletionRequest{}, ErrCandidateFinalVerdict
 	}
 	return llm.CompletionRequest{System: []string{system}, Messages: []llm.Message{llm.UserText(string(raw))}, MaxTokens: maxTokens}, nil
@@ -230,6 +254,15 @@ func ParseCandidateFinalVerdict(raw []byte, c CandidateAssessmentContext) (Candi
 			c.Original.OriginalObservation.Source.Observation.RequestAuthContext != "none" &&
 			c.Original.OriginalObservation.Source.Observation.RequestAuthContext == c.Followup[0].Source.Observation.RequestAuthContext {
 			out.Reason = "account_identity_unverified"
+		}
+	}
+	// 응답 근거 게이트: 근거가 없거나 비교할 수 없거나 재현이 원본과 다른 상태면 결정적 권고를 근거 부족으로 낮춘다. 모델 출력이
+	// 아니라 저장 문맥에서만 정해지므로 재조회 때 같은 결과다.
+	if review := reviewCandidateEvidence(c); review != nil {
+		if out.Verdict == "confirmed" && !review.ConfirmAllowed {
+			out.Verdict, out.Reason = "insufficient", review.ConfirmReason
+		} else if out.Verdict == "negative" && !review.NegativeAllowed {
+			out.Verdict, out.Reason = "insufficient", review.NegativeReason
 		}
 	}
 	if out.Verdict != "insufficient" && (!original || !followup ||

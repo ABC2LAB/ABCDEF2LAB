@@ -91,6 +91,16 @@ func (l *chargeRecordingLease) Status(ctx context.Context) (exploration.State, e
 	return l.inner.Status(ctx)
 }
 
+// ResetBrowserContext는 계수 래퍼 뒤의 실제 경계에 계정 문맥 초기화를 전달한다.
+// 호스트가 이를 지원하지 않으면 새 문맥에서 다른 계정 로그인을 열지 않는다.
+func (l *chargeRecordingLease) ResetBrowserContext(ctx context.Context) error {
+	resetter, ok := l.inner.(interface{ ResetBrowserContext(context.Context) error })
+	if !ok {
+		return exploration.ErrUnavailable
+	}
+	return resetter.ResetBrowserContext(ctx)
+}
+
 func (l *chargeRecordingLease) Close(ctx context.Context, reason exploration.Reason) (exploration.State, error) {
 	state, err := l.inner.Close(ctx, reason)
 	// 새 송신이 끝났다고 경계가 확정한 상태만 몫으로 쓴다. 활성·연결 잔류·결속 불일치는 모르는 몫으로 남긴다.

@@ -235,33 +235,37 @@ func (p E2HTTPFilePolicy) excludedPaths() []string {
 type E2HTTPFilePolicy struct {
 	// LoginAttempts는 제품 회차의 로그인 시도 판정 설정이다(계약 docs/contracts/model-login-attempts.md §4·§5). 계정을 등록하지
 	// 않은 회차도 등록 밖 아이디(기본 계정 시험 등)의 연속 실패 상한을 지키도록 인증 칸과 따로 둔다(사용자 결정 2026-11-26).
-	LoginAttempts      *E2HTTPLoginAttemptLimits        `json:"login_attempts,omitempty"`
-	Workflow           *E2HTTPWorkflowPolicy            `json:"workflow,omitempty"`
-	ApprovalMode       e2proxy.ApprovalMode             `json:"approval_mode"`
-	Format             string                           `json:"format"`
-	RunRef             string                           `json:"run_ref"`
-	ResetRef           string                           `json:"reset_ref"`
-	PolicyRef          string                           `json:"policy_ref"`
-	CaseRef            string                           `json:"case_ref"`
-	PolicyRevision     string                           `json:"policy_revision"`
-	BudgetRef          string                           `json:"budget_ref"`
-	OwnerRef           string                           `json:"owner_ref"`
-	AccountRef         string                           `json:"account_ref"`
-	SessionRef         string                           `json:"session_ref"`
-	ValidFrom          time.Time                        `json:"valid_from"`
-	ValidUntil         time.Time                        `json:"valid_until"`
-	MaxRequests        uint64                           `json:"max_requests"`
-	HeaderMode         e2proxy.HeaderMode               `json:"header_mode"`
-	SelectedAccountRef string                           `json:"selected_account_ref,omitempty"`
-	Evaluation         *e2proxy.EvaluationCallerContext `json:"evaluation"`
-	StateDir           string                           `json:"state_dir"`
-	Helper             string                           `json:"helper"`
-	HelperSHA256       string                           `json:"helper_sha256"`
-	CACert             E2HTTPFilePin                    `json:"ca_cert"`
-	CAKey              E2HTTPFilePin                    `json:"ca_key"`
-	AuditKey           E2HTTPFilePin                    `json:"audit_key"`
-	UpstreamCA         *E2HTTPFilePin                   `json:"upstream_ca,omitempty"`
-	Rules              []E2HTTPFileRule                 `json:"rules"`
+	LoginAttempts *E2HTTPLoginAttemptLimits `json:"login_attempts,omitempty"`
+	// ExplorationLoginEvidence binds new product runs to the protected
+	// exploration projection. An absent field denotes an older run.
+	ExplorationLoginEvidence string                           `json:"exploration_login_evidence,omitempty"`
+	ExplorationSourceDigest  string                           `json:"exploration_source_digest,omitempty"`
+	Workflow                 *E2HTTPWorkflowPolicy            `json:"workflow,omitempty"`
+	ApprovalMode             e2proxy.ApprovalMode             `json:"approval_mode"`
+	Format                   string                           `json:"format"`
+	RunRef                   string                           `json:"run_ref"`
+	ResetRef                 string                           `json:"reset_ref"`
+	PolicyRef                string                           `json:"policy_ref"`
+	CaseRef                  string                           `json:"case_ref"`
+	PolicyRevision           string                           `json:"policy_revision"`
+	BudgetRef                string                           `json:"budget_ref"`
+	OwnerRef                 string                           `json:"owner_ref"`
+	AccountRef               string                           `json:"account_ref"`
+	SessionRef               string                           `json:"session_ref"`
+	ValidFrom                time.Time                        `json:"valid_from"`
+	ValidUntil               time.Time                        `json:"valid_until"`
+	MaxRequests              uint64                           `json:"max_requests"`
+	HeaderMode               e2proxy.HeaderMode               `json:"header_mode"`
+	SelectedAccountRef       string                           `json:"selected_account_ref,omitempty"`
+	Evaluation               *e2proxy.EvaluationCallerContext `json:"evaluation"`
+	StateDir                 string                           `json:"state_dir"`
+	Helper                   string                           `json:"helper"`
+	HelperSHA256             string                           `json:"helper_sha256"`
+	CACert                   E2HTTPFilePin                    `json:"ca_cert"`
+	CAKey                    E2HTTPFilePin                    `json:"ca_key"`
+	AuditKey                 E2HTTPFilePin                    `json:"audit_key"`
+	UpstreamCA               *E2HTTPFilePin                   `json:"upstream_ca,omitempty"`
+	Rules                    []E2HTTPFileRule                 `json:"rules"`
 	// Auth는 인증 준비 칸이다(C14). 없으면 로그인하지 않는다.
 	Auth *E2HTTPFileAuth `json:"auth,omitempty"`
 	// 제품 실행의 동결된 쓰기 승인과 리셋 가능 대상 판이다. 확정 요청에만 적용한다.

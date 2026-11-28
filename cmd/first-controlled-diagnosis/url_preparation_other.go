@@ -10,7 +10,7 @@ import (
 )
 
 func urlOperatorUID() uint32 { return 0 }
-func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask) (launchConfig, error) {
+func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask, sourceDigest ...string) (launchConfig, error) {
 	return launchConfig{}, errPreparation
 }
 func (b *urlPreparationRuntime) issueSelectedCandidate(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask) (launchConfig, error) {

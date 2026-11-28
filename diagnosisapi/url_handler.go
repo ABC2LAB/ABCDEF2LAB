@@ -26,6 +26,8 @@ type URLOptions struct {
 	Authenticate Authenticate
 	Endpoint     diagnosisprep.Endpoint
 	CallTimeout  time.Duration
+	// Now는 응답의 server_time 시계다(시험만 바꾼다). 준비 서비스와 같은 호스트 시계다.
+	Now func() time.Time
 }
 type URLHandler struct{ options URLOptions }
 
@@ -35,6 +37,9 @@ func NewURL(options URLOptions) (*URLHandler, error) {
 	}
 	if options.CallTimeout <= 0 || options.CallTimeout > managementCallTimeout {
 		options.CallTimeout = managementCallTimeout
+	}
+	if options.Now == nil {
+		options.Now = time.Now
 	}
 	return &URLHandler{options: options}, nil
 }
@@ -209,6 +214,11 @@ func (h *URLHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			urlFail(w, 503, "preparation_service_unavailable")
 			return
 		}
+		if response.Error == "busy" && response.BusyReason != "" {
+			// 새 시작 거절 사유(docs/url-diagnosis-preparation.md '새 시작 거절 사유'). 오류 코드는 그대로 busy다.
+			writeJSON(w, status, map[string]string{"version": URLVersion, "error": response.Error, "busy_reason": response.BusyReason})
+			return
+		}
 		urlFail(w, status, response.Error)
 		return
 	}
@@ -228,11 +238,54 @@ func (h *URLHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if created {
 		status = http.StatusCreated
 	}
+	// 시간 상한이 있는 회차는 응답 시각을 함께 준다. 화면은 브라우저 시계 대신 이 값과의 차이로 남은 시간을 센다
+	// (docs/contracts/diagnosis-run-timing.md §시간 상한).
+	var serverTime *time.Time
+	if response.Job != nil && response.Job.TimeLimit != nil {
+		now := h.options.Now().UTC()
+		serverTime = &now
+	}
+	var confirmation *urlConfirmation
+	if req.Command == diagnosisprep.Status && response.Confirmation != nil {
+		confirmation = urlConfirmationOf(*response.Confirmation)
+	}
 	writeJSON(w, status, struct {
 		Version      string             `json:"version"`
 		OwnerContext string             `json:"owner_context"`
 		Draft        *diagnosisprep.Job `json:"draft"`
-	}{URLVersion, urlOwnerContext(owner), response.Job})
+		ServerTime   *time.Time         `json:"server_time,omitempty"`
+		Confirmation *urlConfirmation   `json:"confirmation,omitempty"`
+	}{URLVersion, urlOwnerContext(owner), response.Job, serverTime, confirmation})
+}
+
+// urlConfirmation은 회차 상태 응답의 E③ 확정 단계 결과다(docs/contracts/e3-product-confirmation-interface.md '회차 상태
+// 응답'). record는 결과 파일의 조회 상태(recorded·absent·unreadable)이고, status·reason은 recorded일 때만 값이 있다(그 밖엔 null). 회차 state의
+// completed와 확정 단계 status의 completed는 다른 칸이며, 확정 단계 completed는 취약점 확정이 아니다.
+type urlConfirmation struct {
+	Record string  `json:"record"`
+	Status *string `json:"status"`
+	Reason *string `json:"reason"`
+}
+
+const (
+	urlConfirmationRecorded   = "recorded"
+	urlConfirmationAbsent     = "absent"
+	urlConfirmationUnreadable = "unreadable"
+)
+
+func urlConfirmationOf(c diagnosisprep.ProductConfirmationState) *urlConfirmation {
+	switch {
+	case !c.Present:
+		return &urlConfirmation{Record: urlConfirmationAbsent}
+	case c.Status == diagnosisprep.ConfirmationUnreadable:
+		return &urlConfirmation{Record: urlConfirmationUnreadable}
+	}
+	// 사유 없음은 null이다. 판정 목록 confirmation의 status·reason과 같은 값이다.
+	out := &urlConfirmation{Record: urlConfirmationRecorded, Status: &c.Status}
+	if c.Reason != "" {
+		out.Reason = &c.Reason
+	}
+	return out
 }
 
 func validURLInput(input diagnosisprep.Input) bool {

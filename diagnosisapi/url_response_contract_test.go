@@ -31,6 +31,8 @@ func TestURLResponseFieldSetsRequireWebContractReview(t *testing.T) {
 			// 2026-11-25 #936: 실행 중 account_auth의 계정별 변경 시각. 웹 parseURLJob은 #937에서 받는다. 공유 예시에는 계정이
 			// 없어 이 칸이 나오지 않는다(omitempty).
 			"account_auth_updated_at",
+			// 2026-11-27 시간 상한(diagnosis-run-timing.md §시간 상한). 웹 parseURLJob이 같은 변경에서 받는다.
+			"time_limit",
 		}},
 		{"RunSummary", diagnosisprep.RunSummary{}, []string{
 			"id", "revision", "display_name", "state", "phase", "reason_code", "task_id", "started", "drain_complete",
@@ -141,12 +143,27 @@ func runTimingContractCases() []runTimingContractCase {
 	failed.ReasonCode, failed.PreparationStarted, failed.DrainComplete, failed.FinishedAt = "preparation_failed", true, true, &finished
 	legacy := completed
 	legacy.StartedAt, legacy.FinishedAt = nil, nil
+	// 시간 상한(§시간 상한): 실행 상한 01:12:00, 모델 마감 = 상한 − 유예 90초 − 확정 몫 120초 − 정리 여유 20초.
+	deadline := time.Date(2026, 11, 17, 1, 12, 0, 0, time.UTC)
+	limit := &diagnosisprep.TimeLimit{RunDeadlineAt: deadline, ModelCloseAt: deadline.Add(-230 * time.Second),
+		ModelDrainMS: 90_000, ConfirmationReserveMS: 120_000, ShutdownMarginMS: 20_000}
+	limited := running
+	limited.Revision, limited.TimeLimit = 6, limit
+	// 기한은 시작 확인보다 먼저 정한 600초 예산 안에 있어야 한다. 다른 예시의 60초 범위는 보존한다.
+	limitedScope := *running.Scope
+	limitedScope.Budget.DurationSeconds = 600
+	limited.Scope = &limitedScope
+	stopped := limited
+	stopped.Revision, stopped.State, stopped.Phase, stopped.ReasonCode = 9, diagnosisprep.Cancelled, diagnosisprep.Report, "stop_requested"
+	stopped.DrainComplete, stopped.FinishedAt, stopped.ResultReady = true, &finished, true
 	return []runTimingContractCase{
 		{"ready_without_times", ready, false},
 		{"running_with_start", running, true},
 		{"completed_with_times", completed, false},
 		{"failed_before_start_with_finish", failed, true},
 		{"legacy_completed_without_times", legacy, false},
+		{"running_with_time_limit", limited, true},
+		{"cancelled_keeps_time_limit", stopped, false},
 	}
 }
 
@@ -169,6 +186,10 @@ func TestURLRunTimingResponsesMatchSharedExamples(t *testing.T) {
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.job.TimeLimit != nil && tc.job.StartedAt != nil &&
+				tc.job.TimeLimit.RunDeadlineAt.Sub(*tc.job.StartedAt) > time.Duration(tc.job.Scope.Budget.DurationSeconds)*time.Second {
+				t.Fatal("시간 상한 예시가 실행 예산을 초과합니다")
+			}
 			example := examples.Cases[i]
 			if example.Name != tc.name {
 				t.Fatal("shared timing example name changed", example.Name)
@@ -200,6 +221,12 @@ func TestURLRunTimingResponsesMatchSharedExamples(t *testing.T) {
 				return response, nil
 			}}
 			handler := urlTestHandler(t, endpoint)
+			// server_time은 응답 시계다. 취소 응답은 마감 확인 시각 이후로 둔다.
+			minute := 5
+			if tc.name == "cancelled_keeps_time_limit" {
+				minute = 8
+			}
+			handler.options.Now = func() time.Time { return time.Date(2026, 11, 17, 10, minute, 3, 0, time.FixedZone("kst", 9*60*60)) }
 			for _, view := range []struct {
 				name, path string
 				want       []byte
@@ -220,4 +247,137 @@ func TestURLRunTimingResponsesMatchSharedExamples(t *testing.T) {
 			}
 		})
 	}
+}
+
+type runConfirmationContractCase struct {
+	name         string
+	job          diagnosisprep.Job
+	confirmation *diagnosisprep.ProductConfirmationState
+}
+
+// 회차 상태 응답의 확정 단계 결과(e3-product-confirmation-interface.md '회차 상태 응답'). 다섯 상태·기록 없음·못 읽음과,
+// 제품 설치가 아닐 때(칸 없음)를 실제 handler가 내는 그대로 공유 예시와 비교한다.
+func runConfirmationContractCases() []runConfirmationContractCase {
+	cases := runTimingContractCases()
+	running, completed := cases[1].job, cases[2].job
+	state := func(status, reason string) *diagnosisprep.ProductConfirmationState {
+		return &diagnosisprep.ProductConfirmationState{Present: true, Status: status, Reason: reason}
+	}
+	return []runConfirmationContractCase{
+		{"running_not_recorded", running, &diagnosisprep.ProductConfirmationState{}},
+		{"completed", completed, state("completed", "")},
+		{"disabled", completed, state("disabled", "test_accounts_unavailable")},
+		{"start_refused", completed, state("start_refused", "e2_execution_unavailable")},
+		{"interrupted", completed, state("interrupted", "")},
+		{"confirmation_integrity_failed", completed, state("confirmation_integrity_failed", "journal_integrity_failed")},
+		{"unreadable", completed, &diagnosisprep.ProductConfirmationState{Present: true, Status: diagnosisprep.ConfirmationUnreadable}},
+		{"not_product_install", completed, nil},
+	}
+}
+
+func TestURLRunConfirmationMatchesSharedExamples(t *testing.T) {
+	var examples struct {
+		Version string `json:"version"`
+		Cases   []struct {
+			Name   string          `json:"name"`
+			Status json.RawMessage `json:"status"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(readURLResponseExample(t, "run-confirmation.status.example.json"), &examples); err != nil {
+		t.Fatal(err)
+	}
+	cases := runConfirmationContractCases()
+	if examples.Version != "run-confirmation.examples.v1" || len(examples.Cases) != len(cases) {
+		t.Fatal("shared confirmation example cases changed")
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if examples.Cases[i].Name != tc.name {
+				t.Fatal("shared confirmation example name changed", examples.Cases[i].Name)
+			}
+			endpoint := &urlTestEndpoint{reply: func(req diagnosisprep.Request) (diagnosisprep.Response, error) {
+				job := tc.job
+				return diagnosisprep.Response{Version: diagnosisprep.Version, RequestID: req.RequestID, Job: &job, Confirmation: tc.confirmation}, nil
+			}}
+			response := urlTestRequest(urlTestHandler(t, endpoint), http.MethodGet, URLBasePath+"/drafts/"+tc.job.ID+"/status", "", "")
+			if response.Code != http.StatusOK {
+				t.Fatal(response.Code, response.Body.String())
+			}
+			requireURLResponseExample(t, response.Body.Bytes(), examples.Cases[i].Status)
+		})
+	}
+}
+
+// 확정 단계 상태는 Status 응답에만 온다. 다른 명령에 붙거나 모양이 계약 밖이면 서비스 응답째 버린다(503).
+func TestURLRunConfirmationRejectsOutOfContract(t *testing.T) {
+	job := runTimingContractCases()[2].job
+	for name, tc := range map[string]struct {
+		method, path, body, key string
+		confirmation            diagnosisprep.ProductConfirmationState
+	}{
+		"start carries confirmation": {http.MethodPost, URLBasePath + "/drafts/job-1/start", `{"version":"diagnosis-api.v2","expected_revision":1}`, "start-1",
+			diagnosisprep.ProductConfirmationState{Present: true, Status: "completed"}},
+		"unknown status":     {http.MethodGet, URLBasePath + "/drafts/job-1/status", "", "", diagnosisprep.ProductConfirmationState{Present: true, Status: "maybe"}},
+		"absent with status": {http.MethodGet, URLBasePath + "/drafts/job-1/status", "", "", diagnosisprep.ProductConfirmationState{Status: "completed"}},
+		"unreadable with reason": {http.MethodGet, URLBasePath + "/drafts/job-1/status", "", "",
+			diagnosisprep.ProductConfirmationState{Present: true, Status: diagnosisprep.ConfirmationUnreadable, Reason: "x"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			endpoint := &urlTestEndpoint{reply: func(req diagnosisprep.Request) (diagnosisprep.Response, error) {
+				j := job
+				c := tc.confirmation
+				return diagnosisprep.Response{Version: diagnosisprep.Version, RequestID: req.RequestID, Job: &j, Confirmation: &c}, nil
+			}}
+			response := urlTestRequest(urlTestHandler(t, endpoint), tc.method, tc.path, tc.body, tc.key)
+			if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), "confirmation") {
+				t.Fatalf("%d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestURLRunConfirmationRejectsErrorPayload(t *testing.T) {
+	endpoint := &urlTestEndpoint{reply: func(req diagnosisprep.Request) (diagnosisprep.Response, error) {
+		return diagnosisprep.Response{Version: diagnosisprep.Version, RequestID: req.RequestID, Error: "not_found",
+			Confirmation: &diagnosisprep.ProductConfirmationState{Present: true, Status: "completed"}}, nil
+	}}
+	response := urlTestRequest(urlTestHandler(t, endpoint), http.MethodGet, URLBasePath+"/drafts/job-1/status", "", "")
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), "confirmation") {
+		t.Fatalf("IPC 오류 응답의 확정 상태를 받아들임: %d %s", response.Code, response.Body.String())
+	}
+}
+
+// 시간 상한(A)과 확정 단계 상태(D)는 같은 Status 봉투의 독립적인 선택 칸이다.
+func TestURLStatusCombinesTimeLimitAndConfirmation(t *testing.T) {
+	job := runTimingContractCases()[5].job
+	endpoint := &urlTestEndpoint{reply: func(req diagnosisprep.Request) (diagnosisprep.Response, error) {
+		return diagnosisprep.Response{Version: diagnosisprep.Version, RequestID: req.RequestID, Job: &job,
+			Confirmation: &diagnosisprep.ProductConfirmationState{}}, nil
+	}}
+	handler := urlTestHandler(t, endpoint)
+	handler.options.Now = func() time.Time { return time.Date(2026, 11, 17, 1, 5, 3, 0, time.UTC) }
+	response := urlTestRequest(handler, http.MethodGet, URLBasePath+"/drafts/"+job.ID+"/status", "", "")
+	if response.Code != http.StatusOK {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	var body struct {
+		Draft struct {
+			TimeLimit *diagnosisprep.TimeLimit `json:"time_limit"`
+		} `json:"draft"`
+		ServerTime   time.Time       `json:"server_time"`
+		Confirmation urlConfirmation `json:"confirmation"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Draft.TimeLimit == nil || !sameTimeLimitContract(body.Draft.TimeLimit, job.TimeLimit) ||
+		!body.ServerTime.Equal(handler.options.Now()) || body.Confirmation.Record != urlConfirmationAbsent {
+		t.Fatalf("함께 온 상태 칸이 다름: %s", response.Body.String())
+	}
+}
+
+func sameTimeLimitContract(a, b *diagnosisprep.TimeLimit) bool {
+	return a.RunDeadlineAt.Equal(b.RunDeadlineAt) && a.ModelCloseAt.Equal(b.ModelCloseAt) &&
+		a.ModelDrainMS == b.ModelDrainMS && a.ConfirmationReserveMS == b.ConfirmationReserveMS &&
+		a.ShutdownMarginMS == b.ShutdownMarginMS
 }

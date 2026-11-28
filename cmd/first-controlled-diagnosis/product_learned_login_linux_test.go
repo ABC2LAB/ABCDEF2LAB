@@ -68,7 +68,7 @@ func verifiedOf(r *productTargetRegistry, id, label, path string, since ...time.
 
 // verified 줄(계약 §6-1-2)은 결속한 대상 판·자격 판이 지금도 같을 때만 쓰고, 같은 방법·판이면 다시 쓰지 않으며, 더 앞선
 // 시각의 결과로 되돌리지 않는다. 상태 반영은 지금 배운 방법의 해시·대상 판·자격 판이 모두 같을 때만이다. 재시작(저널 재생)
-// 뒤에도 같다. 자격 변경·표시 해제·대상 철회 뒤에는 반영하지 않는다.
+// 뒤에도 같다. 자격 변경·자격 철회·대상 철회 뒤에는 반영하지 않는다.
 func TestLoginMethodVerifiedJournal(t *testing.T) {
 	r, root, rec := learnedAccountTarget(t)
 	id, rev := rec.Target.ID, rec.Target.Revision

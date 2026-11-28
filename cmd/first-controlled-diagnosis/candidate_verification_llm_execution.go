@@ -166,49 +166,8 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 	if err != nil || currentTarget == nil || !server.CandidateLLMPlanStillApproved(time.Now().UTC(), plan, ownerResp.Job.Input, *ownerResp.Job.Scope, *currentTarget) || l.current() != nil {
 		return errPreparation
 	}
-	if plan.AccountRef == "" {
-		if l.prepareAnonymousCandidate(plan) != nil {
-			return errPreparation
-		}
-	} else {
-		if l.policy.Auth == nil || l.policy.Auth.Login == nil || plan.AuthPreparation == nil || l.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough ||
-			l.policy.Auth.Login.Method != plan.AuthPreparation.Method || l.policy.Auth.Login.Path != plan.AuthPreparation.ExactPath ||
-			server.CandidateLoginDigest(*l.policy.Auth.Login) != plan.AuthPreparation.LoginDigest {
-			return errPreparation
-		}
-		var selected *server.E2HTTPFileAuthAccount
-		var selectedRun *productRunAccount
-		for i := range l.policy.Auth.Accounts {
-			account := &l.policy.Auth.Accounts[i]
-			if server.CandidateAccountRevision(account.Label, account.Credential.SHA256) == plan.AccountRef {
-				if selected != nil {
-					return errPreparation
-				}
-				selected = account
-			}
-		}
-		for i := range l.productAccounts {
-			account := &l.productAccounts[i]
-			if server.CandidateAccountRevision(account.Label, account.CredentialSHA256) == plan.AccountRef {
-				selectedRun = account
-			}
-		}
-		if selected == nil || selectedRun == nil || selected.Label != selectedRun.Label ||
-			selected.Credential.SHA256 != selectedRun.CredentialSHA256 {
-			return errPreparation
-		}
-		for _, account := range l.policy.Auth.Accounts {
-			if account.Label != selected.Label {
-				if raw := l.materials[account.Credential.File]; raw != nil {
-					clear(raw)
-					delete(l.materials, account.Credential.File)
-				}
-			}
-		}
-		l.policy.Auth.Accounts = []server.E2HTTPFileAuthAccount{*selected}
-		l.policy.Auth.PasswordResponse = e2proxy.PasswordResponseMaskSpans
-		l.productAccounts = []productRunAccount{*selectedRun}
-		l.policy.SelectedAccountRef = plan.AccountRef
+	if bindCandidateLLMAccount(l, plan) != nil {
+		return errPreparation
 	}
 	l.policy.Workflow = nil
 	l.policy.E3WriteConsent, l.policy.E3Resettable = false, false
@@ -556,5 +515,56 @@ LEFT JOIN tasks t ON t.id=x.followup_task_id AND t.deleted_at IS NULL
 			log.Printf("[candidate-llm-execution] request %d recovery schedule unavailable", item.id)
 		}
 	}
+	return nil
+}
+
+// bindCandidateLLMAccount는 승인 계획의 계정 결속대로 이 실행의 인증 자료를 좁힌다. 익명 계획이면 결속 계정을 떼고
+// preserve로 묶는다(prepareAnonymousCandidate — 외부 계정 동의도 끄고, 사본이 남으면 닫힌 쪽). 계정 계획이면 계획의 계정
+// 판본(라벨·자격 해시)과 정확히 같은 계정 하나만 남기고 다른 계정 자격 사본은 메모리에서 지운다.
+// 비밀번호 응답 정책은 일반 제품 진단과 같은 model_visible_v1이다(절대규칙 2, 2026-11-26 DLP 폐기):
+// 이전 mask_spans_v1은 짧은(6바이트 미만) 비밀번호 계정의 인증 준비를 막고, 비밀번호가 비친 응답이나 구간 가림이 다루지
+// 못하는 응답(압축·부분·지원하지 않는 형식)을 보류해 관찰을 잃게 했다. 우리 제어 비밀·E③ 표식 가림은 정책과 상관없다.
+func bindCandidateLLMAccount(l *urlLoadedProfile, plan server.CandidateLLMPlan) error {
+	if plan.AccountRef == "" {
+		return l.prepareAnonymousCandidate(plan)
+	}
+	if l.policy.Auth == nil || l.policy.Auth.Login == nil || plan.AuthPreparation == nil || l.policy.HeaderMode != e2proxy.HeaderTestAccountPassthrough ||
+		l.policy.Auth.Login.Method != plan.AuthPreparation.Method || l.policy.Auth.Login.Path != plan.AuthPreparation.ExactPath ||
+		server.CandidateLoginDigest(*l.policy.Auth.Login) != plan.AuthPreparation.LoginDigest {
+		return errPreparation
+	}
+	var selected *server.E2HTTPFileAuthAccount
+	var selectedRun *productRunAccount
+	for i := range l.policy.Auth.Accounts {
+		account := &l.policy.Auth.Accounts[i]
+		if server.CandidateAccountRevision(account.Label, account.Credential.SHA256) == plan.AccountRef {
+			if selected != nil {
+				return errPreparation
+			}
+			selected = account
+		}
+	}
+	for i := range l.productAccounts {
+		account := &l.productAccounts[i]
+		if server.CandidateAccountRevision(account.Label, account.CredentialSHA256) == plan.AccountRef {
+			selectedRun = account
+		}
+	}
+	if selected == nil || selectedRun == nil || selected.Label != selectedRun.Label ||
+		selected.Credential.SHA256 != selectedRun.CredentialSHA256 {
+		return errPreparation
+	}
+	for _, account := range l.policy.Auth.Accounts {
+		if account.Label != selected.Label {
+			if raw := l.materials[account.Credential.File]; raw != nil {
+				clear(raw)
+				delete(l.materials, account.Credential.File)
+			}
+		}
+	}
+	l.policy.Auth.Accounts = []server.E2HTTPFileAuthAccount{*selected}
+	l.policy.Auth.PasswordResponse = e2proxy.PasswordResponseModelVisible
+	l.productAccounts = []productRunAccount{*selectedRun}
+	l.policy.SelectedAccountRef = plan.AccountRef
 	return nil
 }

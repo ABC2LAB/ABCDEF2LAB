@@ -26,8 +26,15 @@ import (
 
 func urlOperatorUID() uint32 { return uint32(os.Geteuid()) }
 
-func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask) (launchConfig, error) {
-	return b.issueForPurpose(l, jobID, actual, false)
+func (b *urlPreparationRuntime) issue(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask, sourceDigest ...string) (launchConfig, error) {
+	if len(sourceDigest) > 1 {
+		return launchConfig{}, errPreparation
+	}
+	digest := ""
+	if len(sourceDigest) == 1 {
+		digest = sourceDigest[0]
+	}
+	return b.issueForPurpose(l, jobID, actual, false, digest)
 }
 
 // issueSelectedCandidate mints a fresh E② authority for an approved non-IDOR
@@ -72,10 +79,10 @@ func (b *urlPreparationRuntime) issueSelectedCandidate(l *urlLoadedProfile, jobI
 	if ordinary < 1 || ordinary > 3 || (l.policy.Auth == nil && loginRules != 0) || (l.policy.Auth != nil && loginRules != 1) {
 		return launchConfig{}, errPreparation
 	}
-	return b.issueForPurpose(l, jobID, actual, true)
+	return b.issueForPurpose(l, jobID, actual, true, "")
 }
 
-func (b *urlPreparationRuntime) issueForPurpose(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask, selectedCandidate bool) (launchConfig, error) {
+func (b *urlPreparationRuntime) issueForPurpose(l *urlLoadedProfile, jobID string, actual server.FirstDiagnosisPreparedTask, selectedCandidate bool, sourceDigest string) (launchConfig, error) {
 	c := l.launch
 	if l.productTarget != nil && (l.productConnection == nil || l.productConnection.jobID != jobID) {
 		return c, errPreparation
@@ -113,6 +120,13 @@ func (b *urlPreparationRuntime) issueForPurpose(l *urlLoadedProfile, jobID strin
 	policy.BudgetRef = "budget-" + jobID
 	policy.PolicyRef = "policy-" + jobID
 	policy.StateDir = filepath.Join(runRoot, "state")
+	if !selectedCandidate && b.explorationLoginTracked() {
+		if !urlDigestValid(sourceDigest) {
+			return c, errPreparation
+		}
+		policy.ExplorationLoginEvidence = "required/v2"
+		policy.ExplorationSourceDigest = sourceDigest
+	}
 	policy.ValidFrom = now
 	var ok bool
 	if policy.ValidUntil, ok = urlAuthorityUntil(now, l.profile.Budget.DurationSeconds, int64(c.ShutdownTimeoutSeconds), l.profile.ValidUntil); !ok {
