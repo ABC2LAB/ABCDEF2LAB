@@ -675,3 +675,83 @@ describe("대상 목록 다시 읽기(사용자 2026-11-22, 1차 리허설 F2)",
     expect(await screen.findByRole("option", { name: /https:\/\/a\.example/ })).toBeInTheDocument();
   });
 });
+
+describe("TargetAccountsLive 로그인 방법 꼬리표(배움 · 검증됨)", () => {
+  const method = {
+    http_method: "POST",
+    path: "/session/new",
+    format: "json",
+    identifier_field: "user_name",
+    password_field: "pass_word",
+    other_fields: [],
+    fields_from_response: [],
+    session_source: "json_field",
+    session_names: ["token"],
+    session_sent_as: "Authorization:Bearer ",
+  };
+  const learned = {
+    at: "2026-11-26T12:00:00Z",
+    run_ref: "run-1",
+    stage: "diagnosis",
+    attempt_ref: "d-1",
+    evidence: "probe_contrast",
+  };
+  const verified = { at: "2026-11-26T12:30:00Z", run_ref: "run-1", attempt_ref: "c-1", evidence: "e3_relogin" };
+
+  it("자격 등록된 계정에만 서버 login_method 대로 꼬리표를 붙인다(A · B 상자와 다른 계정 목록 모두)", async () => {
+    api.mockImplementation((path: string, init?: RequestInit) => {
+      const method_ = init?.method ?? "GET";
+      if (path === "/api/product/targets")
+        return Promise.resolve({ targets: [{ id: "t1", origin: "https://a.example", state: "approved" }] }) as never;
+      if (path === "/api/product/targets/t1/accounts" && method_ === "GET")
+        return Promise.resolve({
+          accounts: [
+            {
+              label: "owner",
+              registered_at: "2026-11-20T00:00:00Z",
+              credential_configured: true,
+              login_method: { state: "verified", learned, verified, method },
+            },
+            {
+              label: "peer",
+              registered_at: "2026-11-21T00:00:00Z",
+              credential_configured: true,
+              login_method: { state: "learned", learned, method },
+            },
+            {
+              label: "extra",
+              registered_at: "2026-11-22T00:00:00Z",
+              credential_configured: true,
+              login_method: { state: "none", cleared_reason: "credential_changed" },
+            },
+            { label: "legacy", registered_at: "2026-11-23T00:00:00Z", login_method: { state: "none" } },
+          ],
+        }) as never;
+      if (path === "/api/product/targets/t1/login" && method_ === "GET") return Promise.resolve({}) as never;
+      return Promise.reject(new Error(`unexpected ${method_} ${path}`)) as never;
+    });
+    render(withRoute("classify"));
+    await pickTarget();
+    const box = within(screen.getByRole("region", { name: "시험 계정" }));
+    const a = box.getByRole("group", { name: "계정 A" });
+    const b = box.getByRole("group", { name: "계정 B" });
+    await waitFor(() => expect(a).toHaveTextContent("로그인 방법 검증됨"));
+    expect(within(a).getByText("로그인 방법 검증됨")).toHaveAttribute(
+      "title",
+      expect.stringContaining("다시 로그인해 확인"),
+    );
+    expect(b).toHaveTextContent("로그인 방법 배움");
+    expect(within(b).getByText("로그인 방법 배움")).toHaveAttribute(
+      "title",
+      expect.stringContaining("진단 단계에서 배움"),
+    );
+    const listRow = (label: string) =>
+      within(screen.getByLabelText("계정 목록")).getByText(label).closest("li") as HTMLElement;
+    expect(within(listRow("extra")).getByText("로그인 방법 아직 없음")).toHaveAttribute(
+      "title",
+      expect.stringContaining("자격을 다시 넣어서"),
+    );
+    // 자격 없는 계정은 '자격 없음'만 — 로그인 방법 꼬리표는 붙이지 않는다
+    expect(within(listRow("legacy")).queryByText(/로그인 방법/)).toBeNull();
+  });
+});

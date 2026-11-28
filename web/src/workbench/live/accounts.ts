@@ -14,6 +14,8 @@
 import { apiFetch } from "@/lib/diagnosis/api";
 import { validUTCInstant } from "@/lib/diagnosis/diagnosis-run-timing";
 
+import { dateTimeOf } from "./map";
+
 /** 대상에 등록된 계정 한 행. 자격 값은 응답에 없다 — 라벨 · 등록 여부만. */
 export type TargetAccount = {
   ref: string;
@@ -198,6 +200,59 @@ export function parseLoginMethod(v: unknown): TargetLoginMethod | "invalid" | nu
     },
     verified,
     method,
+  };
+}
+
+// ---------- login_method 화면 표시(§6-1-3 "화면에 어디까지 보일지는 화면 PR이 정한다") ----------
+
+/**
+ * 계정 줄에 붙일 로그인 방법 꼬리표. 글 · 색 종류 · 마우스 설명만이고 값(아이디 · 비밀번호 · 세션 값)은 없다 — 서버 방법
+ * 객체에 처음부터 값이 없다. tone: ok=검증됨 · learned=배움 · none=아직 없음 · unknown=읽지 못함.
+ */
+export type LoginMethodBadge = { text: string; tone: "ok" | "learned" | "none" | "unknown"; title: string };
+
+const STAGE_TEXT = { exploration: "탐색", diagnosis: "진단" } as const;
+const CLEARED_TEXT = {
+  target_reapproved: "대상을 다시 승인해서 전에 배운 방법을 지웠습니다",
+  credential_changed: "자격을 다시 넣어서 전에 배운 방법을 지웠습니다",
+} as const;
+
+/** 방법 객체 → "POST /login · form · 세션 connect.sid". 칸 이름만이고 값은 없다 */
+function methodText(m: TargetLoginMethodObject): string {
+  const session = m.sessionNames.length ? ` · 세션 ${m.sessionNames.join(", ")}` : "";
+  return `${m.httpMethod} ${m.path} · ${m.format}${session}`;
+}
+
+/**
+ * 계정 행 login_method → 꼬리표. 칸이 없으면(그 칸을 싣기 전 서버) null — 꼬리표를 두지 않는다. 자격이 없는 계정은 '자격 없음'
+ * 꼬리표가 이미 말하므로 부르는 쪽이 자격 등록된 계정에만 붙인다.
+ */
+export function loginMethodBadge(m: TargetAccount["loginMethod"]): LoginMethodBadge | null {
+  if (m === null) return null;
+  if (m === "invalid") {
+    return { text: "로그인 방법 확인 못 함", tone: "unknown", title: "서버가 보낸 로그인 방법 칸을 읽지 못했습니다" };
+  }
+  if (m.state === "none" || !m.learned || !m.method) {
+    return {
+      text: "로그인 방법 아직 없음",
+      tone: "none",
+      title: m.clearedReason
+        ? `${CLEARED_TEXT[m.clearedReason]}. 모델이 이 계정으로 다시 로그인에 성공하면 다시 배웁니다`
+        : "모델이 점검 중 이 계정으로 로그인에 성공하면 그 방법을 배웁니다",
+    };
+  }
+  const learned = `${STAGE_TEXT[m.learned.stage]} 단계에서 배움(${dateTimeOf(m.learned.at)}) · ${methodText(m.method)}`;
+  if (m.state === "verified" && m.verified) {
+    return {
+      text: "로그인 방법 검증됨",
+      tone: "ok",
+      title: `확정 단계에서 이 방법으로 다시 로그인해 확인했습니다(${dateTimeOf(m.verified.at)})\n${learned}`,
+    };
+  }
+  return {
+    text: "로그인 방법 배움",
+    tone: "learned",
+    title: `${learned}\n확정 단계에서 이 방법으로 다시 로그인에 성공하면 '검증됨'이 됩니다`,
   };
 }
 

@@ -25,6 +25,7 @@ import {
   validAccountCredential,
 } from "../../live/accounts";
 import s from "../../workbench.module.css";
+import { LoginMethodTag } from "./LoginMethodTag";
 import { TargetLoginForm } from "./TargetLoginForm";
 
 /**
@@ -213,6 +214,8 @@ export function QuickTestAccount({
               {/* 내부 별칭(vampi-a 등)은 서버 · 정책 선언이 계정을 가리키는 이름이라 화면엔 안 보이고 마우스를 올리면만(사용자 11/24) */}
               <b title={`별칭 ${x.label}`}>{`계정 ${x.key}`}</b>
               <span className={cx(s.tag, state === "자격 등록됨" ? s.in : s.ex)}>{state}</span>
+              {/* 모델이 배운 로그인 방법(배움 · 검증됨, #996 login_method) */}
+              <LoginMethodTag account={a} />
               {/* 그 계정만 자격 철회(#982 이동찬 P2, 예전 '표시 해제'가 하던 일) */}
               {state === "자격 등록됨" ? (
                 <button
