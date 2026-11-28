@@ -96,6 +96,25 @@ func TestSelectExcludesIneligibleRows(t *testing.T) {
 	}
 }
 
+func TestSelectRejectsRegistrationPaths(t *testing.T) {
+	for _, path := range []string{"/account/register", "/api/SignUp/", "/sign-up.php", "/account/sign_up", "/registration;step=1", "/account/%72egister"} {
+		t.Run(path, func(t *testing.T) {
+			login := succeededRow("diagnosis-1", "acct-a")
+			latest := succeededRow("diagnosis-2", "acct-a")
+			latest.Path = path
+			got := Select([]Row{login, latest}, run, []string{"acct-a"})["acct-a"]
+			if got.Reason != ReasonScopeDenied || got.Learned.Method.Path != "" {
+				t.Fatalf("가입 경로에 대한 학습 결과 %+v", got)
+			}
+		})
+	}
+	login := succeededRow("diagnosis-1", "acct-a")
+	login.Path = "/session/registered-users/sign-in"
+	if got := Select([]Row{login}, run, []string{"acct-a"})["acct-a"]; got.Reason != "" || got.Learned.Method.Path != login.Path {
+		t.Fatalf("일반 로그인 경로에 대한 학습 결과 %+v", got)
+	}
+}
+
 func TestSelectRejectsSuccessWithoutTransportRef(t *testing.T) {
 	older := succeededRow("diagnosis-1", "acct-a")
 	latest := succeededRow("diagnosis-2", "acct-a")

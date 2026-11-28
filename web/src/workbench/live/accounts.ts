@@ -322,11 +322,6 @@ const MAX_PREFIX_BYTES = 32;
 // 자격 길이(diagnosisprep.ValidAccountCredential, UTF-8 바이트).
 const MAX_USERNAME_BYTES = 256;
 const MAX_PASSWORD_BYTES = 512;
-/**
- * E② 보호 값 하한(e2proxy minProtectedValueBytes). 이보다 짧은 비밀번호는 서버가 저장은 하지만, 실행 때 보호 값으로 등록할 수
- * 없어 그 계정으로 로그인하지 않는다(11/21 VAmPI 기본 계정 5바이트에서 확인). 화면은 안내만 하고 막지 않는다.
- */
-export const MIN_USABLE_PASSWORD_BYTES = 6;
 
 /** Go unicode.IsControl(Cc: U+0000–U+001F, U+007F–U+009F). */
 // biome-ignore lint/suspicious/noControlCharactersInRegex: 제어 문자를 거르려는 검사
@@ -480,11 +475,6 @@ export function validAccountCredential(username: string, password: string): bool
     !USERNAME_WHITESPACE.test(username.slice(0, 1) + username.slice(-1)) &&
     !/[\0\r\n]/.test(username + password)
   );
-}
-
-/** 비밀번호가 실행 때 E② 보호 값으로 쓰기에 짧은가(안내용, 바이트 수만 본다). */
-export function passwordTooShortForRun(password: string): boolean {
-  return utf8Bytes(password) < MIN_USABLE_PASSWORD_BYTES;
 }
 
 /**

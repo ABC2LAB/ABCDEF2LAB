@@ -273,3 +273,28 @@ func TestE2HTTPRunPolicyDocumentAcceptsE3WriteConsent(t *testing.T) {
 		t.Fatal("평가 단독 정책이 쓰기 동의 칸을 받음")
 	}
 }
+
+func TestE2HTTPRunPolicyExplorationEvidenceVersion(t *testing.T) {
+	_, _, base := e2HostPolicyFixture(t)
+	encode := func(mode, digest string) []byte {
+		p := base
+		p.ExplorationLoginEvidence, p.ExplorationSourceDigest = mode, digest
+		raw, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	digest := strings.Repeat("a", 64)
+	if p, _, err := ValidateE2HTTPRunPolicyDocument(encode("required/v2", digest)); err != nil || p.ExplorationSourceDigest != digest {
+		t.Fatalf("결속된 신규 정책 거부: %v", err)
+	}
+	for _, input := range [][2]string{{"required/v2", ""}, {"required/v2", "short"}, {"required/v1", digest}, {"", digest}} {
+		if _, _, err := ValidateE2HTTPRunPolicyDocument(encode(input[0], input[1])); err == nil {
+			t.Fatalf("잘못된 출처 정책 허용: %q", input)
+		}
+	}
+	if _, err := ValidateE2HTTPPolicyDocument(encode("required/v2", digest), true); err == nil {
+		t.Fatal("제품 전용 근거 요구를 평가 정책으로 허용")
+	}
+}

@@ -66,13 +66,17 @@ func validateE2HTTPPolicyDocumentMode(raw []byte, prepared, run bool) (E2HTTPFil
 	if run {
 		// e3_write_consent·e3_resettable은 제품 발급(productE3PolicyRules)이 E③ 확정 단계를 켤 때 싣는 칸이다. factory는
 		// 같은 칸을 받으므로 실행 정책 문서도 받는다(선언 있는 회차의 확정 몫 읽기가 이 검증을 쓴다).
-		optional = append(optional, "workflow", "e3_write_consent", "e3_resettable", "selected_account_ref")
+		optional = append(optional, "workflow", "e3_write_consent", "e3_resettable", "selected_account_ref", "exploration_login_evidence", "exploration_source_digest")
 		approvalMode = approvalMode || policy.ApprovalMode == e2proxy.ApprovalConfirmEveryRequest || policy.ApprovalMode == e2proxy.ApprovalWorkbenchV1
 	}
 	if !e2HTTPExactJSON(raw, top, optional, "evaluation", "upstream_ca") || !validE2HTTPFileAuth(policy.Auth, policy.HeaderMode, policy.Rules) ||
 		policy.Format != E2HTTPFilePolicyFormat || !approvalMode ||
 		policy.HeaderMode == "" || policy.MaxRequests == 0 || policy.MaxRequests > uint64(math.MaxInt) || len(policy.Rules) == 0 || len(policy.Rules) > 128 ||
 		!policy.ValidUntil.After(policy.ValidFrom) {
+		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
+	}
+	if policy.ExplorationLoginEvidence != "" && (!run || policy.ExplorationLoginEvidence != "required/v2" || policy.SelectedAccountRef != "" || !e2HTTPHash(policy.ExplorationSourceDigest)) ||
+		policy.ExplorationLoginEvidence == "" && policy.ExplorationSourceDigest != "" {
 		return E2HTTPFilePolicy{}, "", ErrE2HTTPHost
 	}
 	// 판정 설정은 있으면 맞는 값이어야 하고, 모델 로그인 인증 칸은 판정 설정 없이 받지 않는다(상한 없이 로그인이 나가지 않게).
