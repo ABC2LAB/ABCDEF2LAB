@@ -169,49 +169,9 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 	if bindCandidateLLMAccount(l, plan) != nil {
 		return errPreparation
 	}
-	l.policy.Workflow = nil
-	l.policy.E3WriteConsent, l.policy.E3Resettable = false, false
-	l.policy.ApprovalMode = e2proxy.ApprovalPreauthorizedScope
-	l.policy.CaseRef = digest
-	l.policy.Rules = nil
-	for i, action := range plan.Actions {
-		ref := fmt.Sprintf("candidate-llm-%d", i+1)
-		l.policy.Rules = append(l.policy.Rules, candidateLLMReadRule(ref, plan.Origin, l.productTarget.SelectedIP,
-			l.productTarget.Target.TLSSPKISHA256, action))
-	}
-	count := len(plan.Actions)
-	if l.policy.Auth != nil {
-		login := *l.policy.Auth.Login
-		l.policy.Rules = append(l.policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: plan.Origin,
-			ConnectIP: l.productTarget.SelectedIP, PathPrefix: login.Path, PathScopeRef: "auth-login-path",
-			Methods: []string{login.Method}, Purpose: e2proxy.PurposeAuthPrep,
-			ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}},
-			TLSSPKISHA256:   l.productTarget.Target.TLSSPKISHA256})
-		count++
-	}
-	if count != plan.MaxRequests {
+	runtimeSeconds, count, err := shapeCandidateLLMPolicy(l, plan, digest)
+	if err != nil {
 		return errPreparation
-	}
-	if l.profile.Budget.Requests < int64(count) || l.profile.Budget.DurationSeconds < 1 ||
-		l.policy.MaxRequests < uint64(count) || l.policy.Limits.MaxAttempts < uint64(count) ||
-		l.policy.Limits.MaxCalls < count || l.policy.Runtime.MaxToolCalls < count {
-		return errPreparation
-	}
-	runtimeSeconds := candidateLLMRuntimeSeconds(plan.DurationSeconds, l.profile.Budget.DurationSeconds, l.policy.Runtime.WorkerTimeoutMS)
-	if runtimeSeconds < 1 {
-		return errPreparation
-	}
-	l.policy.MaxRequests = uint64(count)
-	l.policy.Limits.MaxAttempts = uint64(count)
-	l.policy.Limits.MaxCalls = count
-	l.policy.Limits.MaxConcurrent = 1
-	l.policy.Runtime.MaxToolCalls = count
-	l.policy.Runtime.MaxIntentRuns = 1
-	l.profile.Budget.Requests = int64(count)
-	l.profile.Budget.ModelRequests, l.profile.Budget.InputTokens, l.profile.Budget.OutputTokens, l.profile.Budget.CostUSDMicros = 0, 0, 0, 0
-	l.profile.Budget.DurationSeconds = int64(runtimeSeconds)
-	if l.profile.ValidUntil.After(plan.ExpiresAt) {
-		l.profile.ValidUntil = plan.ExpiresAt
 	}
 	jobID := fmt.Sprintf("candidate-llm-%d-%s", requestID, digest[:16])
 	runRef := "run-" + jobID
@@ -567,4 +527,56 @@ func bindCandidateLLMAccount(l *urlLoadedProfile, plan server.CandidateLLMPlan) 
 	l.productAccounts = []productRunAccount{*selectedRun}
 	l.policy.SelectedAccountRef = plan.AccountRef
 	return nil
+}
+
+// shapeCandidateLLMPolicy는 승인 계획대로 #950 실행의 E② 정책 · 예산을 좁힌다: 승인한 읽기 행동 규칙(계정 계획이면 인증 준비
+// 규칙 하나 더), 요청 · 호출 상한 = 행동 수, 모델 예산 0, 실행 시간 · 유효 기한은 계획 안으로. 계획과 설치 상한이 맞지 않으면
+// errPreparation이다. 돌려주는 값은 실행 시간(초)과 규칙 수(발급 정책 대조용)다. 시험이 좁힌 정책을 발급 · Host 로딩까지
+// 태우려고 뺐다(동작 그대로).
+func shapeCandidateLLMPolicy(l *urlLoadedProfile, plan server.CandidateLLMPlan, digest string) (int, int, error) {
+	l.policy.Workflow = nil
+	l.policy.E3WriteConsent, l.policy.E3Resettable = false, false
+	l.policy.ApprovalMode = e2proxy.ApprovalPreauthorizedScope
+	l.policy.CaseRef = digest
+	l.policy.Rules = nil
+	for i, action := range plan.Actions {
+		ref := fmt.Sprintf("candidate-llm-%d", i+1)
+		l.policy.Rules = append(l.policy.Rules, candidateLLMReadRule(ref, plan.Origin, l.productTarget.SelectedIP,
+			l.productTarget.Target.TLSSPKISHA256, action))
+	}
+	count := len(plan.Actions)
+	if l.policy.Auth != nil {
+		login := *l.policy.Auth.Login
+		l.policy.Rules = append(l.policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: plan.Origin,
+			ConnectIP: l.productTarget.SelectedIP, PathPrefix: login.Path, PathScopeRef: "auth-login-path",
+			Methods: []string{login.Method}, Purpose: e2proxy.PurposeAuthPrep,
+			ApprovalDisplay: server.RequestApprovalDisplay{QueryKeys: []string{}, JSONFields: []string{}},
+			TLSSPKISHA256:   l.productTarget.Target.TLSSPKISHA256})
+		count++
+	}
+	if count != plan.MaxRequests {
+		return 0, 0, errPreparation
+	}
+	if l.profile.Budget.Requests < int64(count) || l.profile.Budget.DurationSeconds < 1 ||
+		l.policy.MaxRequests < uint64(count) || l.policy.Limits.MaxAttempts < uint64(count) ||
+		l.policy.Limits.MaxCalls < count || l.policy.Runtime.MaxToolCalls < count {
+		return 0, 0, errPreparation
+	}
+	runtimeSeconds := candidateLLMRuntimeSeconds(plan.DurationSeconds, l.profile.Budget.DurationSeconds, l.policy.Runtime.WorkerTimeoutMS)
+	if runtimeSeconds < 1 {
+		return 0, 0, errPreparation
+	}
+	l.policy.MaxRequests = uint64(count)
+	l.policy.Limits.MaxAttempts = uint64(count)
+	l.policy.Limits.MaxCalls = count
+	l.policy.Limits.MaxConcurrent = 1
+	l.policy.Runtime.MaxToolCalls = count
+	l.policy.Runtime.MaxIntentRuns = 1
+	l.profile.Budget.Requests = int64(count)
+	l.profile.Budget.ModelRequests, l.profile.Budget.InputTokens, l.profile.Budget.OutputTokens, l.profile.Budget.CostUSDMicros = 0, 0, 0, 0
+	l.profile.Budget.DurationSeconds = int64(runtimeSeconds)
+	if l.profile.ValidUntil.After(plan.ExpiresAt) {
+		l.profile.ValidUntil = plan.ExpiresAt
+	}
+	return runtimeSeconds, count, nil
 }

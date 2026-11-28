@@ -316,31 +316,7 @@ func (b *urlPreparationRuntime) executeCandidateVerification(ctx context.Context
 	if err != nil || currentTarget == nil || !server.CandidatePlanStillApproved(time.Now().UTC(), plan, ownerResp.Job.Input, *ownerResp.Job.Scope, *currentTarget) || l.current() != nil {
 		return errPreparation
 	}
-	// Collapse the frozen policy to exactly one approved, static GET. No
-	// credential, E③, model, query or general diagnosis rule is inherited.
-	l.policy.Workflow = nil
-	l.policy.Auth = nil
-	l.policy.E3WriteConsent, l.policy.E3Resettable = false, false
-	l.policy.HeaderMode = e2proxy.HeaderPreserve
-	l.policy.ApprovalMode = e2proxy.ApprovalPreauthorizedScope
-	l.policy.CaseRef = requestedDigest
-	l.policy.Rules = []server.E2HTTPFileRule{{Ref: "candidate-exact", Origin: plan.Origin, ConnectIP: l.productTarget.SelectedIP,
-		PathPrefix: plan.ExactPath, PathMatch: "exact", PathScopeRef: "candidate-exact", Methods: []string{"GET"}, TLSSPKISHA256: l.productTarget.Target.TLSSPKISHA256}}
-	l.policy.MaxRequests = 2
-	l.policy.Limits.MaxAttempts = 2
-	l.policy.Limits.MaxCalls = 2
-	l.policy.Limits.MaxConcurrent = 1
-	l.policy.Runtime.MaxToolCalls = 2
-	l.policy.Runtime.MaxIntentRuns = 1
-	l.profile.Budget.Requests = 2
-	l.profile.Budget.ModelRequests = 0
-	l.profile.Budget.InputTokens = 0
-	l.profile.Budget.OutputTokens = 0
-	l.profile.Budget.CostUSDMicros = 0
-	l.profile.Budget.DurationSeconds = 60
-	if l.profile.ValidUntil.After(plan.ExpiresAt) {
-		l.profile.ValidUntil = plan.ExpiresAt
-	}
+	shapeStoredCandidatePolicy(l, plan, requestedDigest)
 	jobID := fmt.Sprintf("candidate-%d-%s", requestID, requestedDigest[:16])
 	runRef := "run-" + jobID
 	hard, cancel := context.WithTimeout(ctx, 60*time.Second)
@@ -441,4 +417,34 @@ VALUES($1,3,'running','execution_started',$2,$3,'candidate-active/v1',$4)`, requ
 		return errPreparation
 	}
 	return nil
+}
+
+// shapeStoredCandidatePolicy는 저장 후보 검증(active/v1)의 고정 정책을 승인한 정확한 GET 하나로 줄인다. 시험이 줄인 정책을
+// 발급 · Host 로딩까지 태우려고 뺐다(동작 그대로).
+func shapeStoredCandidatePolicy(l *urlLoadedProfile, plan server.CandidateActivePlan, requestedDigest string) {
+	// Collapse the frozen policy to exactly one approved, static GET. No
+	// credential, E③, model, query or general diagnosis rule is inherited.
+	l.policy.Workflow = nil
+	l.policy.Auth = nil
+	l.policy.E3WriteConsent, l.policy.E3Resettable = false, false
+	l.policy.HeaderMode = e2proxy.HeaderPreserve
+	l.policy.ApprovalMode = e2proxy.ApprovalPreauthorizedScope
+	l.policy.CaseRef = requestedDigest
+	l.policy.Rules = []server.E2HTTPFileRule{{Ref: "candidate-exact", Origin: plan.Origin, ConnectIP: l.productTarget.SelectedIP,
+		PathPrefix: plan.ExactPath, PathMatch: "exact", PathScopeRef: "candidate-exact", Methods: []string{"GET"}, TLSSPKISHA256: l.productTarget.Target.TLSSPKISHA256}}
+	l.policy.MaxRequests = 2
+	l.policy.Limits.MaxAttempts = 2
+	l.policy.Limits.MaxCalls = 2
+	l.policy.Limits.MaxConcurrent = 1
+	l.policy.Runtime.MaxToolCalls = 2
+	l.policy.Runtime.MaxIntentRuns = 1
+	l.profile.Budget.Requests = 2
+	l.profile.Budget.ModelRequests = 0
+	l.profile.Budget.InputTokens = 0
+	l.profile.Budget.OutputTokens = 0
+	l.profile.Budget.CostUSDMicros = 0
+	l.profile.Budget.DurationSeconds = 60
+	if l.profile.ValidUntil.After(plan.ExpiresAt) {
+		l.profile.ValidUntil = plan.ExpiresAt
+	}
 }
