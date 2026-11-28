@@ -307,6 +307,7 @@ func e2HTTPLearnedLogin(ctx context.Context, execution *e2proxy.Execution, dir, 
 	}
 	out.Transport = learnedlogin.TransportSent
 	if err := execution.AddRedactValues(learnedSessionValues(m, extracted)...); err != nil {
+		log.Print("[e2-http] 학습 로그인 세션 가림 등록 실패. 세션 없음으로 처리합니다")
 		out.Result, out.Reason = E2HTTPAuthSessionNotFound, learnedlogin.ReasonSessionNotFound
 		return out, nil
 	}

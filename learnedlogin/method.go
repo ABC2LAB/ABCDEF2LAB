@@ -11,7 +11,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -200,6 +202,9 @@ func (m Method) fromResponse(name string) bool {
 	return false
 }
 
+// registrationPath는 로그인 대신 계정을 만드는 경로의 동작 이름을 본다.
+var registrationPath = regexp.MustCompile(`(?i)/(register|registration|sign[-_]?up)([/.;]|$)`)
+
 // Validate는 방법이 지원 범위 안이고 모호하지 않은지 본다. 통과하면 빈 사유다.
 func (m Method) Validate() Reason {
 	if m.Method != http.MethodPost {
@@ -207,6 +212,10 @@ func (m Method) Validate() Reason {
 	}
 	if !validPath(m.Path) {
 		return ReasonRecordInvalid
+	}
+	decoded, err := url.PathUnescape(m.Path)
+	if registrationPath.MatchString(m.Path) || err == nil && registrationPath.MatchString(decoded) {
+		return ReasonScopeDenied
 	}
 	switch m.Format {
 	case FormatForm, FormatJSON, FormatMultipart:

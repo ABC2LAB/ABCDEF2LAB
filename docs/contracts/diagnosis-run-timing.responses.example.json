@@ -396,6 +396,186 @@
           "more": false
         }
       }
+    },
+    {
+      "name": "running_with_time_limit",
+      "status": {
+        "version": "diagnosis-api.v2",
+        "owner_context": "cbff6530efa1f3c07dcd22533b5c5e8c40b18d5d80fd4ae80868c47a5552ed82",
+        "draft": {
+          "id": "job-1",
+          "revision": 6,
+          "source_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "input": {
+            "target_url": "https://owned.example/",
+            "profile_id": "profile-1",
+            "display_name": "합성 점검"
+          },
+          "state": "running",
+          "phase": "execution",
+          "scope": {
+            "target_ref": "target-1",
+            "scope_ref": "scope-1",
+            "origin": "https://owned.example",
+            "path_prefixes": [
+              "=/",
+              "/users/v1",
+              "=/a/"
+            ],
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "query_policy": "any",
+            "body_policy": "bounded",
+            "max_body_bytes": 0,
+            "approval_mode": "preauthorized_scope",
+            "attestation_ref": "attestation-1",
+            "budget": {
+              "requests": 100,
+              "model_requests": 2,
+              "input_tokens": 1000,
+              "output_tokens": 1000,
+              "cost_usd_micros": 0,
+              "duration_seconds": 600
+            },
+            "expires_at": "2030-01-01T00:00:00Z"
+          },
+          "task_id": "42",
+          "preparation_started": true,
+          "authority_state": "consumed",
+          "started": true,
+          "drain_complete": false,
+          "started_at": "2026-11-17T01:02:03.123456789Z",
+          "time_limit": {
+            "run_deadline_at": "2026-11-17T01:12:00Z",
+            "model_close_at": "2026-11-17T01:08:10Z",
+            "model_drain_ms": 90000,
+            "confirmation_reserve_ms": 120000,
+            "shutdown_margin_ms": 20000
+          },
+          "result_ready": false
+        },
+        "server_time": "2026-11-17T01:05:03Z"
+      },
+      "list": {
+        "version": "diagnosis-api.v2",
+        "owner_context": "cbff6530efa1f3c07dcd22533b5c5e8c40b18d5d80fd4ae80868c47a5552ed82",
+        "page": {
+          "runs": [
+            {
+              "id": "job-1",
+              "revision": 6,
+              "display_name": "합성 점검",
+              "state": "running",
+              "phase": "execution",
+              "task_id": "42",
+              "started": true,
+              "drain_complete": false,
+              "started_at": "2026-11-17T01:02:03.123456789Z",
+              "result_ready": false,
+              "report_available": false,
+              "approval_status": "not_revalidated",
+              "action_required": true
+            }
+          ],
+          "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "limit": 25,
+          "more": false
+        }
+      }
+    },
+    {
+      "name": "cancelled_keeps_time_limit",
+      "status": {
+        "version": "diagnosis-api.v2",
+        "owner_context": "cbff6530efa1f3c07dcd22533b5c5e8c40b18d5d80fd4ae80868c47a5552ed82",
+        "draft": {
+          "id": "job-1",
+          "revision": 9,
+          "source_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "input": {
+            "target_url": "https://owned.example/",
+            "profile_id": "profile-1",
+            "display_name": "합성 점검"
+          },
+          "state": "cancelled",
+          "phase": "report",
+          "reason_code": "stop_requested",
+          "scope": {
+            "target_ref": "target-1",
+            "scope_ref": "scope-1",
+            "origin": "https://owned.example",
+            "path_prefixes": [
+              "=/",
+              "/users/v1",
+              "=/a/"
+            ],
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "query_policy": "any",
+            "body_policy": "bounded",
+            "max_body_bytes": 0,
+            "approval_mode": "preauthorized_scope",
+            "attestation_ref": "attestation-1",
+            "budget": {
+              "requests": 100,
+              "model_requests": 2,
+              "input_tokens": 1000,
+              "output_tokens": 1000,
+              "cost_usd_micros": 0,
+              "duration_seconds": 600
+            },
+            "expires_at": "2030-01-01T00:00:00Z"
+          },
+          "task_id": "42",
+          "preparation_started": true,
+          "authority_state": "consumed",
+          "started": true,
+          "drain_complete": true,
+          "started_at": "2026-11-17T01:02:03.123456789Z",
+          "finished_at": "2026-11-17T01:07:03.123456789Z",
+          "time_limit": {
+            "run_deadline_at": "2026-11-17T01:12:00Z",
+            "model_close_at": "2026-11-17T01:08:10Z",
+            "model_drain_ms": 90000,
+            "confirmation_reserve_ms": 120000,
+            "shutdown_margin_ms": 20000
+          },
+          "result_ready": true
+        },
+        "server_time": "2026-11-17T01:08:03Z"
+      },
+      "list": {
+        "version": "diagnosis-api.v2",
+        "owner_context": "cbff6530efa1f3c07dcd22533b5c5e8c40b18d5d80fd4ae80868c47a5552ed82",
+        "page": {
+          "runs": [
+            {
+              "id": "job-1",
+              "revision": 9,
+              "display_name": "합성 점검",
+              "state": "cancelled",
+              "phase": "report",
+              "reason_code": "stop_requested",
+              "task_id": "42",
+              "started": true,
+              "drain_complete": true,
+              "started_at": "2026-11-17T01:02:03.123456789Z",
+              "finished_at": "2026-11-17T01:07:03.123456789Z",
+              "result_ready": true,
+              "report_available": true,
+              "approval_status": "not_revalidated",
+              "action_required": false
+            }
+          ],
+          "snapshot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "limit": 25,
+          "more": false
+        }
+      }
     }
   ]
 }

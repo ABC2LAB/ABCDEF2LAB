@@ -30,6 +30,7 @@ import (
 	"github.com/Autumn-27/artex/e3contract"
 	"github.com/Autumn-27/artex/internal/pathscope"
 	"github.com/Autumn-27/artex/loginattempt"
+	"github.com/Autumn-27/artex/responseevidence"
 	"github.com/Autumn-27/artex/transmit/budget"
 )
 
@@ -72,6 +73,10 @@ type Execution struct {
 	controlPending bool
 	stopDone       chan struct{}
 	stopErr        error
+
+	// responseEvidenceBytes는 이 실행이 만든 응답 근거의 누적 직렬화 크기다(원격 조회 봉투 상한 보호).
+	responseEvidenceBytes int
+
 	// slots는 동시 송신 자리다. 용량이 MaxConcurrent이고, 자리가 없으면 거부하지 않고 기다린다(C20).
 	// 기다리는 쪽은 제안 순서대로 자리를 얻는다(채널 송신 대기열). 대기 수는 프록시 연결 상한×call 수로 묶인다.
 	slots chan struct{}
@@ -100,6 +105,10 @@ type Call struct {
 	e                    *Execution
 	ctx                  context.Context
 	cancel               context.CancelFunc
+
+	// responseEvidence는 완결 응답의 구조 근거다(selected 후보 검증용). 워커 모델 결과에는 넣지 않는다.
+	responseEvidence []ResponseEvidence
+
 	// cancelCause는 call 문맥을 원인과 함께 끊는다(모델 단계 마감 ErrModelStageClosed).
 	cancelCause context.CancelCauseFunc
 	ref         string
@@ -819,7 +828,7 @@ func (c *Call) resultLocked() CallResult {
 	if c.finalized {
 		state = "closed"
 	}
-	return CallResult{Observations: cloneHTTPObservations(c.diagnostics), ObservationsTruncated: c.diagnosticsTruncated, IntentID: c.intentID, Program: c.program, CallRef: c.ref, CommandRef: c.commandRef, State: state, Counts: c.counts, AuditComplete: c.auditComplete && !c.e.auditFailed, Final: c.finalized, Reason: c.reason}
+	return CallResult{Observations: cloneHTTPObservations(c.diagnostics), ObservationsTruncated: c.diagnosticsTruncated, ResponseEvidence: cloneResponseEvidence(c.responseEvidence), IntentID: c.intentID, Program: c.program, CallRef: c.ref, CommandRef: c.commandRef, State: state, Counts: c.counts, AuditComplete: c.auditComplete && !c.e.auditFailed, Final: c.finalized, Reason: c.reason}
 }
 
 // Snapshot uses the original approval anchor. Counts remain execution-wide;
@@ -1408,6 +1417,8 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	var loginPlan loginattempt.Plan
 	var loginReq loginattempt.Request
 	var loginResp *loginattempt.Response
+	// 완결 응답의 구조 근거다. 본문을 도구에 돌려주기 전에 뽑고, 관찰 기록과 같은 시점에 붙인다.
+	var bodyEvidence *responseevidence.Evidence
 	finish := func(resp *http.Response, cause error) (*http.Response, http.Header, Receipt, error) {
 		if e3 != nil {
 			e3.finish(&r, ctx)
@@ -1416,7 +1427,7 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 		rr, aerr := c.finish(ctx, r, func(rr Receipt) {
 			// 로그인 판정을 관찰 기록보다 먼저 한다. 로그인 성공을 세운 요청도 그 계정으로 귀속된다(ResolveSentAccount).
 			finishLoginAttempt(loginTracker, loginPlan, loginReq, loginResp, rr)
-			c.observeHTTP(req, requestHeaders, resp, rr)
+			c.observeHTTP(req, requestHeaders, resp, rr, bodyEvidence)
 			attempt := rr
 			attempt.Reason = r.Reason
 			c.observeAttemptPath(req, attempt)
@@ -2001,8 +2012,11 @@ func (c *Call) doWithE3(ctx context.Context, req *http.Request, purpose string, 
 	resp.Request = &http.Request{Method: req.Method}
 	r.Reason = Complete
 	if masked {
+		// 원래 표현은 일부 보류했다. 기존 v2 보류 영수증 모양을 유지하며 결과 불명으로 세지 않는다.
 		r.Reason, r.ResponseComplete = Withheld, false
-	} // 원래 표현은 일부 보류했다. 기존 v2 보류 영수증 모양을 유지하며 결과 불명으로 세지 않는다.
+	} else {
+		bodyEvidence = e.extractResponseEvidence(req.Method, resp, responseBody)
+	}
 	return finish(resp, nil)
 }
 

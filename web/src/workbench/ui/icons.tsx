@@ -181,22 +181,14 @@ export function Icon({ name, className }: { name: IconName; className?: string }
   );
 }
 
-/** 레일 맨 위 로고. */
+/** 레일 맨 위 로고: 진돗개 옆얼굴 실루엣. 귀 안쪽 · 눈 · 목줄 틈은 evenodd 구멍으로 뚫는다. */
 export function BrandMark() {
   return (
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
       <path
-        d="M4 19L4 12C4 7 7.6 3.5 12 3.5C16.4 3.5 20 7 20 12L20 19L18 21L16 19L14 21L12 19L10 21L8 19L6 21Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinejoin="round"
-      />
-      <path d="M9.3 8.4L9.3 10.4M14.7 8.4L14.7 10.4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <path
-        d="M12 12L15 14.6L12 18.4L9 14.6ZM9.4 14.6L14.6 14.6"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinejoin="round"
+        fill="currentColor"
+        fillRule="evenodd"
+        d="M11.22 0L12.33 5.07L12.46 5.2L16.1 5.92L18.05 7.61L18.44 8.85L22.47 9.95L21.24 10.28L21.17 10.6L22.02 11.71L22.67 12.03L22.41 12.68L21.76 13.59L20.85 14.18L16.88 14.89L15.45 15.48L14.8 16.13L13.76 18.86L12.46 18.47L11.74 20.49L12.85 20.81L12.91 21.07L11.74 24L2.44 16.13L1.98 15.61L1.33 15.22L1.66 14.63L1.85 14.57L3.41 15.93L6.47 18.02L9.46 19.58L10.83 20.16L10.96 20.1L11.74 18.28L11.61 18.08L10.18 17.56L7.32 16L4.13 13.85L3.02 12.94L3.02 12.68L6.6 7.61L8.94 3.51ZM10.7 2.54L9.07 5.4L8.94 7.74L11.35 5.79L11.02 4.1L11.09 3.77L10.96 3.71ZM14.15 8.13L14.08 8.26L15.32 9.43L17.4 9.5L15.84 8.26Z"
       />
     </svg>
   );

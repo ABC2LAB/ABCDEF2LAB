@@ -61,6 +61,8 @@ export class ApiError extends Error {
   /** 오류 본문이 `{error: {code, retryable}}` 봉투(KG 조회 v1 §5.4)일 때의 고정 code·재조회 가능 여부. */
   code?: string;
   retryable?: boolean;
+  /** 새 시작 거절(`busy`)의 고정 사유 코드(docs/url-diagnosis-preparation.md '새 시작 거절 사유'). 모양만 검사한다. */
+  busyReason?: string;
   constructor(status: number, message: string, field?: string) {
     super(message);
     this.name = "ApiError";
@@ -109,9 +111,12 @@ async function responseError(res: Response): Promise<ApiError> {
   let field: string | undefined;
   let code: string | undefined;
   let retryable: boolean | undefined;
+  let busyReason: string | undefined;
   try {
-    const body = (await res.json()) as { error?: unknown; field?: unknown };
+    const body = (await res.json()) as { error?: unknown; field?: unknown; busy_reason?: unknown };
     if (typeof body?.error === "string" && body.error) message = body.error;
+    if (body?.error === "busy" && typeof body.busy_reason === "string" && ERROR_CODE.test(body.busy_reason))
+      busyReason = body.busy_reason;
     // 봉투 오류: code 와 retryable 둘 다 모양이 맞을 때만 받는다
     const e = body?.error as { code?: unknown; retryable?: unknown } | null | undefined;
     if (e && typeof e === "object" && typeof e.code === "string" && ERROR_CODE.test(e.code)) {
@@ -126,6 +131,7 @@ async function responseError(res: Response): Promise<ApiError> {
     /* 본문 없음/비 JSON */
   }
   const err = new ApiError(res.status, message, field);
+  if (busyReason !== undefined) err.busyReason = busyReason;
   if (code !== undefined) {
     err.code = code;
     err.retryable = retryable;

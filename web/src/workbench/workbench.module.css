@@ -462,8 +462,9 @@
   font-size: 15px;
   letter-spacing: 0.03em;
 }
+/* 로고는 JinDo 글자와 같은 색(.brand의 --rail-ink)을 물려받는다 */
 .brand svg {
-  color: var(--rail-acc);
+  flex: none;
 }
 .new-btn {
   display: flex;

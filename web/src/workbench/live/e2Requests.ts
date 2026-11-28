@@ -3,7 +3,7 @@
 // 탐색 단계 요청은 E② 저널에 없어 여기 없다(탐색 경계를 지난 요청 · 원문 기록 없음).
 
 import { ApiError, apiFetch } from "@/lib/diagnosis/api";
-import { type E2Reason, REASON_LABEL } from "@/lib/diagnosis/e2flow";
+import { type E2LoginRefusal, type E2Reason, e2LoginRefusal, REASON_LABEL } from "@/lib/diagnosis/e2flow";
 
 const LIST_FORMAT = "abc2lab.e2-flow-requests/v1";
 const DETAIL_FORMAT = "abc2lab.e2-flow-request/v1";
@@ -102,6 +102,8 @@ export type E2RequestDetail = {
   response_complete: boolean;
   response_truncated: boolean;
   fields: Record<E2FieldKey, E2Field>;
+  /** 로그인 시도 판정기가 막은 고정 사유(workbench-live-data.md §4.2). 없으면 기존 reason 표시만. */
+  login_refusal?: E2LoginRefusal;
 };
 
 /** 상세를 못 읽은 까닭(계약 §4.1 이유 코드 · 상태) */
@@ -192,6 +194,16 @@ export function parseE2RequestDetail(v: unknown, callRef: string, attemptId: str
   const decision = Object.hasOwn(DECISION_TEXT, v.decision) ? (v.decision as E2Decision) : "unknown";
   const reason = Object.hasOwn(REASON_LABEL, v.reason) ? (v.reason as E2Reason) : null;
   const fields = Object.fromEntries(E2_FIELDS.map((k) => [k, fieldOf(v[k])])) as Record<E2FieldKey, E2Field>;
+  if (
+    v.login_refusal !== undefined &&
+    (typeof v.login_refusal !== "string" ||
+      v.method !== "POST" ||
+      v.decision !== "denied" ||
+      v.reason !== "policy_denied" ||
+      v.forward_attempted !== false)
+  )
+    invalid();
+  const loginRefusal = e2LoginRefusal(v.login_refusal);
   return {
     call_ref: callRef,
     attempt_id: attemptId,
@@ -212,6 +224,7 @@ export function parseE2RequestDetail(v: unknown, callRef: string, attemptId: str
     response_complete: v.response_complete as boolean,
     response_truncated: v.response_truncated as boolean,
     fields,
+    ...(loginRefusal ? { login_refusal: loginRefusal } : {}),
   };
 }
 

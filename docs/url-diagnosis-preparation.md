@@ -434,3 +434,32 @@ preparation-only 내부 서버 차단은 유지한다.
 `TestInitInstanceEvidenceIsValidatedAndImmutable`.
 마지막 시험은 실제 설치 인증·공개 관리 mux·작업 권한 조회·소유 HTTP 수신기를 사용한다.
 합성 실행 수신기는 실제 Planner/Worker·Qwen 수용을 대신하지 않으며 유료 모델 시험은 NOT_RUN이다.
+
+### 새 시작 거절 사유(2026-11-27, `busy_reason`)
+
+새 Start 거절은 계속 `409 {"error":"busy"}`이고, 준비 서비스가 고른 고정 사유를 `busy_reason`으로 더한다. 사유는 위
+운영자 해제 판단(`release_status`와 같은 `releaseViewLocked`)에서 고르며, 사유를 붙여도 거절·잠금은 그대로다(자동 해제·
+재기동·재송신 없음, 결과 불명을 완료·실패로 바꾸지 않음). 작업 ID·시각·활동 기록 같은 운영자 화면의 근거는 싣지 않는다
+(그 근거는 운영자 전용 `GET /api/product/preparation/release`에만 있다). 구 서버·사유를 고르지 못한 거절은 칸이 없다.
+
+```json
+{"version":"diagnosis-api.v2","error":"busy","busy_reason":"release_available"}
+```
+
+| `busy_reason` | 뜻 | 화면이 할 일 |
+|---|---|---|
+| `run_active` | 다른 회차가 준비·실행 중(정상) | 끝날 때까지 기다림 |
+| `run_stopping` | 다른 회차가 중지·마감 중, 또는 끝 상태를 게시했지만 실행 반환 전 | 잠시 뒤 상태 다시 조회 |
+| `candidate_verification_active` | 선택 후보 검증 실행이 진행 중 | 끝날 때까지 기다림 |
+| `closure_unconfirmed` | 이전 회차가 결과 불명이고 자원 마감 미확인, 운영자 해제 기준(활동 없음)에는 아직 안 닿음 | 기다리거나 운영자에게 알림 |
+| `release_available` | 결과 불명·멈춘 회차가 운영자 해제 조건을 채움 | 운영자 [멈춘 작업 해제] 안내 |
+| `release_pending_restart` | 운영자 해제를 기록했고 준비 서비스 재기동·경계 확인 대기 | 재기동 뒤 다시 조회 |
+| `recovery_unsupported` | 이 설치·회차에서 재기동형 해제를 쓸 수 없음(재기동 증거·활동 조회 없음) | 운영자 수동 복구(위 전체 재기동 절차) |
+| `multiple_blockers` | 둘 이상의 작업이 새 시작을 막음 | 운영자 확인 |
+
+대응: 해제 판단 `job_running` → 준비·실행 중이면 `run_active`, 끝 상태 게시 뒤 반환 전이면 `run_stopping`.
+`stopping`은 해제 가능 전까지 `run_stopping`(활동이 최근이거나 증거가 없어도 정상 중지일 수 있음). `unknown`은
+`not_quiet` → `closure_unconfirmed`, `unsupported` → `recovery_unsupported`. 해제 가능(`eligible`) → `release_available`,
+`pending_restart` → `release_pending_restart`, `other_active` → `multiple_blockers`. E② Host의 미완료 intent 복구와는
+다른 장치다(준비 서비스의 재기동형 해제만 다룬다). 보호 IPC 응답 검사는 `busy_reason`을 Start의 `busy`에만, 닫힌 목록 값으로만
+받는다. 웹은 `ApiError.busyReason`과 `urlBusyReason()`으로 읽는다(목록 밖이면 없음으로 본다).

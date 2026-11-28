@@ -15,17 +15,14 @@ import {
   accountWriteFailureText,
   clearAccountCredential,
   getAccounts,
-  MIN_USABLE_PASSWORD_BYTES,
   NO_SPACE_USERNAME,
   type ProductTargetRef,
-  passwordTooShortForRun,
   setAccountCredential,
   type TargetAccount,
   validAccountCredential,
 } from "../../live/accounts";
 import { confirmationPlanOf } from "../../live/confirmationPlan";
 import { getDeclaration } from "../../live/declaration";
-import { Icon } from "../../ui/icons";
 import s from "../../workbench.module.css";
 import { pairLabels, QuickTestAccount } from "./QuickTestAccount";
 
@@ -81,9 +78,6 @@ export function AccountManager({
   const [writeError, setWriteError] = useState("");
   // 자격 입력 칸을 연 계정 라벨. 칸 값은 상태가 아니라 DOM(비제어 입력)에만 있다.
   const [credentialFor, setCredentialFor] = useState<string | null>(null);
-  // 자격 등록 뒤 안내(계정 라벨과 바이트 하한만 담는다, 값 없음). 서버는 짧은 비밀번호도 저장해 목록은 '자격 등록됨'이 되므로
-  // 실행 때 쓰이지 않는다는 것을 따로 알린다(#842 경준 리뷰).
-  const [credentialNotice, setCredentialNotice] = useState("");
   const usernameInput = useRef<HTMLInputElement>(null);
   const passwordInput = useRef<HTMLInputElement>(null);
   // 지금 화면에 결속된 대상 id. 쓰기·재조회 응답은 이 값과 같을 때만 반영한다(대상을 바꾼 뒤 늦게 온 이전 대상 응답은 버림).
@@ -96,7 +90,6 @@ export function AccountManager({
     setAccountsFailed(false);
     setWriteError("");
     setCredentialFor(null);
-    setCredentialNotice("");
     current.current = tref.id;
     getAccounts(tref)
       .then((r) => {
@@ -132,9 +125,6 @@ export function AccountManager({
     const password = p.value;
     u.value = "";
     p.value = "";
-    // 값이 아니라 바이트 수만 본다(실행 때 E② 보호 값 하한).
-    const tooShort = passwordTooShortForRun(password);
-    setCredentialNotice("");
     if (busy) return;
     if (!validAccountCredential(username, password)) {
       setWriteError(accountWriteFailureText(new Error("invalid_account_credential")));
@@ -146,13 +136,7 @@ export function AccountManager({
           if (!configured) throw new Error("credential_not_confirmed");
         }),
       label,
-      () => {
-        setCredentialFor(null);
-        if (tooShort)
-          setCredentialNotice(
-            `${label}: 자격은 등록했지만 비밀번호가 ${MIN_USABLE_PASSWORD_BYTES}바이트보다 짧아 실행 때 이 계정으로 로그인하지 않습니다. 더 긴 비밀번호의 시험 계정을 쓰세요.`,
-          );
-      },
+      () => setCredentialFor(null),
     );
   }
 
@@ -205,12 +189,6 @@ export function AccountManager({
         {!accounts && !accountsFailed ? <p className={s.empty}>불러오는 중…</p> : null}
         {accounts ? (
           <>
-            {credentialNotice ? (
-              <div className={cx(s.note, s.warn)} role="status">
-                <Icon name="alert" />
-                <span>{credentialNotice}</span>
-              </div>
-            ) : null}
             {writeError && !credentialFor ? (
               <p className={s.empty} role="alert">
                 {writeError}
@@ -233,7 +211,6 @@ export function AccountManager({
                           disabled={busy}
                           onClick={() => {
                             setWriteError("");
-                            setCredentialNotice("");
                             setCredentialFor(credentialFor === a.ref ? null : a.ref);
                           }}
                         >
@@ -289,8 +266,7 @@ export function AccountManager({
                             <br />
                             <small>
                               보내면 칸을 바로 비웁니다. 값은 서버 보호 파일에만 남고 화면 · 목록에는 '자격 등록됨'만
-                              보입니다. 비밀번호가 {MIN_USABLE_PASSWORD_BYTES}바이트보다 짧으면 실행 때 보호 값으로
-                              등록할 수 없어 그 계정으로 로그인하지 않습니다.
+                              보입니다.
                             </small>
                             <br />
                             <button
