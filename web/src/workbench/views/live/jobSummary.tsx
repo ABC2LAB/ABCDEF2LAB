@@ -360,6 +360,30 @@ function summaryHead(
 }
 
 /**
+ * [이 주소로 다시 점검]: 이어 보는 끝난 점검의 주소 · 이름 · 모델 · 진단 모드 · 제외 경로를 새 점검에 다 채우고 그 화면으로 간다
+ * (사용자 11/27). 시작 확인 진술은 다시 받는다. 끝난 점검의 오른쪽 요약 패널과 보고서 머리 맨 오른쪽에 둔다
+ */
+export function RescanButton({ primary = false }: { primary?: boolean }) {
+  const { goTo } = useShell();
+  const input = useUrl((st) => st.handle?.input ?? null);
+  if (!input) return null;
+  return (
+    <button
+      className={cx(s.btn, primary && s.pri)}
+      type="button"
+      onClick={() => {
+        const { target_url, display_name, profile_id, workflow_mode, excluded_paths } = input;
+        disconnectUrl();
+        useWb.getState().nPrefill(target_url, { display_name, profile_id, workflow_mode, excluded_paths });
+        goTo("new");
+      }}
+    >
+      이 주소로 다시 점검
+    </button>
+  );
+}
+
+/**
  * 이어 보는 진단의 상세 (시안 inspFor). 진행 중: 지금 하는 일 · 점검 정보 · 결정 대기 · 화면 열기,
  * 끝난 점검: 발견 수 · 판정 · 보고서 열기 · 다시 점검. 이어 보는 진단이 없으면 그리지 않는다(화면이 빈 안내를 그린다).
  */
@@ -479,20 +503,7 @@ export function JobSummary({
         {!ended && !pending ? <Icon name="arrow" /> : null}
       </button>
     ) : null;
-  const again = ended ? (
-    <button
-      className={cx(s.btn, to !== "report" && s.pri)}
-      type="button"
-      onClick={() => {
-        const url = handle.input.target_url;
-        disconnectUrl();
-        useWb.getState().nPrefill(url);
-        goTo("new");
-      }}
-    >
-      이 주소로 다시 점검
-    </button>
-  ) : null;
+  const again = ended ? <RescanButton primary={to !== "report"} /> : null;
 
   return (
     <>

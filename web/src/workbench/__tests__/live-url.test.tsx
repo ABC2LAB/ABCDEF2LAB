@@ -582,6 +582,51 @@ describe("서버 방식 확인 (catalog)", () => {
     expect(u.readURLCatalog).toHaveBeenCalledTimes(1);
   });
 
+  it("'이 주소로 다시 점검'은 이전 점검의 주소 · 이름 · 모델 · 진단 모드 · 제외 경로를 다 채우고, 시작 확인 두 진술은 다시 받는다(사용자 11/27)", async () => {
+    const limits = {
+      format: "abc2lab.workbench-flow/v1" as const,
+      max_pages: 10,
+      max_endpoints: 20,
+      max_response_bytes: 1000,
+      allow_reversible_writes: false,
+    };
+    const second = { ...catalog.profiles[0], id: "profile-2", label: "두 번째", workflow: limits };
+    u.readURLCatalog.mockResolvedValue({
+      ...catalog,
+      profiles: [{ ...catalog.profiles[0], workflow: limits }, second],
+    });
+    act(() =>
+      useWb.getState().nPrefill("https://target.example/app", {
+        display_name: "쇼핑몰 정기 점검",
+        profile_id: "profile-2",
+        workflow_mode: "ai_auto_v1",
+        excluded_paths: "/logout\n/delete",
+      }),
+    );
+    mount("new");
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    await waitFor(() => expect(target).toHaveValue("https://target.example/app"));
+    expect(screen.getByLabelText("점검 이름 (선택)")).toHaveValue("쇼핑몰 정기 점검");
+    await waitFor(() => expect(screen.getByLabelText("모델")).toHaveValue("profile-2"));
+    expect(screen.getByRole("radio", { name: /AI 자동/ })).toBeChecked();
+    expect(screen.getByLabelText(/^제외 경로/)).toHaveValue("/logout, /delete");
+    // 시작 확인 두 진술은 이번 점검의 진술이라 미리 체크하지 않는다
+    expect(exclusionsBox()).not.toBeChecked();
+    expect(backupBox()).not.toBeChecked();
+    tickStartConfirm();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
+    });
+    expect(u.createURLDraft.mock.calls[0][0]).toEqual({
+      target_url: "https://target.example/app",
+      profile_id: "profile-2",
+      display_name: "쇼핑몰 정기 점검",
+      workflow_mode: "ai_auto_v1",
+      excluded_paths: "/logout\n/delete",
+      ...START_CONFIRMED,
+    });
+  });
+
   it("작업 이름 칸은 없고, 탐색 흐름이 있는 프로필만 '점검 설정' 칸(진단 모드 · 제외 경로)이 보인다 (시안 v39)", async () => {
     const limits = {
       format: "abc2lab.workbench-flow/v1" as const,
