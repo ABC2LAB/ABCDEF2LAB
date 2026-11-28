@@ -42,6 +42,19 @@ func candidateAuthComparable(original, comparison e2proxy.HTTPObservation) bool 
 		original.RequestAccountRef == comparison.RequestAccountRef
 }
 
+// candidateHeaderModeComparable은 원본과 후속 관찰의 헤더 전달 방식이 비교를 막지 않는지 본다. 같은 방식이면 된다. 다른 방식은
+// 계정이 결속된 회차(test_account_passthrough)의 익명 원본을 계정을 뗀 익명 후속 검증(preserve)으로 재현한 경우만 받는다.
+// 두 요청 모두 자격 헤더가 없고(auth none) 계정 참조가 없어서, 헤더 방식은 실제로 보낸 요청을 바꾸지 않는다. 자격을 실은
+// 요청이나 그 밖의 방식 조합(평가 caller 전달 · 보호 세션 제안)은 그대로 비교하지 않는다.
+func candidateHeaderModeComparable(original, comparison candidateverify.StoredObservationV2) bool {
+	if original.HeaderMode == comparison.HeaderMode {
+		return true
+	}
+	o, c := original.Source.Observation, comparison.Source.Observation
+	return original.HeaderMode == e2proxy.HeaderTestAccountPassthrough && comparison.HeaderMode == e2proxy.HeaderPreserve &&
+		o.RequestAuthContext == "none" && c.RequestAuthContext == "none" && o.RequestAccountRef == "" && c.RequestAccountRef == ""
+}
+
 func candidateRequestContextComparable(original, comparison e2proxy.HTTPObservation) bool {
 	return candidateAuthComparable(original, comparison) && original.RequestQueryDigest == comparison.RequestQueryDigest &&
 		original.RequestHeaderDigest == comparison.RequestHeaderDigest
@@ -219,7 +232,7 @@ func ParseCandidateFinalVerdict(raw []byte, c CandidateAssessmentContext) (Candi
 			break
 		}
 		observed, originalObservation := row.Source.Observation, c.Original.OriginalObservation.Source.Observation
-		if !candidateAuthComparable(originalObservation, observed) || row.HeaderMode != c.Original.OriginalObservation.HeaderMode {
+		if !candidateAuthComparable(originalObservation, observed) || !candidateHeaderModeComparable(*c.Original.OriginalObservation, row) {
 			comparableAuth = false
 		}
 		kind := ""
@@ -265,12 +278,12 @@ func ParseCandidateFinalVerdict(raw []byte, c CandidateAssessmentContext) (Candi
 		}
 	}
 	if out.Verdict != "insufficient" && (!original || !followup ||
-		c.Original.OriginalObservation.HeaderMode != c.Followup[0].HeaderMode ||
+		!candidateHeaderModeComparable(*c.Original.OriginalObservation, c.Followup[0]) ||
 		!c.Original.OriginalObservation.Source.Observation.ExactFunction) {
 		return CandidateFinalVerdict{}, ErrCandidateFinalVerdict
 	}
 	for _, row := range c.Followup {
-		if !row.Source.Observation.ExactFunction || c.Original.OriginalObservation != nil && row.HeaderMode != c.Original.OriginalObservation.HeaderMode {
+		if !row.Source.Observation.ExactFunction || c.Original.OriginalObservation != nil && !candidateHeaderModeComparable(*c.Original.OriginalObservation, row) {
 			if out.Verdict != "insufficient" {
 				return CandidateFinalVerdict{}, ErrCandidateFinalVerdict
 			}

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -212,6 +213,101 @@ func TestCandidateFinalVerdictRequiresCitedIndependentSources(t *testing.T) {
 	raw, _ = json.Marshal(base)
 	if _, err := ParseCandidateFinalVerdict(raw, c); err != nil {
 		t.Fatal("missing original observation could not be left inconclusive", err)
+	}
+}
+
+// 계정이 결속된 회차의 익명 원본(test_account_passthrough)을 계정을 뗀 익명 후속 검증(preserve)으로 재현하면 비교할 수 있다.
+// 두 요청 모두 자격 헤더 · 계정 참조가 없을 때만이고, 자격을 실은 쪽이 있거나 다른 방식 조합이면 그대로 비교하지 않는다.
+func TestCandidateFinalVerdictAnonymousAcrossDetachedHeaderMode(t *testing.T) {
+	verdict := CandidateFinalVerdict{Version: "selected/final-v1", CandidateID: 1, Verdict: "confirmed",
+		Claim: "Synthetic claim", NormalExplanation: "Public resource may be normal", Reason: "Model recommendation",
+		Limitations: "Only two requests", Remediation: "Review exposure", VerificationCriteria: "Repeat anonymously",
+		Sources: []candidateVerificationSourceRef{
+			{"original-call", "original-attempt", strings.Repeat("a", 64)},
+			{"followup-call", "followup-attempt", strings.Repeat("b", 64)},
+		}}
+	raw, _ := json.Marshal(verdict)
+	parse := func(c CandidateAssessmentContext) CandidateFinalVerdict {
+		t.Helper()
+		got, err := ParseCandidateFinalVerdict(raw, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	c := syntheticCandidateAssessmentContext(t)
+	c.Original.OriginalObservation.HeaderMode = e2proxy.HeaderTestAccountPassthrough
+	if got := parse(c); got.Verdict != "confirmed" {
+		t.Fatalf("anonymous original from an account-bound run was not comparable with the detached anonymous followup: %+v", got)
+	}
+	previous := verdict
+	previous.Verdict, previous.Reason = "insufficient", "context_mismatch"
+	previousRaw, _ := json.Marshal(previous)
+	if got, err := ParseCandidateFinalVerdict(previousRaw, c); err != nil || !reflect.DeepEqual(got, previous) {
+		t.Fatalf("previously stored insufficient verdict changed on read: %+v %v", got, err)
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*CandidateAssessmentContext)
+		reason string
+	}{
+		{"followup credential", func(c *CandidateAssessmentContext) {
+			c.Followup[0].Source.Observation.RequestAuthContext = "cookie"
+		}, "context_mismatch"},
+		{"followup account", func(c *CandidateAssessmentContext) {
+			c.Followup[0].Source.Observation.RequestAccountRef = strings.Repeat("2", 64)
+		}, "context_mismatch"},
+		{"unclassified original header", func(c *CandidateAssessmentContext) {
+			c.Original.OriginalObservation.Source.Observation.RequestAuthContext = "unknown"
+		}, "context_mismatch"},
+		{"different query", func(c *CandidateAssessmentContext) {
+			c.Followup[0].Source.Observation.RequestQueryDigest = strings.Repeat("3", 64)
+		}, "input_context_mismatch"},
+		{"different headers", func(c *CandidateAssessmentContext) {
+			c.Followup[0].Source.Observation.RequestHeaderDigest = strings.Repeat("4", 64)
+		}, "input_context_mismatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := syntheticCandidateAssessmentContext(t)
+			c.Original.OriginalObservation.HeaderMode = e2proxy.HeaderTestAccountPassthrough
+			tc.change(&c)
+			if got := parse(c); got.Verdict != "insufficient" || got.Reason != tc.reason {
+				t.Fatalf("detached comparison crossed %s: %+v", tc.name, got)
+			}
+		})
+	}
+	// 거꾸로(원본 preserve, 후속 passthrough)는 익명 후속 검증이 만드는 조합이 아니다.
+	c = syntheticCandidateAssessmentContext(t)
+	c.Followup[0].HeaderMode = e2proxy.HeaderTestAccountPassthrough
+	if got := parse(c); got.Verdict != "insufficient" || got.Reason != "context_mismatch" {
+		t.Fatalf("reverse header mode pair became decisive: %+v", got)
+	}
+	for _, mode := range []e2proxy.HeaderMode{e2proxy.HeaderEvaluationCallerPassthrough, e2proxy.HeaderProtectedSessionProposal} {
+		c = syntheticCandidateAssessmentContext(t)
+		c.Original.OriginalObservation.HeaderMode = mode
+		if got := parse(c); got.Verdict != "insufficient" || got.Reason != "context_mismatch" {
+			t.Fatalf("%s original compared with preserve followup: %+v", mode, got)
+		}
+	}
+	// 원본이 자격을 실었으면 헤더 방식 예외가 적용되지 않는다(인증 비교 자체도 실패).
+	c = syntheticCandidateAssessmentContext(t)
+	c.Original.OriginalObservation.HeaderMode = e2proxy.HeaderTestAccountPassthrough
+	c.Original.OriginalObservation.Source.Observation.RequestAuthContext = "authorization"
+	c.Original.OriginalObservation.Source.Observation.RequestAccountRef = strings.Repeat("1", 64)
+	if got := parse(c); got.Verdict != "insufficient" {
+		t.Fatalf("credentialed original compared with anonymous detached followup: %+v", got)
+	}
+	if candidateHeaderModeComparable(candidateverify.StoredObservationV2{HeaderMode: e2proxy.HeaderTestAccountPassthrough,
+		Source: candidateverify.SourceV2{Observation: e2proxy.HTTPObservation{RequestAuthContext: "none", RequestAccountRef: strings.Repeat("1", 64)}}},
+		candidateverify.StoredObservationV2{HeaderMode: e2proxy.HeaderPreserve,
+			Source: candidateverify.SourceV2{Observation: e2proxy.HTTPObservation{RequestAuthContext: "none"}}}) {
+		t.Fatal("account-bound original crossed header modes")
+	}
+	c = syntheticCandidateAssessmentContext(t)
+	c.Original.OriginalObservation.HeaderMode = e2proxy.HeaderTestAccountPassthrough
+	attachGateEvidence(c.Original.OriginalObservation, gateEvidence(200, "application/json", `{"items":[{"id":1}]}`, nil))
+	if got := parse(c); got.Verdict != "insufficient" || got.Reason != evidenceReasonUnavailable {
+		t.Fatalf("detached comparison bypassed response evidence gate: %+v", got)
 	}
 }
 
