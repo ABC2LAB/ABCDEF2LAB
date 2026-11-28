@@ -9,6 +9,7 @@ import {
   getAccounts,
   getProductTargets,
   isValidAccountLabel,
+  loginMethodBadge,
   type ProductTargetRef,
   parseLoginMethod,
   registerAccount,
@@ -290,5 +291,60 @@ describe("자격 지우기(#982) — 값 없이 DELETE", () => {
     api.mockClear();
     await expect(clearAccountCredential("t1", "User@x")).rejects.toThrow();
     expect(api).not.toHaveBeenCalled();
+  });
+});
+
+// 계정 줄 로그인 방법 꼬리표(§6-1-3 화면 몫). 글 · 색 종류 · 마우스 설명만이고 값은 없다.
+describe("login_method 꼬리표", () => {
+  const method = {
+    http_method: "POST",
+    path: "/login",
+    format: "form",
+    identifier_field: "email",
+    password_field: "password",
+    other_fields: [],
+    fields_from_response: [],
+    session_source: "set_cookie",
+    session_names: ["sid"],
+    session_sent_as: "cookie",
+  };
+  const learned = {
+    at: "2026-11-26T12:00:00Z",
+    run_ref: "run-1",
+    stage: "exploration",
+    attempt_ref: "a-1",
+    evidence: "observed_contrast",
+  };
+  const verified = { at: "2026-11-26T12:30:00Z", run_ref: "run-1", attempt_ref: "c-1", evidence: "e3_relogin" };
+  const badge = (v: unknown) => loginMethodBadge(parseLoginMethod(v));
+
+  it("칸이 없으면(그 칸을 싣기 전 서버) 꼬리표를 두지 않는다", () => {
+    expect(badge(undefined)).toBeNull();
+  });
+
+  it("검증됨 · 배움 · 아직 없음 · 확인 못 함을 색 종류와 같이 낸다", () => {
+    expect(badge({ state: "verified", learned, verified, method })).toMatchObject({
+      text: "로그인 방법 검증됨",
+      tone: "ok",
+    });
+    expect(badge({ state: "learned", learned, method })).toMatchObject({ text: "로그인 방법 배움", tone: "learned" });
+    expect(badge({ state: "none" })).toMatchObject({ text: "로그인 방법 아직 없음", tone: "none" });
+    expect(badge({ state: "learned" })).toMatchObject({ text: "로그인 방법 확인 못 함", tone: "unknown" });
+  });
+
+  it("마우스 설명: 배운 단계 · 방법 칸 이름을 싣고, 검증됨은 다시 로그인한 확인을 앞에 둔다", () => {
+    const l = badge({ state: "learned", learned, method });
+    expect(l?.title).toContain("탐색 단계에서 배움");
+    expect(l?.title).toContain("POST /login · form · 세션 sid");
+    expect(l?.title).toContain("'검증됨'이 됩니다");
+    const v = badge({ state: "verified", learned, verified, method });
+    if (!v) throw new Error("검증됨 꼬리표가 없음");
+    expect(v.title.split("\n")[0]).toContain("확정 단계에서 이 방법으로 다시 로그인해 확인했습니다");
+    expect(v.title).toContain("POST /login");
+  });
+
+  it("예전 방법이 지워진 까닭(cleared_reason)을 설명에 싣는다", () => {
+    expect(badge({ state: "none", cleared_reason: "target_reapproved" })?.title).toContain("대상을 다시 승인해서");
+    expect(badge({ state: "none", cleared_reason: "credential_changed" })?.title).toContain("자격을 다시 넣어서");
   });
 });

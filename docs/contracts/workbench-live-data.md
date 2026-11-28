@@ -39,7 +39,7 @@
 
 `ProductAccount`: `label`, `registered_by`, `registered_at`(등록 시각 — 목록은 라벨순이라 등록 순서는 이 값으로 본다), `credential_configured`(bool, 값 없음), `login_method_missing`(아래, 9칸-1부터 서버가 내지 않음). 예전 분류 칸(`classification`·`reason`·`classified_by`·`classified_at`·`marked_revision`)은 싣지 않는다.
 
-계정마다 배운 로그인 방법 `login_method`(`state` `none`·`learned`·`verified`, 언제·근거·값 없는 방법)를 싣는다. 칸 이름·값·모양은 [모델 로그인 시도 기록 계약](model-login-attempts.md) §6-1-3이다(모델 로그인 PR에서 서버·웹 파서를 같이 고침).
+계정마다 배운 로그인 방법 `login_method`(`state` `none`·`learned`·`verified`, 언제·근거·값 없는 방법)를 싣는다. 칸 이름·값·모양은 [모델 로그인 시도 기록 계약](model-login-attempts.md) §6-1-3이다(모델 로그인 PR에서 서버·웹 파서를 같이 고침). 화면은 자격이 등록된 계정 줄(새 점검 시험 계정 A · B, 다른 계정 목록)에 꼬리표 하나만 붙인다: `verified`='로그인 방법 검증됨', `learned`='로그인 방법 배움', `none`='로그인 방법 아직 없음', 형식 밖='로그인 방법 확인 못 함', 칸 없음=꼬리표 없음. 배운 단계 · 시각 · 방법 칸 이름(메서드 · 경로 · 형식 · 세션 이름)과 검증 시각 · `cleared_reason` 설명은 마우스를 올렸을 때만 보인다(seam `loginMethodBadge`).
 
 9칸-1부터 서버는 `login_method_missing`을 내지 않는다(계정 목록 · 계정 변경 응답 둘 다). 자격이 있으면 대상 로그인 방식이 없어도 결속하고 모델이 직접 로그인한다. 실제 결과는 회차 `account_auth`다. 이 칸을 읽는 화면 정리는 9칸-2다.
 
