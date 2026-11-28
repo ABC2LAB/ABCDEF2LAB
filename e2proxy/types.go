@@ -349,4 +349,8 @@ type CallResult struct {
 	AuditComplete         bool              `json:"audit_complete"`
 	Final                 bool              `json:"final"`
 	Reason                Reason            `json:"reason"`
+
+	// ResponseEvidence는 완결 응답의 구조 근거다(attempt_ref·sequence로 Observations와 결속). 원문·값은 없다. 워커 모델 결과와
+	// 후보 근거 JSON에는 넣지 않고, 종료 뒤 선택 후보 저장 관찰에만 옮긴다(docs/contracts/selected-candidate-response-evidence.md).
+	ResponseEvidence []ResponseEvidence `json:"response_evidence,omitempty"`
 }

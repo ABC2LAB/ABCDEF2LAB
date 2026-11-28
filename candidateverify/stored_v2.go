@@ -19,6 +19,9 @@ type StoredObservationV2 struct {
 	Source        SourceV2                     `json:"source"`
 	HeaderMode    e2proxy.HeaderMode           `json:"header_mode"`
 	SelectedProof *e2runner.SelectedAuditProof `json:"selected_proof,omitempty"`
+	// ResponseEvidence는 revision 2(선택 후보) 행에만 있는 응답 구조 근거다. 이 필드가 생기기 전 행은 비어 있고
+	// 근거 없음(not_recorded)으로 읽는다. 기존 관찰 digest(Source.Digest)의 의미는 바뀌지 않는다.
+	ResponseEvidence *SelectedResponseEvidence `json:"response_evidence,omitempty"`
 }
 
 const MaxStoredObservationsV2 = 2048
