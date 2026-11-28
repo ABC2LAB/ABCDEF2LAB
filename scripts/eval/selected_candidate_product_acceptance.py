@@ -428,12 +428,16 @@ def main():
         pass
     elif latest["process_state"] != "completed":
         raise RuntimeError("verification_not_completed:" + latest["process_state"] + ":" + latest.get("reason", ""))
+    if args.scenario == "S04" and (latest["process_state"] != "failed" or
+                                   latest.get("reason") != "candidate_execution_unavailable"):
+        raise RuntimeError("changed_account_failure_reason_not_preserved")
     report = "/api/report/diagnostic?task=" + task
     for audience in ("internal", "shared"):
         for fmt in ("", "&format=docx"):
             rendered = request(product, report + "&audience=" + audience + fmt, token, binary=True)
             content = zipfile.ZipFile(io.BytesIO(rendered)).read("word/document.xml") if fmt else rendered
-            if b"synthetic-secret-a" in content or b"synthetic-session-a-" in content:
+            if any(secret in content for secret in (b"synthetic-secret-a", b"synthetic-secret-b",
+                                                    b"synthetic-session-a-", b"synthetic-session-b-")):
                 raise RuntimeError("report_secret_exposure")
     current = request(product, "/api/report/diagnostic/remediation?task=" + task + "&audience=internal", token)
     current_candidate = next((row for row in current["entries"] if row.get("entry_id") == "candidate-" + candidate_id), None)
