@@ -135,7 +135,7 @@ func evalRows(c evalCase, structured bool) (candidateverify.StoredObservationV2,
 		if header.Get("Content-Type") == "" && o.Response.ContentType != "" {
 			header.Set("Content-Type", o.Response.ContentType)
 		}
-		obs := e2proxy.HTTPObservation{Sequence: uint64(1 + 10*i), AttemptRef: fmt.Sprintf("%s-attempt-%d", strings.ToLower(c.ID), i),
+		obs := e2proxy.HTTPObservation{Sequence: uint64(1 + 10*i), AttemptRef: fmt.Sprintf("eval-attempt-%d", i),
 			Method: method, Endpoint: endpoint, ExactFunction: true, RuleRef: "rule", Decision: "allowed", Reason: e2proxy.Complete,
 			StatusCode: o.Response.Status, ResponseComplete: true, ForwardAttempted: true, AuditComplete: true,
 			ObservedAt: time.Date(2026, 11, 27, 1, 0, i, 0, time.UTC), RequestAuthContext: auth,
@@ -155,7 +155,7 @@ func evalRows(c evalCase, structured bool) (candidateverify.StoredObservationV2,
 		}
 		raw, _ := json.Marshal(obs)
 		row := candidateverify.StoredObservationV2{Revision: 2, HeaderMode: mode, Source: candidateverify.SourceV2{
-			CallRef: fmt.Sprintf("%s-call-%d", strings.ToLower(c.ID), i), IntentID: 7, TaskRef: "42", RunRef: "eval-run",
+			CallRef: fmt.Sprintf("eval-call-%d", i), IntentID: 7, TaskRef: "42", RunRef: "eval-run",
 			ScopeDigest: digestHex("scope"), PolicyRevision: "policy-eval", Observation: obs, Digest: db.DiagnosticEvidenceDigest(string(raw))}}
 		if structured && !(i == 0 && c.OriginalLegacy) {
 			ev := responseevidence.Extract(responseevidence.Response{Received: true, Complete: true, StatusCode: o.Response.Status, Method: method,
@@ -434,6 +434,9 @@ func runEval(t *testing.T, cases []evalCase, model evalModel) evalReport {
 				t.Fatalf("%s: model input: %v", c.ID, err)
 			}
 			text := request.Messages[0].Content[0].Text
+			if strings.Contains(strings.ToLower(text), strings.ToLower(c.ID)) {
+				t.Fatalf("%s: gold case ID reached the model input", c.ID)
+			}
 			// 정답 값이 JSON 문자열 값으로 새는지 본다. v2 사유 코드(예: generic_error_only)가 유형 이름(error_only)을 일부로 담는 것은
 			// 누출이 아니다.
 			for _, leaked := range []string{`"` + c.Expected + `"`, `"` + c.Category + `"`, `"expected"`, `"category"`} {

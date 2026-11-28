@@ -275,6 +275,9 @@ func TestSelectedCandidateAnalysisInputsForGoldCases(t *testing.T) {
 				t.Fatalf("%s: %v", c.ID, err)
 			}
 			text := request.Messages[0].Content[0].Text
+			if strings.Contains(strings.ToLower(text), strings.ToLower(c.ID)) {
+				t.Fatalf("%s: gold case ID reached the analysis input", c.ID)
+			}
 			largest = max(largest, len(text))
 			for _, leaked := range []string{`"` + c.Expected + `"`, `"` + c.Category + `"`, `"expected"`} {
 				if strings.Contains(text, leaked) && leaked != `"insufficient"` {
