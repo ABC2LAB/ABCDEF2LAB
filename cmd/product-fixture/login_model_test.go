@@ -70,6 +70,55 @@ func TestWorkflowLoginModelSteps(t *testing.T) {
 	}
 }
 
+func TestWorkflowExploreLoginModelUsesBrowserAndSwitch(t *testing.T) {
+	cfg := workflowLoginConfig{loginPath: "/users/v1/login", identityPath: "/me", usernameField: "username",
+		passwordField: "password", tokenField: "auth_token", header: "Authorization", prefix: "Bearer ", exploreOnly: true}
+	h := workflowLoginModel(cfg)
+	tools := []map[string]any{}
+	for _, name := range []string{"mcp__explore_browser__browser_navigate", "mcp__explore_browser__browser_evaluate", "switch_browser_account"} {
+		tools = append(tools, map[string]any{"type": "function", "function": map[string]any{"name": name}})
+	}
+	system := "Owned target https://vampi.test:9443\n" +
+		`- tester-b: username "user-b", password "synthetic-b"` + "\n" +
+		`- tester-a: username "user-a", password "synthetic-a"`
+	want := []string{"mcp__explore_browser__browser_navigate", "mcp__explore_browser__browser_evaluate",
+		"switch_browser_account", "mcp__explore_browser__browser_navigate", "mcp__explore_browser__browser_evaluate", ""}
+	for i, expected := range want {
+		raw, _ := json.Marshal(map[string]any{"model": "owned", "tools": tools, "messages": []map[string]any{{"role": "system", "content": system}}})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(raw)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("step %d status %d", i, rec.Code)
+		}
+		var out struct {
+			Choices []struct {
+				Message struct {
+					ToolCalls []struct {
+						Function struct{ Name, Arguments string } `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal(rec.Body.Bytes(), &out) != nil || len(out.Choices) != 1 {
+			t.Fatalf("step %d response", i)
+		}
+		name, args := "", ""
+		if len(out.Choices[0].Message.ToolCalls) > 0 {
+			name = out.Choices[0].Message.ToolCalls[0].Function.Name
+			args = out.Choices[0].Message.ToolCalls[0].Function.Arguments
+		}
+		if name != expected {
+			t.Fatalf("step %d tool %q want %q", i, name, expected)
+		}
+		if (i == 0 || i == 3) && !strings.Contains(args, "https://vampi.test:9443/openapi.json") ||
+			i == 1 && (!strings.Contains(args, "user-a") || strings.Contains(args, "user-b")) ||
+			i == 2 && !strings.Contains(args, `"account":"tester-b"`) ||
+			i == 4 && (!strings.Contains(args, "user-b") || strings.Contains(args, "user-a")) {
+			t.Fatalf("step %d account sequence invalid", i)
+		}
+	}
+}
+
 // 계정을 다 쓴 Worker는 이 의도로 사실 하나를 남기고, Planner는 의도 하나를 낸 뒤 사실이 있으면 열린 목표를 증명한다.
 func TestWorkflowLoginModelFinish(t *testing.T) {
 	h := workflowLoginModel(workflowLoginConfig{loginPath: "/login", identityPath: "/me", usernameField: "username",
