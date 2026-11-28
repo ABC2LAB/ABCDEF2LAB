@@ -119,6 +119,56 @@ func TestWorkflowExploreLoginModelUsesBrowserAndSwitch(t *testing.T) {
 	}
 }
 
+func TestWorkflowCSRFModelUsesSeparateJSONAndHTMLSources(t *testing.T) {
+	h := workflowLoginModel(workflowLoginConfig{loginPath: "/users/v1/login", identityPath: "/me", usernameField: "username",
+		passwordField: "password", tokenField: "auth_token", header: "Authorization", prefix: "Bearer ", csrfMode: true})
+	system := "Owned target https://vampi.test:9443\n" +
+		`- vampi-a: username "user-a", password "synthetic-a"` + "\n" +
+		`- vampi-b: username "user-b", password "synthetic-b"`
+	tools := []map[string]any{{"type": "function", "function": map[string]any{"name": "Bash"}}}
+	command := func(results ...string) string {
+		messages := []map[string]any{{"role": "system", "content": system}, {"role": "user", "content": "go"}}
+		for _, result := range results {
+			messages = append(messages, map[string]any{"role": "tool", "content": result})
+		}
+		body, _ := json.Marshal(map[string]any{"model": "owned", "tools": tools, "messages": messages})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body)))
+		if rec.Code != 200 {
+			t.Fatalf("model status %d", rec.Code)
+		}
+		var out struct {
+			Choices []struct {
+				Message struct {
+					ToolCalls []struct {
+						Function struct{ Arguments string } `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"message"`
+			} `json:"choices"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		if len(out.Choices) != 1 || len(out.Choices[0].Message.ToolCalls) != 1 {
+			return ""
+		}
+		var args map[string]string
+		_ = json.Unmarshal([]byte(out.Choices[0].Message.ToolCalls[0].Function.Arguments), &args)
+		return args["command"]
+	}
+	login := `{"auth_token":"eyJhbGciOiJIUzI1NiJ9.abcdefgh.ijk"}`
+	if got := command(); !strings.Contains(got, "/me") {
+		t.Fatal("anonymous read missing")
+	}
+	if got := command("anonymous=401"); !strings.Contains(got, "/api/csrf") || !strings.Contains(got, "--cookie-jar") || !strings.Contains(got, "--cookie") || !strings.Contains(got, "jq -er .csrfToken") || !strings.Contains(got, "application/json") {
+		t.Fatal("JSON source and login must share one Bash call")
+	}
+	if got := command("anonymous=401", login); !strings.Contains(got, "Authorization: Bearer") {
+		t.Fatal("JSON login identity read missing")
+	}
+	if got := command("anonymous=401", login, "identity-a"); !strings.Contains(got, "/csrf-form") || !strings.Contains(got, "--cookie-jar") || !strings.Contains(got, "--cookie") || !strings.Contains(got, "--data-urlencode") {
+		t.Fatal("HTML source and login must share one Bash call")
+	}
+}
+
 // 계정을 다 쓴 Worker는 이 의도로 사실 하나를 남기고, Planner는 의도 하나를 낸 뒤 사실이 있으면 열린 목표를 증명한다.
 func TestWorkflowLoginModelFinish(t *testing.T) {
 	h := workflowLoginModel(workflowLoginConfig{loginPath: "/login", identityPath: "/me", usernameField: "username",

@@ -77,6 +77,36 @@ func TestBuildExplorationLoginEvidence(t *testing.T) {
 	}
 }
 
+func TestBuildExplorationLoginEvidenceIncludesCSRFGET(t *testing.T) {
+	digest := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	b := exploration.Binding{SessionRef: "explore-one", RunRef: "run-one", JobID: "one", TaskID: "1", TargetRef: "target-one", TargetRevision: 2}
+	row := loginattempt.Row{Stage: loginattempt.StageExploration, RunRef: b.RunRef, TransportRef: "17", Transport: loginattempt.TransportSent,
+		Method: "POST", Path: "/login", Status: 302, FieldSources: []loginattempt.RowFieldSource{{Destination: "_csrf", SourceMethod: "GET",
+			SourcePath: "/api/csrf", SourceType: "json_field", SourceField: "csrfToken", SourceRef: "16", SourceStatus: 200}}}
+	flow := diagnosisflow.ExplorationBinding{SessionRef: b.SessionRef, RunRef: b.RunRef, JobID: b.JobID, TaskID: b.TaskID,
+		TargetRef: b.TargetRef, TargetRevision: b.TargetRevision, SourceDigest: digest}
+	records := []exploreboundary.Record{
+		{SessionRef: b.SessionRef, Seq: 16, Decision: "forwarded", Dest: exploreboundary.DestApproved, Method: "GET", Status: 200},
+		{SessionRef: b.SessionRef, Seq: 17, Decision: "forwarded", Dest: exploreboundary.DestApproved, Method: "POST", Status: 302},
+	}
+	read := func(seq uint64) (diagnosisflow.ExplorationObservation, error) {
+		method, path, status := "GET", "/api/csrf", 200
+		if seq == 17 {
+			method, path, status = "POST", "/login", 302
+		}
+		return diagnosisflow.ExplorationObservation{Binding: flow, Seq: seq, Method: method, Path: path, Status: status,
+			Forwarded: true, ResponseReceived: true, Transport: "http"}, nil
+	}
+	evidence, err := buildExplorationLoginEvidence(b, digest, []loginattempt.Row{row}, records, read)
+	if err != nil || len(evidence.Sends) != 2 {
+		t.Fatalf("GET 출처 인계 %+v %v", evidence, err)
+	}
+	records[0].Dest = exploreboundary.DestExternal
+	if _, err := buildExplorationLoginEvidence(b, digest, []loginattempt.Row{row}, records, read); err == nil {
+		t.Fatal("외부 GET을 출처로 수용함")
+	}
+}
+
 func TestExplorationLoginEvidenceHandoverFailureKeepsMarker(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {

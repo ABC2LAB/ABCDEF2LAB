@@ -55,7 +55,9 @@ const (
 	SourceNone      = "none"
 
 	// SentAsCookie는 세션을 Cookie 헤더로 실어 보낸 방식이다(§3 session_sent_as). 나머지는 "헤더이름:접두"다.
-	SentAsCookie = "cookie"
+	SentAsCookie     = "cookie"
+	MethodSchemaV2   = "jindo.learned-login-method/v2"
+	SourceHTMLHidden = "html_hidden"
 )
 
 // Reason은 학습한 로그인 방법을 쓰지 못했거나 재현에 실패한 고정 사유다(§6-2). 값·라벨은 들어가지 않는다.
@@ -125,6 +127,19 @@ type Method struct {
 	SessionSource      string   `json:"session_source"`
 	SessionNames       []string `json:"session_names"`
 	SessionSentAs      string   `json:"session_sent_as"`
+	// V1에서는 이 칸을 생략하여 기존 정본 JSON과 digest를 그대로 유지한다.
+	Schema       string        `json:"schema,omitempty"`
+	FieldSources []FieldSource `json:"field_sources,omitempty"`
+}
+
+// FieldSource는 로그인 전에 새로 받아야 하는 값의 출처를 나타낸다. 원본 관찰 참조는
+// 재사용 가능한 방법이 아니라 RowFieldSource에만 둔다.
+type FieldSource struct {
+	Destination  string `json:"destination"`
+	SourceMethod string `json:"source_method"`
+	SourcePath   string `json:"source_path"`
+	SourceType   string `json:"source_type"`
+	SourceField  string `json:"source_field"`
 }
 
 // Source는 방법을 배운 모델 로그인 시도의 출처다(§6-1). 회차·시도 참조와 보낸 시각뿐이다.
@@ -145,6 +160,7 @@ func (m Method) Clone() Method {
 	m.OtherFields = append([]string{}, m.OtherFields...)
 	m.FieldsFromResponse = append([]string{}, m.FieldsFromResponse...)
 	m.SessionNames = append([]string{}, m.SessionNames...)
+	m.FieldSources = append([]FieldSource(nil), m.FieldSources...)
 	return m
 }
 
@@ -165,6 +181,15 @@ func (m Method) Digest() string {
 // 로그인 요청에 실려 간 세션 쿠키(continued) 중 하나라도 있으면 받는다.
 func (m Method) NeedsPrep() bool {
 	return len(m.OtherFields) > 0 || m.SessionSource == SourceContinued
+}
+
+// PrepPath는 이 방법에서 준비 GET을 보낼 경로다. V1은 로그인 경로를 사용하고,
+// V2는 명시적으로 학습한 동일 origin의 절대 경로를 사용한다.
+func (m Method) PrepPath() string {
+	if len(m.FieldSources) > 0 {
+		return m.FieldSources[0].SourcePath
+	}
+	return m.Path
 }
 
 // fromResponse는 칸이 응답에서 받는 칸인지다.
@@ -219,6 +244,29 @@ func (m Method) Validate() Reason {
 		inResponse[name] = true
 	}
 	if m.Format == FormatJSON && jsonPathsConflict(names) {
+		return ReasonInputUnavailable
+	}
+	if len(m.FieldSources) > 0 {
+		if m.Schema != MethodSchemaV2 || len(m.OtherFields) != len(m.FieldsFromResponse) || len(m.FieldSources) != len(m.FieldsFromResponse) {
+			return ReasonInputUnavailable
+		}
+		seenSources := map[string]bool{}
+		for _, source := range m.FieldSources {
+			if source.SourceMethod != http.MethodGet || !validPath(source.SourcePath) || source.SourcePath == m.Path ||
+				(source.SourceType != SourceJSONField && source.SourceType != SourceHTMLHidden) || seenSources[source.Destination] ||
+				!inResponse[source.Destination] {
+				return ReasonInputUnavailable
+			}
+			if source.SourceType == SourceJSONField && !validJSONPath(source.SourceField) ||
+				source.SourceType == SourceHTMLHidden && !validFieldName(source.SourceField, FormatForm) {
+				return ReasonInputUnavailable
+			}
+			if source.SourcePath != m.FieldSources[0].SourcePath || source.SourceType != m.FieldSources[0].SourceType {
+				return ReasonInputUnavailable
+			}
+			seenSources[source.Destination] = true
+		}
+	} else if m.Schema != "" {
 		return ReasonInputUnavailable
 	}
 	return m.validSession()

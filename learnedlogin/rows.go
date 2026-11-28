@@ -28,40 +28,52 @@ const (
 // Row는 로그인 시도 기록 한 행이다(§3 칸 전부). 비밀번호·세션 값·응답 본문은 없다. 같은 attempt_ref의 마지막 행이 그
 // 시도의 지금 값이고, 시도 순서는 처음 나온 순서다(§3·§4).
 type Row struct {
-	Schema               string   `json:"schema"`
-	AttemptRef           string   `json:"attempt_ref"`
-	RunRef               string   `json:"run_ref"`
-	Stage                string   `json:"stage"`
-	Actor                string   `json:"actor"`
-	TransportRef         string   `json:"transport_ref"`
-	At                   string   `json:"at"`
-	AccountLabel         string   `json:"account_label"`
-	Identifier           string   `json:"identifier"`
-	PasswordRegistered   bool     `json:"password_registered"`
-	Method               string   `json:"method"`
-	Path                 string   `json:"path"`
-	QueryKeys            []string `json:"query_keys"`
-	Format               string   `json:"format"`
-	WriteException       bool     `json:"write_exception"`
-	IdentifierField      string   `json:"identifier_field"`
-	PasswordField        string   `json:"password_field"`
-	OtherFields          []string `json:"other_fields"`
-	FieldsFromResponse   []string `json:"fields_from_response"`
-	Status               int      `json:"status"`
-	Transport            string   `json:"transport"`
-	Refusal              string   `json:"refusal"`
-	RedirectPath         string   `json:"redirect_path"`
-	LoginFormReturned    bool     `json:"login_form_returned"`
-	SessionSource        string   `json:"session_source"`
-	SessionNames         []string `json:"session_names"`
-	SessionSeenAnonymous []string `json:"session_seen_anonymous"`
-	SessionSentAs        string   `json:"session_sent_as"`
-	Followup             string   `json:"followup"`
-	ContrastSource       string   `json:"contrast_source"`
-	ContrastProbes       int      `json:"contrast_probes"`
-	SessionEnded         bool     `json:"session_ended"`
-	Outcome              string   `json:"outcome"`
-	ConsecutiveFailures  int      `json:"consecutive_failures"`
+	Schema               string           `json:"schema"`
+	AttemptRef           string           `json:"attempt_ref"`
+	RunRef               string           `json:"run_ref"`
+	Stage                string           `json:"stage"`
+	Actor                string           `json:"actor"`
+	TransportRef         string           `json:"transport_ref"`
+	At                   string           `json:"at"`
+	AccountLabel         string           `json:"account_label"`
+	Identifier           string           `json:"identifier"`
+	PasswordRegistered   bool             `json:"password_registered"`
+	Method               string           `json:"method"`
+	Path                 string           `json:"path"`
+	QueryKeys            []string         `json:"query_keys"`
+	Format               string           `json:"format"`
+	WriteException       bool             `json:"write_exception"`
+	IdentifierField      string           `json:"identifier_field"`
+	PasswordField        string           `json:"password_field"`
+	OtherFields          []string         `json:"other_fields"`
+	FieldsFromResponse   []string         `json:"fields_from_response"`
+	FieldSources         []RowFieldSource `json:"field_sources,omitempty"`
+	SourceUnresolved     bool             `json:"source_unresolved,omitempty"`
+	Status               int              `json:"status"`
+	Transport            string           `json:"transport"`
+	Refusal              string           `json:"refusal"`
+	RedirectPath         string           `json:"redirect_path"`
+	LoginFormReturned    bool             `json:"login_form_returned"`
+	SessionSource        string           `json:"session_source"`
+	SessionNames         []string         `json:"session_names"`
+	SessionSeenAnonymous []string         `json:"session_seen_anonymous"`
+	SessionSentAs        string           `json:"session_sent_as"`
+	Followup             string           `json:"followup"`
+	ContrastSource       string           `json:"contrast_source"`
+	ContrastProbes       int              `json:"contrast_probes"`
+	SessionEnded         bool             `json:"session_ended"`
+	Outcome              string           `json:"outcome"`
+	ConsecutiveFailures  int              `json:"consecutive_failures"`
+}
+
+type RowFieldSource struct {
+	Destination  string `json:"destination"`
+	SourceMethod string `json:"source_method"`
+	SourcePath   string `json:"source_path"`
+	SourceType   string `json:"source_type"`
+	SourceField  string `json:"source_field"`
+	SourceRef    string `json:"source_ref"`
+	SourceStatus int    `json:"source_status"`
 }
 
 // ErrRecord는 기록 파일이 있는데 보호 파일이 아니거나(권한·소유자·링크) 읽을 수 없다는 뜻이다. 학습하지 않는다.
@@ -94,7 +106,7 @@ func ParseRows(raw []byte) ([]Row, int, error) {
 			continue
 		}
 		var row Row
-		if !utf8.Valid(line) || json.Unmarshal(line, &row) != nil || !unambiguousRowKeys(line) || !validHistoryRow(row) {
+		if !utf8.Valid(line) || json.Unmarshal(line, &row) != nil || !unambiguousRowKeys(line) || !UniqueJSONKeys(line) || !validHistoryRow(row) {
 			skipped++
 			continue
 		}
@@ -114,6 +126,27 @@ func validHistoryRow(row Row) bool {
 	if row.Schema != RowSchema || !validRef(row.AttemptRef) || !validRef(row.RunRef) || row.ConsecutiveFailures < 0 {
 		return false
 	}
+	if len(row.FieldSources) > 0 {
+		if len(row.FieldSources) > len(row.FieldsFromResponse) {
+			return false
+		}
+		seen := map[string]bool{}
+		for _, source := range row.FieldSources {
+			if source.SourceMethod != "GET" || !validPath(source.SourcePath) || source.SourcePath == row.Path || !validRef(source.SourceRef) || source.SourceRef == row.TransportRef ||
+				source.SourceStatus < 200 || source.SourceStatus > 299 || seen[source.Destination] ||
+				(source.SourceType != SourceJSONField && source.SourceType != SourceHTMLHidden) {
+				return false
+			}
+			found := false
+			for _, name := range row.FieldsFromResponse {
+				found = found || name == source.Destination
+			}
+			if !found {
+				return false
+			}
+			seen[source.Destination] = true
+		}
+	}
 	switch row.Stage {
 	case StageExploration, StageDiagnosis, StageConfirmation:
 	default:
@@ -131,6 +164,25 @@ func validHistoryRow(row Row) bool {
 		return row.Outcome == OutcomeUnknown
 	}
 	return false
+}
+
+// 이전 V2 추적기는 일부 출처나 여러 GET의 출처를 source_unresolved 없이 기록할 수 있었다.
+// 해당 보호 행과 실패 횟수는 보존하되, 그 행에서 로그인 방법을 재구성하지 않는다.
+func replayableRowFieldSources(row Row) bool {
+	if len(row.FieldSources) == 0 {
+		return true
+	}
+	if len(row.FieldSources) != len(row.FieldsFromResponse) {
+		return false
+	}
+	first := row.FieldSources[0]
+	for _, source := range row.FieldSources[1:] {
+		if source.SourcePath != first.SourcePath || source.SourceType != first.SourceType ||
+			source.SourceRef != first.SourceRef || source.SourceStatus != first.SourceStatus {
+			return false
+		}
+	}
+	return true
 }
 
 // unambiguousRowKeys는 JSON 해석 시 뒤의 값이 앞의 값을 덮는 행을 거부한다. 구조체 디코더가 같은 칸으로 보는
@@ -172,7 +224,7 @@ func fixedFieldsEqual(a, b Row) bool {
 		a.Identifier == b.Identifier && a.PasswordRegistered == b.PasswordRegistered && a.Method == b.Method && a.Path == b.Path &&
 		slices.Equal(a.QueryKeys, b.QueryKeys) && a.Format == b.Format && a.WriteException == b.WriteException &&
 		a.IdentifierField == b.IdentifierField && a.PasswordField == b.PasswordField && slices.Equal(a.OtherFields, b.OtherFields) &&
-		slices.Equal(a.FieldsFromResponse, b.FieldsFromResponse) && (a.TransportRef == "" || b.TransportRef == a.TransportRef)
+		slices.Equal(a.FieldsFromResponse, b.FieldsFromResponse) && slices.Equal(a.FieldSources, b.FieldSources) && a.SourceUnresolved == b.SourceUnresolved && (a.TransportRef == "" || b.TransportRef == a.TransportRef)
 }
 
 // attempts는 행을 시도로 묶는다. 순서는 attempt_ref가 처음 나온 순서이고, 지금 값은 마지막 행이다.
@@ -247,12 +299,23 @@ func Select(rows []Row, runRef string, labels []string) map[string]Selection {
 		m := Method{Method: r.Method, Path: r.Path, Format: r.Format, IdentifierField: r.IdentifierField, PasswordField: r.PasswordField,
 			OtherFields: r.OtherFields, FieldsFromResponse: r.FieldsFromResponse, SessionSource: r.SessionSource, SessionNames: r.SessionNames,
 			SessionSentAs: r.SessionSentAs}.Clone()
+		if len(r.FieldSources) > 0 {
+			m.Schema = MethodSchemaV2
+			for _, source := range r.FieldSources {
+				m.FieldSources = append(m.FieldSources, FieldSource{Destination: source.Destination, SourceMethod: source.SourceMethod,
+					SourcePath: source.SourcePath, SourceType: source.SourceType, SourceField: source.SourceField})
+			}
+		}
 		sel := Selection{Learned: Learned{Method: m, Source: Source{RunRef: r.RunRef, AttemptRef: r.AttemptRef, At: at.UTC()}}, Row: r}
 		switch {
 		case err != nil || at.IsZero():
 			sel = Selection{Reason: ReasonRecordInvalid}
 		case !validRef(r.TransportRef):
 			sel = Selection{Reason: ReasonTransportUnverified}
+		case r.SourceUnresolved:
+			sel = Selection{Reason: ReasonPrepUnavailable}
+		case !replayableRowFieldSources(r):
+			sel = Selection{Reason: ReasonPrepUnavailable}
 		case len(r.QueryKeys) > 0:
 			// 질의 값은 기록에 없다(§3 query_keys는 이름뿐). 질의가 있던 로그인은 다시 만들 수 없다.
 			sel = Selection{Reason: ReasonInputUnavailable}

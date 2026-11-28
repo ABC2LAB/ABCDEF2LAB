@@ -66,6 +66,10 @@ func main() {
 		must(servePidsTarget())
 		return
 	}
+	if *mode == "csrf-target" {
+		must(serveCSRFTarget(*upstream))
+		return
+	}
 	var u *url.URL
 	readyAddress := ""
 	if *mode != "selected-target-nosniff" && *mode != "selected-target-auth-nosniff" {
@@ -85,7 +89,7 @@ func main() {
 		}
 		json.NewEncoder(w).Encode(map[string]any{"fixture": true, "ready": ready, "model_calls": calls.Load(), "goal_calls": goals.Load(), "planner_calls": planner.Load(), "worker_calls": worker.Load(), "explore_calls": exploreTurns.Load(), "explore_bash_calls": exploreBash.Load(), "explore_bash_seen": exploreBashSeen.Load(), "allowed_received": allowed.Load(), "outside_received": denied.Load(), "auth_logins": authLogins.Load(), "authenticated_reads": authenticatedReads.Load(), "anonymous_reads": anonymousReads.Load(), "login_pages": loginPages.Load(), "structured_reads": structuredReads.Load(), "held_target_reads": heldTargetReads.Load(), "held_final_models": heldFinalModels.Load()})
 	})
-	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" || *mode == "selected-model-stored-nosniff" || *mode == "selected-model-auth-nosniff" || *mode == "selected-model-structured-nosniff" || *mode == "selected-model-overconfident-nosniff" || *mode == "selected-model-unsupported-write" || *mode == "workflow-login-model" || *mode == "workflow-explore-login-model" {
+	if *mode == "model" || *mode == "workflow-model" || *mode == "selected-model" || *mode == "selected-model-nosniff" || *mode == "selected-model-stored-nosniff" || *mode == "selected-model-auth-nosniff" || *mode == "selected-model-structured-nosniff" || *mode == "selected-model-overconfident-nosniff" || *mode == "selected-model-unsupported-write" || *mode == "workflow-login-model" || *mode == "workflow-explore-login-model" || *mode == "workflow-csrf-model" {
 		mux := http.NewServeMux()
 		mux.Handle("GET /stats", stats)
 		mux.HandleFunc("POST /hold-next-final", func(w http.ResponseWriter, r *http.Request) {
@@ -95,11 +99,12 @@ func main() {
 		handler := model(*target)
 		if *mode == "workflow-model" {
 			handler = workflowModel()
-		} else if *mode == "workflow-login-model" || *mode == "workflow-explore-login-model" {
+		} else if *mode == "workflow-login-model" || *mode == "workflow-explore-login-model" || *mode == "workflow-csrf-model" {
 			if login.loginPath == "" || login.identityPath == "" {
 				must(fmt.Errorf("login_fixture_paths_required"))
 			}
 			login.exploreOnly = *mode == "workflow-explore-login-model"
+			login.csrfMode = *mode == "workflow-csrf-model"
 			handler = workflowLoginModel(login)
 		} else if *mode == "selected-model" {
 			handler = selectedModel(*target)

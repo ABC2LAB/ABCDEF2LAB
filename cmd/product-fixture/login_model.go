@@ -16,7 +16,7 @@ import (
 // 플래그로 받는다(소유 수용 전용, 제품 경로 아님).
 type workflowLoginConfig struct {
 	loginPath, identityPath, usernameField, passwordField, tokenField, header, prefix string
-	exploreOnly                                                                       bool
+	exploreOnly, csrfMode                                                             bool
 }
 
 var (
@@ -190,6 +190,36 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 			}
 		case names["Bash"]:
 			worker.Add(1)
+			if cfg.csrfMode {
+				step := len(toolResults)
+				if step == 0 {
+					bash("wl-anonymous", "curl --silent --show-error --max-time 10 --output /dev/null --write-out 'anonymous=%{http_code}\\n' "+target+cfg.identityPath)
+					break
+				}
+				index, phase := (step-1)/2, (step-1)%2
+				if index >= len(accounts) {
+					if names["record_fact"] && !factCalled && intentID > 0 {
+						turn.factRecorded = true
+						tool("record_fact", "wl-csrf-fact", map[string]any{"intent_id": intentID,
+							"summary": "Owned synthetic fixture finished its login sequence (not a login success claim).",
+							"detail":  "synthetic fixture (not a model judgment)", "evidence": "synthetic fixture", "confidence": "observed"})
+					}
+					break
+				}
+				account := accounts[index]
+				switch phase {
+				case 0:
+					// Bash 호출마다 샌드박스가 다르므로 발급 쿠키는 한 호출 안에서 받고 사용한다.
+					// E②는 서로 독립적인 HTTP 요청 두 건과 순서를 계속 관찰한다.
+					bash("wl-csrf-login-"+account.label, csrfLoginCommand(cfg, account, index, target))
+				case 1:
+					match := tokenPattern.FindStringSubmatch(toolResults[len(toolResults)-1])
+					if match != nil {
+						bash("wl-csrf-read-"+account.label, "curl --silent --show-error --max-time 10 --header "+shellQuote(cfg.header+": "+cfg.prefix+match[1])+" "+target+cfg.identityPath)
+					}
+				}
+				break
+			}
 			if cfg.exploreOnly {
 				if names["record_fact"] && !factCalled && intentID > 0 {
 					turn.factRecorded = true
@@ -236,6 +266,20 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"id": "owned-workflow-login-synthetic", "object": "chat.completion", "model": req.Model, "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}}, "usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20}})
 	})
+}
+
+func csrfLoginCommand(cfg workflowLoginConfig, account fixtureAccount, index int, target string) string {
+	jar := "/tmp/owned-csrf-" + account.label + ".jar"
+	login := shellQuote(target + cfg.loginPath)
+	if index%2 == 0 {
+		return "csrf=$(curl --silent --show-error --fail --max-time 10 --cookie-jar " + shellQuote(jar) + " " + shellQuote(target+"/api/csrf") +
+			" | jq -er .csrfToken); test ${#csrf} -eq 32 && curl --silent --show-error --max-time 10 --request POST --header 'Content-Type: application/json' --cookie " + shellQuote(jar) +
+			" --data \"$(jq -n --arg u " + shellQuote(account.username) + " --arg p " + shellQuote(account.password) + " --arg c \"$csrf\" '{username:$u,password:$p,_csrf:$c}')\" " + login
+	}
+	return "csrf=$(curl --silent --show-error --fail --max-time 10 --cookie-jar " + shellQuote(jar) + " " + shellQuote(target+"/csrf-form") +
+		" | sed -n 's/.*name=\"_csrf\" value=\"\\([^\"]*\\)\".*/\\1/p'); test ${#csrf} -eq 32 && curl --silent --show-error --max-time 10 --request POST --cookie " + shellQuote(jar) +
+		" --data-urlencode " + shellQuote(cfg.usernameField+"="+account.username) + " --data-urlencode " + shellQuote(cfg.passwordField+"="+account.password) +
+		" --data-urlencode \"_csrf=$csrf\" " + login
 }
 
 func browserLoginScript(cfg workflowLoginConfig, account fixtureAccount) string {
