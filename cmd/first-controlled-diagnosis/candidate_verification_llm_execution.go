@@ -546,6 +546,11 @@ func shapeCandidateLLMPolicy(l *urlLoadedProfile, plan server.CandidateLLMPlan, 
 	}
 	count := len(plan.Actions)
 	if l.policy.Auth != nil {
+		// 계정 계획은 bindCandidateLLMAccount가 9칸 없는 인증 칸을 먼저 거부하지만, 그 분기가 바뀌어도(9칸-2) 역참조로 멈추지 않게
+		// 여기서도 닫힌 쪽으로 막는다.
+		if l.policy.Auth.Login == nil {
+			return 0, 0, errPreparation
+		}
 		login := *l.policy.Auth.Login
 		l.policy.Rules = append(l.policy.Rules, server.E2HTTPFileRule{Ref: "auth-login", Origin: plan.Origin,
 			ConnectIP: l.productTarget.SelectedIP, PathPrefix: login.Path, PathScopeRef: "auth-login-path",

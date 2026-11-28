@@ -173,3 +173,26 @@ func TestBindCandidatePlanOnAccountWithoutLoginMethod(t *testing.T) {
 		t.Fatal("account plan bound without a login method")
 	}
 }
+
+// #950 정책 좁히기는 인증 칸이 있는데 9칸(Login)이 없으면 패닉 없이 errPreparation이다. 지금은 bindCandidateLLMAccount의 계정
+// 분기가 먼저 거부하지만 9칸-2가 그 분기를 바꾸므로 좁히기 함수도 스스로 막는다.
+func TestShapeCandidateLLMPolicyRefusesAuthWithoutLogin(t *testing.T) {
+	_, l, _, _ := detachTestProfile(t)
+	if l.policy.Auth == nil || l.policy.Auth.Login != nil {
+		t.Fatal("fixture: 9칸 없는 인증 칸이 아님")
+	}
+	plan := server.CandidateLLMPlan{TargetID: l.productTarget.Target.ID, Origin: l.productTarget.Target.Origin, MaxRequests: 2, DurationSeconds: 30,
+		ExpiresAt: time.Now().Add(time.Hour), Actions: []server.CandidateLLMPlanAction{{Purpose: "reproduction", Method: "GET", ExactPath: "/read"}}}
+	err := func() (err error) {
+		defer func() {
+			if v := recover(); v != nil {
+				t.Fatalf("9칸 없는 인증 칸에서 패닉: %v", v)
+			}
+		}()
+		_, _, err = shapeCandidateLLMPolicy(l, plan, strings.Repeat("f", 64))
+		return err
+	}()
+	if err != errPreparation {
+		t.Fatalf("9칸 없는 인증 칸으로 #950 정책을 좁힘: %v", err)
+	}
+}
