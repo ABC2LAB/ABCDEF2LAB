@@ -188,7 +188,7 @@ func candidateAnalysisEvidence(c CandidateSelectedContext, original *candidateve
 	// 저장 관찰 평가는 같은 조건 독립 관찰이 1~3개일 때만 한다(넘으면 골라 쓰지 않는다: selectedStoredComparisons).
 	out.StoredAssessmentPending = out.StoredReproductions >= 1 && out.StoredReproductions <= 3
 	for fact, ok := range stored {
-		if ok && claimObservationFacts[fact] {
+		if ok && (claimObservationFacts[fact] || fact == factGenericError) {
 			out.StoredFacts = append(out.StoredFacts, fact)
 		}
 	}
