@@ -145,6 +145,10 @@ type productLoginVerified struct {
 	runRef           string
 	attemptRef       string
 	at               time.Time
+	// cleared는 선택 후보 로그인 실패·결과 불명으로 이 검증의 현재 유효성을 해제했다는 뜻이다(login_method_verified_cleared,
+	// candidate_login_reservation.go). 줄 자체는 남고 상태 계산에서만 빠진다. 같은 방법의 새 검증 줄이 오면 새 값으로 바뀐다.
+	cleared       bool
+	clearedReason string
 }
 
 var (
@@ -180,8 +184,9 @@ func (r *productTargetRegistry) replayLoginMethodVerified(rec productTargetRecor
 // "A 검증 → B 배움 → A 다시 배움"에서 옛 A 검증은 다시 보이지 않는다(§6-1-1: 방법이 바뀌면 이전 검증 표시는 버림).
 func loginMethodVerifiedFor(rec productTargetRecord, st *productAccountState, learnedMethodSHA256 string, methodSince time.Time) *productLoginVerified {
 	v := st.loginVerified[learnedMethodSHA256]
-	if v == nil || learnedMethodSHA256 == "" || v.targetRevision != rec.Target.Revision || st.credentialSHA256 == "" ||
-		v.credentialSHA256 != st.credentialSHA256 || v.at.Before(methodSince) {
+	// 같은 시각의 검증은 그 방법이 지금 것이 된 뒤라고 단정할 수 없어 인정하지 않는다(시각이 같으면 순서를 추정하지 않음).
+	if v == nil || v.cleared || learnedMethodSHA256 == "" || v.targetRevision != rec.Target.Revision || st.credentialSHA256 == "" ||
+		v.credentialSHA256 != st.credentialSHA256 || !v.at.After(methodSince) {
 		return nil
 	}
 	out := *v
@@ -209,7 +214,8 @@ func (r *productTargetRegistry) recordLoginMethodVerified(targetID, label string
 	if st == nil || rec.Target.Revision != boundRevision || st.credentialSHA256 == "" || st.credentialSHA256 != boundCredential {
 		return false, nil
 	}
-	if cur := st.loginVerified[methodSHA256]; cur != nil && (cur.targetRevision == boundRevision && cur.credentialSHA256 == boundCredential ||
+	// 해제된 검증(login_method_verified_cleared)은 같은 판·자격이어도 다시 검증할 수 있다.
+	if cur := st.loginVerified[methodSHA256]; cur != nil && (!cur.cleared && cur.targetRevision == boundRevision && cur.credentialSHA256 == boundCredential ||
 		at.UTC().Before(cur.at)) {
 		return false, nil
 	}

@@ -24,7 +24,7 @@ import (
 func TestSelectedCandidateHistoryAcceptsAuthFailureReasons(t *testing.T) {
 	now := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
 	plan, _, _, _ := learnedPlanFixture(now, CandidateLearnedAuthPreparation(CandidateLearnedLogin{
-		Method: selectedTokenMethod(), Trust: CandidateLoginTrustVerified,
+		Method: selectedTokenMethod(), Trust: CandidateLoginTrustVerified, VerifiedRef: testVerifiedRef,
 	}))
 	digest, err := candidateLLMPlanDigest(plan)
 	if err != nil {
@@ -40,7 +40,8 @@ func TestSelectedCandidateHistoryAcceptsAuthFailureReasons(t *testing.T) {
 	binding := candidateVerificationBinding{Decision: sql.NullString{String: "approved", Valid: true},
 		DecisionDigest: sql.NullString{String: digest, Valid: true}}
 	for _, step := range []int{6, 7} {
-		for _, reason := range []string{"candidate_auth_preparation_changed", "candidate_auth_failed", "candidate_auth_result_unknown", "candidate_auth_not_sent"} {
+		for _, reason := range []string{"candidate_auth_preparation_changed", "candidate_auth_failed", "candidate_auth_result_unknown", "candidate_auth_not_sent",
+			"candidate_login_in_progress", "candidate_login_unresolved"} {
 			row.Latest.Reason = reason
 			if err := validateCandidateVerificationAttempt(row, step, binding, candidate, report.CandidateAssessment{}); err != nil {
 				t.Errorf("step %d reason %s rejected: %v", step, reason, err)
@@ -52,6 +53,9 @@ func TestSelectedCandidateHistoryAcceptsAuthFailureReasons(t *testing.T) {
 		t.Fatal("unknown failure reason accepted")
 	}
 }
+
+// testVerifiedRef는 시험용 E③ 검증 사건 참조다(실제 값은 제품 계층이 계정 저널의 verified 줄로 만든다).
+var testVerifiedRef = strings.Repeat("7", 64)
 
 func learnedPlanFixture(now time.Time, a *CandidateLLMAuthPreparation) (CandidateLLMPlan, diagnosisprep.Input, diagnosisprep.Scope, diagnosisprep.ProductTarget) {
 	approved := now.Add(-time.Minute)
@@ -133,7 +137,7 @@ func TestSelectedLearnedAuthPreparationShapes(t *testing.T) {
 		{"separate hidden CSRF", selectedHiddenCSRFMethod(), CandidateAuthLearnedV2, "/session/new", 2},
 		{"token", selectedTokenMethod(), CandidateAuthLearnedV1, "", 1},
 	} {
-		a := CandidateLearnedAuthPreparation(CandidateLearnedLogin{Method: tc.method, Trust: CandidateLoginTrustExplorationObserved})
+		a := CandidateLearnedAuthPreparation(CandidateLearnedLogin{Method: tc.method, Trust: CandidateLoginTrustVerified, VerifiedRef: testVerifiedRef})
 		if a == nil || a.Kind != tc.kind || a.PrepPath != tc.prepPath || a.Requests != tc.requests || a.LoginDigest != tc.method.Digest() ||
 			a.ExactPath != tc.method.Path || (a.PrepPath != "") != (a.PrepMethod == "GET") {
 			t.Errorf("%s: %+v", tc.name, a)
@@ -148,12 +152,18 @@ func TestSelectedLearnedAuthPreparationShapes(t *testing.T) {
 			t.Errorf("%s: 계획에 값이 들어감", tc.name)
 		}
 	}
-	if CandidateLearnedAuthPreparation(CandidateLearnedLogin{Method: selectedTokenMethod(), Trust: "learned"}) != nil {
-		t.Fatal("출처 수준이 정책 밖인 방법으로 계획을 만듦")
+	// G01: verified만 계획에 묶는다. 출처 재대조 수준(e2_audited·exploration_observed)·learned·검증 사건 참조 없는 verified는 받지 않는다.
+	for _, l := range []CandidateLearnedLogin{{Method: selectedTokenMethod(), Trust: "learned", VerifiedRef: testVerifiedRef},
+		{Method: selectedTokenMethod(), Trust: CandidateLoginTrustE2Audited, VerifiedRef: testVerifiedRef},
+		{Method: selectedTokenMethod(), Trust: CandidateLoginTrustExplorationObserved, VerifiedRef: testVerifiedRef},
+		{Method: selectedTokenMethod(), Trust: CandidateLoginTrustVerified}} {
+		if CandidateLearnedAuthPreparation(l) != nil {
+			t.Fatalf("verified 아닌 방법으로 계획을 만듦: %s %q", l.Trust, l.VerifiedRef)
+		}
 	}
 	bad := selectedTokenMethod()
 	bad.Method = "PUT"
-	if CandidateLearnedAuthPreparation(CandidateLearnedLogin{Method: bad, Trust: CandidateLoginTrustVerified}) != nil {
+	if CandidateLearnedAuthPreparation(CandidateLearnedLogin{Method: bad, Trust: CandidateLoginTrustVerified, VerifiedRef: testVerifiedRef}) != nil {
 		t.Fatal("재현할 수 없는 방법으로 계획을 만듦")
 	}
 }
@@ -162,7 +172,7 @@ func TestSelectedLearnedAuthPreparationShapes(t *testing.T) {
 // 단어·요청 수를 지금 대상 승인으로 다시 본다.
 func TestSelectedLearnedPlanStillApprovedRechecksPreparation(t *testing.T) {
 	now := time.Now().UTC()
-	base := CandidateLearnedAuthPreparation(CandidateLearnedLogin{Method: selectedJSONCSRFMethod(), Trust: CandidateLoginTrustExplorationObserved})
+	base := CandidateLearnedAuthPreparation(CandidateLearnedLogin{Method: selectedJSONCSRFMethod(), Trust: CandidateLoginTrustVerified, VerifiedRef: testVerifiedRef})
 	for name, change := range map[string]func(*CandidateLLMPlan, *diagnosisprep.Input, *diagnosisprep.ProductTarget){
 		"prep excluded": func(p *CandidateLLMPlan, in *diagnosisprep.Input, _ *diagnosisprep.ProductTarget) {
 			p.ExcludedPaths, in.ExcludedPaths = []string{"/api/csrf"}, "/api/csrf"
@@ -189,6 +199,12 @@ func TestSelectedLearnedPlanStillApprovedRechecksPreparation(t *testing.T) {
 		},
 		"untrusted": func(p *CandidateLLMPlan, _ *diagnosisprep.Input, _ *diagnosisprep.ProductTarget) {
 			p.AuthPreparation.Trust = "learned"
+		},
+		"source provenance only": func(p *CandidateLLMPlan, _ *diagnosisprep.Input, _ *diagnosisprep.ProductTarget) {
+			p.AuthPreparation.Trust = CandidateLoginTrustE2Audited
+		},
+		"verified without event ref": func(p *CandidateLLMPlan, _ *diagnosisprep.Input, _ *diagnosisprep.ProductTarget) {
+			p.AuthPreparation.VerifiedRef = ""
 		},
 		"v1 version with learned": func(p *CandidateLLMPlan, _ *diagnosisprep.Input, _ *diagnosisprep.ProductTarget) {
 			p.Version = candidateLLMPlanV1
@@ -238,7 +254,10 @@ func TestSelectedCandidatePlanAuthLookup(t *testing.T) {
 		config  bool
 		reason  string
 	}{
-		{"learned", diagnosisprep.ProductCandidateLogin{Source: diagnosisprep.CandidateLoginLearned, Trust: CandidateLoginTrustExplorationObserved, Method: &m}, true, false, ""},
+		{"learned", diagnosisprep.ProductCandidateLogin{Source: diagnosisprep.CandidateLoginLearned, Trust: CandidateLoginTrustVerified, VerifiedRef: testVerifiedRef, Method: &m}, true, false, ""},
+		{"source provenance only", diagnosisprep.ProductCandidateLogin{Source: diagnosisprep.CandidateLoginLearned, Trust: CandidateLoginTrustExplorationObserved, VerifiedRef: testVerifiedRef, Method: &m}, false, false, ""},
+		{"verified without event ref", diagnosisprep.ProductCandidateLogin{Source: diagnosisprep.CandidateLoginLearned, Trust: CandidateLoginTrustVerified, Method: &m}, false, false, ""},
+		{"unverified", diagnosisprep.ProductCandidateLogin{Source: diagnosisprep.CandidateLoginNone, Reason: "learned_login_unverified"}, false, false, "learned_login_unverified"},
 		{"configured", diagnosisprep.ProductCandidateLogin{Source: diagnosisprep.CandidateLoginConfigured, Login: &login}, false, true, ""},
 		{"untrusted", diagnosisprep.ProductCandidateLogin{Source: diagnosisprep.CandidateLoginNone, Reason: "learned_login_transport_unverified"}, false, false, "learned_login_transport_unverified"},
 		{"invalid trust", diagnosisprep.ProductCandidateLogin{Source: diagnosisprep.CandidateLoginLearned, Trust: "learned", Method: &m}, false, false, ""},
@@ -281,13 +300,13 @@ func TestSelectedCandidateRecentAuthFailuresQueryPostgres(t *testing.T) {
 // 한다. ARTEX_UPDATE_CONTRACT_FIXTURE=1이면 다시 쓴다.
 func TestSelectedCandidateLearnedLoginFixture(t *testing.T) {
 	now := time.Date(2026, 11, 27, 9, 0, 0, 0, time.UTC)
-	learned := CandidateLearnedAuthPreparation(CandidateLearnedLogin{Method: selectedJSONCSRFMethod(), Trust: CandidateLoginTrustExplorationObserved})
+	learned := CandidateLearnedAuthPreparation(CandidateLearnedLogin{Method: selectedJSONCSRFMethod(), Trust: CandidateLoginTrustVerified, VerifiedRef: testVerifiedRef})
 	plan, _, _, _ := learnedPlanFixture(now, learned)
 	digest, err := candidateLLMPlanDigest(plan)
 	if err != nil {
 		t.Fatal(err)
 	}
-	token := CandidateLearnedAuthPreparation(CandidateLearnedLogin{Method: selectedTokenMethod(), Trust: CandidateLoginTrustVerified})
+	token := CandidateLearnedAuthPreparation(CandidateLearnedLogin{Method: selectedTokenMethod(), Trust: CandidateLoginTrustVerified, VerifiedRef: testVerifiedRef})
 	fixture := map[string]any{
 		"schema":      "jindo.selected-candidate-learned-login.fixture/v1",
 		"note":        "합성 예시다. 값(아이디·비밀번호·세션·CSRF)은 계획·이력·모델 입력에 없다.",

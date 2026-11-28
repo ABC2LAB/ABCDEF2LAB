@@ -74,6 +74,9 @@ type E2HTTPFileOptions struct {
 	Supervisor       E2HTTPExecutionSupervisor
 	ObserveEvent     func(context.Context, e2proxy.Event) error
 	ObserveResult    func(context.Context, e2runner.Result) error
+	// SelectedLogin은 선택 후보 학습 로그인 결과를 받는다(값 없음). 실행 시작의 학습 로그인 뒤 한 번, 권한 재확인보다 먼저
+	// 부른다(권한 철회로 실행이 실패해도 송신 여부를 알게). nil이면 부르지 않는다.
+	SelectedLogin func(E2HTTPSelectedLoginOutcome)
 	// AttemptPathObserver는 수용시험 회차(eval-e2 설정 v2)에서만 설정한다. nil이면 실행 동작은 그대로다.
 	AttemptPathObserver e2proxy.AttemptPathObserver
 	// PlannerLimits는 Plan당 상한이다(C26·C32). 0이면 기본값이다.
@@ -780,7 +783,7 @@ func loadE2HTTPRuntimeOptions(ctx context.Context, input E2HTTPFileOptions, froz
 			var authErr error
 			if policy.Auth.LearnedMethod != nil {
 				// 선택 후보 검증의 학습 로그인(계획에 결속한 방법·계정 하나, 전용 규칙). 로그인 설정(9칸)을 쓰지 않는다.
-				auth, authErr = e2HTTPSelectedLearnedLogin(taskctx, execution, dir, origin, *policy.Auth)
+				auth, authErr = e2HTTPSelectedLearnedLogin(taskctx, execution, dir, origin, *policy.Auth, input.SelectedLogin)
 			} else {
 				auth, authErr = e2HTTPAuthPrep(taskctx, execution, dir, origin, *policy.Auth)
 			}

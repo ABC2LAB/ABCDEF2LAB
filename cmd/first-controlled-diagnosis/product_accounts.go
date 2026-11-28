@@ -87,6 +87,8 @@ type productAccountEvent struct {
 	Stage        string `json:"stage,omitempty"`
 	AttemptRef   string `json:"attempt_ref,omitempty"`
 	Evidence     string `json:"evidence,omitempty"`
+	// ReservationRef는 선택 후보 학습 로그인 예약·종료·verified 해제 줄의 예약 참조다(candidate_login_reservation.go, 값 없음).
+	ReservationRef string `json:"reservation_ref,omitempty"`
 }
 
 const (
@@ -116,6 +118,9 @@ type productAccountState struct {
 	// 대상 판·자격 판과 모두 같을 때만 상태에 반영한다(계약 §6-1-1·§6-1-2, loginMethodVerifiedFor). 다른 방법의 검증 줄이
 	// 지금 방법의 검증을 덮지 않게 방법마다 따로 둔다.
 	loginVerified map[string]*productLoginVerified
+	// candidateLogin은 열린 선택 후보 학습 로그인 예약이다(candidate_login_reservation.go). 있으면 그 계정의 다른 선택 로그인을
+	// 막는다.
+	candidateLogin *productCandidateLoginReservation
 }
 
 // replayAccount는 저널 한 줄을 상태에 반영한다. 대상 저널을 먼저 다 읽은 뒤에 부른다.
@@ -125,9 +130,16 @@ func (r *productTargetRegistry) replayAccount(e productAccountEvent) error {
 		return errPreparation
 	}
 	if e.Action == accountLoginMethodVerified {
+		if e.ReservationRef != "" {
+			return errPreparation
+		}
 		return r.replayLoginMethodVerified(rec, e)
 	}
-	if e.MethodSHA256 != "" || e.RunRef != "" || e.Stage != "" || e.AttemptRef != "" || e.Evidence != "" {
+	switch e.Action {
+	case accountCandidateLoginReserved, accountCandidateLoginFinished, accountLoginVerifiedCleared:
+		return r.replayCandidateLogin(e)
+	}
+	if e.MethodSHA256 != "" || e.RunRef != "" || e.Stage != "" || e.AttemptRef != "" || e.Evidence != "" || e.ReservationRef != "" {
 		return errPreparation
 	}
 	if e.Action == accountExternalConsent {

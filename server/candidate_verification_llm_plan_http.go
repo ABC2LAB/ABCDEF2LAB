@@ -227,8 +227,8 @@ VALUES($1,4,'awaiting_approval','action_approval_required','[]'::json,$2,'select
 }
 
 // readCandidatePlanAuth는 원본 계정의 인증 준비 원천을 보호 준비 서비스에서 읽는다(docs/contracts/selected-candidate-learned-login.md).
-// 출처를 확인한 학습 방법이 먼저이고, 학습 방법이 없을 때만 로그인 설정(9칸)이다. 학습 방법이 있는데 믿을 수 없으면 그 고정
-// 사유로 막는다(9칸으로 대신하지 않음). 실패면 nil과 응답 오류 사유다.
+// verified 학습 방법이 먼저이고, 학습 방법이 없을 때만 로그인 설정(9칸)이다. 학습 방법이 있는데 verified가 아니거나(해제 포함)
+// 쓸 수 없으면 그 고정 사유로 막는다(9칸으로 대신하지 않음). 실패면 nil과 응답 오류 사유다.
 func readCandidatePlanAuth(ctx context.Context, endpoint diagnosisprep.Endpoint, owner, targetID, accountRef string) (*CandidatePlanAuth, string) {
 	req := diagnosisprep.Request{Version: diagnosisprep.Version, RequestID: "candidate-llm-plan-login", Command: diagnosisprep.ProductControl,
 		Principal: owner, Product: &diagnosisprep.ProductRequest{Operation: "target_login_candidate", TargetID: targetID, AccountRef: accountRef}}
@@ -239,7 +239,7 @@ func readCandidatePlanAuth(ctx context.Context, endpoint diagnosisprep.Endpoint,
 	choice := resp.Product.CandidateLogin
 	switch choice.Source {
 	case diagnosisprep.CandidateLoginLearned:
-		return &CandidatePlanAuth{Learned: &CandidateLearnedLogin{Method: choice.Method.Clone(), Trust: choice.Trust}}, ""
+		return &CandidatePlanAuth{Learned: &CandidateLearnedLogin{Method: choice.Method.Clone(), Trust: choice.Trust, VerifiedRef: choice.VerifiedRef}}, ""
 	case diagnosisprep.CandidateLoginConfigured:
 		login := *choice.Login
 		login.Cookies = append([]string(nil), login.Cookies...)

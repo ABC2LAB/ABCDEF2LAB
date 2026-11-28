@@ -65,12 +65,14 @@ const (
 // ProductCandidateLogin은 선택 후보 검증이 원본 계정으로 다시 로그인할 방법이다(docs/contracts/selected-candidate-learned-login.md).
 // 값(아이디·비밀번호·세션·CSRF)은 없다. learned는 출처를 확인한 학습 방법과 그 수준, configured는 로그인 설정(9칸, 학습 방법이
 // 없을 때만), none은 쓸 방법이 없거나 학습 방법을 믿을 수 없다는 고정 사유다.
+// learned는 verified 방법뿐이고(2026-11-27 팀 결정) VerifiedRef는 그 검증 사건(E③ login_method_verified 줄)의 비밀 없는 참조다.
 type ProductCandidateLogin struct {
-	Source string               `json:"source"`
-	Reason string               `json:"reason,omitempty"`
-	Trust  string               `json:"trust,omitempty"`
-	Method *learnedlogin.Method `json:"method,omitempty"`
-	Login  *TargetLogin         `json:"login,omitempty"`
+	Source      string               `json:"source"`
+	Reason      string               `json:"reason,omitempty"`
+	Trust       string               `json:"trust,omitempty"`
+	VerifiedRef string               `json:"verified_ref,omitempty"`
+	Method      *learnedlogin.Method `json:"method,omitempty"`
+	Login       *TargetLogin         `json:"login,omitempty"`
 }
 
 var candidateLoginReason = regexp.MustCompile(`^[a-z][a-z0-9_]{2,63}$`)
@@ -78,11 +80,12 @@ var candidateLoginReason = regexp.MustCompile(`^[a-z][a-z0-9_]{2,63}$`)
 func validProductCandidateLogin(c ProductCandidateLogin) bool {
 	switch c.Source {
 	case CandidateLoginLearned:
-		return c.Reason == "" && c.Login == nil && c.Method != nil && c.Method.Validate() == "" && (c.Trust == "verified" || c.Trust == "exploration_observed" || c.Trust == "e2_audited")
+		return c.Reason == "" && c.Login == nil && c.Method != nil && c.Method.Validate() == "" && c.Trust == "verified" &&
+			candidateControlDigest.MatchString(c.VerifiedRef)
 	case CandidateLoginConfigured:
-		return c.Reason == "" && c.Trust == "" && c.Method == nil && c.Login != nil && ValidTargetLogin(*c.Login)
+		return c.Reason == "" && c.Trust == "" && c.VerifiedRef == "" && c.Method == nil && c.Login != nil && ValidTargetLogin(*c.Login)
 	case CandidateLoginNone:
-		return candidateLoginReason.MatchString(c.Reason) && c.Trust == "" && c.Method == nil && c.Login == nil
+		return candidateLoginReason.MatchString(c.Reason) && c.Trust == "" && c.VerifiedRef == "" && c.Method == nil && c.Login == nil
 	}
 	return false
 }

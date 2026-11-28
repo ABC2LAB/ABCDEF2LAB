@@ -98,6 +98,8 @@ func (b *urlPreparationRuntime) executeCandidateLLMVerification(ctx context.Cont
 	phase := "context"
 	// failReason은 실패 사건의 고정 사유다(인증 준비 변경·실패처럼 원인을 아는 경우). 비면 기존 사유다.
 	failReason := ""
+	// learnedPlan은 verified 학습 로그인 계획(v2)인지, learnedRef는 그 계정 선택 로그인 예약 참조(예약했을 때만)다.
+	learnedPlan, learnedRef := false, ""
 	pool, err := b.candidateDatabase(ctx)
 	if err != nil {
 		return errPreparation
@@ -176,7 +178,8 @@ WHERE q.id=$1 FOR UPDATE OF q`, requestID).Scan(&approvalEventID) != nil {
 	}
 	phase = "account_binding"
 	if plan.AccountRef != "" && plan.AuthPreparation != nil && plan.AuthPreparation.Kind != "" {
-		// 학습 로그인 계획(v2): 지금 고른 학습 방법·출처 수준이 승인한 그대로일 때만 그 계정 하나를 싣는다. 9칸으로 대신하지 않는다.
+		learnedPlan = true
+		// 학습 로그인 계획(v2): 지금 고른 verified 방법·검증 사건이 승인한 그대로일 때만 그 계정 하나를 싣는다. 9칸으로 대신하지 않는다.
 		if reason := b.bindCandidateLearnedAccount(l, plan); reason != "" {
 			failReason = reason
 			return errPreparation
@@ -419,7 +422,7 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 		if current.AuthPreparation != nil && current.AuthPreparation.Kind != "" {
 			// 송신 직전마다 학습 방법·출처 수준·준비 경로가 승인한 그대로인지 다시 본다(대상 재승인·자격 변경·방법 변경·
 			// 원본 회차 기록 유실이면 멈춤). 새 방법을 자동으로 골라 보내지 않는다.
-			if !b.candidateLearnedLoginCurrent(current) {
+			if !b.candidateLearnedLoginCurrent(current, learnedRef) {
 				return errPreparation
 			}
 		} else if current.AuthPreparation != nil {
@@ -435,6 +438,28 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 		}
 		return nil
 	}
+	var selectedLogin candidateSelectedLoginCapture
+	if learnedPlan {
+		// 송신 전에 그 계정의 선택 로그인을 계정 저널에 예약한다(한 번에 하나, 결과를 남긴 뒤에만 닫음). 예약하지 못하면
+		// 보내지 않는다. 이후 송신 직전 확인은 이 예약을 잡은 실행만 통과한다.
+		phase = "login_reservation"
+		ref := candidateLoginReservationRefFor(requestID)
+		account, reason := b.product.reserveCandidateLearnedLogin("ARTEX", plan.TargetID, plan.AccountRef, plan.AuthPreparation.VerifiedRef, ref)
+		if reason != "" {
+			failReason = candidateReservationFailReason(reason)
+			return errPreparation
+		}
+		learnedRef = ref
+		defer func() {
+			finished, cleared := selectedLogin.classify(plan.AccountRef)
+			if err := b.product.targets.finishCandidateLogin(plan.TargetID, account.label, ref, finished, cleared); err != nil {
+				// 결과를 남기지 못하면 예약이 열린 채로 남아 이 계정의 다음 선택 검증을 막는다(fail-closed).
+				log.Printf("[candidate-llm-execution] request %d login reservation close failed", requestID)
+			} else if cleared != "" {
+				log.Printf("[candidate-llm-execution] request %d verified cleared: %s", requestID, cleared)
+			}
+		}()
+	}
 	phase = "supervisor"
 	guard, err := server.NewCandidateLLMExecutionSupervisor(hard, runtimePool, requestID, prepared.TaskID, digest, checkCurrent)
 	if err != nil {
@@ -443,10 +468,12 @@ VALUES($1,6,'running','execution_started','[]'::json,$2,'selected/llm-v1',$3)`, 
 	options := server.FirstDiagnosisHTTPStartOptions{Host: server.FirstDiagnosisHTTPHostConfig{PolicyFile: launch.HTTP.PolicyFile,
 		AuthorityFile: launch.HTTP.AuthorityFile, AuthorityRoot: launch.HTTP.AuthorityRoot}, SkillDir: launch.SkillDir, DataDir: launch.DataDir, KeyDir: launch.KeyDir,
 		LocalLLMManifestPath: launch.LocalLLMManifestPath, ModelExecutionMode: launch.ModelExecutionMode, OpenRouterManifestPath: launch.OpenRouterManifestPath,
-		Supervisor: guard, Hooks: server.FirstDiagnosisHTTPHooks{HostSocket: launch.E2HostSocket, CheckAuthority: func() error { return checkCurrent(hard, plan) }},
+		Supervisor: guard, Hooks: server.FirstDiagnosisHTTPHooks{HostSocket: launch.E2HostSocket, CheckAuthority: func() error { return checkCurrent(hard, plan) },
+			SelectedLogin: selectedLogin.record},
 		CleanupTimeout: time.Duration(launch.ShutdownTimeoutSeconds) * time.Second}
 	phase = "e2_execution"
 	observations, err := server.ExecuteSelectedCandidateActions(hard, manager, options, prepared.TaskID, runRef, plan)
+	selectedLogin.done(observations)
 	if err != nil {
 		failReason = server.CandidateAuthFailureReason(err)
 		return errPreparation
@@ -607,25 +634,50 @@ LEFT JOIN tasks t ON t.id=x.followup_task_id AND t.deleted_at IS NULL
 // candidateLLMPasswordResponse는 선택 후보 검증 실행의 비밀번호 응답 정책이다. 9칸 인증 준비와 학습 로그인이 같은 값을 쓴다.
 const candidateLLMPasswordResponse = e2proxy.PasswordResponseModelVisible
 
-// candidateLearnedLoginCurrent는 승인한 학습 로그인 준비가 지금 고른 방법과 같은지다(값 없음, 원본 회차 기록 재대조 포함).
-func (b *urlPreparationRuntime) candidateLearnedLoginCurrent(plan server.CandidateLLMPlan) bool {
+// candidateLearnedLoginCurrent는 승인한 학습 로그인 준비가 지금 고른 verified 방법·검증 사건과 같은지다(값 없음, 원본 회차
+// 기록 재대조 포함). holder는 송신 중인 실행의 예약 참조다(실행 전 확인은 빈 값: 다른 실행이 잡은 예약이 있으면 거짓).
+func (b *urlPreparationRuntime) candidateLearnedLoginCurrent(plan server.CandidateLLMPlan, holder string) bool {
+	return b.candidateLearnedLoginRefusal(plan, holder) == ""
+}
+
+// candidateLearnedLoginRefusal은 candidateLearnedLoginCurrent의 거절 사유다(같으면 빈 값).
+func (b *urlPreparationRuntime) candidateLearnedLoginRefusal(plan server.CandidateLLMPlan, holder string) string {
 	if b == nil || b.product == nil || plan.AuthPreparation == nil || plan.AccountRef == "" {
-		return false
+		return candidateReasonUnverified
 	}
-	choice := b.product.candidateLogin("ARTEX", plan.TargetID, plan.AccountRef)
+	choice := b.product.candidateLogin("ARTEX", plan.TargetID, plan.AccountRef, holder)
 	if choice.Source != diagnosisprep.CandidateLoginLearned || choice.Method == nil {
-		return false
+		if choice.Reason == "" {
+			return candidateReasonUnverified
+		}
+		return choice.Reason
 	}
-	return reflect.DeepEqual(server.CandidateLearnedAuthPreparation(server.CandidateLearnedLogin{Method: *choice.Method, Trust: choice.Trust}), plan.AuthPreparation)
+	if !reflect.DeepEqual(server.CandidateLearnedAuthPreparation(server.CandidateLearnedLogin{Method: *choice.Method, Trust: choice.Trust,
+		VerifiedRef: choice.VerifiedRef}), plan.AuthPreparation) {
+		return candidateReasonUnverified
+	}
+	return ""
+}
+
+// candidateReservationFailReason은 학습 로그인 예약·확인 거절의 실행 실패 사유다. 진행 중·미해결 예약은 따로, 나머지(검증
+// 해제·판본·방법 변경)는 인증 준비 변경이다.
+func candidateReservationFailReason(reason string) string {
+	switch reason {
+	case candidateReasonInProgress:
+		return "candidate_login_in_progress"
+	case candidateReasonUnresolved:
+		return "candidate_login_unresolved"
+	}
+	return "candidate_auth_preparation_changed"
 }
 
 // bindCandidateLearnedAccount는 학습 로그인 계획의 계정 하나만 실행에 싣는다. 9칸이 없는 대상도 그 계정 자격 보호 파일을
 // 따로 읽는다. 다른 계정 자격 사본은 메모리에서 지운다. 실패면 고정 사유다.
 func (b *urlPreparationRuntime) bindCandidateLearnedAccount(l *urlLoadedProfile, plan server.CandidateLLMPlan) string {
-	if !b.candidateLearnedLoginCurrent(plan) {
-		return "candidate_auth_preparation_changed"
+	if reason := b.candidateLearnedLoginRefusal(plan, ""); reason != "" {
+		return candidateReservationFailReason(reason)
 	}
-	choice := b.product.candidateLogin("ARTEX", plan.TargetID, plan.AccountRef)
+	choice := b.product.candidateLogin("ARTEX", plan.TargetID, plan.AccountRef, "")
 	account, reason := b.product.targets.candidateAccount("ARTEX", plan.TargetID, plan.AccountRef)
 	if reason != "" || choice.Method == nil || server.CandidateAccountRevision(account.label, account.credential) != plan.AccountRef {
 		return "candidate_auth_preparation_changed"

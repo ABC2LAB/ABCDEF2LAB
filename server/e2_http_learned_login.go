@@ -58,6 +58,9 @@ type E2HTTPLearnedLoginResult struct {
 	LoginPaths []string
 	// BindingRef는 성공했을 때 새 세션에 발급한 계정 결속 참조다. 확정 단계 신원 요청이 이 세션으로 나갔는지 보는 데 쓴다.
 	BindingRef string
+	// LoginForwardAttempted는 로그인 POST를 E②가 대상으로 전달하기 시작했다는 영수증 칸이다. Transport가 not_sent여도(감사
+	// 실패 등 기본 분기) 이 값이 참이면 대상이 받았을 수 있다. 선택 후보 verified 해제 판단이 쓴다.
+	LoginForwardAttempted bool
 }
 
 // E2HTTPLoginContrastResult는 세션 없는 대조 GET 하나의 결과다(§4 프로그램 대조 요청).
@@ -302,6 +305,7 @@ func e2HTTPLearnedLoginVia(ctx context.Context, execution *e2proxy.Execution, di
 	if receipt.ForwardAttempted {
 		out.Requests++
 	}
+	out.LoginForwardAttempted = receipt.ForwardAttempted || receipt.RequestWritten
 	out.Status, out.RedirectPath, out.LoginFormReturned = receipt.StatusCode, checked.RedirectPath, checked.LoginFormReturned
 	switch {
 	case loginErr == nil:
@@ -444,7 +448,7 @@ func learnedLogReason(reason learnedlogin.Reason) string {
 // 결속한 계정 하나를 학습 방법으로 한 번 로그인한다. 준비 GET(필요하면 하나)과 로그인 POST는 전용 규칙만 쓰는 호출로 나가고
 // 실행 예산을 쓴다. 다시 보내지 않으며(결과 불명 포함), 성공해도 E③ verified가 아니다(세션을 받았다는 뜻뿐). 세션은 실행
 // 메모리의 보호 세션 저장소에만 둔다.
-func e2HTTPSelectedLearnedLogin(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth) (E2HTTPAuthResult, error) {
+func e2HTTPSelectedLearnedLogin(ctx context.Context, execution *e2proxy.Execution, dir, origin string, auth E2HTTPFileAuth, report func(E2HTTPSelectedLoginOutcome)) (E2HTTPAuthResult, error) {
 	out := E2HTTPAuthResult{AccountAuth: map[string]string{}, Sessions: E2HTTPSessions{}}
 	if execution == nil || ctx == nil || auth.LearnedMethod == nil || len(auth.Accounts) != 1 {
 		return out, ErrE2HTTPHost
@@ -459,9 +463,28 @@ func e2HTTPSelectedLearnedLogin(ctx context.Context, execution *e2proxy.Executio
 	} else if result.Result == E2HTTPAuthAuthenticated {
 		out.AccountAuth[label] = E2HTTPAuthSessionNotFound
 	}
+	if report != nil {
+		report(E2HTTPSelectedLoginOutcome{Label: label, Result: out.AccountAuth[label], Transport: result.Transport,
+			LoginForwardAttempted: result.LoginForwardAttempted})
+	}
 	for ref := range program.snapshot() {
 		out.CallRefs = append(out.CallRefs, ref)
 	}
 	sort.Strings(out.CallRefs)
 	return out, nil
+}
+
+// E2HTTPSelectedLoginOutcome은 선택 후보 학습 로그인 한 번의 결과다(값 없음). 실행기는 이것으로 verified 유지·해제를 정한다
+// (docs/contracts/selected-candidate-learned-login.md §5). Result는 인증 준비 고정 결과, Transport는 로그인 POST 기록 칸
+// (sent·not_sent·result_unknown), LoginForwardAttempted는 E② 영수증의 전달 시작 여부다.
+type E2HTTPSelectedLoginOutcome struct {
+	Label                 string
+	Result                string
+	Transport             string
+	LoginForwardAttempted bool
+}
+
+// LoginPossiblySent는 로그인 POST가 대상에 닿았을 수 있는지다. 기록이 not_sent이고 전달을 시작하지 않았을 때만 아니다.
+func (o E2HTTPSelectedLoginOutcome) LoginPossiblySent() bool {
+	return o.Transport != learnedlogin.TransportNotSent || o.LoginForwardAttempted
 }

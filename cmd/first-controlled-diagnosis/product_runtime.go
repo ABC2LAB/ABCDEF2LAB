@@ -739,7 +739,7 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 		case "target_login_candidate":
 			// 선택 후보 검증의 인증 준비 원천(값 없음). 대상 승인자 확인은 targetLogin과 같고, 학습 방법 출처는 다시 대조한다.
 			if _, err = p.targets.targetLogin(r.Principal, r.Product.TargetID); err == nil {
-				choice := p.candidateLogin(r.Principal, r.Product.TargetID, r.Product.AccountRef)
+				choice := p.candidateLogin(r.Principal, r.Product.TargetID, r.Product.AccountRef, "")
 				control.CandidateLogin = &choice
 			}
 		case "target_login_set":

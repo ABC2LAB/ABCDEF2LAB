@@ -14,21 +14,48 @@ import (
 	"github.com/Autumn-27/artex/server"
 )
 
-// storedMethodReader는 ⑤-B 저장 방법 읽기 경계를 흉내 낸다(라벨별 방법 또는 고정 사유).
+// storedMethodReader는 ⑤-B 저장 방법 읽기 경계를 흉내 낸다(라벨별 방법·since 또는 고정 사유). since가 없으면 관찰 시각과 같다
+// (처음 배운 방법).
 type storedMethodReader struct {
 	learned map[string]learnedlogin.Learned
+	since   map[string]time.Time
 	reason  learnedlogin.Reason
 }
 
 func (s storedMethodReader) learnedLoginMethod(_ string, label string, _ uint64, _ string) (learnedlogin.Learned, learnedlogin.Reason) {
+	m, _, reason := s.learnedLoginMethodState("", label, 0, "")
+	return m, reason
+}
+
+func (s storedMethodReader) learnedLoginMethodState(_ string, label string, _ uint64, _ string) (learnedlogin.Learned, time.Time, learnedlogin.Reason) {
 	if s.reason != "" {
-		return learnedlogin.Learned{}, s.reason
+		return learnedlogin.Learned{}, time.Time{}, s.reason
 	}
 	m, ok := s.learned[label]
 	if !ok {
-		return learnedlogin.Learned{}, learnedlogin.ReasonNone
+		return learnedlogin.Learned{}, time.Time{}, learnedlogin.ReasonNone
 	}
-	return m, ""
+	since, ok := s.since[label]
+	if !ok {
+		since = m.Source.At
+	}
+	return m, since, ""
+}
+
+// methodOnlyReader는 since를 주지 않는 이전 읽기 경계다(방법만). verified를 판단할 수 없어 쓰지 않아야 한다.
+type methodOnlyReader struct{ inner storedMethodReader }
+
+func (s methodOnlyReader) learnedLoginMethod(targetID, label string, revision uint64, credential string) (learnedlogin.Learned, learnedlogin.Reason) {
+	return s.inner.learnedLoginMethod(targetID, label, revision, credential)
+}
+
+// verifyStored는 저장된 방법을 E③ 다시 로그인으로 검증한 줄을 남긴다(제품 쓰기 경로 recordLoginMethodVerified 그대로).
+func verifyStored(t *testing.T, r *productTargetRegistry, rec productTargetRecord, label string, m learnedlogin.Method, attempt string, at time.Time) {
+	t.Helper()
+	if _, err := r.recordLoginMethodVerified(rec.Target.ID, label, rec.Target.Revision, credentialOf(r, rec.Target.ID, label), m.Digest(), "run-e3",
+		attempt, at); err != nil {
+		t.Fatal("verified 줄 쓰기", err)
+	}
 }
 
 const selectedSourceRunRef = "run-" + liveJob
@@ -83,15 +110,19 @@ func jsonLine(row learnedlogin.Row) ([]byte, error) {
 	return append(raw, '\n'), err
 }
 
-// A·작업 A: 저장된 학습 방법은 원본 회차의 보호 기록·탐색 경계 근거로 다시 대조될 때만 선택 검증에 쓴다. 인계 실패 표지·
-// 기록 유실·근거 불일치·진단 단계 출처·이전 회차·저장 줄과 회차 선택 불일치는 막고 9칸으로 넘어가지 않는다(AN04~AN06).
+// G01·ST03: verified 방법만 쓴다. verified 방법이라도 원본 시도가 지금 원본 회차 보호 기록·탐색 경계 근거·감사 저널과 맞지
+// 않으면(인계 실패 표지·기록 유실·근거 불일치·이전 회차·저장 줄과 회차 선택 불일치) 그 사유로 막고 9칸으로 넘어가지 않는다.
+// 출처 재대조가 맞아도 verified가 없으면 쓰지 않는다(출처 수준은 verified를 대신하지 않음).
 func TestSelectedCandidateLearnedLoginTrust(t *testing.T) {
-	r, _, rec := learnedAccountTarget(t)
-	if _, err := r.setTargetLogin("ARTEX", rec.Target.ID, diagnosisprep.TargetLogin{Method: "POST", Path: "/read/login", Format: "form",
-		UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}); err != nil {
-		t.Fatal(err)
+	// 계정마다 verified 줄을 새로 쓰므로 하위 시험마다 대상을 새로 만든다. 9칸이 있어도 넘어가지 않는지 함께 본다.
+	setup := func(t *testing.T) (*productTargetRegistry, productTargetRecord, string) {
+		r, _, rec := learnedAccountTarget(t)
+		if _, err := r.setTargetLogin("ARTEX", rec.Target.ID, diagnosisprep.TargetLogin{Method: "POST", Path: "/read/login", Format: "form",
+			UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}); err != nil {
+			t.Fatal(err)
+		}
+		return r, rec, server.CandidateAccountRevision("tester-a", credentialOf(r, rec.Target.ID, "tester-a"))
 	}
-	ref := server.CandidateAccountRevision("tester-a", credentialOf(r, rec.Target.ID, "tester-a"))
 	for _, tc := range []struct {
 		name   string
 		change func(*server.E2HTTPFilePolicy, *learnedlogin.Row, *learnedlogin.ExplorationEvidence)
@@ -99,11 +130,11 @@ func TestSelectedCandidateLearnedLoginTrust(t *testing.T) {
 		want   string
 		events []e2proxy.Event
 	}{
-		{name: "diagnosis stage audited journal", want: server.CandidateLoginTrustE2Audited, change: diagnosisSourceRow, events: []e2proxy.Event{diagnosisLoginResult(302)},
+		{name: "diagnosis stage audited journal", want: server.CandidateLoginTrustVerified, change: diagnosisSourceRow, events: []e2proxy.Event{diagnosisLoginResult(302)},
 			after: func(_ *testing.T, _ string, stored *learnedlogin.Learned) { stored.Source.AttemptRef = "diagnosis-1" }},
 		{name: "diagnosis stage journal other status", want: string(learnedlogin.ReasonTransportUnverified), change: diagnosisSourceRow,
 			events: []e2proxy.Event{diagnosisLoginResult(401)}, after: func(_ *testing.T, _ string, stored *learnedlogin.Learned) { stored.Source.AttemptRef = "diagnosis-1" }},
-		{name: "exploration observed", want: server.CandidateLoginTrustExplorationObserved},
+		{name: "exploration observed", want: server.CandidateLoginTrustVerified},
 		{name: "handoff marker", want: string(learnedlogin.ReasonRecordInvalid), after: func(t *testing.T, runs string, _ *learnedlogin.Learned) {
 			if err := os.WriteFile(filepath.Join(runs, liveJob, "state", learnedlogin.AttemptsUnavailableFile), []byte("x"), 0o600); err != nil {
 				t.Fatal(err)
@@ -141,18 +172,25 @@ func TestSelectedCandidateLearnedLoginTrust(t *testing.T) {
 			p.Auth.Accounts[0].Credential.File = "account-other-target.json"
 		}},
 		{name: "source run predates target approval", want: string(learnedlogin.ReasonRecordInvalid), change: func(p *server.E2HTTPFilePolicy, _ *learnedlogin.Row, _ *learnedlogin.ExplorationEvidence) {
-			p.ValidFrom = rec.Target.ApprovedAt.Add(-time.Second)
+			p.ValidFrom = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 		}},
 		{name: "source login uses other origin", want: string(learnedlogin.ReasonRecordInvalid), change: func(p *server.E2HTTPFilePolicy, _ *learnedlogin.Row, _ *learnedlogin.ExplorationEvidence) {
 			p.Rules[1].Origin = "https://other.example.test"
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			r, rec, ref := setup(t)
 			runs, stored := selectedSourceRun(t, r, rec, tc.change, tc.events...)
 			if tc.after != nil {
 				tc.after(t, runs, &stored)
 			}
-			choice := candidateLoginChoice(r, storedMethodReader{learned: map[string]learnedlogin.Learned{"tester-a": stored}}, runs, "ARTEX", rec.Target.ID, ref)
+			reader := storedMethodReader{learned: map[string]learnedlogin.Learned{"tester-a": stored}}
+			if c := candidateLoginChoice(r, reader, runs, "ARTEX", rec.Target.ID, ref, ""); c.Source != diagnosisprep.CandidateLoginNone ||
+				c.Reason != candidateReasonUnverified {
+				t.Fatalf("verified 없이 출처 재대조만으로 씀: %+v", c)
+			}
+			verifyStored(t, r, rec, "tester-a", stored.Method, "confirmation-1", stored.Source.At.Add(time.Hour))
+			choice := candidateLoginChoice(r, reader, runs, "ARTEX", rec.Target.ID, ref, "")
 			got := choice.Trust
 			if choice.Source == diagnosisprep.CandidateLoginNone {
 				got = choice.Reason
@@ -160,46 +198,53 @@ func TestSelectedCandidateLearnedLoginTrust(t *testing.T) {
 			if got != tc.want || choice.Source == diagnosisprep.CandidateLoginConfigured {
 				t.Fatalf("선택 %+v, want %s", choice, tc.want)
 			}
-			if choice.Source == diagnosisprep.CandidateLoginLearned && (choice.Method == nil || choice.Method.Digest() != stored.Method.Digest()) {
-				t.Fatal("다른 방법을 돌려줌")
+			if choice.Source == diagnosisprep.CandidateLoginLearned && (choice.Method == nil || choice.Method.Digest() != stored.Method.Digest() ||
+				len(choice.VerifiedRef) != 64) {
+				t.Fatal("다른 방법을 돌려주거나 검증 사건 참조가 없음")
 			}
 		})
 	}
 }
 
-// 진단 단계에서 배운 방법도 같은 방법·지금 대상 판·자격 판의 E③ verified가 학습 시각 뒤에 있으면 verified로 쓴다. 다른
-// 방법의 검증이나 학습 시각보다 앞선 검증은 인정하지 않는다(저장 경계가 '방법이 지금 것이 된 시각'을 주지 않아 보수적으로 본다).
-func TestSelectedCandidateLearnedLoginVerifiedTrust(t *testing.T) {
-	learnedTime := time.Date(2026, 11, 26, 10, 0, 0, 0, time.UTC)
-	stored := learnedlogin.Learned{Method: learnedMethod("/login"), Source: learnedlogin.Source{RunRef: "run-gone", AttemptRef: "diagnosis-1", At: learnedTime}}
-	reader := storedMethodReader{learned: map[string]learnedlogin.Learned{"tester-a": stored}}
+// G03·작업 P0 시각 결속: verified는 그 방법이 지금 것이 된 시각(since) 뒤의 같은 방법·지금 대상 판·자격 판 검증만이다.
+// 같은 방법을 다시 배워 관찰 시각(at)만 늦어진 경우는 since 기준이라 그 사이의 검증도 인정하고, since 앞의 검증·다른 방법의
+// 검증·같은 시각의 검증은 인정하지 않는다. since를 주지 않는 읽기 경계면 쓰지 않는다(at만으로 추정하지 않음).
+func TestSelectedCandidateLearnedLoginVerifiedSince(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		method string
-		at     time.Duration
-		want   string
+		// since·verified는 원본 관찰 시각(at) 기준 차이다.
+		since, verified time.Duration
+		legacy          bool
+		want            string
 	}{
-		{"no verified", "", 0, string(learnedlogin.ReasonRecordInvalid)},
-		{"other method verified", "/other", time.Hour, string(learnedlogin.ReasonRecordInvalid)},
-		{"verified before learned", "/login", -time.Hour, string(learnedlogin.ReasonRecordInvalid)},
-		{"verified at learned time", "/login", 0, string(learnedlogin.ReasonRecordInvalid)},
-		{"verified after learned", "/login", 2 * time.Hour, server.CandidateLoginTrustVerified},
+		{name: "no verified", since: 0, want: candidateReasonUnverified},
+		{name: "other method verified", method: "/other", verified: time.Hour, want: candidateReasonUnverified},
+		{name: "verified before since", method: "/login", since: -time.Hour, verified: -2 * time.Hour, want: candidateReasonUnverified},
+		{name: "verified at since", method: "/login", verified: 0, want: candidateReasonUnverified},
+		{name: "relearned same method verified between since and at", method: "/login", since: -2 * time.Hour, verified: -time.Hour,
+			want: server.CandidateLoginTrustVerified},
+		{name: "verified after at", method: "/login", verified: time.Hour, want: server.CandidateLoginTrustVerified},
+		{name: "reader without since", method: "/login", verified: time.Hour, legacy: true, want: candidateReasonVerificationUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _, rec := learnedAccountTarget(t)
+			runs, stored := selectedSourceRun(t, r, rec, nil)
 			cred := credentialOf(r, rec.Target.ID, "tester-a")
 			if tc.method != "" {
-				if ok, err := r.recordLoginMethodVerified(rec.Target.ID, "tester-a", rec.Target.Revision, cred, learnedMethod(tc.method).Digest(), "run-e3",
-					"confirmation-1", learnedTime.Add(tc.at)); err != nil || !ok {
-					t.Fatal("verified 줄 쓰기", err)
-				}
+				verifyStored(t, r, rec, "tester-a", learnedMethod(tc.method), "confirmation-1", stored.Source.At.Add(tc.verified))
 			}
-			c := candidateLoginChoice(r, reader, t.TempDir(), "ARTEX", rec.Target.ID, server.CandidateAccountRevision("tester-a", cred))
+			var reader productLearnedMethodReader = storedMethodReader{learned: map[string]learnedlogin.Learned{"tester-a": stored},
+				since: map[string]time.Time{"tester-a": stored.Source.At.Add(tc.since)}}
+			if tc.legacy {
+				reader = methodOnlyReader{reader.(storedMethodReader)}
+			}
+			c := candidateLoginChoice(r, reader, runs, "ARTEX", rec.Target.ID, server.CandidateAccountRevision("tester-a", cred), "")
 			got := c.Trust
 			if c.Source == diagnosisprep.CandidateLoginNone {
 				got = c.Reason
 			}
-			if got != tc.want {
+			if got != tc.want || c.Source == diagnosisprep.CandidateLoginConfigured {
 				t.Fatalf("선택 %+v, want %s", c, tc.want)
 			}
 		})
@@ -212,29 +257,39 @@ func TestSelectedCandidateLoginPriority(t *testing.T) {
 	r, _, rec := learnedAccountTarget(t)
 	ref := server.CandidateAccountRevision("tester-a", credentialOf(r, rec.Target.ID, "tester-a"))
 	runs := t.TempDir()
-	if c := candidateLoginChoice(r, nil, runs, "ARTEX", rec.Target.ID, ref); c.Source != diagnosisprep.CandidateLoginNone || c.Reason != string(learnedlogin.ReasonNone) {
+	if c := candidateLoginChoice(r, nil, runs, "ARTEX", rec.Target.ID, ref, ""); c.Source != diagnosisprep.CandidateLoginNone || c.Reason != string(learnedlogin.ReasonNone) {
 		t.Fatalf("방법·설정 없음: %+v", c)
 	}
 	login := diagnosisprep.TargetLogin{Method: "POST", Path: "/read/login", Format: "form", UsernameField: "email", PasswordField: "password", Cookies: []string{"session"}}
 	if _, err := r.setTargetLogin("ARTEX", rec.Target.ID, login); err != nil {
 		t.Fatal(err)
 	}
-	if c := candidateLoginChoice(r, storedMethodReader{}, runs, "ARTEX", rec.Target.ID, ref); c.Source != diagnosisprep.CandidateLoginConfigured || c.Login == nil || c.Login.Path != "/read/login" {
+	if c := candidateLoginChoice(r, storedMethodReader{}, runs, "ARTEX", rec.Target.ID, ref, ""); c.Source != diagnosisprep.CandidateLoginConfigured || c.Login == nil || c.Login.Path != "/read/login" {
 		t.Fatalf("학습 방법 없음 → 9칸: %+v", c)
 	}
 	for _, reason := range []learnedlogin.Reason{learnedlogin.ReasonTargetChanged, learnedlogin.ReasonCredentialChanged, learnedlogin.ReasonRecordInvalid} {
-		if c := candidateLoginChoice(r, storedMethodReader{reason: reason}, runs, "ARTEX", rec.Target.ID, ref); c.Source != diagnosisprep.CandidateLoginNone || c.Reason != string(reason) {
+		if c := candidateLoginChoice(r, storedMethodReader{reason: reason}, runs, "ARTEX", rec.Target.ID, ref, ""); c.Source != diagnosisprep.CandidateLoginNone || c.Reason != string(reason) {
 			t.Fatalf("%s에서 9칸으로 넘어감: %+v", reason, c)
 		}
 	}
-	if c := candidateLoginChoice(r, nil, runs, "ARTEX", rec.Target.ID, strings.Repeat("0", 64)); c.Source != diagnosisprep.CandidateLoginNone || c.Reason != string(learnedlogin.ReasonCredentialChanged) {
+	if c := candidateLoginChoice(r, nil, runs, "ARTEX", rec.Target.ID, strings.Repeat("0", 64), ""); c.Source != diagnosisprep.CandidateLoginNone || c.Reason != string(learnedlogin.ReasonCredentialChanged) {
 		t.Fatalf("모르는 계정 참조: %+v", c)
 	}
 	if _, err := r.setAccountCredential("ARTEX", rec.Target.ID, "tester-a", diagnosisprep.AccountCredential{Username: "learned-user-a", Password: "rotated-pass-a"}); err != nil {
 		t.Fatal(err)
 	}
-	if c := candidateLoginChoice(r, nil, runs, "ARTEX", rec.Target.ID, ref); c.Source != diagnosisprep.CandidateLoginNone || c.Reason != string(learnedlogin.ReasonCredentialChanged) {
+	if c := candidateLoginChoice(r, nil, runs, "ARTEX", rec.Target.ID, ref, ""); c.Source != diagnosisprep.CandidateLoginNone || c.Reason != string(learnedlogin.ReasonCredentialChanged) {
 		t.Fatalf("자격 변경 뒤 옛 참조: %+v", c)
+	}
+	// G02: 학습 방법은 있지만 verified가 아니면(learned만) 9칸이 있어도 넘어가지 않는다.
+	ref = server.CandidateAccountRevision("tester-a", credentialOf(r, rec.Target.ID, "tester-a"))
+	learnedOnly := storedMethodReader{learned: map[string]learnedlogin.Learned{"tester-a": learnedAt("/login", "run-gone", time.Now().UTC())}}
+	if c := candidateLoginChoice(r, learnedOnly, runs, "ARTEX", rec.Target.ID, ref, ""); c.Source != diagnosisprep.CandidateLoginNone || c.Reason != candidateReasonUnverified {
+		t.Fatalf("learned만 있는데 9칸으로 넘어감: %+v", c)
+	}
+	if c := candidateLoginChoice(r, methodOnlyReader{learnedOnly}, runs, "ARTEX", rec.Target.ID, ref, ""); c.Source != diagnosisprep.CandidateLoginNone ||
+		c.Reason != candidateReasonVerificationUnavailable {
+		t.Fatalf("since 없는 읽기 경계에서 9칸으로 넘어감: %+v", c)
 	}
 }
 
@@ -245,9 +300,10 @@ func TestSelectedCandidateLearnedAccountBinding(t *testing.T) {
 	cred := credentialOf(r, rec.Target.ID, "tester-a")
 	ref := server.CandidateAccountRevision("tester-a", cred)
 	runs, stored := selectedSourceRun(t, r, rec, nil)
+	verifyStored(t, r, rec, "tester-a", stored.Method, "confirmation-1", stored.Source.At.Add(time.Hour))
 	reader := storedMethodReader{learned: map[string]learnedlogin.Learned{"tester-a": stored}}
 	b := &urlPreparationRuntime{product: &productRuntime{targets: r, learnedMethods: reader, config: urlPreparationInstallation{RunsDir: runs}}}
-	prep := server.CandidateLearnedAuthPreparation(server.CandidateLearnedLogin{Method: stored.Method, Trust: server.CandidateLoginTrustExplorationObserved})
+	prep := currentLearnedPreparation(t, b, rec.Target.ID, ref)
 	plan := server.CandidateLLMPlan{TargetID: rec.Target.ID, AccountRef: ref, AuthPreparation: prep}
 	otherFile := bindingCredentialName(rec.Target.ID, "tester-b", credentialOf(r, rec.Target.ID, "tester-b"))
 	l := &urlLoadedProfile{materials: map[string][]byte{otherFile: []byte("other-account-secret"), "ca.pem": []byte("ca")}}
@@ -267,17 +323,47 @@ func TestSelectedCandidateLearnedAccountBinding(t *testing.T) {
 	}
 	changed := plan
 	other := *prep
-	other.Trust = server.CandidateLoginTrustVerified
+	other.VerifiedRef = strings.Repeat("e", 64)
 	changed.AuthPreparation = &other
 	if reason := b.bindCandidateLearnedAccount(&urlLoadedProfile{materials: map[string][]byte{}}, changed); reason != "candidate_auth_preparation_changed" {
-		t.Fatalf("승인 뒤 바뀐 준비를 실음: %q", reason)
+		t.Fatalf("승인 뒤 바뀐 검증 사건을 실음: %q", reason)
 	}
+	// G03·ST12·ST13: 승인 뒤 verified가 해제되면 실행하지 않고, E③가 다시 검증해 검증 사건이 바뀌어도 옛 계획은 실행하지 않는다.
+	if reason := r.reserveCandidateLogin(rec.Target.ID, "tester-a", stored.Method.Digest(), rec.Target.Revision, cred, stored.Source.At,
+		plan.AuthPreparation.VerifiedRef, "candidate-90"); reason != "" {
+		t.Fatalf("예약 실패: %s", reason)
+	}
+	if err := r.finishCandidateLogin(rec.Target.ID, "tester-a", "candidate-90", "", candidateLoginClearedFailed); err != nil {
+		t.Fatal(err)
+	}
+	if reason := b.candidateLearnedLoginRefusal(plan, ""); reason != candidateReasonUnverified {
+		t.Fatalf("verified 해제 뒤 옛 계획: %q", reason)
+	}
+	verifyStored(t, r, rec, "tester-a", stored.Method, "confirmation-2", stored.Source.At.Add(2*time.Hour))
+	if b.candidateLearnedLoginCurrent(plan, "") {
+		t.Fatal("다른 검증 사건으로 바뀐 뒤에도 옛 계획이 통과")
+	}
+	plan.AuthPreparation = currentLearnedPreparation(t, b, rec.Target.ID, ref)
 	if err := os.WriteFile(filepath.Join(runs, liveJob, "state", learnedlogin.AttemptsUnavailableFile), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if b.candidateLearnedLoginCurrent(plan) {
+	if b.candidateLearnedLoginCurrent(plan, "") {
 		t.Fatal("원본 회차 인계 실패 뒤에도 송신 직전 재검사를 통과")
 	}
+}
+
+// currentLearnedPreparation은 지금 고른 verified 방법으로 만든 v2 인증 준비다(계획 생성과 같은 변환).
+func currentLearnedPreparation(t *testing.T, b *urlPreparationRuntime, targetID, ref string) *server.CandidateLLMAuthPreparation {
+	t.Helper()
+	c := b.product.candidateLogin("ARTEX", targetID, ref, "")
+	if c.Source != diagnosisprep.CandidateLoginLearned || c.Method == nil {
+		t.Fatalf("verified 방법을 고르지 못함: %+v", c)
+	}
+	prep := server.CandidateLearnedAuthPreparation(server.CandidateLearnedLogin{Method: *c.Method, Trust: c.Trust, VerifiedRef: c.VerifiedRef})
+	if prep == nil {
+		t.Fatal("v2 인증 준비를 만들지 못함")
+	}
+	return prep
 }
 
 func diagnosisSourceRow(_ *server.E2HTTPFilePolicy, row *learnedlogin.Row, _ *learnedlogin.ExplorationEvidence) {
@@ -300,12 +386,13 @@ func TestSelectedCandidateLearnedBindingWithoutConfiguredLogin(t *testing.T) {
 	cred := credentialOf(r, rec.Target.ID, "tester-a")
 	ref := server.CandidateAccountRevision("tester-a", cred)
 	runs, stored := selectedSourceRun(t, r, rec, nil)
+	verifyStored(t, r, rec, "tester-a", stored.Method, "confirmation-1", stored.Source.At.Add(time.Hour))
 	b := &urlPreparationRuntime{product: &productRuntime{targets: r, config: urlPreparationInstallation{RunsDir: runs},
 		learnedMethods: storedMethodReader{learned: map[string]learnedlogin.Learned{"tester-a": stored}}}}
 	if login, err := r.targetLogin("ARTEX", rec.Target.ID); err != nil || login != nil {
 		t.Fatal("9칸 없는 대상 준비 실패")
 	}
-	prep := server.CandidateLearnedAuthPreparation(server.CandidateLearnedLogin{Method: stored.Method, Trust: server.CandidateLoginTrustExplorationObserved})
+	prep := currentLearnedPreparation(t, b, rec.Target.ID, ref)
 	l := &urlLoadedProfile{}
 	if reason := b.bindCandidateLearnedAccount(l, server.CandidateLLMPlan{TargetID: rec.Target.ID, AccountRef: ref, AuthPreparation: prep}); reason != "" {
 		t.Fatalf("9칸 없는 대상에서 학습 로그인 결속 실패: %s", reason)

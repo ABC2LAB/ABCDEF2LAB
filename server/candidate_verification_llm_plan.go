@@ -67,7 +67,9 @@ type CandidateLLMPlanAction struct {
 //   - candidate-llm-plan/v1(로그인 설정 9칸): method·exact_path·login_digest(9칸 전체 digest)만. 칸 모양·digest는 그대로다.
 //   - candidate-llm-plan/v2(학습 로그인, docs/contracts/selected-candidate-learned-login.md): kind가 learned_login/v1(같은 경로
 //     준비) 또는 learned_login/v2(별도 경로 CSRF), login_digest는 학습 방법의 method_sha256, prep_*는 준비 GET 하나(필요할 때),
-//     requests는 인증 준비 요청 수(1 또는 2), trust는 계획을 만들 때 확인한 방법의 출처 수준이다.
+//     requests는 인증 준비 요청 수(1 또는 2), trust는 계획을 만들 때 확인한 방법의 검증 수준(verified만, 2026-11-27 팀 결정),
+//     verified_ref는 그 검증 사건(E③ login_method_verified 줄)의 비밀 없는 참조다. 검증이 해제되거나 다른 검증 사건으로
+//     바뀌면 승인 계획과 달라져 실행·송신 직전 대조에서 멈춘다.
 type CandidateLLMAuthPreparation struct {
 	Method      string `json:"method"`
 	ExactPath   string `json:"exact_path"`
@@ -77,6 +79,7 @@ type CandidateLLMAuthPreparation struct {
 	PrepPath    string `json:"prep_path,omitempty"`
 	Requests    int    `json:"requests,omitempty"`
 	Trust       string `json:"trust,omitempty"`
+	VerifiedRef string `json:"verified_ref,omitempty"`
 }
 
 const (
@@ -85,19 +88,23 @@ const (
 	// 학습 로그인 준비 유형. v1은 로그인 경로의 준비 GET(또는 준비 없음), v2는 출처가 결속된 별도 경로 준비 GET이다.
 	CandidateAuthLearnedV1 = "learned_login/v1"
 	CandidateAuthLearnedV2 = "learned_login/v2"
-	// 선택 후보 검증이 쓰는 학습 방법의 출처 수준(제안, 팀 확인 필요). verified: 같은 방법·지금 대상 판·자격 판의 E③
-	// 다시 로그인 성공(login_method_verified). exploration_observed: 원본 회차의 보호 기록·탐색 경계 근거로 다시 대조함.
-	CandidateLoginTrustVerified            = "verified"
+	// 선택 후보 검증이 쓰는 학습 방법의 검증 수준이다. #950은 verified 방법만 쓴다(2026-11-27 팀 결정, 개발 계획 "#950 학습
+	// 방법 로그인과 9칸-1 후속": learned는 가입·탈퇴 POST를 거르지 못함). verified: 같은 방법·지금 대상 판·자격 판의 E③
+	// 다시 로그인 성공(login_method_verified)이 그 방법이 지금 것이 된 뒤에 있고 해제되지 않음.
+	CandidateLoginTrustVerified = "verified"
+	// 아래 둘은 원본 회차 기록 재대조의 출처 수준이다. 계획 신뢰 수준으로 쓰지 않고(verified를 대신하지 않음), verified
+	// 방법의 원본 시도가 지금도 보호 기록과 맞는지 다시 볼 때의 결과로만 쓴다. exploration_observed: 탐색 경계 근거 v2로 대조함.
+	// e2_audited: 진단 단계 원본 시도가 원본 회차 E② 감사 저널(실행 감사 키로 끝까지 검증한 사본)의 같은 호출·시도 결과와 맞음.
 	CandidateLoginTrustExplorationObserved = "exploration_observed"
-	// e2_audited: 진단 단계 원본 시도가 원본 회차 E② 감사 저널(실행 감사 키로 끝까지 검증한 사본)의 같은 호출·시도 결과와
-	// 맞는다(learnedlogin.VerifyTransport와 같은 칸).
-	CandidateLoginTrustE2Audited = "e2_audited"
+	CandidateLoginTrustE2Audited           = "e2_audited"
 )
 
-// CandidateLearnedLogin은 제품 계층이 고른, 선택 후보 검증에 쓸 학습 방법이다(값 없음).
+// CandidateLearnedLogin은 제품 계층이 고른, 선택 후보 검증에 쓸 학습 방법이다(값 없음). VerifiedRef는 그 방법을 검증한
+// E③ 사건의 참조다.
 type CandidateLearnedLogin struct {
-	Method learnedlogin.Method
-	Trust  string
+	Method      learnedlogin.Method
+	Trust       string
+	VerifiedRef string
 }
 
 // CandidatePlanAuth는 인증된 원본 후보의 인증 준비 원천이다. 둘 중 하나만 있다.
@@ -106,8 +113,9 @@ type CandidatePlanAuth struct {
 	Learned    *CandidateLearnedLogin
 }
 
+// validCandidateLoginTrust는 계획에 묶을 수 있는 학습 방법 검증 수준이다. verified만 받는다(출처 재대조 수준은 계획 신뢰가 아님).
 func validCandidateLoginTrust(trust string) bool {
-	return trust == CandidateLoginTrustVerified || trust == CandidateLoginTrustExplorationObserved || trust == CandidateLoginTrustE2Audited
+	return trust == CandidateLoginTrustVerified
 }
 
 // CandidateLLMAuthRequests는 계획의 인증 준비 요청 수다(없음 0, 9칸 POST 1, 학습 로그인 1 또는 2).
@@ -125,10 +133,11 @@ func CandidateLLMAuthRequests(a *CandidateLLMAuthPreparation) int {
 // 정책 밖이면 nil이다.
 func CandidateLearnedAuthPreparation(l CandidateLearnedLogin) *CandidateLLMAuthPreparation {
 	m := l.Method.Clone()
-	if m.Validate() != "" || m.Method != "POST" || !validCandidateLoginTrust(l.Trust) {
+	if m.Validate() != "" || m.Method != "POST" || !validCandidateLoginTrust(l.Trust) || !candidateVerificationDigest.MatchString(l.VerifiedRef) {
 		return nil
 	}
-	a := &CandidateLLMAuthPreparation{Method: m.Method, ExactPath: m.Path, LoginDigest: m.Digest(), Kind: CandidateAuthLearnedV1, Requests: 1, Trust: l.Trust}
+	a := &CandidateLLMAuthPreparation{Method: m.Method, ExactPath: m.Path, LoginDigest: m.Digest(), Kind: CandidateAuthLearnedV1, Requests: 1, Trust: l.Trust,
+		VerifiedRef: l.VerifiedRef}
 	if len(m.FieldSources) > 0 {
 		a.Kind = CandidateAuthLearnedV2
 	}
@@ -240,7 +249,7 @@ func candidateLLMPlanStillApproved(now time.Time, p CandidateLLMPlan, original d
 		return false
 	}
 	if p.AuthPreparation != nil && !learned && (p.AuthPreparation.PrepMethod != "" || p.AuthPreparation.PrepPath != "" || p.AuthPreparation.Requests != 0 ||
-		p.AuthPreparation.Trust != "") {
+		p.AuthPreparation.Trust != "" || p.AuthPreparation.VerifiedRef != "") {
 		return false
 	}
 	if p.AuthPreparation != nil && (p.AuthPreparation.Method != "POST" || !validSelectedExactPath(p.AuthPreparation.ExactPath) ||
@@ -287,7 +296,7 @@ func candidateLLMPlanStillApproved(now time.Time, p CandidateLLMPlan, original d
 // 메서드를 허용한다.
 func candidateLearnedPreparationApproved(a CandidateLLMAuthPreparation, excluded []string, target diagnosisprep.ProductTarget) bool {
 	if a.Kind != CandidateAuthLearnedV1 && a.Kind != CandidateAuthLearnedV2 || !validCandidateLoginTrust(a.Trust) ||
-		candidateRiskyLoginPath("POST", a.ExactPath) {
+		!candidateVerificationDigest.MatchString(a.VerifiedRef) || candidateRiskyLoginPath("POST", a.ExactPath) {
 		return false
 	}
 	switch a.Requests {

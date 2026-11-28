@@ -687,7 +687,8 @@ func scanCandidateVerificationAttempt(scanner candidateVerificationScanner, extr
 
 func candidateLLMExecutionFailureReason(reason string) bool {
 	switch reason {
-	case "candidate_execution_unavailable", "candidate_auth_preparation_changed", "candidate_auth_failed", "candidate_auth_result_unknown", "candidate_auth_not_sent":
+	case "candidate_execution_unavailable", "candidate_auth_preparation_changed", "candidate_auth_failed", "candidate_auth_result_unknown", "candidate_auth_not_sent",
+		"candidate_login_in_progress", "candidate_login_unresolved":
 		return true
 	}
 	return false
