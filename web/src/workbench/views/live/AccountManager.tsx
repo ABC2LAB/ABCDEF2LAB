@@ -24,6 +24,7 @@ import {
 import { confirmationPlanOf } from "../../live/confirmationPlan";
 import { getDeclaration } from "../../live/declaration";
 import s from "../../workbench.module.css";
+import { LoginMethodTag } from "./LoginMethodTag";
 import { pairLabels, QuickTestAccount } from "./QuickTestAccount";
 
 /**
@@ -204,6 +205,7 @@ export function AccountManager({
                       <span className={cx(s.tag, a.credentialConfigured ? s.in : s.ex)}>
                         {a.credentialConfigured ? "자격 등록됨" : "자격 없음"}
                       </span>
+                      <LoginMethodTag account={a} />
                       <span className={s["acct-acts"]}>
                         <button
                           className={cx(s.btn, s.sm)}
