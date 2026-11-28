@@ -54,6 +54,7 @@ export function UrlHead({
   acts,
   meta,
   phase,
+  phaseActs,
   onCurrentPhase,
 }: {
   title: string;
@@ -66,6 +67,8 @@ export function UrlHead({
   meta?: ReactNode;
   /** 점검 하나를 보는 네 화면이면 단계 표시를 붙인다 */
   phase?: PhaseKey;
+  /** 단계 줄 오른쪽 끝(메타 밑)에 둘 버튼. 줄 높이 안에 두어 머리 높이가 다른 화면과 같다(보고서 [이 주소로 다시 점검], 사용자 11/27) */
+  phaseActs?: ReactNode;
   /** 단계 줄에서 지금 단계를 눌렀을 때 (안쪽 페이지를 닫고 그 화면 처음으로) */
   onCurrentPhase?: () => void;
 }) {
@@ -113,7 +116,13 @@ export function UrlHead({
         {acts !== undefined ? <div className={s["vh-acts"]}>{acts}</div> : null}
       </div>
       {!phase && meta !== undefined ? <div className={s["vh-meta"]}>{meta}</div> : null}
-      {phase ? <Phases phase={phase} onCurrent={onCurrentPhase} /> : null}
+      {phase && phaseActs !== undefined ? (
+        <div className={s["vh-phrow"]}>
+          <Phases phase={phase} onCurrent={onCurrentPhase} />
+          <div className={s["vh-phacts"]}>{phaseActs}</div>
+        </div>
+      ) : null}
+      {phase && phaseActs === undefined ? <Phases phase={phase} onCurrent={onCurrentPhase} /> : null}
     </header>
   );
 }

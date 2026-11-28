@@ -1935,6 +1935,28 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(await screen.findByText("중지·마감 중")).toBeInTheDocument();
   });
 
+  it("보고서 머리 메타(모델 · 토큰) 밑, 단계 줄 오른쪽 끝에 [이 주소로 다시 점검] — 누르면 이전 점검 값을 넘기고 새 점검으로 간다(사용자 11/27)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({ ...completed, started_at: STARTED_AT, finished_at: FINISHED_AT });
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [] });
+    const { goTo } = mount("report");
+    const header = (await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).closest(
+      "header",
+    ) as HTMLElement;
+    const again = await within(header).findByRole("button", { name: "이 주소로 다시 점검" });
+    // 메타 밑: 단계 줄과 같은 줄의 오른쪽 끝(머리 높이가 다른 세 화면과 같게 — 단계 줄이 오르내리지 않는다)
+    const row = again.closest(`.${s["vh-phrow"]}`) as HTMLElement;
+    expect(row).not.toBeNull();
+    expect(within(row).getByRole("navigation", { name: "점검 단계" })).toBeInTheDocument();
+    expect(again.closest(`.${s["vh-acts"]}`)).toBeNull();
+    fireEvent.click(again);
+    expect(goTo).toHaveBeenCalledWith("new");
+    expect(useWb.getState().prefill).toMatchObject({
+      url: completed.input.target_url,
+      rest: { profile_id: completed.input.profile_id },
+    });
+  });
+
   it("보고서 머리: 서버 시작 · 마감 시각이 둘 다 있으면 시작 시각과 소요(finished − started)를 보인다", async () => {
     saveHandle();
     u.readURLStatus.mockResolvedValue({ ...completed, started_at: STARTED_AT, finished_at: FINISHED_AT });
