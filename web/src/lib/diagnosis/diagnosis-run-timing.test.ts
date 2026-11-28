@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { matchURLRun, parseURLRunPage, type URLRunSummary } from "./diagnosis-runs";
-import { matchURLHandle, matchURLJob, parseURLJob, type URLDiagnosisJob } from "./diagnosis-url";
+import { matchURLHandle, matchURLJob, parseURLJob, parseURLServerTime, type URLDiagnosisJob } from "./diagnosis-url";
 import { envelope, handle, owner, ready, running } from "./diagnosis-url-fixtures";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -229,14 +229,18 @@ describe("시각의 정본 결속", () => {
 
 type ContractExample = {
   version: string;
-  cases: { name: string; status: { owner_context: string; draft: URLDiagnosisJob }; list: unknown }[];
+  cases: {
+    name: string;
+    status: { owner_context: string; draft: URLDiagnosisJob; server_time?: string };
+    list: unknown;
+  }[];
 };
 const example = JSON.parse(
   readFileSync(resolve(process.cwd(), "../docs/contracts/diagnosis-run-timing.responses.example.json"), "utf8"),
 ) as ContractExample;
 
 describe("실제 Go handler와 공유하는 점검 시각 응답", () => {
-  it("시작 전·실행 중·완료·시작 전 마감·구 기록의 다섯 응답을 모두 확인한다", () => {
+  it("시작 전·실행 중·완료·시작 전 마감·구 기록·시간 상한 두 응답을 모두 확인한다", () => {
     expect(example.version).toBe("diagnosis-run-timing.examples.v1");
     expect(example.cases.map(({ name }) => name)).toEqual([
       "ready_without_times",
@@ -244,6 +248,8 @@ describe("실제 Go handler와 공유하는 점검 시각 응답", () => {
       "completed_with_times",
       "failed_before_start_with_finish",
       "legacy_completed_without_times",
+      "running_with_time_limit",
+      "cancelled_keeps_time_limit",
     ]);
   });
 
@@ -259,5 +265,84 @@ describe("실제 Go handler와 공유하는 점검 시각 응답", () => {
     expect(Object.hasOwn(run, "started_at")).toBe(Object.hasOwn(job, "started_at"));
     expect(Object.hasOwn(run, "finished_at")).toBe(Object.hasOwn(job, "finished_at"));
     expect(matchURLRun(job, run)).toBe(job);
+    // 시간 상한과 응답 시각은 상태 응답에만 있고, 함께 나타난다(목록 행에는 없다).
+    expect(job.time_limit).toEqual(status.draft.time_limit);
+    expect(parseURLServerTime(status, status.owner_context)).toBe(status.server_time);
+    expect(Object.hasOwn(run, "time_limit")).toBe(false);
+  });
+});
+
+describe("시간 상한(§시간 상한)", () => {
+  const found = example.cases.find(({ name }) => name === "running_with_time_limit");
+  if (!found) throw new Error("shared time limit example missing");
+  const limited = found.status;
+  const parse = (draft: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    parseURLJob({ ...limited, ...extra, draft: { ...limited.draft, ...draft } }, limited.owner_context);
+
+  it("남은 시간은 서버 응답 시각 기준으로 센다(브라우저 시계 아님)", () => {
+    const job = parse({});
+    const server = String(parseURLServerTime(limited, limited.owner_context));
+    const limit = job.time_limit;
+    if (!limit) throw new Error("time limit not parsed");
+    expect(Date.parse(limit.run_deadline_at) - Date.parse(server)).toBe(417_000);
+    expect(Date.parse(limit.run_deadline_at) - Date.parse(limit.model_close_at)).toBe(230_000);
+  });
+
+  it("같은 revision의 새 server_time은 Job 정본 비교를 바꾸지 않는다", () => {
+    const current = parse({});
+    const polled = { ...limited, server_time: "2026-11-17T01:05:04Z" };
+    expect(parseURLServerTime(polled, limited.owner_context)).toBe("2026-11-17T01:05:04Z");
+    const next = parseURLJob(polled, limited.owner_context);
+    expect(matchURLJob(next, current)).toBe(next);
+    expect(next).toEqual(current);
+  });
+
+  it("같은 revision의 같은 시간 상한은 소수 초 표기가 달라도 같은 순간으로 본다", () => {
+    const current = parse({});
+    if (!current.time_limit) throw new Error("time limit not parsed");
+    const next = parse({
+      time_limit: {
+        ...current.time_limit,
+        run_deadline_at: "2026-11-17T01:12:00.0Z",
+        model_close_at: "2026-11-17T01:08:10.000000000Z",
+      },
+    });
+    expect(matchURLJob(next, current)).toBe(next);
+  });
+
+  it.each([
+    { name: "식이 맞지 않음", limit: { shutdown_margin_ms: 20_001 } },
+    { name: "음수 몫", limit: { model_drain_ms: -1, shutdown_margin_ms: 20_001 + 89_999 } },
+    { name: "정수가 아님", limit: { model_drain_ms: 90_000.5 } },
+    { name: "모르는 칸", limit: { extra: 1 } },
+    { name: "offset 시각", limit: { run_deadline_at: "2026-11-17T10:12:00+09:00" } },
+    { name: "null", limit: null },
+  ])("모양이 틀린 시간 상한을 거부한다: $name", ({ limit }) => {
+    const value = limit === null ? null : { ...limited.draft.time_limit, ...limit };
+    expect(() => parse({ time_limit: value })).toThrow();
+  });
+
+  it("server_time은 시간 상한과 함께만 있다", () => {
+    expect(() => parse({}, { server_time: undefined })).toThrow();
+    expect(() => parse({}, { server_time: "2026-11-17T10:05:03+09:00" })).toThrow();
+    const { time_limit: _, ...noLimit } = limited.draft;
+    expect(() => parseURLJob({ ...limited, draft: noLimit }, limited.owner_context)).toThrow();
+    expect(() => parse({ preparation_started: false, started: false, task_id: undefined })).toThrow();
+  });
+
+  it("한 번 받은 시간 상한은 지우거나 바꾸지 않고, 시작 뒤 사후 보충도 받지 않는다", () => {
+    const job = parse({});
+    const { time_limit: _, ...withoutLimit } = job;
+    const later = { ...job, revision: job.revision + 1 };
+    expect(matchURLJob(later, job)).toBe(later);
+    expect(() => matchURLJob({ ...withoutLimit, revision: job.revision + 1 }, job)).toThrow();
+    if (!job.time_limit) throw new Error("time limit not parsed");
+    const moved = {
+      ...job.time_limit,
+      run_deadline_at: "2026-11-17T01:13:00Z",
+      model_close_at: "2026-11-17T01:09:10Z",
+    };
+    expect(() => matchURLJob({ ...later, time_limit: moved }, job)).toThrow();
+    expect(() => matchURLJob(later, withoutLimit)).toThrow();
   });
 });

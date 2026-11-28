@@ -1,0 +1,479 @@
+{
+  "version": "run-confirmation.examples.v1",
+  "cases": [
+    {
+      "name": "running_not_recorded",
+      "status": {
+        "version": "diagnosis-api.v2",
+        "owner_context": "cbff6530efa1f3c07dcd22533b5c5e8c40b18d5d80fd4ae80868c47a5552ed82",
+        "draft": {
+          "id": "job-1",
+          "revision": 4,
+          "source_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "input": {
+            "target_url": "https://owned.example/",
+            "profile_id": "profile-1",
+            "display_name": "합성 점검"
+          },
+          "state": "running",
+          "phase": "execution",
+          "scope": {
+            "target_ref": "target-1",
+            "scope_ref": "scope-1",
+            "origin": "https://owned.example",
+            "path_prefixes": [
+              "=/",
+              "/users/v1",
+              "=/a/"
+            ],
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "query_policy": "any",
+            "body_policy": "bounded",
+            "max_body_bytes": 0,
+            "approval_mode": "preauthorized_scope",
+            "attestation_ref": "attestation-1",
+            "budget": {
+              "requests": 100,
+              "model_requests": 2,
+              "input_tokens": 1000,
+              "output_tokens": 1000,
+              "cost_usd_micros": 0,
+              "duration_seconds": 60
+            },
+            "expires_at": "2030-01-01T00:00:00Z"
+          },
+          "task_id": "42",
+          "preparation_started": true,
+          "authority_state": "consumed",
+          "started": true,
+          "drain_complete": false,
+          "started_at": "2026-11-17T01:02:03.123456789Z",
+          "result_ready": false
+        },
+        "confirmation": {
+          "record": "absent",
+          "status": null,
+          "reason": null
+        }
+      }
+    },
+    {
+      "name": "completed",
+      "status": {
+        "version": "diagnosis-api.v2",
+        "owner_context": "cbff6530efa1f3c07dcd22533b5c5e8c40b18d5d80fd4ae80868c47a5552ed82",
+        "draft": {
+          "id": "job-1",
+          "revision": 5,
+          "source_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "input": {
+            "target_url": "https://owned.example/",
+            "profile_id": "profile-1",
+            "display_name": "합성 점검"
+          },
+          "state": "completed",
+          "phase": "report",
+          "scope": {
+            "target_ref": "target-1",
+            "scope_ref": "scope-1",
+            "origin": "https://owned.example",
+            "path_prefixes": [
+              "=/",
+              "/users/v1",
+              "=/a/"
+            ],
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "query_policy": "any",
+            "body_policy": "bounded",
+            "max_body_bytes": 0,
+            "approval_mode": "preauthorized_scope",
+            "attestation_ref": "attestation-1",
+            "budget": {
+              "requests": 100,
+              "model_requests": 2,
+              "input_tokens": 1000,
+              "output_tokens": 1000,
+              "cost_usd_micros": 0,
+              "duration_seconds": 60
+            },
+            "expires_at": "2030-01-01T00:00:00Z"
+          },
+          "task_id": "42",
+          "preparation_started": true,
+          "authority_state": "consumed",
+          "started": true,
+          "drain_complete": true,
+          "started_at": "2026-11-17T01:02:03.123456789Z",
+          "finished_at": "2026-11-17T01:07:03.123456789Z",
+          "result_ready": true
+        },
+        "confirmation": {
+          "record": "recorded",
+          "status": "completed",
+          "reason": null
+        }
+      }
+    },
+    {
+      "name": "disabled",
+      "status": {
+        "version": "diagnosis-api.v2",
+        "owner_context": "cbff6530efa1f3c07dcd22533b5c5e8c40b18d5d80fd4ae80868c47a5552ed82",
+        "draft": {
+          "id": "job-1",
+          "revision": 5,
+          "source_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "input": {
+            "target_url": "https://owned.example/",
+            "profile_id": "profile-1",
+            "display_name": "합성 점검"
+          },
+          "state": "completed",
+          "phase": "report",
+          "scope": {
+            "target_ref": "target-1",
+            "scope_ref": "scope-1",
+            "origin": "https://owned.example",
+            "path_prefixes": [
+              "=/",
+              "/users/v1",
+              "=/a/"
+            ],
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "query_policy": "any",
+            "body_policy": "bounded",
+            "max_body_bytes": 0,
+            "approval_mode": "preauthorized_scope",
+            "attestation_ref": "attestation-1",
+            "budget": {
+              "requests": 100,
+              "model_requests": 2,
+              "input_tokens": 1000,
+              "output_tokens": 1000,
+              "cost_usd_micros": 0,
+              "duration_seconds": 60
+            },
+            "expires_at": "2030-01-01T00:00:00Z"
+          },
+          "task_id": "42",
+          "preparation_started": true,
+          "authority_state": "consumed",
+          "started": true,
+          "drain_complete": true,
+          "started_at": "2026-11-17T01:02:03.123456789Z",
+          "finished_at": "2026-11-17T01:07:03.123456789Z",
+          "result_ready": true
+        },
+        "confirmation": {
+          "record": "recorded",
+          "status": "disabled",
+          "reason": "test_accounts_unavailable"
+        }
+      }
+    },
+    {
+      "name": "start_refused",
+      "status": {
+        "version": "diagnosis-api.v2",
+        "owner_context": "cbff6530efa1f3c07dcd22533b5c5e8c40b18d5d80fd4ae80868c47a5552ed82",
+        "draft": {
+          "id": "job-1",
+          "revision": 5,
+          "source_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "input": {
+            "target_url": "https://owned.example/",
+            "profile_id": "profile-1",
+            "display_name": "합성 점검"
+          },
+          "state": "completed",
+          "phase": "report",
+          "scope": {
+            "target_ref": "target-1",
+            "scope_ref": "scope-1",
+            "origin": "https://owned.example",
+            "path_prefixes": [
+              "=/",
+              "/users/v1",
+              "=/a/"
+            ],
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "query_policy": "any",
+            "body_policy": "bounded",
+            "max_body_bytes": 0,
+            "approval_mode": "preauthorized_scope",
+            "attestation_ref": "attestation-1",
+            "budget": {
+              "requests": 100,
+              "model_requests": 2,
+              "input_tokens": 1000,
+              "output_tokens": 1000,
+              "cost_usd_micros": 0,
+              "duration_seconds": 60
+            },
+            "expires_at": "2030-01-01T00:00:00Z"
+          },
+          "task_id": "42",
+          "preparation_started": true,
+          "authority_state": "consumed",
+          "started": true,
+          "drain_complete": true,
+          "started_at": "2026-11-17T01:02:03.123456789Z",
+          "finished_at": "2026-11-17T01:07:03.123456789Z",
+          "result_ready": true
+        },
+        "confirmation": {
+          "record": "recorded",
+          "status": "start_refused",
+          "reason": "e2_execution_unavailable"
+        }
+      }
+    },
+    {
+      "name": "interrupted",
+      "status": {
+        "version": "diagnosis-api.v2",
+        "owner_context": "cbff6530efa1f3c07dcd22533b5c5e8c40b18d5d80fd4ae80868c47a5552ed82",
+        "draft": {
+          "id": "job-1",
+          "revision": 5,
+          "source_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "input": {
+            "target_url": "https://owned.example/",
+            "profile_id": "profile-1",
+            "display_name": "합성 점검"
+          },
+          "state": "completed",
+          "phase": "report",
+          "scope": {
+            "target_ref": "target-1",
+            "scope_ref": "scope-1",
+            "origin": "https://owned.example",
+            "path_prefixes": [
+              "=/",
+              "/users/v1",
+              "=/a/"
+            ],
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "query_policy": "any",
+            "body_policy": "bounded",
+            "max_body_bytes": 0,
+            "approval_mode": "preauthorized_scope",
+            "attestation_ref": "attestation-1",
+            "budget": {
+              "requests": 100,
+              "model_requests": 2,
+              "input_tokens": 1000,
+              "output_tokens": 1000,
+              "cost_usd_micros": 0,
+              "duration_seconds": 60
+            },
+            "expires_at": "2030-01-01T00:00:00Z"
+          },
+          "task_id": "42",
+          "preparation_started": true,
+          "authority_state": "consumed",
+          "started": true,
+          "drain_complete": true,
+          "started_at": "2026-11-17T01:02:03.123456789Z",
+          "finished_at": "2026-11-17T01:07:03.123456789Z",
+          "result_ready": true
+        },
+        "confirmation": {
+          "record": "recorded",
+          "status": "interrupted",
+          "reason": null
+        }
+      }
+    },
+    {
+      "name": "confirmation_integrity_failed",
+      "status": {
+        "version": "diagnosis-api.v2",
+        "owner_context": "cbff6530efa1f3c07dcd22533b5c5e8c40b18d5d80fd4ae80868c47a5552ed82",
+        "draft": {
+          "id": "job-1",
+          "revision": 5,
+          "source_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "input": {
+            "target_url": "https://owned.example/",
+            "profile_id": "profile-1",
+            "display_name": "합성 점검"
+          },
+          "state": "completed",
+          "phase": "report",
+          "scope": {
+            "target_ref": "target-1",
+            "scope_ref": "scope-1",
+            "origin": "https://owned.example",
+            "path_prefixes": [
+              "=/",
+              "/users/v1",
+              "=/a/"
+            ],
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "query_policy": "any",
+            "body_policy": "bounded",
+            "max_body_bytes": 0,
+            "approval_mode": "preauthorized_scope",
+            "attestation_ref": "attestation-1",
+            "budget": {
+              "requests": 100,
+              "model_requests": 2,
+              "input_tokens": 1000,
+              "output_tokens": 1000,
+              "cost_usd_micros": 0,
+              "duration_seconds": 60
+            },
+            "expires_at": "2030-01-01T00:00:00Z"
+          },
+          "task_id": "42",
+          "preparation_started": true,
+          "authority_state": "consumed",
+          "started": true,
+          "drain_complete": true,
+          "started_at": "2026-11-17T01:02:03.123456789Z",
+          "finished_at": "2026-11-17T01:07:03.123456789Z",
+          "result_ready": true
+        },
+        "confirmation": {
+          "record": "recorded",
+          "status": "confirmation_integrity_failed",
+          "reason": "journal_integrity_failed"
+        }
+      }
+    },
+    {
+      "name": "unreadable",
+      "status": {
+        "version": "diagnosis-api.v2",
+        "owner_context": "cbff6530efa1f3c07dcd22533b5c5e8c40b18d5d80fd4ae80868c47a5552ed82",
+        "draft": {
+          "id": "job-1",
+          "revision": 5,
+          "source_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "input": {
+            "target_url": "https://owned.example/",
+            "profile_id": "profile-1",
+            "display_name": "합성 점검"
+          },
+          "state": "completed",
+          "phase": "report",
+          "scope": {
+            "target_ref": "target-1",
+            "scope_ref": "scope-1",
+            "origin": "https://owned.example",
+            "path_prefixes": [
+              "=/",
+              "/users/v1",
+              "=/a/"
+            ],
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "query_policy": "any",
+            "body_policy": "bounded",
+            "max_body_bytes": 0,
+            "approval_mode": "preauthorized_scope",
+            "attestation_ref": "attestation-1",
+            "budget": {
+              "requests": 100,
+              "model_requests": 2,
+              "input_tokens": 1000,
+              "output_tokens": 1000,
+              "cost_usd_micros": 0,
+              "duration_seconds": 60
+            },
+            "expires_at": "2030-01-01T00:00:00Z"
+          },
+          "task_id": "42",
+          "preparation_started": true,
+          "authority_state": "consumed",
+          "started": true,
+          "drain_complete": true,
+          "started_at": "2026-11-17T01:02:03.123456789Z",
+          "finished_at": "2026-11-17T01:07:03.123456789Z",
+          "result_ready": true
+        },
+        "confirmation": {
+          "record": "unreadable",
+          "status": null,
+          "reason": null
+        }
+      }
+    },
+    {
+      "name": "not_product_install",
+      "status": {
+        "version": "diagnosis-api.v2",
+        "owner_context": "cbff6530efa1f3c07dcd22533b5c5e8c40b18d5d80fd4ae80868c47a5552ed82",
+        "draft": {
+          "id": "job-1",
+          "revision": 5,
+          "source_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "input": {
+            "target_url": "https://owned.example/",
+            "profile_id": "profile-1",
+            "display_name": "합성 점검"
+          },
+          "state": "completed",
+          "phase": "report",
+          "scope": {
+            "target_ref": "target-1",
+            "scope_ref": "scope-1",
+            "origin": "https://owned.example",
+            "path_prefixes": [
+              "=/",
+              "/users/v1",
+              "=/a/"
+            ],
+            "methods": [
+              "GET",
+              "HEAD"
+            ],
+            "query_policy": "any",
+            "body_policy": "bounded",
+            "max_body_bytes": 0,
+            "approval_mode": "preauthorized_scope",
+            "attestation_ref": "attestation-1",
+            "budget": {
+              "requests": 100,
+              "model_requests": 2,
+              "input_tokens": 1000,
+              "output_tokens": 1000,
+              "cost_usd_micros": 0,
+              "duration_seconds": 60
+            },
+            "expires_at": "2030-01-01T00:00:00Z"
+          },
+          "task_id": "42",
+          "preparation_started": true,
+          "authority_state": "consumed",
+          "started": true,
+          "drain_complete": true,
+          "started_at": "2026-11-17T01:02:03.123456789Z",
+          "finished_at": "2026-11-17T01:07:03.123456789Z",
+          "result_ready": true
+        }
+      }
+    }
+  ]
+}

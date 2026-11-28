@@ -103,6 +103,8 @@ type e2RequestDetail struct {
 	RequestBody       e2RequestField `json:"request_body"`
 	ResponseHeaders   e2RequestField `json:"response_headers"`
 	ResponseBody      e2RequestField `json:"response_body"`
+	// LoginRefusal은 흐름 시도 행과 같은 로그인 거절 사유다(계약 §4.2). 없으면 생략.
+	LoginRefusal string `json:"login_refusal,omitempty"`
 
 	PathDetailState server.PathDetailState `json:"path_detail_state"`
 }
@@ -172,7 +174,7 @@ func e2RequestsPageOf(events []e2proxy.Event, patterns map[string]string, cursor
 }
 
 // e2RequestDetailOf는 그 호출·시도의 마지막 결과 행(없으면 마지막 의도 행)으로 상세를 만든다.
-func e2RequestDetailOf(events []e2proxy.Event, patterns map[string]string, call, attempt string) (e2RequestDetail, bool) {
+func e2RequestDetailOf(events []e2proxy.Event, patterns, refusals map[string]string, call, attempt string) (e2RequestDetail, bool) {
 	var found *e2proxy.Event
 	for i := range events {
 		e := events[i]
@@ -192,7 +194,13 @@ func e2RequestDetailOf(events []e2proxy.Event, patterns map[string]string, call,
 	return e2RequestDetail{Format: e2RequestViewFormat, CallRef: e.CallRef, AttemptID: e.AttemptID, Kind: requestKind(e), Index: e.Index, At: e.At,
 		Method: e.Method, PathPattern: pattern, PathDetailState: attemptPathDetailState(pattern), RuleRef: e.RuleRef, Decision: e.Decision, Reason: string(e.Reason), StatusCode: e.StatusCode,
 		ForwardAttempted: e.ForwardAttempted, RequestWritten: e.RequestWritten, ResponseReceived: e.ResponseReceived, ResponseComplete: e.ResponseComplete,
-		ResponseTruncated: e.ResponseTruncated, RequestHeaders: notStored, RequestBody: notStored, ResponseHeaders: notStored, ResponseBody: notStored}, true
+		ResponseTruncated: e.ResponseTruncated, RequestHeaders: notStored, RequestBody: notStored, ResponseHeaders: notStored, ResponseBody: notStored,
+		LoginRefusal: func() string {
+			if e.Stage != "result" {
+				return ""
+			}
+			return loginRefusalFor(refusals, e.CallRef, e.AttemptID, e.Decision, e.Reason, e.ForwardAttempted)
+		}()}, true
 }
 
 // e2RequestsQuery는 전체 기록의 cursor·limit을 읽는다. 다른 키·중복·형식이 틀린 값은 거부한다.
@@ -281,7 +289,7 @@ func serveE2Requests(w http.ResponseWriter, r *http.Request, b *runBinding, view
 	if view == e2RequestsView {
 		out = e2RequestsPageOf(events, patterns, cursor, limit)
 	} else {
-		detail, found := e2RequestDetailOf(events, patterns, call, attempt)
+		detail, found := e2RequestDetailOf(events, patterns, loginRefusals(b, events), call, attempt)
 		if !found {
 			writeE2RequestError(w, http.StatusNotFound, e2RequestNotFound)
 			return
