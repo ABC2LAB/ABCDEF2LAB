@@ -148,20 +148,22 @@ func observationFacts(ev responseevidence.Evidence) []string {
 	return facts
 }
 
-// 입력 효과로 보지 않는 차이다. 상태·오류 모양·빈 응답·일반 오류 신호만 다르면 "요청이 실패했다"는 것 말고는 알 수 없다.
-var genericDifferenceKinds = map[string]bool{responseevidence.DiffStatus: true, responseevidence.DiffEmpty: true,
+// 입력 효과로 보지 않는 차이다. 실패 모양·헤더 또는 스칼라 값만 다르면 본문 구조의 입력 효과가 관찰된 것은 아니다.
+var nonStructuralDifferenceKinds = map[string]bool{responseevidence.DiffStatus: true, responseevidence.DiffEmpty: true,
 	responseevidence.DiffSignal: true, responseevidence.DiffErrorShape: true, responseevidence.DiffMedia: true,
-	responseevidence.DiffHeader: true, responseevidence.DiffHeaderValue: true}
+	responseevidence.DiffHeader: true, responseevidence.DiffHeaderValue: true,
+	responseevidence.DiffValue: true, responseevidence.DiffBool: true,
+	responseevidence.DiffShape: true, responseevidence.DiffEmptyValue: true}
 
 // inputContrastObserved는 입력이 다른 정상 대조와 재현의 비교에 입력 효과로 볼 수 있는 구조 차이가 있는지다. 대조 쪽 입력이 같으면
 // (같은 Query digest) 입력 효과가 아니다. 한쪽이 실패 응답(2xx 아님·오류 모양)이면 차이는 "실패했다"는 것뿐이라 세지 않는다.
-// 정규화된 값 변화는 Compare가 이미 뺐다.
+// 정규화된 값 변화는 Compare가 이미 뺐고, 나머지 스칼라 값 변화도 위 목록에서 제외한다.
 func inputContrastObserved(c responseevidence.Comparison, reproduction, control responseevidence.Evidence, sameInput bool) bool {
 	if sameInput || c.Relation == responseevidence.RelationIncomparable || !successfulBody(reproduction) || !successfulBody(control) {
 		return false
 	}
 	for _, d := range c.Differences {
-		if !genericDifferenceKinds[d.Kind] {
+		if !nonStructuralDifferenceKinds[d.Kind] {
 			return true
 		}
 	}

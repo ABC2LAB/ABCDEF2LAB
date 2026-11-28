@@ -111,3 +111,34 @@ func TestInputContrastIgnoresGenericDifferences(t *testing.T) {
 		t.Fatal("same input cannot show an input effect")
 	}
 }
+
+func TestInputContrastRequiresStructuralDifference(t *testing.T) {
+	for _, tc := range []struct {
+		name, reproduction, control, expectedKind string
+	}{
+		{"string value", `{"message":"alpha"}`, `{"message":"bravo"}`, responseevidence.DiffValue},
+		{"boolean value", `{"enabled":true}`, `{"enabled":false}`, responseevidence.DiffBool},
+		{"string shape", `{"message":"alpha"}`, `{"message":"https://example.test/"}`, responseevidence.DiffShape},
+		{"empty field", `{"message":""}`, `{"message":"alpha"}`, responseevidence.DiffEmptyValue},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reproduction := claimEvidence(200, "application/json", tc.reproduction, nil)
+			control := claimEvidence(200, "application/json", tc.control, nil)
+			comparison := responseevidence.Compare(reproduction, control, responseevidence.RoleReproduction, responseevidence.RoleNormalControl)
+			found := false
+			for _, difference := range comparison.Differences {
+				found = found || difference.Kind == tc.expectedKind
+				if difference.Kind != responseevidence.DiffValue && difference.Kind != responseevidence.DiffBool &&
+					difference.Kind != responseevidence.DiffShape && difference.Kind != responseevidence.DiffEmptyValue {
+					t.Fatalf("test needs scalar-only differences: %+v", comparison.Differences)
+				}
+			}
+			if !found {
+				t.Fatalf("expected %s in %+v", tc.expectedKind, comparison.Differences)
+			}
+			if inputContrastObserved(comparison, reproduction, control, false) {
+				t.Fatal("scalar target data cannot establish a structural input effect")
+			}
+		})
+	}
+}
