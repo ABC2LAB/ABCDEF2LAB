@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/dlp"
+	"github.com/Autumn-27/artex/responseevidence"
 )
 
 // HTTPObservation은 실제 통제 경로의 제한된 비민감 projection이다. 본문·쿠키·계정 값은 없다.
@@ -67,7 +68,7 @@ func cloneHTTPObservations(in []HTTPObservation) []HTTPObservation {
 	sort.Slice(out, func(i, j int) bool { return out[i].Sequence < out[j].Sequence })
 	return out
 }
-func (c *Call) observeHTTP(req *http.Request, sentHeaders http.Header, resp *http.Response, r Receipt) {
+func (c *Call) observeHTTP(req *http.Request, sentHeaders http.Header, resp *http.Response, r Receipt, evidence *responseevidence.Evidence) {
 	if req == nil || req.URL == nil {
 		return
 	}
@@ -152,6 +153,16 @@ func (c *Call) observeHTTP(req *http.Request, sentHeaders http.Header, resp *htt
 			}
 		}
 	}
+	var attached *ResponseEvidence
+	encodedBytes := 0
+	if evidence != nil && obs.ResponseComplete && obs.ForwardAttempted && !obs.ResponseTruncated {
+		// 근거 하나와 실행 전체의 크기를 묶는다. 넘으면 근거를 붙이지 않는다(없음 = 기록 안 함, 저장 쪽이 not_recorded로 읽음).
+		if fitted, ok := responseevidence.Fit(*evidence, MaxResponseEvidenceBytes); ok {
+			if raw, err := json.Marshal(fitted); err == nil {
+				attached, encodedBytes = &ResponseEvidence{AttemptRef: r.AttemptID, Sequence: r.Sequence, Evidence: fitted}, len(raw)
+			}
+		}
+	}
 	c.e.mu.Lock()
 	defer c.e.mu.Unlock()
 	if len(c.diagnostics) >= 32 {
@@ -159,6 +170,49 @@ func (c *Call) observeHTTP(req *http.Request, sentHeaders http.Header, resp *htt
 		return
 	}
 	c.diagnostics = append(c.diagnostics, obs)
+	if attached != nil && c.e.responseEvidenceBytes+encodedBytes <= MaxExecutionResponseEvidenceBytes {
+		c.e.responseEvidenceBytes += encodedBytes
+		c.responseEvidence = append(c.responseEvidence, *attached)
+	}
+}
+
+// 응답 근거 크기 상한이다. 근거 하나는 저장 관찰 행(4096바이트)에 Host 증빙과 같이 들어가야 하고, 실행 전체 근거는 원격 실행
+// 조회 봉투(8 MiB)에 관찰과 함께 들어가야 한다.
+const (
+	MaxResponseEvidenceBytes          = 1024
+	MaxExecutionResponseEvidenceBytes = 2 << 20
+)
+
+// ResponseEvidence는 시도 하나의 응답 구조 근거다.
+type ResponseEvidence struct {
+	AttemptRef string                    `json:"attempt_ref"`
+	Sequence   uint64                    `json:"sequence"`
+	Evidence   responseevidence.Evidence `json:"evidence"`
+}
+
+// cloneResponseEvidence는 반환된 결과와 실행 내부 근거 사이의 모든 별칭을 끊는다.
+func cloneResponseEvidence(in []ResponseEvidence) []ResponseEvidence {
+	if len(in) == 0 {
+		return nil
+	}
+	out := append([]ResponseEvidence(nil), in...)
+	for i := range out {
+		out[i].Evidence = responseevidence.Clone(in[i].Evidence)
+	}
+	return out
+}
+
+// extractResponseEvidence는 완결 본문에서 구조 근거를 만든다. 제어 비밀·E③ 표식·출력 가림 값이 든 이름·값은 남기지 않는다.
+// 호출자는 e.mu를 잡지 않은 상태여야 한다(가림 검사가 잠근다).
+func (e *Execution) extractResponseEvidence(method string, resp *http.Response, body []byte) *responseevidence.Evidence {
+	if resp == nil {
+		return nil
+	}
+	protected := func(s string) bool { return string(e.redact([]byte(s), false)) != s }
+	ev := responseevidence.Extract(responseevidence.Response{Received: true, Complete: true, StatusCode: resp.StatusCode, Method: method,
+		ContentType: resp.Header.Get("Content-Type"), ContentEncoding: resp.Header.Get("Content-Encoding"), Header: resp.Header, Body: body},
+		responseevidence.DefaultLimits(), protected)
+	return &ev
 }
 
 func diagnosticMediaClass(raw string) string {

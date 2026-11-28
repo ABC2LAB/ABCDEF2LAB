@@ -11,7 +11,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -125,13 +127,13 @@ type Method struct {
 	SessionSource      string   `json:"session_source"`
 	SessionNames       []string `json:"session_names"`
 	SessionSentAs      string   `json:"session_sent_as"`
-	// V1 omits these fields, preserving its exact canonical JSON and digest.
+	// V1에서는 이 칸을 생략하여 기존 정본 JSON과 digest를 그대로 유지한다.
 	Schema       string        `json:"schema,omitempty"`
 	FieldSources []FieldSource `json:"field_sources,omitempty"`
 }
 
-// FieldSource describes a fresh value to fetch before a login. The original
-// observation reference belongs to RowFieldSource, not the reusable method.
+// FieldSource는 로그인 전에 새로 받아야 하는 값의 출처를 나타낸다. 원본 관찰 참조는
+// 재사용 가능한 방법이 아니라 RowFieldSource에만 둔다.
 type FieldSource struct {
 	Destination  string `json:"destination"`
 	SourceMethod string `json:"source_method"`
@@ -181,8 +183,8 @@ func (m Method) NeedsPrep() bool {
 	return len(m.OtherFields) > 0 || m.SessionSource == SourceContinued
 }
 
-// PrepPath is the sole approved GET to request for this method. V1 keeps the
-// login path; V2 uses the explicitly learned, same-origin absolute path.
+// PrepPath는 이 방법에서 준비 GET을 보낼 경로다. V1은 로그인 경로를 사용하고,
+// V2는 명시적으로 학습한 동일 origin의 절대 경로를 사용한다.
 func (m Method) PrepPath() string {
 	if len(m.FieldSources) > 0 {
 		return m.FieldSources[0].SourcePath
@@ -200,6 +202,9 @@ func (m Method) fromResponse(name string) bool {
 	return false
 }
 
+// registrationPath는 로그인 대신 계정을 만드는 경로의 동작 이름을 본다.
+var registrationPath = regexp.MustCompile(`(?i)/(register|registration|sign[-_]?up)([/.;]|$)`)
+
 // Validate는 방법이 지원 범위 안이고 모호하지 않은지 본다. 통과하면 빈 사유다.
 func (m Method) Validate() Reason {
 	if m.Method != http.MethodPost {
@@ -207,6 +212,10 @@ func (m Method) Validate() Reason {
 	}
 	if !validPath(m.Path) {
 		return ReasonRecordInvalid
+	}
+	decoded, err := url.PathUnescape(m.Path)
+	if registrationPath.MatchString(m.Path) || err == nil && registrationPath.MatchString(decoded) {
+		return ReasonScopeDenied
 	}
 	switch m.Format {
 	case FormatForm, FormatJSON, FormatMultipart:

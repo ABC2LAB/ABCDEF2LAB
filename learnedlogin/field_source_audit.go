@@ -5,9 +5,8 @@ import (
 	"strings"
 )
 
-// VerifyFieldSources ties each dynamic field's original issuance request to
-// a separate completed transport observation. It does not grant permission
-// for a fresh GET; the new E② call still enforces the current approval scope.
+// VerifyFieldSources는 동적 필드의 원래 발급 요청을 별도로 완료된 전송 관찰과 결속한다.
+// 새 GET의 송신 권한은 부여하지 않으며, 현재 승인 범위는 새 E② 호출에서 다시 집행한다.
 func VerifyFieldSources(row Row, runRef string, evidence *ExplorationEvidence,
 	lookup func(callRef, attemptID string) (AuditedSend, bool)) Reason {
 	if len(row.FieldSources) == 0 {

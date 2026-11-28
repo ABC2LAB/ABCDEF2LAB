@@ -50,7 +50,7 @@ var (
 func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 	var mu sync.Mutex
 	turns := map[string]*loginFixtureTurns{}
-	tokenPattern := regexp.MustCompile(regexp.QuoteMeta(cfg.tokenField) + `\\*"\s*:\s*\\*"([A-Za-z0-9._~+/=-]{16,})`)
+	tokenPattern := fixtureTokenPattern(cfg.tokenField)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Model string `json:"model"`
@@ -93,13 +93,7 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 					intentID, _ = strconv.ParseInt(match[1], 10, 64)
 				}
 			}
-			for _, match := range fixtureCredentialLine.FindAllStringSubmatch(plain, -1) {
-				username, e1 := strconv.Unquote(match[2])
-				password, e2 := strconv.Unquote(match[3])
-				if e1 == nil && e2 == nil {
-					accounts = appendFixtureAccount(accounts, fixtureAccount{label: match[1], username: username, password: password})
-				}
-			}
+			accounts = appendFixtureCredentials(accounts, plain)
 		}
 		if target == "" {
 			http.Error(w, "owned_target_required", 400)
@@ -215,9 +209,8 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 				account := accounts[index]
 				switch phase {
 				case 0:
-					// Each Bash call has its own sandbox. Fetch and use the
-					// issuance cookie inside one call, while E2 still observes
-					// two independent HTTP requests and their order.
+					// Bash 호출마다 샌드박스가 다르므로 발급 쿠키는 한 호출 안에서 받고 사용한다.
+					// E②는 서로 독립적인 HTTP 요청 두 건과 순서를 계속 관찰한다.
 					bash("wl-csrf-login-"+account.label, csrfLoginCommand(cfg, account, index, target))
 				case 1:
 					match := tokenPattern.FindStringSubmatch(toolResults[len(toolResults)-1])
@@ -260,15 +253,13 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 			}
 			account := accounts[index]
 			if !read {
-				body, _ := json.Marshal(map[string]string{cfg.usernameField: account.username, cfg.passwordField: account.password})
 				authLogins.Add(1)
-				bash("wl-login-"+account.label, "curl --silent --show-error --max-time 10 --request POST --header 'Content-Type: application/json' --data "+
-					shellQuote(string(body))+" "+target+cfg.loginPath)
+				bash("wl-login-"+account.label, fixtureLoginCommand(target, cfg, account))
 				break
 			}
 			match := tokenPattern.FindStringSubmatch(toolResults[len(toolResults)-1])
 			authenticatedReads.Add(1)
-			bash("wl-read-"+account.label, "curl --silent --show-error --max-time 10 --header "+shellQuote(cfg.header+": "+cfg.prefix+match[1])+" "+target+cfg.identityPath)
+			bash("wl-read-"+account.label, fixtureSessionReadCommand(target+cfg.identityPath, cfg, match[1]))
 		default:
 			// 요약·마무리 같은 다른 역할은 도구 없이 끝낸다.
 		}
@@ -341,6 +332,38 @@ type loginFixtureTurns struct {
 	explore                                         int
 	discoverySent, intentSent, factRecorded, proved bool
 	goalID                                          int64
+}
+
+// appendFixtureCredentials는 글 하나에서 진단 Worker 지침의 등록 계정 줄을 읽어 붙인다. 합성 모델의 자격은 이 줄에서만
+// 온다(모델 코드·overlay에 자격 값을 두지 않는다). 같은 라벨은 처음 것만 둔다.
+func appendFixtureCredentials(out []fixtureAccount, text string) []fixtureAccount {
+	for _, match := range fixtureCredentialLine.FindAllStringSubmatch(text, -1) {
+		username, e1 := strconv.Unquote(match[2])
+		password, e2 := strconv.Unquote(match[3])
+		if e1 == nil && e2 == nil {
+			out = appendFixtureAccount(out, fixtureAccount{label: match[1], username: username, password: password})
+		}
+	}
+	return out
+}
+
+// fixtureTokenPattern은 로그인 응답에서 토큰 칸 값을 꺼내는 식이다. 응답은 도구 결과 JSON 문자열 안에 실려 오므로 따옴표가
+// 한 번 이상 escape돼 있을 수 있다. 짧은 값(16바이트 미만)은 토큰으로 보지 않는다.
+func fixtureTokenPattern(field string) *regexp.Regexp {
+	return regexp.MustCompile(regexp.QuoteMeta(field) + `\\*"\s*:\s*\\*"([A-Za-z0-9._~+/=-]{16,})`)
+}
+
+// fixtureLoginCommand는 등록 계정 하나로 대상 로그인 API에 JSON POST를 한 번 보내는 Bash 명령이다. 실패해도 다시 보내지
+// 않는다(부르는 쪽이 한 번만 낸다).
+func fixtureLoginCommand(target string, cfg workflowLoginConfig, account fixtureAccount) string {
+	body, _ := json.Marshal(map[string]string{cfg.usernameField: account.username, cfg.passwordField: account.password})
+	return "curl --silent --show-error --max-time 10 --request POST --header 'Content-Type: application/json' --data " +
+		shellQuote(string(body)) + " " + target + cfg.loginPath
+}
+
+// fixtureSessionReadCommand는 대상이 준 토큰을 세션 헤더에 실어 주소 하나를 GET하는 Bash 명령이다.
+func fixtureSessionReadCommand(address string, cfg workflowLoginConfig, token string) string {
+	return "curl --silent --show-error --max-time 10 --header " + shellQuote(cfg.header+": "+cfg.prefix+token) + " " + address
 }
 
 func appendFixtureAccount(out []fixtureAccount, a fixtureAccount) []fixtureAccount {

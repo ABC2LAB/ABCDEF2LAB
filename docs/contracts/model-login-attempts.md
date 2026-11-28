@@ -344,6 +344,7 @@
 - 같은 `attempt_ref`의 마지막 행이 그 시도의 지금 값이고, 시도 순서는 `attempt_ref`가 처음 나온 순서다(파일 마지막 행 순서가 아님).
 - 적격: 이 회차 `run_ref`, `actor: model`, `stage`가 `exploration`·`diagnosis`, 이 회차에 결속된 계정 `account_label`, `password_registered: true`, `transport: sent`, `outcome: succeeded`, `followup: authenticated_contrast`, `transport_ref` 있음, 상태 100~399, `login_form_returned: false`, `session_source`가 `none`이 아님.
 - 계정마다 적격 시도 가운데 가장 늦게 시작한 것 하나만 본다. 그 방법을 재현할 수 없으면(아래 지원 범위 밖) 더 앞의 성공으로 돌아가지 않고 사유를 남긴다.
+- `register`, `registration`, `signup`, `sign-up`, `sign_up` 경로 조각은 회원가입으로 보고 학습 방법에서 제외한다. 로그인 POST 경로 원문과 한 번 푼 경로를 확인하고, 해당하면 `learned_login_scope_denied`를 남긴다. 저장된 방법을 다시 쓸 때도 같은 검사를 적용한다. 이 검사는 경로 이름을 기준으로 하므로, 가입 동작이 이름에 드러나지 않는 자원 생성 요청은 걸러내지 못한다.
 - 한 시도의 고정 칸(회차·단계·주체·시각·라벨·아이디·메서드·경로·형식·칸 이름·`transport_ref`)이 행마다 다르면, 그 시도의 어느 행에든 나온 이 회차 결속 라벨은 이 회차에서 배우지 않는다(`learned_login_record_invalid`).
 - 중복 JSON 키(대소문자 변형 포함)나 잘못된 JSON이 있는 행은 기록 전체를 무효로 본다. 같은 시도의 이전 행을 최신 값으로 쓰지 않는다.
 - 출처 결속(`transport_ref`): 고른 시도는 실제 송신 근거와 맞아야 쓴다(`learnedlogin.VerifyTransport`).

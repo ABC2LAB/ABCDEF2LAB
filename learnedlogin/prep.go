@@ -41,9 +41,8 @@ func (j Jar) Absorb(resp Response, loginPath string, origin *url.URL, now time.T
 	j.AbsorbForLogin(resp, loginPath, loginPath, origin, now)
 }
 
-// AbsorbForLogin keeps only cookies the issuance response would send to the
-// distinct login path. A cookie without Path uses the issuance request's
-// default path, not the login path's default path.
+// AbsorbForLogin은 발급 응답의 쿠키 중 로그인 경로로 전송 가능한 것만 담는다.
+// Path가 없는 쿠키는 로그인 경로가 아닌 발급 요청 경로의 기본 Path를 적용한다.
 func (j Jar) AbsorbForLogin(resp Response, responsePath, loginPath string, origin *url.URL, now time.Time) {
 	seen := map[string]string{}
 	conflict := map[string]bool{}
@@ -237,8 +236,7 @@ func (s Screen) Values(m Method) (map[string]string, Reason) {
 	return out, ""
 }
 
-// SourceValue extracts a V2 field from its recorded location, without
-// requiring a password form on a separate issuance endpoint.
+// SourceValue는 별도 발급 경로에 비밀번호 양식이 없어도 기록된 위치에서 V2 값을 추출한다.
 func (s Screen) SourceValue(source FieldSource) (string, Reason) {
 	switch source.SourceType {
 	case SourceJSONField:
@@ -259,9 +257,8 @@ func (s Screen) SourceValue(source FieldSource) (string, Reason) {
 	return "", ReasonPrepFieldMissing
 }
 
-// FindValueSource identifies one exact HTML hidden input or JSON string leaf.
-// It rejects identical values in multiple locations; a body substring alone
-// cannot establish an issuance endpoint or extraction method.
+// FindValueSource는 HTML hidden input 또는 JSON 문자열 잎 하나의 정확한 위치를 찾는다.
+// 같은 값이 여러 곳에 있으면 거부한다. 본문에 값이 포함된 것만으로는 발급 경로와 추출 방법을 입증할 수 없다.
 func (s Screen) FindValueSource(value string) (sourceType, field string, ok bool) {
 	if !prepValueOK(value) || value == "" {
 		return "", "", false

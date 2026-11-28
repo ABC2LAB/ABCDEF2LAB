@@ -468,6 +468,8 @@ func parseE2HTTPBash(input json.RawMessage, hostTimeout time.Duration) (string, 
 }
 
 func encodeE2HTTPResult(result e2runner.Result, isError bool, controls ...E2HTTPControlView) actool.Result {
+	// 응답 구조 근거는 선택 후보 검증의 저장 관찰용이다. 워커 모델 입력(원본 진단)은 바꾸지 않는다.
+	result.Trusted.Call.ResponseEvidence = nil
 	var value any = result
 	if len(controls) > 0 {
 		value = struct {

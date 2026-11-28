@@ -137,8 +137,8 @@ type Row struct {
 	ConsecutiveFailures  int              `json:"consecutive_failures"`
 }
 
-// RowFieldSource records where a dynamic login field was observed, never its
-// value. SourceRef identifies a separate GET observation in this run.
+// RowFieldSource는 동적 로그인 필드의 관찰 위치만 기록하고 값은 기록하지 않는다.
+// SourceRef는 이번 회차의 별도 GET 관찰을 가리킨다.
 type RowFieldSource struct {
 	Destination  string `json:"destination"`
 	SourceMethod string `json:"source_method"`
@@ -300,8 +300,8 @@ func (t *Tracker) Prepare(req Request, writeAllowed bool) Plan {
 			a.row.SourceUnresolved = true
 		}
 	}
-	// A v2 method can replay one issuance GET only. A partial or mixed
-	// source must remain a valid history row, but must not become a method.
+	// V2 방법은 발급 GET 한 건만 재현한다. 부분 또는 혼합 출처는 유효한 이력 행으로
+	// 남기되 재현 방법으로 만들지 않는다.
 	if len(a.row.FieldSources) > 0 {
 		if len(a.row.FieldSources) != len(cand.FieldsFromResponse) {
 			a.row.SourceUnresolved = true

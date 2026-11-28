@@ -123,7 +123,9 @@ type candidateVerificationAttempt struct {
 	Latest          candidateVerificationEvent `json:"latest"`
 	Analysis        *candidateAnalysisView     `json:"analysis,omitempty"`
 	Final           *CandidateFinalVerdict     `json:"final_verdict,omitempty"`
-	BusinessAnswers []candidateBusinessAnswer  `json:"business_answers,omitempty"`
+	// EvidenceReview는 완료 판정의 프로그램 응답 비교(재조회 때 저장 문맥에서 다시 계산)다. 응답 근거가 없는 옛 회차는 생략한다.
+	EvidenceReview  *CandidateEvidenceReview  `json:"evidence_review,omitempty"`
+	BusinessAnswers []candidateBusinessAnswer `json:"business_answers,omitempty"`
 }
 
 type candidateVerificationPage struct {
@@ -620,7 +622,7 @@ func listCandidateVerifications(ctx context.Context, tx *sql.Tx, route candidate
 					return nil, false, db.ErrDiagnosticCandidate
 				}
 			}
-			pendingRow.row.Final, err = readCandidateFinalVerdict(ctx, tx, pendingRow.row, pendingRow.binding, candidate)
+			pendingRow.row.Final, pendingRow.row.EvidenceReview, err = readCandidateFinalVerdictReview(ctx, tx, pendingRow.row, pendingRow.binding, candidate)
 			if err != nil || (pendingRow.row.Latest.State == "completed") != (pendingRow.row.Final != nil) {
 				return nil, false, db.ErrDiagnosticCandidate
 			}

@@ -610,6 +610,15 @@ func (e productPreparationEndpoint) Call(ctx context.Context, r diagnosisprep.Re
 	if (r.Command == diagnosisprep.Release || r.Command == diagnosisprep.ReleaseStatus) && r.Principal != "ARTEX" {
 		return diagnosisprep.Response{Version: diagnosisprep.Version, RequestID: r.RequestID, Error: "forbidden"}, nil
 	}
+	if r.Command == diagnosisprep.Status && r.Principal == "ARTEX" && e.product != nil {
+		// 회차 상태에 E③ 확정 단계 결과 상태를 붙인다(e3-product-confirmation-interface.md '회차 상태 응답'). 판정 목록의
+		// policy_source와 같은 판독기를 쓴다. 같은 파일 상태를 읽으면 두 응답의 상태·사유가 같다. 회차 소유는 위 Status가 이미 확인했다.
+		res, err := e.base.Call(ctx, r)
+		if err == nil && res.Error == "" && res.Job != nil && res.Job.ID == r.JobID {
+			res.Confirmation = readConfirmationState(e.product.config.RunsDir, res.Job.ID)
+		}
+		return res, err
+	}
 	if r.Command != diagnosisprep.ProductControl {
 		return e.base.Call(ctx, r)
 	}

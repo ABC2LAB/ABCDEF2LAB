@@ -15,9 +15,8 @@ import (
 	"time"
 )
 
-// csrfTarget is an owned acceptance fixture in front of VAmPI. It adds two
-// anonymous CSRF issuers and requires their one-use value on the login POST.
-// All non-login routes still go to VAmPI so E3 verifies a real book policy.
+// csrfTarget은 VAmPI 앞에 두는 소유 합성 시험 대상이다. 익명 CSRF 발급 경로 두 개를 추가하고
+// 로그인 POST에 일회용 값을 요구한다. 로그인 외 경로는 VAmPI로 전달해 E③가 실제 도서 정책을 검증한다.
 type csrfTarget struct {
 	mu     sync.Mutex
 	tokens map[string]csrfTicket

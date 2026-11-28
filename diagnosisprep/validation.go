@@ -290,7 +290,7 @@ func validPhase(p Phase) bool {
 func terminal(s State) bool { return s == Completed || s == Cancelled || s == Failed }
 func active(s State) bool   { return s == Preparing || s == Running || s == Stopping }
 func validJob(j Job) bool {
-	if !validRunTiming(j.Started, j.DrainComplete, j.StartedAt, j.FinishedAt) {
+	if !validRunTiming(j.Started, j.DrainComplete, j.StartedAt, j.FinishedAt) || !validTimeLimit(j.TimeLimit, j.PreparationStarted) {
 		return false
 	}
 	if j.Scope != nil && j.Scope.ApprovalMode == "workbench_selective_v1" && j.Input.WorkflowMode != "user_approval_v1" {
@@ -383,13 +383,24 @@ func ValidateResponse(r Request, response Response) error {
 		return ErrProtocol
 	}
 	if response.Error != "" {
-		if response.Product != nil || response.RunPage != nil || response.Release != nil || (validReleaseError(response.Error) && r.Command != Release) {
+		if response.Product != nil || response.RunPage != nil || response.Release != nil || response.Confirmation != nil || (validReleaseError(response.Error) && r.Command != Release) {
 			return ErrProtocol
 		}
 		if !validError(response.Error) || response.Job != nil || response.Authorized != nil || len(response.Profiles) != 0 {
 			return ErrProtocol
 		}
+		// 거절 사유는 Start의 busy에만, 닫힌 목록 값으로만 온다.
+		if response.BusyReason != "" && (response.Error != "busy" || r.Command != Start || !ValidBusyReason(response.BusyReason)) {
+			return ErrProtocol
+		}
 		return nil
+	}
+	if response.BusyReason != "" {
+		return ErrProtocol
+	}
+	// 확정 단계 상태는 회차를 돌려준 Status에만, 계약 모양으로만 온다.
+	if response.Confirmation != nil && (r.Command != Status || response.Job == nil || !validProductConfirmationState(*response.Confirmation)) {
+		return ErrProtocol
 	}
 	switch r.Command {
 	case ListRuns:
