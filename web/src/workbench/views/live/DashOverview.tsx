@@ -660,10 +660,10 @@ export function TrendChart({ groups, onOpen }: { groups: TrendGroup[]; onOpen: (
                   const v = st ? vOf(st) : null;
                   const cut = cutOf(row.state);
                   let state = "읽는 중";
-                  if (run && cut) state = `${CUT_TEXT[cut]} · 판정 없음(0으로 세지 않음)`;
-                  else if (run?.stat === "none") state = "결과 없음(0으로 세지 않음)";
-                  else if (run?.stat === "error") state = "결과 못 읽음(0으로 세지 않음)";
-                  const partial = v && cut ? `${CUT_TEXT[cut]}(일부 결과) · ` : "";
+                  if (run && cut) state = `${CUT_TEXT[cut]} · 판정 없음`;
+                  else if (run?.stat === "none") state = "결과 없음";
+                  else if (run?.stat === "error") state = "결과 못 읽음";
+                  const partial = v && cut ? `${CUT_TEXT[cut]} · 일부 결과 · ` : "";
                   const label = `${date ?? "날짜 없음"} ${g.host} — ${v ? `${partial}${vText(v)}` : state}`;
                   return (
                     <li key={row.id}>
@@ -792,7 +792,7 @@ function SevTag({ k }: { k: SevF }) {
  * '허용 n · 막음 n'의 막음은 그 둘의 합이다 — 그래서 둘을 같은 색(채움 · 빗금)으로 그린다.
  */
 export const E2_PARTS: readonly [keyof E2Sum, string, string][] = [
-  ["allowed", "허용(응답 받음)", "ov-ea"],
+  ["allowed", "허용 · 응답 받음", "ov-ea"],
   ["denied", "정책으로 막음", "ov-ed"],
   ["unsupported", "미지원 경로 막음", "ov-eu"],
   ["unsure", "결과 불명 · 실패", "ov-ex"],
@@ -1058,7 +1058,7 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
 
   // ── 머리: 집계 기준 ──
   const scopeText = listReady
-    ? `최근 점검 ${rows.length}건 기준${page?.more ? " · 더 있음(그 뒤는 세지 않음)" : ""}`
+    ? `최근 점검 ${rows.length}건 기준${page?.more ? " · 더 있음 · 그 뒤는 세지 않음" : ""}`
     : "점검 목록을 읽는 중";
 
   const e2ChipView = e2ChipOf(e2Tally);
@@ -1096,7 +1096,7 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
     noResult ? `결과 없이 끝남 ${noResult}건` : null,
     failedReads ? `결과 못 읽음 ${failedReads}건` : null,
     // 주소를 못 읽은 점검은 어느 대상인지 몰라 합계에 넣지 않는다(#978 이경준 P2-4)
-    unknownTargets.length ? `대상 확인 못 함 ${unknownTargets.length}건(합계에서 뺌)` : null,
+    unknownTargets.length ? `대상 확인 못 함 ${unknownTargets.length}건 · 합계에서 뺌` : null,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -1510,14 +1510,9 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
                     const top = st !== "cut-empty" && isStat(st) ? SEV_RANK.find((k) => st.sev[k] > 0) : undefined;
                     let cells: ReactNode;
                     if (st === "cut-empty")
-                      cells = (
-                        <span className={s["ov-span"]}>
-                          {`판정 없음(${CUT_TEXT[cut ?? "failed"]} — 0으로 세지 않음)`}
-                        </span>
-                      );
+                      cells = <span className={s["ov-span"]}>{`${CUT_TEXT[cut ?? "failed"]} · 판정 없음`}</span>;
                     else if (st === "none") cells = <span className={s["ov-span"]}>결과 없음</span>;
-                    else if (st === "error")
-                      cells = <span className={s["ov-span"]}>결과 못 읽음(0으로 세지 않음)</span>;
+                    else if (st === "error") cells = <span className={s["ov-span"]}>결과 못 읽음</span>;
                     else if (!st) cells = <span className={s["ov-span"]}>읽는 중</span>;
                     else
                       cells = (
@@ -1556,7 +1551,7 @@ export function DashOverview({ tabs }: { tabs?: ReactNode }) {
                           </span>
                         ) : (
                           <span>
-                            {[urlStateText(row.state), reason, partialRow ? "제품 판정 못 읽음(부분 결과)" : null]
+                            {[urlStateText(row.state), reason, partialRow ? "제품 판정 못 읽음 · 부분 결과" : null]
                               .filter(Boolean)
                               .join(" · ")}
                           </span>

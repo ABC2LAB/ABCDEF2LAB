@@ -582,6 +582,51 @@ describe("서버 방식 확인 (catalog)", () => {
     expect(u.readURLCatalog).toHaveBeenCalledTimes(1);
   });
 
+  it("'이 주소로 다시 점검'은 이전 점검의 주소 · 이름 · 모델 · 진단 모드 · 제외 경로를 다 채우고, 시작 확인 두 진술은 다시 받는다(사용자 11/27)", async () => {
+    const limits = {
+      format: "abc2lab.workbench-flow/v1" as const,
+      max_pages: 10,
+      max_endpoints: 20,
+      max_response_bytes: 1000,
+      allow_reversible_writes: false,
+    };
+    const second = { ...catalog.profiles[0], id: "profile-2", label: "두 번째", workflow: limits };
+    u.readURLCatalog.mockResolvedValue({
+      ...catalog,
+      profiles: [{ ...catalog.profiles[0], workflow: limits }, second],
+    });
+    act(() =>
+      useWb.getState().nPrefill("https://target.example/app", {
+        display_name: "쇼핑몰 정기 점검",
+        profile_id: "profile-2",
+        workflow_mode: "ai_auto_v1",
+        excluded_paths: "/logout\n/delete",
+      }),
+    );
+    mount("new");
+    const target = await screen.findByLabelText(/점검할 사이트 주소/);
+    await waitFor(() => expect(target).toHaveValue("https://target.example/app"));
+    expect(screen.getByLabelText("점검 이름 (선택)")).toHaveValue("쇼핑몰 정기 점검");
+    await waitFor(() => expect(screen.getByLabelText("모델")).toHaveValue("profile-2"));
+    expect(screen.getByRole("radio", { name: /AI 자동/ })).toBeChecked();
+    expect(screen.getByLabelText(/^제외 경로/)).toHaveValue("/logout, /delete");
+    // 시작 확인 두 진술은 이번 점검의 진술이라 미리 체크하지 않는다
+    expect(exclusionsBox()).not.toBeChecked();
+    expect(backupBox()).not.toBeChecked();
+    tickStartConfirm();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "승인 범위 확인" })[0]);
+    });
+    expect(u.createURLDraft.mock.calls[0][0]).toEqual({
+      target_url: "https://target.example/app",
+      profile_id: "profile-2",
+      display_name: "쇼핑몰 정기 점검",
+      workflow_mode: "ai_auto_v1",
+      excluded_paths: "/logout\n/delete",
+      ...START_CONFIRMED,
+    });
+  });
+
   it("작업 이름 칸은 없고, 탐색 흐름이 있는 프로필만 '점검 설정' 칸(진단 모드 · 제외 경로)이 보인다 (시안 v39)", async () => {
     const limits = {
       format: "abc2lab.workbench-flow/v1" as const,
@@ -1888,6 +1933,28 @@ describe("복구 · 점검 진행 · 보고서 (URL 진단)", () => {
     expect(u.commandURLDiagnosis).toHaveBeenCalledTimes(1);
     expect(u.commandURLDiagnosis).toHaveBeenCalledWith(running, "stop", owner);
     expect(await screen.findByText("중지·마감 중")).toBeInTheDocument();
+  });
+
+  it("보고서 머리 메타(모델 · 토큰) 밑, 단계 줄 오른쪽 끝에 [이 주소로 다시 점검] — 누르면 이전 점검 값을 넘기고 새 점검으로 간다(사용자 11/27)", async () => {
+    saveHandle();
+    u.readURLStatus.mockResolvedValue({ ...completed, started_at: STARTED_AT, finished_at: FINISHED_AT });
+    a.fetchRemediation.mockResolvedValue({ task_id: 42, entries: [] });
+    const { goTo } = mount("report");
+    const header = (await screen.findByRole("heading", { level: 1, name: "target.example 보고서" })).closest(
+      "header",
+    ) as HTMLElement;
+    const again = await within(header).findByRole("button", { name: "이 주소로 다시 점검" });
+    // 메타 밑: 단계 줄과 같은 줄의 오른쪽 끝(머리 높이가 다른 세 화면과 같게 — 단계 줄이 오르내리지 않는다)
+    const row = again.closest(`.${s["vh-phrow"]}`) as HTMLElement;
+    expect(row).not.toBeNull();
+    expect(within(row).getByRole("navigation", { name: "점검 단계" })).toBeInTheDocument();
+    expect(again.closest(`.${s["vh-acts"]}`)).toBeNull();
+    fireEvent.click(again);
+    expect(goTo).toHaveBeenCalledWith("new");
+    expect(useWb.getState().prefill).toMatchObject({
+      url: completed.input.target_url,
+      rest: { profile_id: completed.input.profile_id },
+    });
   });
 
   it("보고서 머리: 서버 시작 · 마감 시각이 둘 다 있으면 시작 시각과 소요(finished − started)를 보인다", async () => {

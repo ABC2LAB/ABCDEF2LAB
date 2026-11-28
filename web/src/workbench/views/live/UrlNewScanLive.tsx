@@ -356,14 +356,31 @@ export function UrlNewScanLive() {
     setTouched(false);
   }, [resetSeq]);
 
-  // 다른 화면의 '이 주소로 다시 점검' (이어 보는 진단이 없을 때만). 그 버튼은 주소를 넘긴 뒤 이 화면을 여니 열릴 때 남아 있는
-  // 주소도 받는다 — 전에는 열릴 때의 값을 이미 본 것으로 쳐서 칸이 비었다(사용자 11/27). 받은 주소는 지워 한 번만 쓴다.
+  // 다른 화면의 '이 주소로 다시 점검' (이어 보는 진단이 없을 때만). 그 버튼은 값을 넘긴 뒤 이 화면을 여니 열릴 때 남아 있는
+  // 값도 받는다 — 전에는 열릴 때의 값을 이미 본 것으로 쳐서 칸이 비었다(사용자 11/27). 받은 값은 지워 한 번만 쓴다.
+  // 주소 · 이름 · 모델 · 진단 모드 · 제외 경로를 다 채운다(사용자 11/27). 모델은 설치 목록이 아직 없거나 그 프로필이 없어졌으면
+  // 목록이 온 뒤에 고르고(pendingProfile), 없으면 기본값 그대로 둔다. 시작 확인 진술은 채우지 않는다.
   // 주소가 채워지면 대상 승인 칸이 그 주소로 서버에 물어, 승인이 살아 있으면 URL 인증을 다시 하지 않는다
+  const pendingProfile = useRef<string | null>(null);
   useEffect(() => {
-    if (!prefill || handle) return;
-    setTarget(prefill.url);
-    useWb.getState().nPrefillTaken(prefill.seq);
-  }, [prefill, handle]);
+    if (prefill && !handle) {
+      setTarget(prefill.url);
+      const rest = prefill.rest;
+      if (rest) {
+        setName(rest.display_name ?? "");
+        setExcluded(excludedOneLine(rest.excluded_paths ?? ""));
+        if (rest.workflow_mode) setWorkflowMode(rest.workflow_mode);
+        pendingProfile.current = rest.profile_id || null;
+      }
+      useWb.getState().nPrefillTaken(prefill.seq);
+    }
+    const id = pendingProfile.current;
+    const picked = id ? profiles.find((p) => p.id === id) : undefined;
+    if (!picked) return;
+    pendingProfile.current = null;
+    setKind(picked.model?.external_transfer ? "external" : "local");
+    setProfileId(picked.id);
+  }, [prefill, handle, profiles]);
 
   // 조회 중인 진단이 있으면 그 입력을 보인다 (잠금)
   const shown = handle?.input;

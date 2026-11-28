@@ -995,6 +995,21 @@
   overflow-x: auto;
   scrollbar-width: none;
 }
+/* 단계 줄 + 오른쪽 끝 버튼(보고서 [이 주소로 다시 점검], 메타 밑, 사용자 11/27). 버튼(34px)이 단계 줄 높이 안이라 머리 높이가 같다 */
+.vh-phrow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.vh-phrow > .phases {
+  flex: 1;
+  min-width: 0;
+}
+.vh-phacts {
+  flex: none;
+  margin-top: 12px;
+  padding-bottom: 4px;
+}
 .ph {
   display: flex;
   align-items: center;

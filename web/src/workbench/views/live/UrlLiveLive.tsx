@@ -76,6 +76,7 @@ import { ApprovalHistory, ApprovalQueue, useRequestApprovals } from "./approvals
 import { SelectedVerificationCard } from "./candidateVerificationView";
 import { AssetGraphTab } from "./coverageGraphView";
 import { DiagnosticEntrySections, stepHeading } from "./DiagnosticEntrySections";
+import { RescanButton } from "./jobSummary";
 import { AccountAuthWarning, LoginMethodMissingWarning } from "./liveAccountWarnings";
 import { PriceCapsNotice } from "./PriceCapsNotice";
 import { ProductVerdictReport, productConfirmationSummary, useProductVerdicts } from "./productVerdictViews";
@@ -2074,6 +2075,8 @@ export function UrlReportLive() {
         host={host}
         pill={<UrlPill job={job} verified={verified} />}
         acts={detailEntry ? undefined : <InspOpenButton>취약점 상세</InspOpenButton>}
+        // 메타(모델 · 토큰) 밑, 단계 줄 오른쪽 끝: [이 주소로 다시 점검](끝난 점검, 사용자 11/27)
+        phaseActs={job && URL_ENDED_STATES.includes(job.state) ? <RescanButton /> : undefined}
         meta={meta}
         // 다른 세 화면처럼 머리에 단계 줄(자산 탐색 · 범위 확인 · 점검 진행 · 보고서, 눌러서 이동)을 둔다(사용자 11/17 —
         // 보고서에서 앞 단계로 돌아갈 길이 주소 입력뿐이었다)

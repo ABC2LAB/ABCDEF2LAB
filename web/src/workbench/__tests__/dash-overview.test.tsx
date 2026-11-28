@@ -205,11 +205,12 @@ it("추이 차트: 대상 이름 줄 · 끝까지 못 간 점검 표식(진단 �
   for (const host of ["admin.example", "fail.example", "zero.example", "part.example", "shop.example"])
     expect(screen.getByRole("listitem", { name: `${host} · 점검 1회` })).toBeInTheDocument();
 
-  const stopped = screen.getByRole("button", { name: /admin\.example — 중지 · 판정 없음\(0으로 세지 않음\)/ });
+  // 대시보드 글엔 괄호 덧말을 쓰지 않는다(사용자 11/27)
+  const stopped = screen.getByRole("button", { name: /admin\.example — 중지 · 판정 없음$/ });
   expect(within(stopped).getAllByText("■").length).toBeGreaterThan(0);
   expect(within(stopped).queryByText("0")).toBeNull();
 
-  const failed = screen.getByRole("button", { name: /fail\.example — 진단 실패 · 판정 없음\(0으로 세지 않음\)/ });
+  const failed = screen.getByRole("button", { name: /fail\.example — 진단 실패 · 판정 없음$/ });
   expect(within(failed).getAllByText("✕").length).toBeGreaterThan(0);
 
   // 정상으로 끝난 0건은 진짜 0 이다
@@ -218,11 +219,13 @@ it("추이 차트: 대상 이름 줄 · 끝까지 못 간 점검 표식(진단 �
   expect(within(zero).getAllByText("0")).toHaveLength(5);
 
   // 중지했어도 남은 결과는 그리고, 일부라는 것을 적는다
-  const partial = screen.getByRole("button", { name: /part\.example — 중지\(일부 결과\) · 확정 0 · 검토 필요 2/ });
+  const partial = screen.getByRole("button", { name: /part\.example — 중지 · 일부 결과 · 확정 0 · 검토 필요 2/ });
   expect(within(partial).getByText("중지 · 남은 결과만")).toBeInTheDocument();
 
   screen.getByRole("button", { name: /shop\.example — 확정 1/ }).click();
   expect(onOpen).toHaveBeenCalledWith(expect.objectContaining({ id: "5" }));
+  for (const b of screen.getAllByRole("button"))
+    expect(b.getAttribute("aria-label") ?? b.textContent).not.toMatch(/[()]/);
 });
 
 it("얇은 막대: max 를 주면 그 목록의 가장 큰 합에 대한 비율로(같은 눈금), 안 주면 꽉 찬 길이", () => {
@@ -245,7 +248,7 @@ it("얇은 막대: max 를 주면 그 목록의 가장 큰 합에 대한 비율�
 
 it("전송 통제 낱말은 '막음'으로 하나다(줄의 '막음 n' = 정책으로 막음 + 미지원 경로 막음)", () => {
   const names = E2_PARTS.map(([, name]) => name);
-  expect(names).toEqual(["허용(응답 받음)", "정책으로 막음", "미지원 경로 막음", "결과 불명 · 실패"]);
+  expect(names).toEqual(["허용 · 응답 받음", "정책으로 막음", "미지원 경로 막음", "결과 불명 · 실패"]);
   expect(names.join(" ")).not.toMatch(/거부|차단/);
 });
 

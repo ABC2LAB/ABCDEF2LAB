@@ -1,11 +1,15 @@
 // 화면 선호·URL 입력 보조만 보관한다. 진단 상태·발견·사용량은 서버 스토어가 소유한다.
 import { create } from "zustand";
+
+import type { URLDiagnosisInput } from "@/lib/diagnosis/diagnosis-url";
 export type Accent = "petrol" | "cobalt" | "mono";
 export type DSel = string;
 /** 화면 모드: 기기 설정을 따름 · 라이트 · 다크 (고르면 이 브라우저에 기억) */
 export type Theme = "system" | "light" | "dark";
 /** 넓은 화면에서 64px 줄로 접을 수 있는 패널: 왼쪽 레일 · 오른쪽 상세. 좁은 화면의 서랍과는 별개다. */
 export type Panel = "rail" | "insp";
+/** '이 주소로 다시 점검'이 새 점검 칸에 미리 채울 이전 점검 값(주소 밖). 시작 확인 진술은 넣지 않는다(이번 점검마다 받는다) */
+export type PrefillRest = Pick<URLDiagnosisInput, "display_name" | "profile_id" | "workflow_mode" | "excluded_paths">;
 export const createInitialState = () => ({
   accent: "petrol" as Accent,
   theme: "system" as Theme,
@@ -17,7 +21,7 @@ export const createInitialState = () => ({
 export const useWb = create<{
   accent: Accent;
   theme: Theme;
-  prefill: { url: string; seq: number } | null;
+  prefill: { url: string; rest?: PrefillRest; seq: number } | null;
   /** 새 점검에서 '시험 계정' · '정책 선언'으로 갈 때 그 화면이 미리 고를 대상(사용자 11/23). seq 로 한 번만 쓴다 */
   focusTarget: { id: string; seq: number } | null;
   /** 넓은 화면에서 레일을 아이콘 줄(64px)로 접었나 (시안 rail-min, 이 브라우저에 기억) */
@@ -26,7 +30,7 @@ export const useWb = create<{
   inspMin: boolean;
   setAccent: (accent: Accent) => void;
   setTheme: (theme: Theme) => void;
-  nPrefill: (url: string) => void;
+  nPrefill: (url: string, rest?: PrefillRest) => void;
   /** 새 점검 화면이 넘겨받은 주소를 지운다(그 사이 새로 넘긴 주소는 남긴다) */
   nPrefillTaken: (seq: number) => void;
   focusTargetOn: (id: string) => void;
@@ -40,7 +44,7 @@ export const useWb = create<{
   inspMin: false,
   setAccent: (accent) => set({ accent }),
   setTheme: (theme) => set({ theme }),
-  nPrefill: (url) => set((st) => ({ prefill: { url, seq: (st.prefill?.seq ?? 0) + 1 } })),
+  nPrefill: (url, rest) => set((st) => ({ prefill: { url, rest, seq: (st.prefill?.seq ?? 0) + 1 } })),
   nPrefillTaken: (seq) => set((st) => (st.prefill?.seq === seq ? { prefill: null } : {})),
   focusTargetOn: (id) => set((st) => ({ focusTarget: { id, seq: (st.focusTarget?.seq ?? 0) + 1 } })),
   setPanelMin: (panel, min) => set(panel === "rail" ? { railMin: min } : { inspMin: min }),
