@@ -492,6 +492,7 @@ func (c *productE3Confirmation) learnedLoginState() *productLearnedLogin {
 		return nil
 	}
 	policy := binding.policy
+	taskID := binding.taskID
 	if binding.Close() != nil {
 		log.Printf("[e3-confirmation] 회차 %s 실행 정책 닫기 실패", c.jobID)
 	}
@@ -503,6 +504,9 @@ func (c *productE3Confirmation) learnedLoginState() *productLearnedLogin {
 		credentials[a.Label] = a.Credential.SHA256
 	}
 	c.learned = newProductLearnedLogin(c.registry, c.runsDir, c.jobID, c.target, policy.RunRef, credentials, c.identityPath)
+	c.learned.explorationEvidenceRequired = policy.ExplorationLoginEvidence == "required/v2"
+	c.learned.taskID = taskID
+	c.learned.sourceDigest = policy.ExplorationSourceDigest
 	return c.learned
 }
 

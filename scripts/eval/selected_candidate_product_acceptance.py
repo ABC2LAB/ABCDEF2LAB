@@ -27,6 +27,25 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
+# 인증 후보 시나리오는 모델이 등록 계정으로 직접 로그인한다. 모델 로그인 계약 §2-2(진단 단계 로그인은 쓰기 승인 범위를 따른다)
+# 대로 워크플로 자동 모드 + 대상의 되돌릴 수 있는 쓰기 승인으로 돈다. 상품 경로는 세션 없이 401이라 크롤 시작은 로그인 화면이다.
+AUTH_SCENARIOS = ("S03", "S04")
+
+
+def draft_input(scenario):
+    """초안 입력이다. 인증 후보 시나리오만 워크플로 자동 모드와 로그인 화면 시작 주소를 쓴다."""
+    value = {"target_url": "https://synthetic.test:9443/rest/products/search", "profile_id": "product-model-local_only",
+             "display_name": "Owned selected candidate acceptance"}
+    if scenario in AUTH_SCENARIOS:
+        value.update({"target_url": "https://synthetic.test:9443/login", "workflow_mode": "ai_auto_v1"})
+    return value
+
+
+def check_model_login(draft):
+    """모델 로그인 시도가 그 계정의 성공(세션 대조)으로 기록됐는지 본다(계약 model-login-attempts §4 account_auth)."""
+    if draft.get("account_auth") != {"owned-a": "authenticated"}:
+        raise RuntimeError("model_login_not_recorded:" + str(draft.get("account_auth")))
+
 
 def request(base, path, token="", body=None, key="", control="", expected=200, binary=False, method=None,
             return_status=False):
@@ -206,9 +225,8 @@ def main():
                 # 계정 분류 폐지(2026-11-26): 자격이 저장된 등록 계정을 결속한다. 시험 계정 표시(mark-test)는 없다
                 request(product, account_base + "/accounts/owned-a/credential", token,
                         body={"username": "owned-a", "password": "synthetic-secret-a"}, method="PUT")
-        draft = request(product, "/api/diagnoses/v2/drafts", token, body={"version": "diagnosis-api.v2", "input": {
-            "target_url": "https://synthetic.test:9443/rest/products/search", "profile_id": "product-model-local_only",
-            "display_name": "Owned selected candidate acceptance"}}, key=secrets.token_hex(16), expected=201)["draft"]
+        draft = request(product, "/api/diagnoses/v2/drafts", token, body={"version": "diagnosis-api.v2",
+            "input": draft_input(args.scenario)}, key=secrets.token_hex(16), expected=201)["draft"]
         prefix = "/api/diagnoses/v2/drafts/" + draft["id"]
         draft = request(product, prefix + "/validate", token, body={"version": "diagnosis-api.v2", "expected_revision": draft["revision"]})["draft"]
         if draft["state"] != "ready":
@@ -222,6 +240,8 @@ def main():
             time.sleep(.5)
         if draft["state"] != "completed" or not draft.get("drain_complete"):
             raise RuntimeError("diagnosis_not_completed:" + draft["state"] + ":" + str(draft.get("reason_code")))
+        if args.scenario in AUTH_SCENARIOS:
+            check_model_login(draft)
         task = draft["task_id"]
     run = request(product, "/api/tasks/" + task + "/diagnosis-run", token)["run"]
     if run["outcome"] != "completed" or not run["execution"]["audit_complete"]:
@@ -428,14 +448,21 @@ def main():
     after_target = request(target_stats, "/stats")["allowed_received"]
     after_logins = request(target_stats, "/stats")["auth_logins"]
     after_authenticated_reads = request(target_stats, "/stats")["authenticated_reads"]
+    # 모델의 세션 없는 읽기(로그인 판정기의 막힘 대조) 한 번은 상품 경로 수에 들어가지만 세션 읽기가 아니다.
+    after_anonymous_reads = request(target_stats, "/stats")["anonymous_reads"]
     after_structured_reads = request(target_stats, "/stats")["structured_reads"]
     after_model = request(model_stats, "/stats")["model_calls"]
     expected_new_sends = 0 if args.scenario in ("S01", "S04", "S06", "S07", "S07B", "S07P", "S09") else 2 if args.scenario in ("S05", "S10") else 1
     if pending_target != after_diagnosis_target or after_target != pending_target + expected_new_sends:
         raise RuntimeError("unexpected_target_send_count")
     if args.scenario == "S03" and (after_diagnosis_logins - before_logins != 1 or
-                                    after_logins - after_diagnosis_logins != 1 or after_authenticated_reads != after_target):
+                                    after_logins - after_diagnosis_logins != 1 or after_anonymous_reads != 1 or
+                                    after_authenticated_reads != after_target - after_anonymous_reads):
         raise RuntimeError("authenticated_send_binding_failed")
+    # 합성 대상은 상품 경로 GET · 로그인 POST · 로그인 화면 GET 밖의 요청을 범위 밖으로 센다. 쓰기 승인으로 POST가 열린
+    # 상품 경로(=/rest/products/search)에 POST가 0건인 것도 이 수로 확인한다.
+    if args.scenario in AUTH_SCENARIOS and request(target_stats, "/stats")["outside_received"] != 0:
+        raise RuntimeError("out_of_scope_target_send")
     if args.scenario in ("S05", "S10") and after_structured_reads != 1:
         raise RuntimeError("structured_send_missing")
     if args.scenario == "S10":

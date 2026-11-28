@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 // 플래그로 받는다(소유 수용 전용, 제품 경로 아님).
 type workflowLoginConfig struct {
 	loginPath, identityPath, usernameField, passwordField, tokenField, header, prefix string
+	exploreOnly                                                                       bool
 }
 
 var (
@@ -48,7 +50,7 @@ var (
 func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 	var mu sync.Mutex
 	turns := map[string]*loginFixtureTurns{}
-	tokenPattern := regexp.MustCompile(regexp.QuoteMeta(cfg.tokenField) + `\\*"\s*:\s*\\*"([A-Za-z0-9._~+/=-]{16,})`)
+	tokenPattern := fixtureTokenPattern(cfg.tokenField)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Model string `json:"model"`
@@ -91,13 +93,7 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 					intentID, _ = strconv.ParseInt(match[1], 10, 64)
 				}
 			}
-			for _, match := range fixtureCredentialLine.FindAllStringSubmatch(plain, -1) {
-				username, e1 := strconv.Unquote(match[2])
-				password, e2 := strconv.Unquote(match[3])
-				if e1 == nil && e2 == nil {
-					accounts = appendFixtureAccount(accounts, fixtureAccount{label: match[1], username: username, password: password})
-				}
-			}
+			accounts = appendFixtureCredentials(accounts, plain)
 		}
 		if target == "" {
 			http.Error(w, "owned_target_required", 400)
@@ -130,6 +126,30 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 			tool("Bash", id, map[string]any{"command": command, "timeout_ms": 60000})
 		}
 		switch {
+		case names["mcp__explore_browser__browser_evaluate"] && cfg.exploreOnly:
+			// The owned fixture drives the real browser MCP and exploration
+			// boundary. The evaluated script returns status codes only; the
+			// registered synthetic credentials and issued session stay in the
+			// browser context.
+			turn.explore++
+			switch turn.explore {
+			case 1, 4:
+				// VAmPI's /ui redirects to its internal HTTP origin. Keep the
+				// browser on the approved HTTPS origin before relative fetches.
+				tool("mcp__explore_browser__browser_navigate", "wl-explore-page", map[string]any{"url": target + "/openapi.json"})
+			case 2, 5:
+				index := 0
+				if turn.explore == 5 {
+					index = 1
+				}
+				if index < len(accounts) {
+					tool("mcp__explore_browser__browser_evaluate", "wl-explore-login", map[string]any{"function": browserLoginScript(cfg, accounts[index])})
+				}
+			case 3:
+				if len(accounts) > 1 && names["switch_browser_account"] {
+					tool("switch_browser_account", "wl-explore-switch", map[string]any{"account": accounts[1].label})
+				}
+			}
 		case names["set_goals"] && !names["add_intent"] && !names["Bash"]:
 			goals.Add(1)
 			turn.goals++
@@ -170,6 +190,15 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 			}
 		case names["Bash"]:
 			worker.Add(1)
+			if cfg.exploreOnly {
+				if names["record_fact"] && !factCalled && intentID > 0 {
+					turn.factRecorded = true
+					tool("record_fact", "wl-explore-fact", map[string]any{"intent_id": intentID,
+						"summary": "Owned browser exploration fixture finished; login success is determined by recorded observations.",
+						"detail":  "synthetic fixture (not a model judgment)", "evidence": "synthetic fixture", "confidence": "observed"})
+				}
+				break
+			}
 			// Worker 대화의 도구 결과 수가 이 대화에서 낸 명령 수다. 단계: 0 세션 없는 신원 GET, 계정마다 로그인 POST·토큰 신원 GET.
 			step := len(toolResults)
 			if len(accounts) == 0 {
@@ -194,21 +223,36 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 			}
 			account := accounts[index]
 			if !read {
-				body, _ := json.Marshal(map[string]string{cfg.usernameField: account.username, cfg.passwordField: account.password})
 				authLogins.Add(1)
-				bash("wl-login-"+account.label, "curl --silent --show-error --max-time 10 --request POST --header 'Content-Type: application/json' --data "+
-					shellQuote(string(body))+" "+target+cfg.loginPath)
+				bash("wl-login-"+account.label, fixtureLoginCommand(target, cfg, account))
 				break
 			}
 			match := tokenPattern.FindStringSubmatch(toolResults[len(toolResults)-1])
 			authenticatedReads.Add(1)
-			bash("wl-read-"+account.label, "curl --silent --show-error --max-time 10 --header "+shellQuote(cfg.header+": "+cfg.prefix+match[1])+" "+target+cfg.identityPath)
+			bash("wl-read-"+account.label, fixtureSessionReadCommand(target+cfg.identityPath, cfg, match[1]))
 		default:
 			// 요약·마무리 같은 다른 역할은 도구 없이 끝낸다.
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"id": "owned-workflow-login-synthetic", "object": "chat.completion", "model": req.Model, "choices": []any{map[string]any{"index": 0, "message": message, "finish_reason": finish}}, "usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20}})
 	})
+}
+
+func browserLoginScript(cfg workflowLoginConfig, account fixtureAccount) string {
+	literal := func(value string) string {
+		encoded, _ := json.Marshal(value)
+		return string(encoded)
+	}
+	return fmt.Sprintf(`async () => {
+  const anonymous = await fetch(%s, {credentials: 'omit'});
+  const login = await fetch(%s, {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({[%s]: %s, [%s]: %s})});
+  const body = await login.json();
+  const identity = await fetch(%s, {headers: {[%s]: %s + body[%s]}});
+  return {anonymous: anonymous.status, login: login.status, identity: identity.status};
+}`, literal(cfg.identityPath), literal(cfg.loginPath), literal(cfg.usernameField), literal(account.username),
+		literal(cfg.passwordField), literal(account.password), literal(cfg.identityPath), literal(cfg.header),
+		literal(cfg.prefix), literal(cfg.tokenField))
 }
 
 // fixtureNodeID는 그래프 도구 결과(노드 배열 또는 {key: 노드 배열})에서 상태가 맞는 첫 노드 번호다. 상태가 비면 첫 노드다.
@@ -241,8 +285,41 @@ func fixtureNodeID(raw, key, state string) int64 {
 // loginFixtureTurns는 대상별 진행 상태다(작업마다 목표 분해 첫 요청에서 새로 센다).
 type loginFixtureTurns struct {
 	goals, planner                                  int
+	explore                                         int
 	discoverySent, intentSent, factRecorded, proved bool
 	goalID                                          int64
+}
+
+// appendFixtureCredentials는 글 하나에서 진단 Worker 지침의 등록 계정 줄을 읽어 붙인다. 합성 모델의 자격은 이 줄에서만
+// 온다(모델 코드·overlay에 자격 값을 두지 않는다). 같은 라벨은 처음 것만 둔다.
+func appendFixtureCredentials(out []fixtureAccount, text string) []fixtureAccount {
+	for _, match := range fixtureCredentialLine.FindAllStringSubmatch(text, -1) {
+		username, e1 := strconv.Unquote(match[2])
+		password, e2 := strconv.Unquote(match[3])
+		if e1 == nil && e2 == nil {
+			out = appendFixtureAccount(out, fixtureAccount{label: match[1], username: username, password: password})
+		}
+	}
+	return out
+}
+
+// fixtureTokenPattern은 로그인 응답에서 토큰 칸 값을 꺼내는 식이다. 응답은 도구 결과 JSON 문자열 안에 실려 오므로 따옴표가
+// 한 번 이상 escape돼 있을 수 있다. 짧은 값(16바이트 미만)은 토큰으로 보지 않는다.
+func fixtureTokenPattern(field string) *regexp.Regexp {
+	return regexp.MustCompile(regexp.QuoteMeta(field) + `\\*"\s*:\s*\\*"([A-Za-z0-9._~+/=-]{16,})`)
+}
+
+// fixtureLoginCommand는 등록 계정 하나로 대상 로그인 API에 JSON POST를 한 번 보내는 Bash 명령이다. 실패해도 다시 보내지
+// 않는다(부르는 쪽이 한 번만 낸다).
+func fixtureLoginCommand(target string, cfg workflowLoginConfig, account fixtureAccount) string {
+	body, _ := json.Marshal(map[string]string{cfg.usernameField: account.username, cfg.passwordField: account.password})
+	return "curl --silent --show-error --max-time 10 --request POST --header 'Content-Type: application/json' --data " +
+		shellQuote(string(body)) + " " + target + cfg.loginPath
+}
+
+// fixtureSessionReadCommand는 대상이 준 토큰을 세션 헤더에 실어 주소 하나를 GET하는 Bash 명령이다.
+func fixtureSessionReadCommand(address string, cfg workflowLoginConfig, token string) string {
+	return "curl --silent --show-error --max-time 10 --header " + shellQuote(cfg.header+": "+cfg.prefix+token) + " " + address
 }
 
 func appendFixtureAccount(out []fixtureAccount, a fixtureAccount) []fixtureAccount {
