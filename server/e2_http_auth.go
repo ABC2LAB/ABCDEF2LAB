@@ -697,11 +697,13 @@ func authPrepOne(ctx context.Context, call *e2proxy.Call, execution *e2proxy.Exe
 		return E2HTTPAuthNotSent
 	}
 	req.Header.Set("Content-Type", contentType)
-	session, receipt, err := call.AuthPrep(ctx, req, authExtractor(login))
+	softFail := false
+	session, receipt, err := call.AuthPrep(ctx, req, authExtractor(login, &softFail))
 	switch {
 	case err == nil:
 	case errors.Is(err, e2proxy.ErrAuthSession):
-		if receipt.StatusCode >= http.StatusBadRequest {
+		// 400 이상 또는 400 미만이어도 로그인 화면을 다시 준 응답(soft fail)은 분명한 로그인 실패다.
+		if receipt.StatusCode >= http.StatusBadRequest || softFail {
 			reason = "auth_login_rejected"
 			return E2HTTPAuthLoginFailed
 		}
@@ -742,10 +744,18 @@ func authPrepBody(login diagnosisprep.TargetLogin, username, password string) ([
 	return bytes.TrimSpace(b.Bytes()), "application/json"
 }
 
-// authExtractor는 로그인 방식의 세션 위치에서 보낼 헤더를 뽑는다. 4xx·5xx는 로그인 실패다.
-func authExtractor(login diagnosisprep.TargetLogin) e2proxy.AuthExtractor {
+// authExtractor는 로그인 방식의 세션 위치에서 보낼 헤더를 뽑는다. 4xx·5xx는 로그인 실패다. 400 미만이어도 로그인 화면을
+// 다시 준 응답(HTML 비밀번호 칸, 같은 origin 로그인 경로로의 리다이렉트)은 세션 쿠키가 와도 실패다(soft fail, 2026-11-27 팀
+// 결정: 실패해도 200 + 로그인 화면 + 세션 쿠키를 주는 앱). 그때 softFail을 켠다. 판정은 학습 로그인과 같은 판독기를 쓴다.
+func authExtractor(login diagnosisprep.TargetLogin, softFail *bool) e2proxy.AuthExtractor {
 	return func(resp *http.Response, body []byte) (http.Header, error) {
 		if resp.StatusCode >= http.StatusBadRequest {
+			return nil, errAuthLoginFailed
+		}
+		if authLoginScreenReturned(login, resp, body) {
+			if softFail != nil {
+				*softFail = true
+			}
 			return nil, errAuthLoginFailed
 		}
 		if len(login.Cookies) > 0 {
@@ -811,4 +821,20 @@ func e2HTTPPasswordResponse(auth *E2HTTPFileAuth) string {
 		return ""
 	}
 	return auth.PasswordResponse
+}
+
+// authLoginScreenReturned는 로그인 응답이 로그인 화면을 다시 줬는지다: HTML 응답의 비밀번호 칸, 또는 같은 origin의 로그인
+// 경로로 가는 리다이렉트다(learnedlogin.CheckLogin과 같은 실패 신호).
+func authLoginScreenReturned(login diagnosisprep.TargetLogin, resp *http.Response, body []byte) bool {
+	copied := learnedResponse(resp, body)
+	defer clear(copied.Body)
+	if learnedlogin.HasPasswordInput(copied) {
+		return true
+	}
+	if resp.Request == nil || resp.Request.URL == nil {
+		return false
+	}
+	origin := &url.URL{Scheme: resp.Request.URL.Scheme, Host: resp.Request.URL.Host}
+	redirect := learnedlogin.RedirectPath(origin, copied)
+	return redirect != "" && redirect == login.Path
 }
