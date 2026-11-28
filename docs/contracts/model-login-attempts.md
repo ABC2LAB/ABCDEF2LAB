@@ -279,6 +279,7 @@
 
 - 더 뒤의 `succeeded`가 다른 방법이면 그 방법으로 바꾸고 `learned`가 된다(검증 표시는 이전 방법의 것이라 버린다). 같은 방법이면 `learned` 근거만 최신으로 바꾸고 `verified`는 유지한다.
 - 따로 지우는 사건은 없다. 서버가 상태를 계산할 때 저장된 방법이 **지금 대상 판(`target_revision`)과 지금 자격 해시(`credential_sha256`)** 둘 다에 묶여 있을 때만 쓴다. 어느 하나가 바뀌면 `none`이고 `cleared_reason`을 준다. 계정을 지우면 계정 행이 없어진다.
+- 예외 하나: 선택 후보 검증(#950)의 학습 로그인이 보낸 뒤 실패·결과 불명이면 그 `verified`의 현재 유효성만 해제한다(`login_method_verified_cleared`, 2026-11-27 팀 결정). 과거 `login_method_verified` 줄은 남고 상태는 `learned`로 돌아간다(새 `cleared_reason` 값 없음). 미전송(`not_sent`)은 해제하지 않는다. 같은 계정의 #950 로그인은 한 번에 하나이고, 해제 기록을 남기지 못하면 그 계정의 다음 #950을 막는다. 세부는 [선택 후보 학습 로그인 계약](selected-candidate-learned-login.md) §5-1.
 
 #### 6-1-2. 대상 계정 저널 사건
 
@@ -398,7 +399,7 @@
 - 방법 객체·`method_sha256`은 §6-1-2를 따른다(§6-1-1~§6-1-3은 모델 로그인 PR #969 `cdf1ae9f`의 계약 갱신이고, 그 PR이 들어오면 이 문서에 합쳐진다): 칸 이름 `http_method`·`path`·`format`·`identifier_field`·`password_field`·`other_fields`·`fields_from_response`·`session_source`·`session_names`·`session_sent_as`를 이 순서로 둔 JSON(빈 목록은 `[]`)의 SHA-256이다. `learned` 저장과 `verified`가 같은 값을 쓰도록 `learnedlogin.Method.Digest()` 하나로 계산한다(칸 이름·순서는 `TestMethodObjectMatchesContract`가 고정).
 - 위 성공 조건을 모두 채운 계정마다 `login_method_verified` 줄 하나를 쓴다. 칸: `target_id`·`label`·`action`·`actor`(대상 승인자)·`at`(성공을 판정한 시각, UTC. 기록 행의 `at`=보낸 시각과 다름)·`target_revision`·`credential_sha256`(그 회차에 결속한 대상 판·자격 해시)·`method_sha256`(재현한 방법)·`run_ref`·`stage: confirmation`·`attempt_ref`(`confirmation-N`)·`evidence: e3_relogin`. 값은 없다.
 - 쓰기 전에 레지스트리 잠금 안에서 그 회차가 결속한 대상 판·자격 해시가 지금도 같은지 본다. 다르면(재현 도중 재승인·자격 변경) 쓰지 않는다. `verified` 줄은 방법 해시마다 따로 둔다(다른 방법의 결과가 지금 방법의 검증을 덮지 않음). 같은 방법·판·자격의 `verified`가 이미 있거나 같은 방법의 더 뒤 결과가 있으면 쓰지 않는다.
-- 상태 반영은 계산 때 한다(§6-1-2 "지금 `learned` 방법의 해시와 같을 때만"): 지금 `learned` 방법 해시의 `verified` 줄이 지금 대상 판·지금 자격 해시와 같고, 그 방법이 지금 것이 된 시각(다른 방법에서 바뀐 시각. 같은 방법을 다시 배우면 그대로) 뒤에 검증됐을 때만 `verified`다(`loginMethodVerifiedFor(…, methodSince)`). 그래서 "A 검증 → B 배움 → A 다시 배움"에서 옛 A 검증은 다시 보이지 않는다(§6-1-1). 따로 지우는 사건은 없다.
+- 상태 반영은 계산 때 한다(§6-1-2 "지금 `learned` 방법의 해시와 같을 때만"): 지금 `learned` 방법 해시의 `verified` 줄이 지금 대상 판·지금 자격 해시와 같고, 그 방법이 지금 것이 된 시각(다른 방법에서 바뀐 시각. 같은 방법을 다시 배우면 그대로)보다 늦게 검증됐을 때만 `verified`다(`loginMethodVerifiedFor(…, methodSince)`, 같은 시각은 순서를 추정하지 않아 인정하지 않음). 그래서 "A 검증 → B 배움 → A 다시 배움"에서 옛 A 검증은 다시 보이지 않는다(§6-1-1). 지우는 사건은 #950 해제(`login_method_verified_cleared`, §6-1-1) 하나뿐이고, 해제된 검증은 같은 판·자격이어도 E③가 다시 검증할 수 있다.
 - 다시 열 때(재시작) `login_method_verified` 줄을 검증한다: 칸 모양(`stage`·`evidence`·`attempt_ref`·해시·회차 참조), 그때 계정이 있고 그때 자격 해시와 같음, 같은 방법의 앞선 줄보다 대상 판·시각이 뒤임. 다른 동작 줄에 이 칸들이 붙으면 저널 손상으로 본다.
 - 계정 목록 API `login_method`(§6-1-3)는 `learned`를 싣는 모델 로그인 PR이 웹 파서와 같이 낸다. 이 PR은 API 칸을 바꾸지 않는다.
 

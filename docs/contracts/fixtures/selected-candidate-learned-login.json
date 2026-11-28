@@ -11,7 +11,8 @@
       "login_digest": "cd2fb18c653b4731da3268972d784aac33a0e05db01f3774338589ecb9981357",
       "kind": "learned_login/v1",
       "requests": 1,
-      "trust": "verified"
+      "trust": "verified",
+      "verified_ref": "7777777777777777777777777777777777777777777777777777777777777777"
     },
     "learned_login_v2_separate_csrf": {
       "method": "POST",
@@ -21,7 +22,8 @@
       "prep_method": "GET",
       "prep_path": "/api/csrf",
       "requests": 2,
-      "trust": "exploration_observed"
+      "trust": "verified",
+      "verified_ref": "7777777777777777777777777777777777777777777777777777777777777777"
     }
   },
   "execution_failure_reasons": [
@@ -31,7 +33,7 @@
     "candidate_auth_not_sent"
   ],
   "note": "합성 예시다. 값(아이디·비밀번호·세션·CSRF)은 계획·이력·모델 입력에 없다.",
-  "plan_digest": "e56ba88dbfaa10567cbcfd67ec5c99810b16f5f774f82d76adef5c8c27b7cb96",
+  "plan_digest": "09084aa3c7b22d7e0818575d1882e3e65c283b900de84c845813775b7cd26b08",
   "plan_errors": [
     {
       "error": "candidate_auth_preparation_unavailable"
@@ -64,7 +66,8 @@
       "prep_method": "GET",
       "prep_path": "/api/csrf",
       "requests": 2,
-      "trust": "exploration_observed"
+      "trust": "verified",
+      "verified_ref": "7777777777777777777777777777777777777777777777777777777777777777"
     },
     "target_id": "owned-target",
     "target_revision": 3,
