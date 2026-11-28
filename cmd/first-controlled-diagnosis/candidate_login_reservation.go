@@ -22,6 +22,7 @@ import (
 //   - 같은 대상·계정의 선택 로그인은 한 번에 하나다. 로그인을 보낼 수 있는 구간(E② 실행 시작~결과 판정)을 송신 전에 계정 저널에
 //     예약(candidate_login_reserved)으로 남기고, 결과를 남긴 뒤에만 닫는다(candidate_login_finished 또는 해제 줄).
 //     예약을 남기지 못하면 보내지 않는다. 결과를 남기지 못하면 예약이 열린 채로 남아 그 계정의 다음 계획·실행을 막는다.
+//     보호 저널의 실제 append 실패로 저널이 poisoned되면 다른 계정도 레지스트리 검사에서 막힌다.
 //   - 이 프로세스가 잡지 않은 열린 예약(재시작 뒤 남은 예약)은 결과를 모르는 로그인이다. 안전한 쪽(verified 해제, 사유
 //     candidate_login_interrupted)으로만 닫는다. 그 기록도 못 남기면 계속 막는다.
 //   - 계정 저널은 디렉터리 배타 잠금(diagnosisprep 보호 저널 flock)이라 한 프로세스만 쓴다. 그래서 "이 프로세스가 잡은 예약"
@@ -274,7 +275,8 @@ func (r *productTargetRegistry) reserveCandidateLogin(targetID, label, methodSHA
 }
 
 // finishCandidateLogin은 이 프로세스가 잡은 예약을 결과로 닫는다. cleared가 있으면 verified 해제, 아니면 finished 결과로
-// 종료한다. 기록하지 못하면 예약은 열린 채로 남고 더는 이 실행 것으로 보지 않는다(다음 판단 때 결과 불명으로 다시 닫아 본다).
+// 종료한다. 기록하지 못하면 예약은 열린 채로 남고 더는 이 실행 것으로 보지 않는다(저널이 정상이면 다음 판단 때 결과 불명으로
+// 다시 닫아 본다. 보호 저널 자체가 poisoned되면 레지스트리 전체가 막힌다).
 func (r *productTargetRegistry) finishCandidateLogin(targetID, label, ref, finished, cleared string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

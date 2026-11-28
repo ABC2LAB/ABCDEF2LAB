@@ -193,6 +193,41 @@ type failingAppendJournal struct{ productContactJournal }
 
 func (failingAppendJournal) Append(json.RawMessage) error { return errors.New("disk full") }
 
+// 보호 저널은 실제 append가 실패하면 poisoned 상태를 유지한다. 쓰기 전 실패만 흉내 내는
+// failingAppendJournal과 달리 Check도 실패시켜 레지스트리 전체가 닫히는 경계를 확인한다.
+type poisonedAppendJournal struct {
+	productContactJournal
+	poisoned bool
+}
+
+func (j *poisonedAppendJournal) Append(json.RawMessage) error {
+	j.poisoned = true
+	return errors.New("disk full")
+}
+func (j *poisonedAppendJournal) Check() error {
+	if j.poisoned {
+		return errors.New("journal poisoned")
+	}
+	return j.productContactJournal.Check()
+}
+
+func TestCandidateLoginJournalPoisonBlocksOtherAccounts(t *testing.T) {
+	f := newReservationFixture(t)
+	if reason := f.reserve(t, "tester-a", "candidate-1"); reason != "" {
+		t.Fatal(reason)
+	}
+	f.r.accountJournal = &poisonedAppendJournal{productContactJournal: f.r.accountJournal}
+	if err := f.r.finishCandidateLogin(f.rec.Target.ID, "tester-a", "candidate-1", "", candidateLoginClearedFailed); err == nil {
+		t.Fatal("보호 저널 장애에서 예약 종료를 성공으로 처리함")
+	}
+	if _, reason := f.gate("tester-b", ""); reason != candidateReasonUnresolved {
+		t.Fatalf("보호 저널 장애에서 다른 계정의 선택 로그인을 허용함: %q", reason)
+	}
+	if reason := f.reserve(t, "tester-b", "candidate-2"); reason != candidateReasonUnresolved {
+		t.Fatalf("보호 저널 장애에서 다른 계정의 예약을 허용함: %q", reason)
+	}
+}
+
 // ST10·ST11·G06·G07: 해제 기록을 남기지 못하면 그 계정의 다음 계획·실행을 막고(다른 계정은 그대로), 재시작 뒤에도 막힌다. 열린
 // 예약은 재시작만으로 풀리지 않고 결과 불명 해제(candidate_login_interrupted)를 남긴 뒤에만 닫힌다. 그 기록도 못 남기면 계속 막는다.
 func TestCandidateLoginClearFailureFailsClosedAcrossRestart(t *testing.T) {
