@@ -211,9 +211,17 @@ func TestRequestApprovalAPIControlledReceiverOwnedPostgres(t *testing.T) {
 			if hits.Load() != 0 {
 				t.Fatal("sent while pending")
 			}
-			encoded, _ := json.Marshal(pending)
-			if strings.Contains(string(encoded), "do-not-store") || pending.InputPreview["body.public"] != `"review-me"` {
-				t.Fatal("private payload leaked or public input missing")
+			// 승인 미리보기는 경로 · 질의 · 본문을 가리지 않고 싣는다(민준 결정 2026-11-27, 절대규칙 2 DLP 폐기). 요청 원문 자체는
+			// 저장하지 않고(지문만) 미리보기 칸으로만 남는다.
+			want := map[string]string{"query.public": `["value"]`, "query.secret": `["do-not-store"]`, "body.public": `"review-me"`,
+				"body.nested": `{"password":"do-not-store"}`, "body.password": `"do-not-store"`}
+			if pending.Path != "/allowed" || len(pending.InputPreview) != len(want) {
+				t.Fatalf("approval preview: %q %v", pending.Path, pending.InputPreview)
+			}
+			for k, v := range want {
+				if pending.InputPreview[k] != v {
+					t.Fatalf("approval preview %s: %q", k, pending.InputPreview[k])
+				}
 			}
 			server := &Server{m: &Manager{pg: d}, jwtKey: []byte(strings.Repeat("s", 32)), requestApprovals: service}
 			hash, err := server.reloadPassHash()

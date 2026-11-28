@@ -18,7 +18,7 @@
 
 분석은 `requested → checking_stored_evidence → analysis_ready` 순서로 기록한다. 분석 중 장애·재시작은 `failed/analysis_unavailable` 또는 `failed/analysis_interrupted`, 시간 상한 도달은 `failed/analysis_timeout`이 되며, 미확인 호출을 자동 재송신하지 않는다. `GET` 이력의 `analysis`는 모델 제안·digest·사용량을 제공하고 `business_answers`는 질문 번호와 사용자 답변을 제공한다. `analysis_ready`는 취약점 판정이 아니다.
 
-`POST /api/product/tasks/{task}/candidates/{candidate}/verifications/{verification}/answers`는 `{"analysis_digest":"<sha256>","question_index":1,"answer":"<업무 진술>"}`을 받는다. 질문 번호는 분석의 `business_questions` 배열에서 1부터 시작한다. 작업 소유권·후보·분석 판본을 검사하고, 답변은 DLP 처리 후 immutable 행으로 저장한다. 같은 답변 재전송은 200, 다른 답변은 `409 business_answer_conflict`, 변경된 분석 판본은 `409 analysis_changed`, 분석 전 입력은 `409 analysis_not_ready`다. 이 API는 모델·대상 요청을 만들지 않으며 답변 자체는 행동 승인으로 해석하지 않는다.
+`POST /api/product/tasks/{task}/candidates/{candidate}/verifications/{verification}/answers`는 `{"analysis_digest":"<sha256>","question_index":1,"answer":"<업무 진술>"}`을 받는다. 질문 번호는 분석의 `business_questions` 배열에서 1부터 시작한다. 작업 소유권·후보·분석 판본을 검사하고, 답변은 가리지 않고(2026-11-26 DLP 폐기) immutable 행으로 저장한다. 같은 답변 재전송은 200, 다른 답변은 `409 business_answer_conflict`, 변경된 분석 판본은 `409 analysis_changed`, 분석 전 입력은 `409 analysis_not_ready`다. 이 API는 모델·대상 요청을 만들지 않으며 답변 자체는 행동 승인으로 해석하지 않는다.
 
 ## 설치 모델과 비용 경계
 
@@ -34,7 +34,7 @@
 
 `OriginalObservation`은 후보의 최초 `call_ref`와 저장된 E② 관찰의 시도·정책·회차 내용이 일치할 때만 제공한다. 원본 관찰이 없으면 `nil`이며, 후속 모델 단계가 다른 호출의 경로나 현재 대상의 응답을 원본인 것처럼 대체해서는 안 된다. 저장된 관찰에는 원문 URL과 본문이 없으므로, 원본 요청의 정확한 입력이 필요하지만 남아 있지 않은 후보는 추가 확인 없이 재현 성공으로 판정할 수 없다.
 
-`BuildCandidateAnalysisRequest`는 검증된 선택 문맥을 도구 없는 모델 입력으로 제한하고 비밀 형식을 다시 가린다. `ParseCandidateAnalysisProposal`은 후보 ID와 실제 제시한 `call_ref`를 확인하고, 모델이 이 단계에서 `verdict`를 추가하면 거부하며, 반환 설명·질문·행동 문구에도 DLP를 적용한다. 보호 실행기는 설치 모델 어댑터로 이를 한 번 호출하고 검증된 제안을 영속 저장한다. 업무 질문의 답변은 별도 출처로 저장한다. 행동 제안은 별도 승인 전까지 송신 권한이 아니다.
+`BuildCandidateAnalysisRequest`는 검증된 선택 문맥을 도구 없는 모델 입력으로 제한한다(후보 근거는 가리지 않고 길이만 자른다, 2026-11-26 DLP 폐기). `ParseCandidateAnalysisProposal`은 후보 ID와 실제 제시한 `call_ref`를 확인하고, 모델이 이 단계에서 `verdict`를 추가하면 거부하며, 반환 설명·질문·행동 문구는 가리지 않고 저장한다(2026-11-27 ⑥-2). 보호 실행기는 설치 모델 어댑터로 이를 한 번 호출하고 검증된 제안을 영속 저장한다. 업무 질문의 답변은 별도 출처로 저장한다. 행동 제안은 별도 승인 전까지 송신 권한이 아니다.
 
 정상 완료 보고서의 HTML·DOCX에는 의심 후보와 `selected_verification_required`가 남고, 후보 선택 요청이 있으면 최근 처리 상태를 별도로 투영한다. 모델 권고 `confirmed`/`negative`는 저장 내부값일 뿐이다. 공개 API와 보고서에는 각각 `model_supported`(관찰 확인됨·모델 판정), `model_refuted`(아님·모델 판정)로 표시하고 프로그램/E③의 `confirmed`/`negative`와 별도 집계한다. 모델 권고만으로 프로그램 확정 수나 확정 심각도 집계를 늘리지 않는다. 기존 보고서와 이행점검의 원본 근거는 수정하지 않는다.
 

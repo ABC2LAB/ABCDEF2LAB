@@ -2,15 +2,12 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/transmit/budget"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -72,7 +69,7 @@ func approvalReviewFixture(t *testing.T, store *approvalReviewStore) (*RequestAp
 	if err := s.bind(t.Context(), 1, "ARTEX", "run", []E2HTTPFileRule{{Ref: "rule", PathPrefix: "/objects"}}); err != nil {
 		t.Fatal(err)
 	}
-	p := e2proxy.RequestApprovalProposal{OwnerRef: "ARTEX", Method: "GET", URL: "http://example.invalid/objects/private-fixture", ExpiresAt: time.Now().Add(time.Minute), Receipt: e2proxy.Receipt{Scope: transmit.Scope{TaskRef: "1", RunRef: "run"}, RuleRef: "rule", AttemptID: "attempt"}}
+	p := e2proxy.RequestApprovalProposal{OwnerRef: "ARTEX", Method: "GET", URL: "http://example.invalid/objects/private-fixture", ExpiresAt: time.Now().Add(time.Minute), Redact: func(b []byte) []byte { return b }, Receipt: e2proxy.Receipt{Scope: transmit.Scope{TaskRef: "1", RunRef: "run"}, RuleRef: "rule", AttemptID: "attempt"}}
 	return s, p
 }
 func TestRequestApprovalStoreCancellationPreservesCause(t *testing.T) {
@@ -159,11 +156,13 @@ func TestRequestApprovalWakeRechecksCancellationAndExpiry(t *testing.T) {
 		})
 	}
 }
-func TestRequestApprovalPrivatePathIsRedacted(t *testing.T) {
+
+// 비공개 경로도 가리지 않는다(승인 미리보기 가림 걷기, 민준 결정 2026-11-27). 남는 가림은 실행의 RedactRecord 뿐이다.
+func TestRequestApprovalPathIsShown(t *testing.T) {
 	_, p := approvalReviewFixture(t, &approvalReviewStore{})
-	_, path, _, err := approvalPreview(p, E2HTTPFileRule{PathPrefix: "/objects"})
-	if err != nil || path != "/objects/[REDACTED]" {
-		t.Fatalf("private path exposed: %q %v", path, err)
+	_, path, _, err := approvalPreview(p)
+	if err != nil || path != "/objects/private-fixture" {
+		t.Fatalf("path masked: %q %v", path, err)
 	}
 }
 
@@ -325,19 +324,18 @@ func TestRequestApprovalStoppedProjectionWithLiveContexts(t *testing.T) {
 	}
 }
 
-func TestRequestApprovalPublicPathUsesWorkflowMasking(t *testing.T) {
+// 경로 · 질의는 대상 값을 가리지 않고 보인다(이전에는 호스트 공개 지정 + 패턴 가림).
+func TestRequestApprovalPathAndQueryAreShown(t *testing.T) {
 	_, p := approvalReviewFixture(t, &approvalReviewStore{})
-	rule := E2HTTPFileRule{PathPrefix: "/", ApprovalDisplay: RequestApprovalDisplay{PublicPath: true}}
-	for _, target := range []string{"https://owned.test/api/Users", "https://owned.test/api/orders", "https://owned.test/account/person@example.test?token=private"} {
+	for _, target := range []string{"https://owned.test/api/Users", "https://owned.test/account/person@example.test?token=private"} {
 		p.URL = target
-		_, path, preview, err := approvalPreview(p, rule)
+		_, path, preview, err := approvalPreview(p)
 		u, _ := url.Parse(target)
-		if err != nil || path != dlp.DiagnosticText(u.EscapedPath()) || strings.Contains(path, "person@example.test") || strings.Contains(path, "token=") {
-			t.Fatal("unsafe public path", path, err)
+		if err != nil || path != u.EscapedPath() {
+			t.Fatal("path changed", path, err)
 		}
-		raw, _ := json.Marshal(preview)
-		if strings.Contains(string(raw), "private") {
-			t.Fatal("private query exposed")
+		if u.RawQuery != "" && preview["query.token"] != `["private"]` {
+			t.Fatalf("query masked: %v", preview)
 		}
 	}
 }

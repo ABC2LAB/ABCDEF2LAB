@@ -103,7 +103,7 @@ OpenRouter는 일반 HTTP의 명시적 외부 모드만 지원한다. 실제 pro
 ### 일반 HTTP 인계
 
 - `general_http.policy_file`: 기존 `abc2lab.e2-http-host-policy/v1` 형식의 실제 approval/run/reset/case/policy/budget 참조, 승인 기간·한도, 계정/세션, CA 인증서·개인키·감사키·credential 보호 파일과 SHA256, helper·state 경로.
-- 정책의 `approval_mode`는 `confirm_every_request` 또는 `preauthorized_scope`로 명시한다. 확인 모드는 owner `ARTEX`를 요구한다. 운영자는 rule별 `approval_display` 공개 path/query/JSON 키를 검토하며 비밀 원문을 표시 허용으로 지정하지 않는다. 자동 모드에도 같은 task/run 중지 경계가 있다.
+- 정책의 `approval_mode`는 `confirm_every_request` 또는 `preauthorized_scope`로 명시한다. 확인 모드는 owner `ARTEX`를 요구한다. 승인 미리보기는 경로 · 질의 · 본문을 가리지 않고 보인다(2026-11-27, 우리 제어 비밀 · E③ 표식만 가림). rule별 `approval_display`는 형식상 받기만 하고 미리보기에 쓰지 않는다. 자동 모드에도 같은 task/run 중지 경계가 있다.
 - `general_http.authority_file`: 기존 `abc2lab.first-http-authority/v1` 형식의 approval_ref, 실제 operator_uid·task_id·exploration_id, 정책 원문의 policy_sha256, valid_from·valid_until. 운영자가 실제 행과 정책 바이트를 확인한다. 승인 구간은 최대15분이며 정책 유효 구간을 포함해야 한다.
 - `general_http.authority_root`: 같은 전용 보호 namespace에서 단회 시작 marker·FD·배타 잠금을 유지한다. 종료·실패 뒤 같은 승인/root로 재기동하지 않는다. 새 회차는 새 승인과 새 전용 경로가 필요하다.
 - 실제 task/intent는 기동·Planner·Store에서 확인하며 임의 ID를 정책에 넣어 대신하지 않는다. 세션 만료·회수 또는 정책 바이트·실행 문맥 변경 시 재검증한다. A/B 쌍과 등록 GET 자료는 이 모드의 필수 입력이 아니다.

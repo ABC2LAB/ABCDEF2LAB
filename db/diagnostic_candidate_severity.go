@@ -6,8 +6,6 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/Autumn-27/artex/dlp"
 )
 
 const WorkerEstimate = "worker_estimate"
@@ -24,7 +22,8 @@ func (c DiagnosticCandidate) NormalizedSeverity() DiagnosticCandidate {
 	if len(rationale) > MaxSeverityRationaleBytes || !utf8.ValidString(rationale) {
 		return c
 	}
-	rationale = strings.TrimSpace(dlp.DiagnosticText(rationale))
+	// 근거 글은 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기). 형식 규칙(한국어 · 한 줄 · 길이)만 본다.
+	rationale = strings.TrimSpace(rationale)
 	hangul := false
 	for _, r := range rationale {
 		if unicode.IsControl(r) {

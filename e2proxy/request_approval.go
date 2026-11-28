@@ -57,6 +57,9 @@ type RequestApprovalProposal struct {
 	Host       string      `json:"-"`
 	Headers    http.Header `json:"-"`
 	Body       []byte      `json:"-"`
+	// Redact는 승인 미리보기(경로 · 질의 · 본문)에 거는 저장 기록 가림이다(실행의 RedactRecord: 우리 제어 비밀 · E③ 표식).
+	// Body는 이미 이 가림을 거쳤다. 없으면 승인 소비자는 미리보기를 만들지 않는다.
+	Redact func([]byte) []byte `json:"-"`
 }
 
 func (RequestApprovalProposal) String() string   { return "e2proxy.RequestApprovalProposal" }

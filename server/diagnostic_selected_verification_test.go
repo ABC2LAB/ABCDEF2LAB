@@ -139,10 +139,11 @@ func TestSelectedVerificationKeepsCandidateWithoutAutomaticVerdictPostgres(t *te
 	if _, err := ParseCandidateAnalysisProposal([]byte(strings.TrimSuffix(proposal, "}")+`,"verdict":"confirmed"}`), context); err == nil {
 		t.Fatal("model proposed an authoritative verdict in the analysis stage")
 	}
+	// 모델 제안은 저장 기록 · 화면이라 자격 모양 글도 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기).
 	secretProposal := strings.Replace(proposal, "검토 대상", "password=synthetic-analysis-secret", 1)
 	if parsed, err := ParseCandidateAnalysisProposal([]byte(secretProposal), context); err != nil ||
-		strings.Contains(parsed.Claim, "synthetic-analysis-secret") {
-		t.Fatal("model proposal returned a synthetic secret")
+		parsed.Claim != "password=synthetic-analysis-secret" {
+		t.Fatal("model proposal text was masked")
 	}
 	if retry := invoke("POST", selectedBody); retry.Code != 200 {
 		t.Fatalf("idempotent retry status=%d", retry.Code)

@@ -14,7 +14,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/internal/pathscope"
 )
@@ -225,7 +224,9 @@ func riskyRequest(method, path string, query url.Values) bool {
 // 다시 보내지 않게).
 func RiskyRequest(method, path string) bool { return riskyRequest(method, path, nil) }
 
-func safePath(path string) string { return dlp.DiagnosticText(path) }
+// safePath는 화면에 싣는 경로 · 요청 줄이다. 대상 경로와 응답 글은 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기: 제품 기록 ·
+// 화면은 내부 담당자만 본다). 경로 틀 · 크기 상한은 공개 투영(endpoint 바이트 상한)이 따로 맡는다.
+func safePath(path string) string { return path }
 
 // 객체 ID로 볼 조각의 종류다. 허용 판정에 쓰므로 경로 가림 규칙(pathmask, 애매하면 값으로 봄)보다 좁게 잡는다. 긴 이름·
 // 특수문자·대소문자와 숫자가 섞인 조각은 이름이다. 그런 조각까지 값으로 보면 크롤에서 보지 못한 형제 끝점
