@@ -61,3 +61,68 @@ export function preservesURLRunTiming(next: RunTiming, previous: RunTiming): boo
     !(previous.drain_complete === true && previous.finished_at === undefined && next.finished_at !== undefined)
   );
 }
+
+/**
+ * 실행 backend가 실제로 집행하는 회차 시간 상한(docs/contracts/diagnosis-run-timing.md §시간 상한).
+ * model_close_at + model_drain_ms + confirmation_reserve_ms + shutdown_margin_ms = run_deadline_at 이 정확히 성립한다.
+ */
+export type URLTimeLimit = {
+  run_deadline_at: string;
+  model_close_at: string;
+  model_drain_ms: number;
+  confirmation_reserve_ms: number;
+  shutdown_margin_ms: number;
+};
+
+const maxTimeLimitPartMs = 24 * 60 * 60 * 1000;
+
+/** RFC3339Nano UTC 시각의 유닉스 나노초(BigInt). 형식이 틀리면 undefined. */
+export function utcNanos(value: unknown): bigint | undefined {
+  if (!validUTCInstant(value)) return undefined;
+  const [, y, m, d, h, min, s, fraction = ""] =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/.exec(value) ?? [];
+  const date = new Date(0);
+  date.setUTCFullYear(Number(y), Number(m) - 1, Number(d));
+  date.setUTCHours(Number(h), Number(min), Number(s), 0);
+  return BigInt(date.getTime()) * BigInt(1_000_000) + BigInt(fraction.padEnd(9, "0"));
+}
+
+/** 시간 상한 칸의 모양·식을 닫는다. 준비를 시작한 회차에만 있다. 맞지 않으면 undefined. */
+export function parseURLTimeLimit(value: unknown, preparationStarted: boolean): URLTimeLimit | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || !preparationStarted) return undefined;
+  const v = value as Record<string, unknown>;
+  const keys = ["run_deadline_at", "model_close_at", "model_drain_ms", "confirmation_reserve_ms", "shutdown_margin_ms"];
+  if (Object.keys(v).length !== keys.length || !keys.every((key) => Object.hasOwn(v, key))) return undefined;
+  const parts = [v.model_drain_ms, v.confirmation_reserve_ms, v.shutdown_margin_ms];
+  if (!parts.every((n) => Number.isSafeInteger(n) && (n as number) >= 0 && (n as number) <= maxTimeLimitPartMs))
+    return undefined;
+  const deadline = utcNanos(v.run_deadline_at);
+  const close = utcNanos(v.model_close_at);
+  const total = parts.reduce<bigint>((sum, n) => sum + BigInt(n as number) * BigInt(1_000_000), BigInt(0));
+  if (deadline === undefined || close === undefined || close + total !== deadline) return undefined;
+  return {
+    run_deadline_at: v.run_deadline_at as string,
+    model_close_at: v.model_close_at as string,
+    model_drain_ms: v.model_drain_ms as number,
+    confirmation_reserve_ms: v.confirmation_reserve_ms as number,
+    shutdown_margin_ms: v.shutdown_margin_ms as number,
+  };
+}
+
+/** 한 번 받은 시간 상한은 지우거나 바꾸지 않는다. 시작이 확인된 뒤 처음 나타나는 상한(사후 보충)도 받지 않는다. */
+export function preservesURLTimeLimit(
+  next: { started?: boolean; time_limit?: URLTimeLimit },
+  previous: { started?: boolean; time_limit?: URLTimeLimit },
+): boolean {
+  const a = previous.time_limit;
+  const b = next.time_limit;
+  if (a === undefined) return !(previous.started === true && b !== undefined);
+  return (
+    b !== undefined &&
+    sameURLRunTime(a.run_deadline_at, b.run_deadline_at) &&
+    sameURLRunTime(a.model_close_at, b.model_close_at) &&
+    a.model_drain_ms === b.model_drain_ms &&
+    a.confirmation_reserve_ms === b.confirmation_reserve_ms &&
+    a.shutdown_margin_ms === b.shutdown_margin_ms
+  );
+}

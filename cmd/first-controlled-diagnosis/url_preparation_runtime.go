@@ -516,7 +516,7 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		return errPreparation
 	}
 	diagnostics.next("e2_policy", "e2_policy_failed")
-	launch, err := b.issue(l, execution.Job.ID, actual)
+	launch, err := b.issue(l, execution.Job.ID, actual, execution.Job.SourceDigest)
 	// 실행 디렉터리에 옮긴 시험 계정 자격 사본은 실행이 끝나면(마감·실패·중지·결과 불명 모두) 지운다. 실행 디렉터리는
 	// 저장 보고서·작업대 조회 때문에 남으므로 사본이 쌓이지 않게 한다(#551 윤재상 리뷰). refresh_session이 실행 중에
 	// 다시 읽으므로 인증 준비 직후가 아니라 실행이 끝날 때 지운다.
@@ -580,8 +580,18 @@ func (b *urlPreparationRuntime) Execute(parent context.Context, execution diagno
 		e3Confirmation = server.FirstDiagnosisE3Hooks{Run: confirmation.run, Stopped: confirmation.stopped}
 		confirmShare, shareErr = confirmation.timeShare()
 	}
-	if end, ok := hard.Deadline(); !ok || shareErr != nil || d.supervisor == nil || d.supervisor.SetTimeBudget(urlTimeBudgetClose(end, time.Duration(l.profile.Budget.DurationSeconds)*time.Second, time.Duration(launch.ShutdownTimeoutSeconds)*time.Second, confirmShare)) != nil ||
+	end, hasEnd := hard.Deadline()
+	closeAt, drain := urlTimeBudgetClose(end, time.Duration(l.profile.Budget.DurationSeconds)*time.Second, time.Duration(launch.ShutdownTimeoutSeconds)*time.Second, confirmShare)
+	if !hasEnd || shareErr != nil || d.supervisor == nil || d.supervisor.SetTimeBudget(closeAt, drain) != nil ||
 		d.supervisor.SetGoalDigests(goalCommonSHA, goalProductSHA) != nil || e3Confirmation.Run != nil && d.supervisor.SetE3Confirmation(e3Confirmation) != nil {
+		cleanup, done := launchCleanupContext(context.WithoutCancel(parent), launch)
+		closeErr := d.Close(cleanup)
+		done()
+		return unknown("gateway_unavailable", closeErr == nil)
+	}
+	// 화면이 남은 시간을 스스로 추정하지 않게, 감독자에 넣은 그 값을 회차 상태에 한 번 게시한다(계약 diagnosis-run-timing.md
+	// §시간 상한). 게시하지 못하면 상태와 집행이 어긋나므로 시작하지 않는다.
+	if limit := urlTimeLimit(end, closeAt, drain, confirmShare); limit == nil || p.set(func(u *diagnosisprep.Update) { u.TimeLimit = limit }) != nil {
 		cleanup, done := launchCleanupContext(context.WithoutCancel(parent), launch)
 		closeErr := d.Close(cleanup)
 		done()
@@ -747,6 +757,19 @@ func urlTimeBudgetClose(end time.Time, budget, shutdown, confirm time.Duration) 
 	drain := min(server.FirstDiagnosisTimeBudgetDrain, budget/urlTimeCloseShare)
 	margin := min(shutdown, budget/urlTimeCloseShare)
 	return end.Add(-confirm - drain - margin), drain
+}
+
+// urlTimeLimit은 감독자에 넣은 시간 상한을 회차 상태 값으로 옮긴다. 정리 여유는 나머지(상한 − 모델 마감 − 유예 − 확정 몫)라
+// 식이 늘 맞는다. 밀리초로 정확히 나타낼 수 없거나 음수가 되는 값은 만들지 않는다(nil: 추정 값을 게시하지 않음).
+func urlTimeLimit(end, closeAt time.Time, drain, confirm time.Duration) *diagnosisprep.TimeLimit {
+	margin := end.Sub(closeAt) - drain - confirm
+	for _, d := range []time.Duration{drain, confirm, margin} {
+		if d < 0 || d > 24*time.Hour || d%time.Millisecond != 0 {
+			return nil
+		}
+	}
+	return &diagnosisprep.TimeLimit{RunDeadlineAt: end.UTC(), ModelCloseAt: closeAt.UTC(), ModelDrainMS: drain.Milliseconds(),
+		ConfirmationReserveMS: confirm.Milliseconds(), ShutdownMarginMS: margin.Milliseconds()}
 }
 
 // urlStoppedUpdate는 실행 문맥이 끝나 멈춘 실행(운영자 중지·대상 철회·결속 계정 변경·상태 조회 포기)의 마감 갱신이다.

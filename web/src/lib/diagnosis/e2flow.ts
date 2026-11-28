@@ -47,7 +47,21 @@ export type E2Attempt = {
   status_code: number;
   response_truncated: boolean;
   at: string;
+  /** 로그인 시도 판정기가 보내기 전에 막은 고정 사유(workbench-live-data.md §4.2). policy_denied 결과 행에만 있다. */
+  login_refusal?: E2LoginRefusal;
 };
+/** 로그인 거절 상세 사유. 서버 cmd url_login_refusals.go와 같은 닫힌 목록이다. 문구는 화면이 정한다. */
+export const E2_LOGIN_REFUSALS = [
+  "login_attempts_exhausted",
+  "login_history_unavailable",
+  "login_verification_pending",
+  "browser_account_in_use",
+] as const;
+export type E2LoginRefusal = (typeof E2_LOGIN_REFUSALS)[number];
+/** 서버가 준 로그인 거절 사유를 읽는다. 없거나 목록 밖(새 서버의 새 사유)이면 undefined — 기존 policy_denied 표시를 쓴다. */
+export function e2LoginRefusal(value: unknown): E2LoginRefusal | undefined {
+  return E2_LOGIN_REFUSALS.find((code) => code === value);
+}
 export type E2Call = {
   call_ref: string;
   intent_id: number;
@@ -134,6 +148,7 @@ function attempt(v: unknown): E2Attempt {
     "status_code",
     "response_truncated",
     "at",
+    "login_refusal",
   ]);
   for (const key of [
     "forward_attempted",
@@ -150,6 +165,18 @@ function attempt(v: unknown): E2Attempt {
   )
     return invalid();
   if (v.rule_ref !== "" && !ref(v.rule_ref)) return invalid();
+  // 로그인 거절 사유는 보내지 않은 policy_denied 결과 행에만 온다. 다른 행에 오면 서버 계약 위반이다.
+  if (
+    v.login_refusal !== undefined &&
+    (typeof v.login_refusal !== "string" ||
+      v.stage !== "result" ||
+      v.method !== "POST" ||
+      v.decision !== "denied" ||
+      v.reason !== "policy_denied" ||
+      v.forward_attempted !== false)
+  )
+    return invalid();
+  const loginRefusal = e2LoginRefusal(v.login_refusal);
   return {
     attempt_id: v.attempt_id,
     index: v.index,
@@ -171,6 +198,7 @@ function attempt(v: unknown): E2Attempt {
     status_code: v.status_code,
     response_truncated: v.response_truncated as boolean,
     at: v.at,
+    ...(loginRefusal ? { login_refusal: loginRefusal } : {}),
   };
 }
 export function parseE2Flow(v: unknown): E2Flow {

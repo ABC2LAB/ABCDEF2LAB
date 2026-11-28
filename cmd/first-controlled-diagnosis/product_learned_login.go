@@ -35,8 +35,20 @@ import (
 func (ll *productLearnedLogin) verifySelection(label string, sel learnedlogin.Selection) learnedlogin.Reason {
 	ll.mu.Lock()
 	audit := ll.audit
+	evidence, evidencePresent, evidenceErr := ll.explorationEvidence, ll.explorationEvidencePresent, ll.explorationEvidenceErr
 	ll.mu.Unlock()
-	provenance, reason := learnedlogin.VerifyTransport(sel.Row, ll.runRef, audit)
+	provenance, reason := learnedlogin.Provenance(""), learnedlogin.Reason("")
+	if sel.Row.Stage == learnedlogin.StageExploration && (ll.explorationEvidenceRequired || evidencePresent || evidenceErr != nil) {
+		if ll.invalidExplorationEvidence() || evidenceErr != nil || evidence == nil || sel.Row.RunRef != ll.runRef {
+			reason = learnedlogin.ReasonTransportUnverified
+		} else {
+			provenance, reason = learnedlogin.VerifyExplorationEvidence(sel.Row, *evidence, ll.jobID, ll.targetID, ll.revision)
+		}
+	} else {
+		// Prior runs have no boundary projection. Keep their explicit
+		// exploration_unaudited status until the team decides migration policy.
+		provenance, reason = learnedlogin.VerifyTransport(sel.Row, ll.runRef, audit)
+	}
 	ll.mu.Lock()
 	defer ll.mu.Unlock()
 	if ll.provenance == nil {
@@ -51,6 +63,25 @@ func (ll *productLearnedLogin) verifySelection(label string, sel learnedlogin.Se
 	}
 	ll.provenance[label] = provenance
 	return ""
+}
+
+// The protected projection and the login rows are separate inputs. Compare
+// both with the current run policy even when a v2 file appears in a legacy run.
+func (ll *productLearnedLogin) invalidExplorationEvidence() bool {
+	if ll.explorationEvidenceErr != nil {
+		return true
+	}
+	if !ll.explorationEvidencePresent {
+		return ll.explorationEvidenceRequired
+	}
+	e := ll.explorationEvidence
+	if e == nil || e.RunRef != ll.runRef || e.JobID != ll.jobID || e.TargetRef != ll.targetID || e.TargetRevision != ll.revision {
+		return true
+	}
+	if e.Schema == learnedlogin.ExplorationEvidenceSchema {
+		return ll.taskID <= 0 || e.TaskID != strconv.FormatInt(ll.taskID, 10) || ll.sourceDigest == "" || e.SourceDigest != ll.sourceDigest
+	}
+	return ll.explorationEvidenceRequired
 }
 
 // setAudit은 이 실행의 E② 감사 결과 조회를 붙인다(확정 단계가 실행을 받은 뒤).
@@ -206,8 +237,10 @@ type productLearnedLogin struct {
 	jobID    string
 	targetID string
 	// revision은 회차를 시작할 때 결속한 대상 판이다.
-	revision uint64
-	runRef   string
+	revision     uint64
+	taskID       int64
+	sourceDigest string
+	runRef       string
 	// credentials는 실행 정책에 결속한 계정별 자격 판이다.
 	credentials map[string]string
 	selections  map[string]learnedlogin.Selection
@@ -224,9 +257,15 @@ type productLearnedLogin struct {
 	// audit은 이 실행의 E② 감사 결과 조회다(transport_ref 대조). provenance는 계정별 출처 확인 수준이다.
 	audit      func(callRef, attemptID string) (learnedlogin.AuditedSend, bool)
 	provenance map[string]learnedlogin.Provenance
-	contrast   *server.E2HTTPLoginContrastResult
-	attempts   map[string]*productProgramLogin
-	identity   map[string]e3contract.Observation
+	// Boundary observations are handed over independently from login-attempt
+	// rows. A damaged present file blocks reuse; absent means a legacy run.
+	explorationEvidence         *learnedlogin.ExplorationEvidence
+	explorationEvidencePresent  bool
+	explorationEvidenceErr      error
+	explorationEvidenceRequired bool
+	contrast                    *server.E2HTTPLoginContrastResult
+	attempts                    map[string]*productProgramLogin
+	identity                    map[string]e3contract.Observation
 }
 
 // productProgramLogin은 확정 단계에서 계정 하나를 배운 방법으로 다시 로그인한 결과다.
@@ -252,6 +291,11 @@ func newProductLearnedLogin(registry *productTargetRegistry, runsDir, jobID stri
 	}
 	var skipped int
 	ll.rows, skipped, ll.rowsErr = learnedlogin.ReadConfirmationHistory(filepath.Join(runsDir, jobID, "state"))
+	if evidence, found, err := learnedlogin.ReadExplorationEvidence(filepath.Join(runsDir, jobID, "state")); err != nil {
+		ll.explorationEvidencePresent, ll.explorationEvidenceErr = found, err
+	} else if found {
+		ll.explorationEvidencePresent, ll.explorationEvidence = true, &evidence
+	}
 	if ll.rowsErr != nil {
 		log.Printf("[e3-confirmation] 회차 %s 로그인 시도 기록을 읽지 못함 (%s, 형식 오류 %d건)", jobID, learnedlogin.ReasonRecordInvalid, skipped)
 	} else {
@@ -266,6 +310,9 @@ func newProductLearnedLogin(registry *productTargetRegistry, runsDir, jobID stri
 func (ll *productLearnedLogin) plan(label string) (learnedlogin.Learned, string, learnedlogin.Reason) {
 	if ll.rowsErr != nil {
 		return learnedlogin.Learned{}, "", learnedlogin.ReasonRecordInvalid
+	}
+	if ll.invalidExplorationEvidence() {
+		return learnedlogin.Learned{}, "", learnedlogin.ReasonTransportUnverified
 	}
 	credential, bound := ll.credentials[label]
 	if !bound {

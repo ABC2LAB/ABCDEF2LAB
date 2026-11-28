@@ -1,0 +1,163 @@
+{
+  "note": "Synthetic partial response. evidence_review appears on a completed llm/v1 verification whose stored observations carry response_evidence; it is omitted for older runs.",
+  "stored_observation_response_evidence_example": {
+    "attempt_ref": "r13-attempt-1",
+    "sequence": 11,
+    "observation_digest": "5e112d669c51bec4c9dc318ff38b1cbe3df489ced979cfbed31dfcaa4babb5ae",
+    "evidence": {
+      "schema": "jindo.candidate-response-evidence/v1",
+      "state": "complete",
+      "media_class": "json",
+      "status_code": 200,
+      "body_bytes": 52,
+      "headers": {},
+      "json": {
+        "root_type": "object",
+        "root_length": 1,
+        "fields": [
+          {
+            "path": "profile",
+            "type": "object",
+            "count": 1,
+            "length": 3
+          },
+          {
+            "path": "profile.canRefund",
+            "type": "bool",
+            "count": 1,
+            "bool": true,
+            "value_digest": "10b41a5909d520b3"
+          },
+          {
+            "path": "profile.id",
+            "type": "number",
+            "count": 1,
+            "value_digest": "69ed6698c77c9062"
+          },
+          {
+            "path": "profile.role",
+            "type": "string",
+            "count": 1,
+            "shape": "text",
+            "value_digest": "ca2dfc2df91799dd"
+          }
+        ]
+      }
+    },
+    "digest": "90e665eb58f3b32ace96b23e8e30814d60f7e6ec1f392dbe47fd5dc5cd7db5e1"
+  },
+  "verifications": [
+    {
+      "evidence_review": {
+        "version": "selected/evidence-gate-v1",
+        "requirement": "response_structure",
+        "comparisons": [
+          {
+            "left": {
+              "call_ref": "r13-call-0",
+              "attempt_ref": "r13-attempt-0",
+              "observation_digest": "4111629da5ba601fa85059c198405e2936d3af282c3f05e0c3919e3b811c53f8"
+            },
+            "right": {
+              "call_ref": "r13-call-1",
+              "attempt_ref": "r13-attempt-1",
+              "observation_digest": "5e112d669c51bec4c9dc318ff38b1cbe3df489ced979cfbed31dfcaa4babb5ae"
+            },
+            "comparison": {
+              "schema": "jindo.candidate-response-comparison/v1",
+              "left": "original",
+              "right": "reproduction",
+              "relation": "equivalent",
+              "similarity": 100,
+              "body_bytes": [
+                52,
+                52
+              ]
+            }
+          },
+          {
+            "left": {
+              "call_ref": "r13-call-0",
+              "attempt_ref": "r13-attempt-0",
+              "observation_digest": "4111629da5ba601fa85059c198405e2936d3af282c3f05e0c3919e3b811c53f8"
+            },
+            "right": {
+              "call_ref": "r13-call-2",
+              "attempt_ref": "r13-attempt-2",
+              "observation_digest": "66ede854d934e04c7d0358dfd89048085cb4f295eac187f6f75c2a526992d9a4"
+            },
+            "comparison": {
+              "schema": "jindo.candidate-response-comparison/v1",
+              "left": "original",
+              "right": "normal_control",
+              "relation": "different",
+              "differences": [
+                {
+                  "kind": "field_bool",
+                  "path": "profile.canRefund",
+                  "left": "true",
+                  "right": "false"
+                },
+                {
+                  "kind": "field_value",
+                  "path": "profile.role",
+                  "left": "value_a",
+                  "right": "value_b"
+                }
+              ],
+              "similarity": 100,
+              "body_bytes": [
+                52,
+                56
+              ]
+            }
+          },
+          {
+            "left": {
+              "call_ref": "r13-call-1",
+              "attempt_ref": "r13-attempt-1",
+              "observation_digest": "5e112d669c51bec4c9dc318ff38b1cbe3df489ced979cfbed31dfcaa4babb5ae"
+            },
+            "right": {
+              "call_ref": "r13-call-2",
+              "attempt_ref": "r13-attempt-2",
+              "observation_digest": "66ede854d934e04c7d0358dfd89048085cb4f295eac187f6f75c2a526992d9a4"
+            },
+            "comparison": {
+              "schema": "jindo.candidate-response-comparison/v1",
+              "left": "reproduction",
+              "right": "normal_control",
+              "relation": "different",
+              "differences": [
+                {
+                  "kind": "field_bool",
+                  "path": "profile.canRefund",
+                  "left": "true",
+                  "right": "false"
+                },
+                {
+                  "kind": "field_value",
+                  "path": "profile.role",
+                  "left": "value_a",
+                  "right": "value_b"
+                }
+              ],
+              "similarity": 100,
+              "body_bytes": [
+                52,
+                56
+              ]
+            }
+          }
+        ],
+        "confirm_allowed": true,
+        "negative_allowed": true
+      },
+      "latest": {
+        "process_state": "completed",
+        "reason": "model_evidence_checked",
+        "verdict": "model_supported"
+      }
+    }
+  ]
+}
