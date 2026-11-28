@@ -34,7 +34,7 @@ func (a *separateCSRFApp) serve(w http.ResponseWriter, r *http.Request) {
 		pre, token := fmt.Sprintf("pre-%04d", a.n), fmt.Sprintf("token-%08d", a.n)
 		a.issued[pre] = token
 		a.mu.Unlock()
-		// No Path: the browser default for /allowed/csrf is /allowed.
+		// Path가 없으면 /allowed/csrf의 브라우저 기본 Path는 /allowed다.
 		http.SetCookie(w, &http.Cookie{Name: "pre", Value: pre})
 		if a.html {
 			w.Header().Set("Content-Type", "text/html")

@@ -166,9 +166,8 @@ func validHistoryRow(row Row) bool {
 	return false
 }
 
-// Earlier v2 trackers could record a partial or multi-GET source without
-// source_unresolved. Preserve those protected rows and failure counts while
-// refusing to reconstruct a method from them.
+// 이전 V2 추적기는 일부 출처나 여러 GET의 출처를 source_unresolved 없이 기록할 수 있었다.
+// 해당 보호 행과 실패 횟수는 보존하되, 그 행에서 로그인 방법을 재구성하지 않는다.
 func replayableRowFieldSources(row Row) bool {
 	if len(row.FieldSources) == 0 {
 		return true

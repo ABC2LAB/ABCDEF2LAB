@@ -8,8 +8,7 @@ import (
 	"github.com/Autumn-27/artex/learnedlogin"
 )
 
-// sourceResponse lives only in the tracker memory. Its token and cookies are
-// never copied into a login-attempt row or a learned method.
+// sourceResponse는 추적기 메모리에만 존재한다. 토큰과 쿠키를 로그인 시도 행이나 학습 방법에 복사하지 않는다.
 type sourceResponse struct {
 	ref, context, path string
 	status             int
@@ -27,8 +26,7 @@ func (t *Tracker) rememberSourceLocked(req Request, resp Response) {
 	if err != nil || media != "application/json" && media != "text/html" && media != "application/xhtml+xml" {
 		return
 	}
-	// A partial JSON or HTML prefix may already contain a token. The tracker
-	// cannot prove completion for a body without an exact length.
+	// 잘린 JSON·HTML 앞부분에도 토큰이 있을 수 있다. 정확한 본문 길이가 없으면 완료를 입증할 수 없다.
 	length := resp.Header.Get("Content-Length")
 	n, lengthErr := strconv.ParseInt(length, 10, 64)
 	if lengthErr != nil || n != int64(len(resp.Body)) {
@@ -55,8 +53,7 @@ func (t *Tracker) fieldSourceLocked(req Request, destination, value string) (Row
 		if source.context != req.Context || source.path == cleanPath(req.Path) || source.ref == req.TransportRef {
 			continue
 		}
-		// V2 issues exactly one bare GET. If the original issuance required
-		// prior authentication, that request cannot be faithfully replayed.
+		// V2는 인증 정보를 담지 않은 GET 한 건만 보낸다. 원래 발급에 선행 인증이 필요했다면 재현할 수 없다.
 		if !replayableSourceHeaders(source.requestHeader) {
 			continue
 		}
@@ -68,8 +65,7 @@ func (t *Tracker) fieldSourceLocked(req Request, destination, value string) (Row
 		jar.AbsorbForLogin(learnedlogin.Response{Status: source.status, Header: source.header}, source.path, cleanPath(req.Path), t.cfg.Origin, t.cfg.Now())
 		cookies := requestCookies(req.Header)
 		if source.context == "" && len(jar) == 0 {
-			// Direct/E② requests have no browser-context identifier. A
-			// response cookie is required to bind this GET to the login.
+			// 직접 E② 요청에는 브라우저 문맥 식별자가 없다. 응답 쿠키가 있어야 발급 GET을 로그인과 결속한다.
 			continue
 		}
 		bound := true
@@ -89,9 +85,8 @@ func (t *Tracker) fieldSourceLocked(req Request, destination, value string) (Row
 	return result, count == 1
 }
 
-// The E③ preparation GET sends no captured authentication context. Accept
-// only ordinary representation-negotiation headers from the original GET;
-// unknown or account-specific headers could be required by the issuer.
+// E③ 준비 GET은 포착된 인증 문맥을 보내지 않는다. 발급자가 미확인 헤더나 계정별 헤더에
+// 의존할 수 있으므로 원래 GET의 일반 콘텐츠 협상 헤더만 허용한다.
 func replayableSourceHeaders(header http.Header) bool {
 	for name := range header {
 		canonical := http.CanonicalHeaderKey(name)

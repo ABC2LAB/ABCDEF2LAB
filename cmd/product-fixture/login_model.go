@@ -209,9 +209,8 @@ func workflowLoginModel(cfg workflowLoginConfig) http.Handler {
 				account := accounts[index]
 				switch phase {
 				case 0:
-					// Each Bash call has its own sandbox. Fetch and use the
-					// issuance cookie inside one call, while E2 still observes
-					// two independent HTTP requests and their order.
+					// Bash 호출마다 샌드박스가 다르므로 발급 쿠키는 한 호출 안에서 받고 사용한다.
+					// E②는 서로 독립적인 HTTP 요청 두 건과 순서를 계속 관찰한다.
 					bash("wl-csrf-login-"+account.label, csrfLoginCommand(cfg, account, index, target))
 				case 1:
 					match := tokenPattern.FindStringSubmatch(toolResults[len(toolResults)-1])
