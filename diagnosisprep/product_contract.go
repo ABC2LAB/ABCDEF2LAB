@@ -179,6 +179,50 @@ type ProductAccount struct {
 	// LoginMethodMissing은 자격이 등록돼 있지만 대상의 로그인 방식이 설정되지 않은 경우였다. 9칸-1부터 서버는 내지 않는다(자격이
 	// 있으면 로그인 방식 없이도 결속한다). 칸은 9칸-2에서 걷는다.
 	LoginMethodMissing bool `json:"login_method_missing,omitempty"`
+	// LoginMethod는 모델이 배운 로그인 방법 상태다(docs/contracts/model-login-attempts.md §6-1-3). 목록·변경 응답에 늘 싣는다.
+	LoginMethod *ProductLoginMethod `json:"login_method,omitempty"`
+}
+
+// ProductLoginMethod는 계정의 배운 로그인 방법 상태다(계약 §6-1-3). 아이디·비밀번호·세션 값은 없다.
+type ProductLoginMethod struct {
+	// State는 none(쓸 수 있는 방법 없음)·learned(배움)·verified(검증됨)다.
+	State string `json:"state"`
+	// ClearedReason은 state none이고 예전 방법이 무효가 됐을 때만: target_reapproved·credential_changed.
+	ClearedReason string                     `json:"cleared_reason,omitempty"`
+	Learned       *ProductLoginMethodLearned `json:"learned,omitempty"`
+	Verified      *ProductLoginMethodProof   `json:"verified,omitempty"`
+	Method        *ProductLoginMethodObject  `json:"method,omitempty"`
+}
+
+// ProductLoginMethodLearned는 방법을 배운 근거다. Evidence는 observed_contrast·probe_contrast다.
+type ProductLoginMethodLearned struct {
+	At         time.Time `json:"at"`
+	RunRef     string    `json:"run_ref"`
+	Stage      string    `json:"stage"`
+	AttemptRef string    `json:"attempt_ref"`
+	Evidence   string    `json:"evidence"`
+}
+
+// ProductLoginMethodProof는 검증 근거다. Evidence는 e3_relogin이다.
+type ProductLoginMethodProof struct {
+	At         time.Time `json:"at"`
+	RunRef     string    `json:"run_ref"`
+	AttemptRef string    `json:"attempt_ref"`
+	Evidence   string    `json:"evidence"`
+}
+
+// ProductLoginMethodObject는 값 없는 방법 객체다(계약 §6-1-2 칸 이름 그대로).
+type ProductLoginMethodObject struct {
+	HTTPMethod         string   `json:"http_method"`
+	Path               string   `json:"path"`
+	Format             string   `json:"format"`
+	IdentifierField    string   `json:"identifier_field"`
+	PasswordField      string   `json:"password_field"`
+	OtherFields        []string `json:"other_fields"`
+	FieldsFromResponse []string `json:"fields_from_response"`
+	SessionSource      string   `json:"session_source"`
+	SessionNames       []string `json:"session_names"`
+	SessionSentAs      string   `json:"session_sent_as"`
 }
 
 // 대상 계정 상한·라벨 형식이다. 라벨은 소문자·숫자·밑줄·하이픈만 받아 사용자명·이메일 원문을 넣지 못하게 한다.

@@ -199,11 +199,16 @@ it("lost decision response keeps resend disabled even after pending GET", async 
   expect(vi.mocked(apiFetch).mock.calls.filter(([, i]) => i?.method === "POST")).toHaveLength(1);
 });
 
-it("승인 미리보기는 서버 키(query.<키> · body.<키> · 표시 제한)를 모두 보이고 대상 · 만료 · attempt 를 함께 보인다", () => {
-  const limit = "호스트가 공개로 지정한 경로와 입력만 표시합니다. 비공개 입력·상태 변경 영향은 확인되지 않았습니다.";
+it("승인 미리보기는 서버가 준 경로 · 질의 · 본문 칸을 가리지 않고 모두 보이고 대상 · 크기 · 만료 · attempt 를 함께 보인다", () => {
+  // 서버(approvalPreview, 2026-11-27 가림 걷기): 질의 · 본문 칸 전부, 긴 값은 앞부분과 잘린 바이트 수
   const shaped = {
     ...row,
-    input_preview: { "query.mode": '["edit"]', "body.role": '"customer"', "표시 제한": limit },
+    input_preview: {
+      "query.mode": '["edit"]',
+      "body.role": '"customer"',
+      "body.password": '"seeded-pass-77"',
+      "body.bio": `"${"가".repeat(84)}…(뒤 352바이트 잘림)`,
+    },
   } as RequestApproval;
   render(
     <>
@@ -213,9 +218,22 @@ it("승인 미리보기는 서버 키(query.<키> · body.<키> · 표시 제한
   );
   expect(screen.getByText(/POST \/api\/Users/)).toHaveTextContent("대상: https://owned.test");
   expect(screen.getByText(/query\.mode: \["edit"\]/)).toBeInTheDocument();
-  expect(screen.getByText(/body\.role: "customer"/)).toBeInTheDocument();
-  expect(screen.getByRole("note")).toHaveTextContent(`표시 제한: ${limit}`);
+  expect(screen.getByText(/body\.password: "seeded-pass-77"/)).toBeInTheDocument();
+  expect(screen.getByText(/body\.bio: .*…\(뒤 352바이트 잘림\)/)).toBeInTheDocument();
+  expect(screen.queryByRole("note")).toBeNull();
   expect(screen.getByText(/일시정지로 연장하지 않음$/)).toBeInTheDocument();
   expect(screen.getByText("attempt-owned")).toBeInTheDocument();
-  expect(screen.getByText("24 bytes · 원문 비공개")).toBeInTheDocument();
+  expect(screen.getByText("24 bytes")).toBeInTheDocument();
+  expect(screen.queryByText(/원문 비공개/)).toBeNull();
+});
+
+it("질의 · 본문이 없는 요청은 빈 칸 안내만, 예전 승인 기록의 '표시 제한' 안내는 그대로 보인다", () => {
+  const empty = { ...row, input_preview: {} } as RequestApproval;
+  const { unmount } = render(<ApprovalRequestCode row={empty} />);
+  expect(screen.getByText(/\(query · body 입력 없음\)/)).toBeInTheDocument();
+  expect(screen.queryByText(/공개로 지정된/)).toBeNull();
+  unmount();
+  const limit = "호스트가 공개로 지정한 경로와 입력만 표시합니다. 비공개 입력·상태 변경 영향은 확인되지 않았습니다.";
+  render(<ApprovalRequestCode row={{ ...row, input_preview: { "표시 제한": limit } } as RequestApproval} />);
+  expect(screen.getByRole("note")).toHaveTextContent(`표시 제한: ${limit}`);
 });

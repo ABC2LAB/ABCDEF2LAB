@@ -503,6 +503,9 @@ func (c *productE3Confirmation) learnedLoginState() *productLearnedLogin {
 	for _, a := range policy.Auth.Accounts {
 		credentials[a.Label] = a.Credential.SHA256
 	}
+	// 배운 방법(learned)을 확정 단계 재사용·verified보다 먼저 남긴다(§6-1, ⑤-B). verified는 그 방법이 지금 것이 된 뒤의
+	// 검증만 인정한다.
+	c.registry.learnLoginMethods(c.runsDir, c.jobID, c.target)
 	c.learned = newProductLearnedLogin(c.registry, c.runsDir, c.jobID, c.target, policy.RunRef, credentials, c.identityPath)
 	c.learned.explorationEvidenceRequired = policy.ExplorationLoginEvidence == "required/v2"
 	c.learned.taskID = taskID

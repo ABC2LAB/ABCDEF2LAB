@@ -216,13 +216,14 @@ export function precheck(row: RequestApproval, fresh: RequestApproval): string |
   return null;
 }
 
-/** 서버가 붙이는 미리보기 안내 키. 값은 서버 문장 그대로 보여 준다. */
+/** 예전 서버(2026-11-27 전)가 붙이던 미리보기 안내 키. 저장된 예전 승인 기록에 남아 있으면 서버 문장 그대로 보여 준다. */
 const PREVIEW_LIMIT_KEY = "표시 제한";
 
 /**
  * 보낼 요청: 메서드 · 경로 · 대상(scheme 포함)과 서버가 준 미리보기 전부.
- * 서버(request_approvals.go approvalPreview)는 호스트가 공개로 지정한 `query.<키>` · `body.<키>` 와
- * `표시 제한` 안내만 보낸다. 원문 본문은 공개하지 않으며, 화면은 키를 바꾸거나 고르지 않고 그대로 보인다.
+ * 서버(request_approvals.go approvalPreview)는 질의 칸 `query.<키>` · 본문 칸 `body.<키>`(JSON 이 아니면 `body`)를 가리지 않고
+ * 모두 보낸다(2026-11-27 가림 걷기, 우리 제어 비밀 · E③ 표식만 서버가 가림). 긴 값은 서버가 앞부분과 잘린 바이트 수로 준다.
+ * 화면은 키를 바꾸거나 고르지 않고 그대로 보인다.
  */
 export function ApprovalRequestCode({ row }: { row: RequestApproval }) {
   const entries = Object.entries(row.input_preview);
@@ -231,7 +232,7 @@ export function ApprovalRequestCode({ row }: { row: RequestApproval }) {
   const text = [
     `${row.method} ${row.path}`,
     `대상: ${row.target_origin}`,
-    ...(shown.length ? shown.map(([k, v]) => `${k}: ${v}`) : ["(공개로 지정된 query · body 입력 없음)"]),
+    ...(shown.length ? shown.map(([k, v]) => `${k}: ${v}`) : ["(query · body 입력 없음)"]),
   ].join("\n");
   return (
     <>
@@ -250,7 +251,7 @@ export function ApprovalFacts({ row }: { row: RequestApproval }) {
   return (
     <Kv
       rows={[
-        ["본문 크기", `${row.body_bytes} bytes · 원문 비공개`],
+        ["본문 크기", `${row.body_bytes} bytes`],
         ["승인 만료", `${clockOf(row.expires_at) || row.expires_at} · 일시정지로 연장하지 않음`],
         ["실제 attempt", row.attempt_id],
         ["상태", `${APPROVAL_STATE_TEXT[row.state]} · ${row.execution_state}`],

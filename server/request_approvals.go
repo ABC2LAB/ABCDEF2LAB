@@ -1,20 +1,24 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/dlp"
 	"github.com/Autumn-27/artex/e2proxy"
 	"github.com/Autumn-27/artex/internal/diagnosticlog"
 )
@@ -95,53 +99,118 @@ func (s *RequestApprovalService) bind(ctx context.Context, task int64, owner, ru
 	s.bindings[task] = existing
 	return nil
 }
-func approvalSecretKey(key string) bool {
-	key = strings.ToLower(key)
-	for _, secret := range []string{"password", "passwd", "secret", "token", "cookie", "authorization", "credential", "api_key", "apikey", "session"} {
-		if strings.Contains(key, secret) {
-			return true
-		}
+
+// 승인 미리보기의 값 하나 · 칸 수 상한이다. 넘는 값은 앞부분과 잘린 바이트 수를, 넘는 칸은 남은 칸 수를 남긴다(조용히 빼지
+// 않는다, 민준 결정 2026-11-27). 승인 기록(JSONB) 한 행이 커지지 않게 둔다.
+const (
+	approvalPreviewValueBytes = 256
+	approvalPreviewEntries    = 64
+	approvalPreviewOmittedKey = "생략"
+)
+
+// approvalPreviewText는 미리보기 값 하나다. 올바른 UTF-8 로 바꾸고, 상한을 넘으면 글자 경계에서 앞부분만 남기고 잘린 바이트
+// 수를 붙인다.
+func approvalPreviewText(s string) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	if len(s) <= approvalPreviewValueBytes {
+		return s
 	}
-	return false
+	cut := approvalPreviewValueBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%s…(뒤 %d바이트 잘림)", s[:cut], len(s)-cut)
 }
-func approvalPreview(p e2proxy.RequestApprovalProposal, rule E2HTTPFileRule) (string, string, map[string]string, error) {
+
+// approvalField는 미리보기 칸 하나(표시 이름 앞 · 값)다.
+type approvalField struct{ name, value string }
+
+// approvalBodyFields는 JSON 객체 본문의 최상위 칸을 원문 순서대로 꺼낸다. 같은 이름이 여러 번 있으면 모두 남긴다 — map으로
+// 풀면 앞 칸이 사라져, 대상 파서에 따라 실제로 쓰일 수 있는 값이 승인 화면에서 숨는다(#990 이동찬 P1). 객체가 아니거나 형식이
+// 틀리면(뒤에 다른 값이 붙은 경우 포함) false다.
+func approvalBodyFields(body []byte) ([]approvalField, bool) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, false
+	}
+	var out []approvalField
+	for dec.More() {
+		tok, err := dec.Token()
+		name, ok := tok.(string)
+		if err != nil || !ok {
+			return nil, false
+		}
+		var raw json.RawMessage
+		if dec.Decode(&raw) != nil {
+			return nil, false
+		}
+		out = append(out, approvalField{"body." + name, string(raw)})
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return nil, false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, false
+	}
+	return out, true
+}
+
+// approvalPreviewKey는 표시 이름이 겹치지 않게 한다. 같은 이름이 여러 번 온 칸, 256바이트로 자른 뒤 · 가린 뒤 이름이 같아진
+// 칸은 ' (n번째)'를 붙여 따로 남긴다 — 한 칸이 다른 칸을 조용히 덮지 않게(#990 이동찬 P2). 칸 이름은 늘 'query' · 'body'로
+// 시작해 생략 칸 이름과는 겹치지 않는다.
+func approvalPreviewKey(preview map[string]string, key string) string {
+	candidate := key
+	for n := 2; ; n++ {
+		if _, taken := preview[candidate]; !taken {
+			return candidate
+		}
+		candidate = fmt.Sprintf("%s (%d번째)", key, n)
+	}
+}
+
+// approvalPreview는 승인 화면 · 승인 기록에 남는 보낼 요청의 모습이다: 대상(scheme://host), 경로, 질의 칸마다 'query.<이름>',
+// JSON 객체 본문은 칸마다 'body.<이름>'(값은 JSON 그대로, 원문 순서, 같은 이름도 모두), 그 밖의 본문은 'body' 한 칸. 질의를
+// 칸으로 풀지 못하면(형식이 틀린 쌍 · ';') 'query' 한 칸에 원문을 싣는다(풀린 칸만 보이고 나머지가 숨지 않게). 대상 값 · 시험
+// 계정 자격은 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기 · 승인 미리보기 가림 걷기, 민준 결정 2026-11-27). 남는 가림은 실행의
+// 저장 기록 가림(RedactRecord: 우리 제어 비밀 · E③ 표식)이고 경로 · 질의 · 칸 이름 · 값 모두에 건다. 요청 헤더(E②가 붙이는 자격 ·
+// 세션 헤더 포함)는 미리보기에 싣지 않는다(요청 지문에만 들어간다).
+func approvalPreview(p e2proxy.RequestApprovalProposal) (string, string, map[string]string, error) {
 	u, err := url.Parse(p.URL)
-	if err != nil || u.User != nil {
+	if err != nil || u.User != nil || p.Redact == nil {
 		return "", "", nil, errRequestApproval
 	}
-	path := rule.PathPrefix
-	if rule.ApprovalDisplay.PublicPath {
-		path = dlp.DiagnosticText(u.EscapedPath())
-	} else if u.Path != rule.PathPrefix {
-		path = strings.TrimSuffix(path, "/") + "/[REDACTED]"
+	redact := func(s string) string { return string(p.Redact([]byte(s))) }
+	var fields []approvalField
+	query, queryErr := url.ParseQuery(u.RawQuery)
+	if queryErr != nil {
+		fields = append(fields, approvalField{"query", u.RawQuery})
+	} else {
+		keys := make([]string, 0, len(query))
+		for key := range query {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			v, _ := json.Marshal(query[key])
+			fields = append(fields, approvalField{"query." + key, string(v)})
+		}
+	}
+	if len(p.Body) > 0 {
+		if body, ok := approvalBodyFields(p.Body); ok {
+			fields = append(fields, body...)
+		} else {
+			fields = append(fields, approvalField{"body", string(p.Body)})
+		}
 	}
 	preview := map[string]string{}
-	add := func(key, value string) {
-		if len(value) <= 256 && !approvalSecretKey(key) {
-			preview[key] = value
+	for i, f := range fields {
+		if i == approvalPreviewEntries {
+			preview[approvalPreviewOmittedKey] = fmt.Sprintf("칸 %d개 더 있음", len(fields)-approvalPreviewEntries)
+			break
 		}
+		preview[approvalPreviewKey(preview, approvalPreviewText(redact(f.name)))] = approvalPreviewText(redact(f.value))
 	}
-	query := u.Query()
-	for _, key := range rule.ApprovalDisplay.QueryKeys {
-		if values, ok := query[key]; ok {
-			v, _ := json.Marshal(values)
-			add("query."+key, string(v))
-		}
-	}
-	var body map[string]json.RawMessage
-	if len(p.Body) > 0 && json.Unmarshal(p.Body, &body) == nil {
-		for _, key := range rule.ApprovalDisplay.JSONFields {
-			if value, ok := body[key]; ok {
-				if len(value) > 0 && value[0] != '{' && value[0] != '[' {
-					add("body."+key, string(value))
-				}
-			}
-		}
-	}
-	if len(p.Body) > 0 || u.RawQuery != "" || !rule.ApprovalDisplay.PublicPath {
-		preview["표시 제한"] = "호스트가 공개로 지정한 경로와 입력만 표시합니다. 비공개 입력·상태 변경 영향은 확인되지 않았습니다."
-	}
-	return u.Scheme + "://" + u.Host, path, preview, nil
+	return u.Scheme + "://" + u.Host, redact(u.EscapedPath()), preview, nil
 }
 func (s *RequestApprovalService) AwaitRequestApproval(ctx context.Context, p e2proxy.RequestApprovalProposal) (bool, error) {
 	var status string
@@ -188,7 +257,7 @@ func (s *RequestApprovalService) awaitRequestApproval(ctx context.Context, p e2p
 	}
 	s.mu.Lock()
 	binding, ok := s.bindings[task]
-	rule, ruleOK := binding.rules[p.Receipt.RuleRef]
+	_, ruleOK := binding.rules[p.Receipt.RuleRef]
 	if !ok || binding.phase == "closed" || binding.phase == "failed" || binding.stopRequested || !ruleOK || binding.run != p.Receipt.Scope.RunRef || s.waiters[p.Receipt.AttemptID] != nil {
 		s.mu.Unlock()
 		return false, errRequestApproval
@@ -201,7 +270,7 @@ func (s *RequestApprovalService) awaitRequestApproval(ctx context.Context, p e2p
 		}
 		return false, nil
 	}
-	origin, path, preview, err := approvalPreview(p, rule)
+	origin, path, preview, err := approvalPreview(p)
 	if err != nil {
 		s.mu.Unlock()
 		return false, err

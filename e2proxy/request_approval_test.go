@@ -239,6 +239,11 @@ func TestRequestApprovalExcludesProtectedCredentialValues(t *testing.T) {
 			t.Error("protected credential exposed to approval")
 			return false, nil
 		}
+		// 승인 미리보기(경로 · 질의)에 거는 가림은 실행의 저장 기록 가림이다: E②가 붙이는 자격 값(제어 비밀)을 가린다.
+		if p.Redact == nil || strings.Contains(string(p.Redact([]byte("/allowed/fixture-private-session"))), "fixture-private-session") {
+			t.Error("approval preview redaction is not the execution record redaction")
+			return false, nil
+		}
 		return p.SessionRef == cfg.SessionRef, nil
 	})
 	_, c := coreOpen(t, cfg)

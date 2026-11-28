@@ -14,6 +14,7 @@ import (
 
 	"github.com/Autumn-27/artex/diagnosisprep"
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/learnedlogin"
 )
 
 // 대상 계정(C14 결정 1·2, docs/account-login-decision.md). 계정은 대상 등록에 붙고 다른 대상에서 쓸 수 없다.
@@ -83,10 +84,12 @@ type productAccountEvent struct {
 	// login_method_verified 줄의 칸이다(모델 로그인 계약 §6-1-2, 값 없음). 이 줄의 CredentialSHA256은 그 회차에 결속된 자격
 	// 해시, TargetRevision은 그 회차의 대상 판이다.
 	MethodSHA256 string `json:"method_sha256,omitempty"`
-	RunRef       string `json:"run_ref,omitempty"`
-	Stage        string `json:"stage,omitempty"`
-	AttemptRef   string `json:"attempt_ref,omitempty"`
-	Evidence     string `json:"evidence,omitempty"`
+	// LoginMethod는 login_method_learned 줄의 방법 객체다(§6-1-2, 값 없음).
+	LoginMethod *learnedlogin.Method `json:"login_method,omitempty"`
+	RunRef      string               `json:"run_ref,omitempty"`
+	Stage       string               `json:"stage,omitempty"`
+	AttemptRef  string               `json:"attempt_ref,omitempty"`
+	Evidence    string               `json:"evidence,omitempty"`
 }
 
 const (
@@ -116,6 +119,8 @@ type productAccountState struct {
 	// 대상 판·자격 판과 모두 같을 때만 상태에 반영한다(계약 §6-1-1·§6-1-2, loginMethodVerifiedFor). 다른 방법의 검증 줄이
 	// 지금 방법의 검증을 덮지 않게 방법마다 따로 둔다.
 	loginVerified map[string]*productLoginVerified
+	// loginLearned는 마지막 login_method_learned 줄이다(product_login_method.go).
+	loginLearned *productLoginLearned
 }
 
 // replayAccount는 저널 한 줄을 상태에 반영한다. 대상 저널을 먼저 다 읽은 뒤에 부른다.
@@ -125,9 +130,15 @@ func (r *productTargetRegistry) replayAccount(e productAccountEvent) error {
 		return errPreparation
 	}
 	if e.Action == accountLoginMethodVerified {
+		if e.LoginMethod != nil {
+			return errPreparation
+		}
 		return r.replayLoginMethodVerified(rec, e)
 	}
-	if e.MethodSHA256 != "" || e.RunRef != "" || e.Stage != "" || e.AttemptRef != "" || e.Evidence != "" {
+	if e.Action == accountLoginMethodLearned {
+		return r.replayLoginMethodLearned(e)
+	}
+	if e.MethodSHA256 != "" || e.RunRef != "" || e.Stage != "" || e.AttemptRef != "" || e.Evidence != "" || e.LoginMethod != nil {
 		return errPreparation
 	}
 	if e.Action == accountExternalConsent {
@@ -234,6 +245,7 @@ func (r *productTargetRegistry) listAccounts(principal, id string) ([]diagnosisp
 func (r *productTargetRegistry) accountResponse(rec productTargetRecord, st *productAccountState) diagnosisprep.ProductAccount {
 	view := diagnosisprep.ProductAccount{Label: st.label, RegisteredBy: st.registeredBy, RegisteredAt: st.registeredAt}
 	view.CredentialConfigured = r.credentialConfigured(rec.Target.ID, st)
+	view.LoginMethod = loginMethodView(rec, st)
 	return view
 }
 

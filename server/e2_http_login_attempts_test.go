@@ -1,11 +1,13 @@
 package server
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/Autumn-27/artex/e2proxy"
+	"github.com/Autumn-27/artex/learnedlogin"
 	"github.com/Autumn-27/artex/loginattempt"
 )
 
@@ -102,5 +104,46 @@ func TestLoginAttemptsOriginFromApprovedTarget(t *testing.T) {
 	}
 	if prober.origin == nil || prober.origin.Host != "target.test" {
 		t.Fatalf("contrast origin: %v", prober.origin)
+	}
+}
+
+// 탐색 로그인 인계 표지(login-attempts.unavailable) 하나를 진단 판정기와 확정 단계 이력 읽기(learnedlogin.ReadConfirmationHistory)가
+// 같이 읽는다: 표지가 있으면 둘 다 막고, 지우면 둘 다 연다. 두 상수가 같은 파일 이름이어야 한다(learned 저장 PR, #969 · #974 합침).
+func TestLoginHandoverMarkerSharedWithConfirmationHistory(t *testing.T) {
+	if E2HTTPLoginHistoryUnavailableFile != learnedlogin.AttemptsUnavailableFile {
+		t.Fatal("두 쪽 표지 파일 이름이 다름")
+	}
+	login := loginattempt.Request{Method: "POST", Path: "/login", ContentType: "application/x-www-form-urlencoded", Body: []byte("username=u1&password=p-123456")}
+	judge := func(t *testing.T, dir string) string {
+		t.Helper()
+		policy := E2HTTPFilePolicy{RunRef: "run-1", StateDir: dir, Rules: []E2HTTPFileRule{{Ref: "auth-login", Origin: "http://target.test"}},
+			Auth: &E2HTTPFileAuth{RuleRef: "auth-login", ModelLogin: true}, LoginAttempts: &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}}
+		tr, err := newE2HTTPLoginAttempts(t.Context(), policy, nil, newE2HTTPSessionStore(nil, "run-1", nil), newLoginContrastProber(nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tr.Prepare(login, true).Refusal
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkLoginHistoryUnavailable(dir); err != nil {
+		t.Fatal(err)
+	}
+	if judge(t, dir) != loginattempt.RefusalHistoryUnavailable {
+		t.Fatal("표지가 있는데 진단 판정기가 로그인을 보냄")
+	}
+	if _, _, err := learnedlogin.ReadConfirmationHistory(dir); !errors.Is(err, learnedlogin.ErrRecord) {
+		t.Fatalf("표지가 있는데 확정 단계 이력을 읽음: %v", err)
+	}
+	if err := ClearLoginHistoryUnavailable(dir); err != nil {
+		t.Fatal(err)
+	}
+	if judge(t, dir) != "" {
+		t.Fatal("표지를 지운 뒤에도 진단 판정기가 막음")
+	}
+	if _, _, err := learnedlogin.ReadConfirmationHistory(dir); err != nil {
+		t.Fatalf("표지를 지운 뒤에도 확정 단계 이력을 못 읽음: %v", err)
 	}
 }

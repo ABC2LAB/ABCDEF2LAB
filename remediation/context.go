@@ -7,8 +7,6 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
-
-	"github.com/Autumn-27/artex/dlp"
 )
 
 // Context is a caller-selected nonsensitive summary, never raw response/log text.
@@ -50,15 +48,16 @@ type ContextObservation struct {
 
 const UnknownContext = "미확인: 저장소와 승인된 비민감 근거에서 확인 필요"
 
-// 용어 자체가 아니라 지시 전환·실행 명령을 거른다. 보안 동작 설명은 보존한다.
-var instructionLike = regexp.MustCompile(`(?i)(\b(ignore|disregard|override)\s+(all\s+|the\s+|your\s+)?(previous|prior|above|system|developer|instructions)|(^|[.;:]\s*)(please\s+)?(reveal|show|print|output|leak|disclose)\s+(the\s+|your\s+)?(system[ ._-]*prompt|developer[ ._-]*message)|(^|[.;:]\s*)(please\s+)?(exfiltrate\s+(the\s+)?(secret|token|credential|password|data|files)|jailbreak\s+(the|this|your)\s+(system|assistant|model))\b|(^|[.;:]\s*)(please\s+)?(disable|turn off)\s+(the\s+)?(auth|audit|validat|security)|(^|[.;:]\s*)delete\s+(audit\s+)?(logs|files)|\b(run|execute)\s+(curl|wget|powershell|bash|sudo)\b|(^|[;|&]\s*)(curl|wget|powershell|sudo|/bin/)\b|\brm\s+-|<\s*/?\s*(script|system|instruction)|지시.{0,12}무시|명령.{0,12}무시|시스템.{0,8}프롬프트.{0,8}(공개|출력|보여)|비밀.{0,8}(전송|출력)|토큰.{0,8}(전송|출력)|인증.{0,12}(꺼라|끄세요|비활성화하)|인가.{0,12}(꺼라|끄세요|비활성화하)|감사.{0,12}(꺼라|끄세요|비활성화하))`)
+// 용어 자체가 아니라 지시 전환·실행 명령을 거른다. 보안 동작 설명은 보존한다. 규칙 · 지침 · 정책 무시는 문장 첫머리
+// 명령형일 때만 거른다(문장 중간은 'users can override the discount rules' 같은 정상 설명이라 막지 않는다).
+var instructionLike = regexp.MustCompile(`(?i)(\b(ignore|disregard|override)\s+(all\s+|the\s+|your\s+)?(previous|prior|above|system|developer|instructions)|(^|[.;:]\s*)(please\s+)?(ignore|disregard|override)\s+(all\s+)?(the\s+|your\s+)?(rules|guidelines|policies)\b|(^|[.;:]\s*)(please\s+)?(reveal|show|print|output|leak|disclose)\s+(the\s+|your\s+)?(system[ ._-]*prompt|developer[ ._-]*message)|(^|[.;:]\s*)(please\s+)?(exfiltrate\s+(the\s+)?(secret|token|credential|password|data|files)|jailbreak\s+(the|this|your)\s+(system|assistant|model))\b|(^|[.;:]\s*)(please\s+)?(disable|turn off)\s+(the\s+)?(auth|audit|validat|security)|(^|[.;:]\s*)delete\s+(audit\s+)?(logs|files)|\b(run|execute)\s+(curl|wget|powershell|bash|sudo)\b|(^|[;|&]\s*)(curl|wget|powershell|sudo|/bin/)\b|\brm\s+-|<\s*/?\s*(script|system|instruction)|지시.{0,12}무시|명령.{0,12}무시|시스템.{0,8}프롬프트.{0,8}(공개|출력|보여)|비밀.{0,8}(전송|출력)|토큰.{0,8}(전송|출력)|인증.{0,12}(꺼라|끄세요|비활성화하)|인가.{0,12}(꺼라|끄세요|비활성화하)|감사.{0,12}(꺼라|끄세요|비활성화하))`)
 var referencePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9:._-]{0,159}$`)
 
 func reference(s string) string {
 	if s == "" {
 		return ""
 	}
-	if !referencePattern.MatchString(s) || instructionLike.MatchString(s) || dlp.DiagnosticText(s) != s {
+	if !referencePattern.MatchString(s) || instructionLike.MatchString(s) {
 		return "unknown"
 	}
 	return s
@@ -93,9 +92,8 @@ func safeData(s string) string {
 	if instructionLike.MatchString(s) || opaqueLike.MatchString(s) || strings.ContainsAny(s, "`\\") {
 		return UnknownContext
 	}
-	if dlp.DiagnosticText(s) != s {
-		return UnknownContext
-	}
+	// 대상 응답 · 시험 계정 자격 모양 글은 가리지 않는다(절대규칙 2, 2026-11-26 DLP 폐기). 위의 지시문 차단은 프롬프트 주입
+	// 방어라 그대로다.
 	return s
 }
 func role(s string) string {

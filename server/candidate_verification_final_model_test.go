@@ -360,3 +360,30 @@ func TestCandidateFinalVerdictRequiresComparableReproductionWithNormalControl(t 
 	c.Followup[1].Source.Observation.RequestAuthContext = "authorization"
 	check("insufficient")
 }
+
+// 최종 판정 글(주장 · 설명 · 근거 · 한계 · 조치 · 확인 기준)은 저장 기록 · 화면이라 자격 모양 글도 가리지 않는다(절대규칙 2,
+// 2026-11-26 DLP 폐기).
+func TestCandidateFinalVerdictKeepsTargetValues(t *testing.T) {
+	c := syntheticCandidateAssessmentContext(t)
+	refs := []candidateVerificationSourceRef{
+		{CallRef: "original-call", AttemptRef: "original-attempt", ObservationDigest: strings.Repeat("a", 64)},
+		{CallRef: "followup-call", AttemptRef: "followup-attempt", ObservationDigest: strings.Repeat("b", 64)},
+	}
+	const text = "Authorization: Bearer synthetic-bearer-value"
+	v := CandidateFinalVerdict{Version: "selected/final-v1", CandidateID: 1, Verdict: "confirmed", Claim: text,
+		NormalExplanation: text, Reason: text, Limitations: text, Remediation: text, VerificationCriteria: text, Sources: refs}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseCandidateFinalVerdict(raw, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, field := range map[string]string{"claim": got.Claim, "normal": got.NormalExplanation, "reason": got.Reason,
+		"limitations": got.Limitations, "remediation": got.Remediation, "criteria": got.VerificationCriteria} {
+		if field != text {
+			t.Fatalf("%s 를 가림: %q", name, field)
+		}
+	}
+}
