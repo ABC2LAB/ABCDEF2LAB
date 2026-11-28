@@ -148,3 +148,28 @@ func TestAnonymousCandidateIssueCarriesNoAccount(t *testing.T) {
 		t.Fatal("issue with external account consent accepted")
 	}
 }
+
+// #950 계획의 입구(bindCandidateLLMAccount): 익명 계획은 계정 떼기를 지나 외부 계정 동의까지 끄고, 그 대상의 자격 사본이 발급
+// 목록에 남아 있으면 거부한다(닫힌 쪽). 로그인 방식 없이 결속된 계정(9칸-1)으로 계정 계획이 오면 거부한다.
+func TestBindCandidatePlanOnAccountWithoutLoginMethod(t *testing.T) {
+	_, l, _, _ := detachTestProfile(t)
+	name := l.policy.Auth.Accounts[0].Credential.File
+	if err := bindCandidateLLMAccount(l, server.CandidateLLMPlan{TargetID: l.productTarget.Target.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := l.materials[name]; ok || l.policy.Auth != nil || l.externalTestAccounts || l.policy.HeaderMode != e2proxy.HeaderPreserve {
+		t.Fatalf("anonymous plan kept account state: auth=%v external=%v header=%s", l.policy.Auth, l.externalTestAccounts, l.policy.HeaderMode)
+	}
+	_, left, _, _ := detachTestProfile(t)
+	left.materials[bindingCredentialName(left.productTarget.Target.ID, "tester-b", strings.Repeat("d", 64))] = []byte("x")
+	if bindCandidateLLMAccount(left, server.CandidateLLMPlan{TargetID: left.productTarget.Target.ID}) == nil {
+		t.Fatal("anonymous plan bound with a credential copy left")
+	}
+	_, account, _, _ := detachTestProfile(t)
+	ref := server.CandidateAccountRevision("tester-a", account.policy.Auth.Accounts[0].Credential.SHA256)
+	plan := server.CandidateLLMPlan{TargetID: account.productTarget.Target.ID, AccountRef: ref,
+		AuthPreparation: &server.CandidateLLMAuthPreparation{Method: "POST", ExactPath: "/login"}}
+	if bindCandidateLLMAccount(account, plan) == nil {
+		t.Fatal("account plan bound without a login method")
+	}
+}

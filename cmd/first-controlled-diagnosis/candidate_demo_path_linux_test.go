@@ -11,7 +11,7 @@ import (
 )
 
 // 시연 경로(9칸-1, 민준 2026-11-27 — 시연에서 이 장면을 쓴다): 시험 계정이 등록된 대상 → 익명 후보 → 선택 검증(#950) → 외부
-// 모델 설치의 E② 호스트가 그 실행 정책을 받는다. 익명 분기(prepareAnonymousCandidate가 인증 칸을 뗌)와 호스트의 거부 조건(외부
+// 모델 설치의 E② 호스트가 그 실행 정책을 받는다. 익명 분기(bindCandidateLLMAccount → prepareAnonymousCandidate가 인증 칸을 뗌)와 호스트의 거부 조건(외부
 // 모델 + 인증 칸 + 시험 계정 동의 없음, server.firstDiagnosisHTTPPolicyAllowed)을 따로 시험하지 않고 한 시험으로 묶는다: 실제
 // 제품 결속 · 실제 #950 익명 분기 · 실제 #950 호스트 시작 옵션 · 서버의 같은 판정을 이어서 지나므로 어느 쪽을 바꿔도 깨진다.
 func TestDemoPathAnonymousCandidateOnAccountTargetRunsWithExternalModel(t *testing.T) {
@@ -39,7 +39,7 @@ func TestDemoPathAnonymousCandidateOnAccountTargetRunsWithExternalModel(t *testi
 	if err != nil || !external || admitted {
 		t.Fatalf("account-bound #950 policy on the external model host: external=%v admitted=%v err=%v", external, admitted, err)
 	}
-	if l.prepareAnonymousCandidate(server.CandidateLLMPlan{Version: "candidate-llm-plan/v1", TargetID: target.ID}) != nil {
+	if bindCandidateLLMAccount(l, server.CandidateLLMPlan{Version: "candidate-llm-plan/v1", TargetID: target.ID}) != nil {
 		t.Fatal("anonymous candidate preparation failed")
 	}
 	external, admitted, err = server.FirstDiagnosisHTTPHostAdmits(candidateLLMStartOptions(l.launch), l.policy)
@@ -48,7 +48,7 @@ func TestDemoPathAnonymousCandidateOnAccountTargetRunsWithExternalModel(t *testi
 	}
 	// 계정 참조나 계정 준비가 붙은 계획은 익명 분기로 오지 않는다.
 	for _, plan := range []server.CandidateLLMPlan{{AccountRef: "tester-a-ref"}, {AuthPreparation: &server.CandidateLLMAuthPreparation{}}} {
-		if l.prepareAnonymousCandidate(plan) == nil {
+		if bindCandidateLLMAccount(l, plan) == nil {
 			t.Fatalf("anonymous preparation accepted an account plan: %+v", plan)
 		}
 	}
