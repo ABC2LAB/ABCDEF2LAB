@@ -2377,11 +2377,14 @@ func compilePolicyTemplate(cfg Config) ([]compiledRule, HeaderMode, *EvaluationC
 		return nil, "", nil, ErrConfig
 	}
 	if cfg.PasswordResponse != "" {
+		// 모델 직접 로그인은 프로그램 인증 준비 규칙 없이 결속 계정을 쓴다. model_visible_v1은 그 회차에도 필요하지만,
+		// mask_spans_v1은 기존처럼 인증 준비 규칙이 있는 정책에서만 받는다.
 		login := false
 		for _, rule := range rules {
 			login = login || rule.Purpose == PurposeAuthPrep
 		}
-		if cfg.PasswordResponse != PasswordResponseMaskSpans && cfg.PasswordResponse != PasswordResponseModelVisible || cfg.HeaderMode != HeaderTestAccountPassthrough || !login {
+		if cfg.PasswordResponse != PasswordResponseMaskSpans && cfg.PasswordResponse != PasswordResponseModelVisible || cfg.HeaderMode != HeaderTestAccountPassthrough ||
+			cfg.PasswordResponse == PasswordResponseMaskSpans && !login {
 			return nil, "", nil, ErrConfig
 		}
 	}

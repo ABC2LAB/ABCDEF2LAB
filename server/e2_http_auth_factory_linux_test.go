@@ -92,6 +92,38 @@ func TestE2HTTPFactoryRunsAuthPrepOnAcquire(t *testing.T) {
 	}
 }
 
+// 9칸 없이 자격만 결속한 제품 정책은 모델이 직접 로그인하므로 인증 준비 규칙이 없다. 이 정책을 E② Host 로더가
+// model_visible_v1과 함께 받아야 하고, 인증 준비 규칙을 요구하는 기존 mask_spans_v1은 계속 거부해야 한다.
+func TestE2HTTPFactoryLoadsModelLoginWithoutLoginMethod(t *testing.T) {
+	cfg, _, policy := e2HostPolicyFixture(t)
+	pin := authCredentialPin(t, cfg.AuthorityRoot, "account-tester-a.json", "tester@owned.test", "seeded-pass-88ff")
+	policy.Auth = &E2HTTPFileAuth{ModelLogin: true, PasswordResponse: e2proxy.PasswordResponseModelVisible,
+		Accounts: []E2HTTPFileAuthAccount{{Label: "tester-a", Credential: pin}}}
+	policy.HeaderMode = e2proxy.HeaderTestAccountPassthrough
+	policy.LoginAttempts = &E2HTTPLoginAttemptLimits{MaxConsecutiveFailures: 3, MaxContrastProbes: 3, TokenMinBytes: 16}
+	write := func() []byte {
+		raw, err := json.Marshal(policy)
+		if err != nil || os.WriteFile(cfg.PolicyFile, raw, 0o600) != nil {
+			t.Fatal("9칸 없는 정책 준비 실패", err)
+		}
+		return raw
+	}
+	input := E2HTTPFileOptions{PolicyFile: cfg.PolicyFile, Authority: &e2HTTPPolicyAuthorityFixture{ctx: t.Context()}, Supervisor: &e2HTTPSupervisorFixture{}}
+	raw := write()
+	_, fingerprint, err := ValidateE2HTTPRunPolicyDocument(raw)
+	if err != nil || fingerprint == "" {
+		t.Fatalf("9칸 없는 실행 정책 거부: %v", err)
+	}
+	options, err := LoadE2HTTPRuntimeOptions(t.Context(), input)
+	if err != nil || options.PolicyFingerprintSHA256 != fingerprint {
+		t.Fatalf("9칸 없는 Host 정책 로딩 실패: %v", err)
+	}
+	policy.Auth.PasswordResponse = e2proxy.PasswordResponseMaskSpans
+	if _, _, err := ValidateE2HTTPRunPolicyDocument(write()); err == nil {
+		t.Fatal("인증 준비 규칙 없는 mask_spans 정책 수용")
+	}
+}
+
 func TestSelectedCandidateFactoryReissuesOneProtectedSession(t *testing.T) {
 	var logins, reads atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
